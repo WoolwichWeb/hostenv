@@ -65,6 +65,7 @@ let
           vendorHash = cfg.composer.dependencyHash;
           composerNoPlugins = !cfg.composer.enablePlugins;
           composerNoScripts = !cfg.composer.enableScripts;
+          composerNoDev = !cfg.composer.enableDev;
         })
     else
       projectWithSettings;
@@ -155,8 +156,9 @@ in
         default = lib.fakeHash;
       };
 
-      enablePlugins = lib.mkEnableOption "Enable composer plugins when running commands like `composer install`?" // { default = true; };
-      enableScripts = lib.mkEnableOption "Enable composer scripts when running commands like `composer install`?" // { default = true; };
+      enablePlugins = lib.mkEnableOption "composer plugins when running commands like `composer install`" // { default = true; };
+      enableScripts = lib.mkEnableOption "composer scripts when running commands like `composer install`" // { default = true; };
+      enableDev = lib.mkEnableOption "dev dependencies" // { default = true; };
     };
 
     phpPackage = lib.mkPackageOption pkgs "php" { };
