@@ -75,6 +75,7 @@ let
       pname = "${config.hostenv.userName}-application";
       version = cfg.codebase.version;
       src = config.hostenv.root;
+      dontPatchShebangs = true;
 
       buildPhase =
         let
