@@ -157,8 +157,8 @@ in
       };
 
       enablePlugins = lib.mkEnableOption "composer plugins when running commands like `composer install`" // { default = true; };
-      enableScripts = lib.mkEnableOption "composer scripts when running commands like `composer install`";
-      enableDev = lib.mkEnableOption "dev dependencies" // { default = true; };
+      enableScripts = lib.mkEnableOption "composer scripts when running commands like `composer install`" // { default = true; };
+      enableDev = lib.mkEnableOption "dev dependencies in composer";
     };
 
     phpPackage = lib.mkPackageOption pkgs "php" { };
