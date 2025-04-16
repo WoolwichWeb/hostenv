@@ -178,7 +178,8 @@ in
           exit 1
         fi
 
-        mkdir -p "$XDG_CONFIG_HOME"/systemd
+        # Ensure the config directory exists, if this is a new user there's a good chance it hasn't been created yet.
+        mkdir -p "$XDG_CONFIG_HOME"
 
         systemdStatus=$(${systemctl} --user is-system-running 2>&1 || true)
 
@@ -201,6 +202,7 @@ in
               rm "$XDG_CONFIG_HOME"/systemd
             else
               echo "Couldn't unlink old systemd user directory at '$XDG_CONFIG_HOME/systemd'. Please check and delete it manually, then try again."
+              echo "hostenv takes over the user systemd directory, so run 'ls -lah $XDG_CONFIG_HOME/systemd' to see what's in the directory, then 'mv $XDG_CONFIG_HOME/systemd' once you have checked there isn't anything important in that directory."
               exit 1
             fi
           fi
