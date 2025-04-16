@@ -302,11 +302,6 @@ in
       wantedBy = [ "default.target" ];
       restartTriggers = [ cfg.configFile ];
 
-      # Use parent directory, since the MySQL data directory itself may not
-      # exist yet, which will result in a 'Failed to set up mount
-      # namespacing' error.
-      unitConfig.RequiresMountsFor = builtins.dirOf cfg.dataDir;
-
       startLimitIntervalSec = 14400;
       startLimitBurst = 10;
 
@@ -444,8 +439,6 @@ in
           Type = if hasNotify then "notify" else "simple";
           Restart = "on-abort";
           RestartSec = "5s";
-          # Access write directories
-          ReadWritePaths = [ cfg.dataDir ];
         }
         (lib.mkIf (cfg.dataDir == defaultDataDir) {
           StateDirectory = "mysql";
