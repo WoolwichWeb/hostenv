@@ -178,6 +178,8 @@ in
           exit 1
         fi
 
+        mkdir -p "$XDG_CONFIG_HOME"/systemd
+
         systemdStatus=$(${systemctl} --user is-system-running 2>&1 || true)
 
         if [ $systemdStatus == 'running' ] || [ $systemdStatus == 'degraded' ]; then
