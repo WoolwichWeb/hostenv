@@ -72,7 +72,7 @@ let
 
   projectWithSettings = pkgs.stdenvNoCC.mkDerivation
     {
-      pname = "${config.hostenv.userName}-application";
+      pname = cfg.codebase.name;
       version = cfg.codebase.version;
       src = config.hostenv.root;
       dontPatchShebangs = true;
