@@ -58,7 +58,7 @@ let
     if cfg.composer.enable then
       cfg.phpPackage.buildComposerProject2
         (finalAttrs: {
-          pname = "composer-" + cfg.codebase.name;
+          pname = cfg.codebase.name;
           version = cfg.codebase.version;
           src = projectWithSettings;
           composerLock = config.hostenv.root + /composer.lock;
