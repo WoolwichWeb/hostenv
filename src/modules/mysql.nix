@@ -17,6 +17,7 @@ let
 
   format = pkgs.formats.ini { listsAsDuplicateKeys = true; };
   configFile = format.generate "my.cnf" cfg.settings;
+  defaultDataDir = "/home/${cfg.user}/.local/share/mysql";
 in
 {
 
@@ -41,7 +42,7 @@ in
 
     dataDir = lib.mkOption {
       type = lib.types.str;
-      example = "/home/vinod/.share/mysql";
+      example = "/home/vinod/.local/share/mysql";
       description = ''
         The data directory for MySQL.
       '';
@@ -268,7 +269,7 @@ in
   config = lib.mkIf cfg.enable {
 
     services.mysql.dataDir =
-      lib.mkDefault "/home/${cfg.user}/.local/share/mysql";
+      lib.mkDefault defaultDataDir;
 
     services.mysql.runtimeDir =
       lib.mkDefault "/run/hostenv/user/${cfg.user}";
@@ -446,7 +447,7 @@ in
           # Access write directories
           ReadWritePaths = [ cfg.dataDir ];
         }
-        (lib.mkIf (cfg.dataDir == "/home/${cfg.user}/.local/mysql") {
+        (lib.mkIf (cfg.dataDir == defaultDataDir) {
           StateDirectory = "mysql";
           StateDirectoryMode = "0700";
         })
