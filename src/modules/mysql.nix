@@ -301,7 +301,11 @@ in
       wantedBy = [ "default.target" ];
       restartTriggers = [ cfg.configFile ];
 
-      unitConfig.RequiresMountsFor = cfg.dataDir;
+      # Use parent directory, since the MySQL data directory itself may not
+      # exist yet, which will result in a 'Failed to set up mount
+      # namespacing' error.
+      unitConfig.RequiresMountsFor = builtins.dirOf cfg.dataDir;
+
       startLimitIntervalSec = 14400;
       startLimitBurst = 10;
 
