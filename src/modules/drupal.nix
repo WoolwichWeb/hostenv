@@ -54,6 +54,7 @@ let
     '';
   });
 
+  projectInnerDir = if cfg.composer.enable then "composer-" + cfg.codebase.name else cfg.codebase.name;
   project =
     if cfg.composer.enable then
       pkgs.stdenvNoCC.mkDerivation
@@ -70,7 +71,7 @@ let
           # `mkDerivation` wrapping this, which fulfills that purpose.
           src = cfg.phpPackage.buildComposerProject2
             (finalAttrs: {
-              pname = "composer-" + cfg.codebase.name;
+              pname = projectInnerDir;
               version = cfg.codebase.version;
               src = projectWithSettings;
               composerLock = config.hostenv.root + /composer.lock;
@@ -192,8 +193,8 @@ in
     drushPath = lib.mkOption {
       type = lib.types.str;
       description = "Drush command-line script location.";
-      default = "${config.services.phpfpm.pools.${cfg.codebase.name}.phpPackage}/bin/php ${toString project}/share/php/${cfg.codebase.name}/vendor/drush/drush/drush.php";
-      defaultText = lib.literalExpression "${config.services.phpfpm.pools.${config.services.drupal.codebase.name}.phpPackage}/bin/php ${toString project}share/php/${config.services.drupal.codebase.name}/vendor/drush/drush/drush.php";
+      default = "${config.services.phpfpm.pools.${cfg.codebase.name}.phpPackage}/bin/php ${toString project}/share/php/${projectInnerDir}/vendor/drush/drush/drush.php";
+      defaultText = lib.literalExpression "${config.services.phpfpm.pools.${config.services.drupal.codebase.name}.phpPackage}/bin/php ${toString project}share/php/${projectInnerDir}/vendor/drush/drush/drush.php";
     };
 
     codebase = {
@@ -301,8 +302,8 @@ in
 
     systemd.services =
       let
-        withoutWeb = "${project}/share/php/${cfg.codebase.name}";
-        withWeb = "${project}/share/php/${cfg.codebase.name}/web";
+        withoutWeb = "${project}/share/php/${projectInnerDir}";
+        withWeb = "${project}/share/php/${projectInnerDir}/web";
       in
       lib.mkIf cfg.cron.enable {
         "${cfg.codebase.name}-cron" = {
@@ -327,7 +328,7 @@ in
         serverName = "_";
         default = true;
         forceSSL = false;
-        root = "${project}/share/php/${cfg.codebase.name}/web";
+        root = "${project}/share/php/${projectInnerDir}/web";
 
         # Set up nginx for Drupal.
         locations."~ '\.php$|^/update.php'" = {
