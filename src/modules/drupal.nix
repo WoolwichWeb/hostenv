@@ -56,17 +56,42 @@ let
 
   project =
     if cfg.composer.enable then
-      cfg.phpPackage.buildComposerProject2
-        (finalAttrs: {
-          pname = cfg.codebase.name;
+      pkgs.stdenvNoCC.mkDerivation
+        {
+          pname = "scaffold-" + cfg.codebase.name;
           version = cfg.codebase.version;
-          src = projectWithSettings;
-          composerLock = config.hostenv.root + /composer.lock;
-          vendorHash = cfg.composer.dependencyHash;
-          composerNoPlugins = !cfg.composer.enablePlugins;
-          composerNoScripts = !cfg.composer.enableScripts;
-          composerNoDev = !cfg.composer.enableDev;
-        })
+          buildInputs = [ cfg.composer.package ];
+          dontPatchShebangs = true;
+
+          # This installs composer dependencies, and creates the 'vendor',
+          # 'web/modules/contrib', 'web/themes/contrib' etc. directories.
+          # It does not know about or track files created by the 
+          # `composer drupal:scaffold` plugin, so there is a call to
+          # `mkDerivation` wrapping this, which fulfills that purpose.
+          src = cfg.phpPackage.buildComposerProject2
+            (finalAttrs: {
+              pname = "composer-" + cfg.codebase.name;
+              version = cfg.codebase.version;
+              src = projectWithSettings;
+              composerLock = config.hostenv.root + /composer.lock;
+              vendorHash = cfg.composer.dependencyHash;
+              composerNoPlugins = !cfg.composer.enablePlugins;
+              composerNoScripts = !cfg.composer.enableScripts;
+              composerNoDev = !cfg.composer.enableDev;
+            });
+
+          buildPhase = ''
+            pushd share/php/composer-${cfg.codebase.name}
+            # Scaffold Drupal files, like 'web/{index.php,autoload.php}' etc.
+            composer drupal:scaffold
+            popd
+          '';
+
+          installPhase = ''
+            mkdir -p $out
+            cp -r . $out/
+          '';
+        }
     else
       projectWithSettings;
 
