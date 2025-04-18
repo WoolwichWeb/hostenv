@@ -55,6 +55,7 @@ let
     ]));
     extraConfig = ''
       apc.enable_cli = 1
+      memory_limit = 1G
     '';
   });
 
@@ -95,6 +96,10 @@ let
           installPhase = ''
             mkdir -p $out
             cp -r . $out/
+            # echo "GO GO GADGET BULLSHIT!"
+            # ls -lah $out
+            # ls -lah $out/web/
+            # exit 1
           '';
         }
     else
