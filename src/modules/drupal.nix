@@ -96,10 +96,6 @@ let
           installPhase = ''
             mkdir -p $out
             cp -r . $out/
-            # echo "GO GO GADGET BULLSHIT!"
-            # ls -lah $out
-            # ls -lah $out/web/
-            # exit 1
           '';
         }
     else
