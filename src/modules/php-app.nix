@@ -4,10 +4,8 @@ let
 
   phpPackage = (cfg.phpPackage.buildEnv {
     extensions = ({ enabled, all }: enabled ++ (with all; [
-      apcu
       pdo
       pdo_mysql
-      redis
     ]));
     extraConfig = ''
       apc.enable_cli = 1
