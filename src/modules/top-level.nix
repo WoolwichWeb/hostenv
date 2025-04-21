@@ -108,6 +108,7 @@ in
     ./nginx.nix
     ./phpfpm.nix
     ./drupal.nix
+    ./php-app.nix
     ./restic.nix
   ];
 
