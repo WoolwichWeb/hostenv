@@ -170,7 +170,7 @@ in
         {
           name = config.hostenv.userName;
           ensurePermissions = {
-            "drupal.*" = "ALL PRIVILEGES";
+            "app.*" = "ALL PRIVILEGES";
           };
         }
         {
