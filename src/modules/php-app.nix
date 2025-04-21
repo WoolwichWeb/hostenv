@@ -3,10 +3,7 @@ let
   cfg = config.services.php-app;
 
   phpPackage = (cfg.phpPackage.buildEnv {
-    extensions = ({ enabled, all }: enabled ++ (with all; [
-      pdo
-      pdo_mysql
-    ]));
+    extensions = ({ enabled, all }: enabled ++ (with all; cfg.phpExtensions));
     extraConfig = ''
       apc.enable_cli = 1
     '';
@@ -31,6 +28,11 @@ in
     };
 
     phpPackage = lib.mkPackageOption pkgs "php" { };
+    phpExtensions = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      description = "PHP extensions to enable";
+      default = [ "pdo" "pdo_mysql" ];
+    };
 
     codebase = {
       name = lib.mkOption {
