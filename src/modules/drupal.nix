@@ -55,7 +55,6 @@ let
     ]));
     extraConfig = ''
       apc.enable_cli = 1
-      memory_limit = 1G
     '';
   });
 
@@ -280,7 +279,7 @@ in
     };
   };
 
-  config = {
+  config = lib.mkIf cfg.enable {
     services.restic.backups = lib.mkIf cfg.backups.enable {
       drupal = {
         backupPrepareCommand = ''
