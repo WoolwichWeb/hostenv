@@ -64,6 +64,12 @@ in
           forceSSL = false;
           root = config.hostenv.root;
 
+          locations."@rewrite" = {
+            extraConfig = ''
+              rewrite ^ /index.php;
+            '';
+          };
+
           # Set up nginx for Drupal.
           locations."~ '\.php$'" = {
             extraConfig = ''
@@ -108,9 +114,7 @@ in
           };
           locations."~* \.(js|css|png|jpg|jpeg|gif|ico|svg|avif|wasm)$" = {
             extraConfig = ''
-              ${ if cfg.frontController then ''
               try_files $uri @rewrite;
-              '' else '''' }
               expires max;
               log_not_found off;
             '';
@@ -121,11 +125,6 @@ in
         locations."/" = {
           extraConfig = ''
             try_files $uri /index.php?$query_string;
-          '';
-        };
-        locations."@rewrite" = {
-          extraConfig = ''
-            rewrite ^ /index.php;
           '';
         };
       } else { });
@@ -164,7 +163,7 @@ in
       dataDir = "${config.hostenv.dataDir}/mysql";
 
       initialDatabases = [
-        { name = "drupal"; }
+        { name = "app"; }
       ];
 
       ensureUsers = [
