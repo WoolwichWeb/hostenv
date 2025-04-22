@@ -296,6 +296,7 @@ in
         paths = [
           "/home/${config.hostenv.userName}/.local/state/mariabackup"
           "/home/${config.hostenv.userName}/.local/share/files"
+          "/home/${config.hostenv.userName}/.local/share/private_files"
         ];
         passwordFile = config.hostenv.backupsSecret;
         environmentFile = cfg.backups.restic.environmentFile;
