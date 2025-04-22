@@ -368,7 +368,7 @@ in
             lib.nameValuePair "restic-backups-${name}" ({
               environment = {
                 # not %C, because that wouldn't work in the wrapper script
-                RESTIC_CACHE_DIR = ''''${XDG_CACHE_HOME}/restic-backups-${name}'';
+                RESTIC_CACHE_DIR = ''${config.hostenv.cacheDir}/restic-backups-${name}'';
                 RESTIC_PASSWORD_FILE = backup.passwordFile;
                 RESTIC_REPOSITORY = backup.repository;
                 RESTIC_REPOSITORY_FILE = backup.repositoryFile;

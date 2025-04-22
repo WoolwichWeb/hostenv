@@ -80,7 +80,12 @@ in
       stateDir = lib.mkOption {
         type = types.str;
         description = "Path (on server) where state data may be found at runtime.";
-        example = lib.literalExpression "/home/\${config.hostenv.userName}/.local/share";
+        example = lib.literalExpression "/home/\${config.hostenv.userName}/.local/state";
+      };
+      cacheDir = lib.mkOption {
+        type = types.str;
+        description = "Path (on server) where cache data may be found at runtime.";
+        example = lib.literalExpression "/home/\${config.hostenv.userName}/.cache";
       };
       backupsSecret = lib.mkOption {
         type = types.str;
