@@ -1,13 +1,6 @@
 { lib, config, pkgs, ... }:
 let
   cfg = config.services.php-app;
-
-  phpPackage = (cfg.phpPackage.buildEnv {
-    extensions = ({ enabled, all }: enabled ++ (with all; cfg.phpExtensions));
-    extraConfig = ''
-      apc.enable_cli = 1
-    '';
-  });
 in
 {
   options.services.php-app = {
@@ -25,13 +18,6 @@ in
         `index.php?some/page/path`.
       '';
       default = true;
-    };
-
-    phpPackage = lib.mkPackageOption pkgs "php" { };
-    phpExtensions = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      description = "PHP extensions to enable";
-      default = [ "pdo" "pdo_mysql" ];
     };
 
     codebase = {
@@ -55,6 +41,21 @@ in
         description = "Optional. Define a version number, will be used when generating directory names and such.";
       };
     };
+
+    backups = {
+      enable = lib.mkEnableOption "default database backups stored in Restic on S3.";
+      restic = {
+        environmentFile = lib.mkOption {
+          type = lib.types.str;
+          default = "/run/secrets/${config.hostenv.userName}/backups_env";
+          description = ''
+            Location of file containing environment variables for Restic.
+
+            Contains sensitive credentials that shouldn't be in the Nix store. For example, backups stored on Amazon S3 require an access key and secret access key.
+          '';
+        };
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -69,6 +70,12 @@ in
           locations."@rewrite" = {
             extraConfig = ''
               rewrite ^ /index.php;
+            '';
+          };
+
+          locations."/" = {
+            extraConfig = ''
+              try_files $uri /index.php?$query_string;
             '';
           };
 
@@ -123,18 +130,10 @@ in
           };
 
           listen = [{ addr = "unix:${config.hostenv.upstreamRuntimeDir}/in.sock"; }];
-        } // (if cfg.frontController then {
-        locations."/" = {
-          extraConfig = ''
-            try_files $uri /index.php?$query_string;
-          '';
         };
-      } else { });
     };
 
     services.phpfpm.pools."${cfg.codebase.name}" = {
-      inherit phpPackage;
-
       phpOptions = lib.mkDefault ''
         upload_max_filesize = 1G
         post_max_size = 1G
@@ -222,6 +221,28 @@ in
         };
       };
 
+    };
+
+    services.restic.backups = lib.mkIf cfg.backups.enable {
+      php-app = {
+        backupPrepareCommand = ''
+          [ -z "$XDG_STATE_HOME" ] && exit 1
+          mkdir -p "$XDG_STATE_HOME/mariabackup"
+          [ -d "$XDG_STATE_HOME/mariabackup/full" ] && rm -r "$XDG_STATE_HOME/mariabackup/full"
+
+          ${pkgs.mariadb}/bin/mariabackup \
+            -S "${config.hostenv.runtimeDir}/mysql.sock" \
+            --backup \
+            --target-dir=$XDG_STATE_HOME/mariabackup/full
+        '';
+        paths = [
+          "/home/${config.hostenv.userName}/.local/state/mariabackup"
+        ];
+        passwordFile = config.hostenv.backupsSecret;
+        environmentFile = cfg.backups.restic.environmentFile;
+        initialize = true;
+        wantsUnits = [ "mysql.service" ];
+      };
     };
   };
 }
