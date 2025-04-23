@@ -178,6 +178,15 @@ in
     commonHttpConfig = lib.mkOption {
       type = lib.types.lines;
       default = ''
+        # Per-workspace temp paths, if this not set per-workspace every nginx
+        # instance tries to write to the same directory, with permissions
+        # errors being the result for all but one of them.
+        client_body_temp_path ${config.hostenv.stateDir}/nginx/;
+        proxy_temp_path ${config.hostenv.stateDir}/nginx/;
+        fastcgi_temp_path ${config.hostenv.stateDir}/nginx/;
+        scgi_temp_path ${config.hostenv.stateDir}/nginx/;
+        uwsgi_temp_path ${config.hostenv.stateDir}/nginx/;
+
         # Load mime types and configure maximum size of the types hash tables.
         include ${cfg.defaultMimeTypes};
         # The following is tailoured to work with default mime types above.
