@@ -8,18 +8,6 @@ in
       Enabling this will bring up an nginx, PHP-FPM, and MySQL.
     '';
 
-    frontController = lib.mkOption {
-      type = lib.types.bool;
-      description = ''
-        Does the PHP application use a front-controller pattern?
-
-        Requests will be matched against files first, then if a match is not
-        found, passed to `index.php` in query parameters. For example:
-        `index.php?some/page/path`.
-      '';
-      default = true;
-    };
-
     codebase = {
       name = lib.mkOption {
         type = lib.types.str;
