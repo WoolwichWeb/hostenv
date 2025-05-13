@@ -1,5 +1,6 @@
-# Liberally cribs from:
-# https://github.com/NixOS/nixpkgs/blob/nixos-24.11/nixos/modules/services/web-servers/phpfpm/default.nix#L251
+# Based on:
+# https://github.com/NixOS/nixpkgs/blob/nixos-24.11/nixos/modules/services/web-servers/phpfpm/default.nix
+# https://github.com/cachix/devenv/blob/main/src/modules/languages/php.nix
 { config, lib, pkgs, inputs, ... }:
 
 let
@@ -7,11 +8,12 @@ let
 
   phps = inputs.phps or { };
 
-  filterDefaultExtensions = ext: builtins.length (builtins.filter (inner: inner == ext.extensionName) cfg.disableExtensions) == 0;
+  filterDefaultExtensions = cfg_: ext: builtins.length (builtins.filter (inner: inner == ext.extensionName) cfg_.disableExtensions) == 0;
 
-  configurePackage = package:
+  configurePackage = package: cfg_:
     package.buildEnv {
-      extensions = { all, enabled }: with all; (builtins.filter filterDefaultExtensions (enabled ++ lib.attrsets.attrValues (lib.attrsets.getAttrs cfg.extensions package.extensions)));
+      extensions = { all, enabled }: with all; (builtins.filter (filterDefaultExtensions cfg_) (enabled ++ lib.attrsets.attrValues (lib.attrsets.getAttrs cfg_.extensions package.extensions)));
+      extraConfig = cfg_.phpPackage.extraConfig or "";
     };
 
   toStr = value:
@@ -141,10 +143,29 @@ let
             }
           '';
         };
+
+        extensions = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = cfg.extensions;
+          defaultText = lib.literalExpression "services.phpfpm.extensions";
+          description = ''
+            PHP extensions to enable for this pool.
+          '';
+        };
+
+        disableExtensions = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = cfg.disableExtensions;
+          defaultText = lib.literalExpression "services.phpfpm.disableExtensions";
+          description = ''
+            PHP extensions to disable for this pool.
+          '';
+        };
+
       };
 
       config = {
-        phpPackage = lib.mkIf (cfg.phpVersion != "") (lib.mkForce (configurePackage (customPhpPackage cfg)));
+        phpPackage = lib.mkIf (poolOpts.phpVersion != "") (lib.mkForce (configurePackage (customPhpPackage poolOpts) poolOpts));
         socket = "${config.hostenv.runtimeDir}/${name}.sock";
         phpOptions = lib.mkBefore cfg.phpOptions;
 
@@ -195,7 +216,7 @@ in
 
       phpPackage = lib.mkOption {
         type = lib.types.package;
-        default = configurePackage pkgs.php;
+        default = configurePackage pkgs.php cfg;
         defaultText = lib.literalExpression "pkgs.php";
       };
 
@@ -243,7 +264,7 @@ in
           poolOpts // {
             phpPackage = lib.mkIf
               (poolOpts.phpVersion != "")
-              (lib.mkForce (configurePackage (customPhpPackage poolOpts)));
+              (lib.mkForce (configurePackage (customPhpPackage poolOpts) poolOpts));
           }
         )
         cfg.pools;
