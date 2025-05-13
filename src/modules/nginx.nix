@@ -96,7 +96,7 @@ let
 in
 {
   options.services.nginx = {
-    enable = lib.mkEnableOption "nginx Web server" // { default = true; };
+    enable = lib.mkEnableOption "nginx Web server" // { default = cfg.virtualHosts != null; };
 
     package = lib.mkOption {
       default = pkgs.nginx;
