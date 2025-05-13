@@ -328,6 +328,10 @@ in
       };
     };
 
+    services.nginx.commonHttpConfig = ''
+      client_max_body_size = 1G
+    '';
+
     services.nginx.virtualHosts = {
       "${cfg.codebase.name}" = lib.mkDefault {
         serverName = "_";
