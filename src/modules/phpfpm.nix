@@ -179,6 +179,8 @@ in
   options = {
     services.phpfpm = {
 
+      enable = lib.mkEnableOption "php-fpm server (note: will enable automatically if any pools are defined)" // { default = cfg.pools != { }; };
+
       phpVersion = lib.mkOption {
         type = lib.types.str;
         default = "";
@@ -257,56 +259,48 @@ in
     };
   };
 
-  config =
-    let
-      pools = lib.mapAttrs
-        (pool: poolOpts:
-          poolOpts // {
-            phpPackage = lib.mkIf
-              (poolOpts.phpVersion != "")
-              (lib.mkForce (configurePackage (customPhpPackage poolOpts) poolOpts));
-          }
-        )
-        cfg.pools;
-    in
-    # Pools have to be calculated separately, to avoid infinite recursion.
-    { cfg.pools = pools; } // lib.mkIf (cfg.pools != { }) {
+  config = lib.mkIf (cfg.enable && cfg.pools != { }) {
 
-      services.phpfpm.settings = {
-        error_log = "syslog";
-        daemonize = false;
-      };
+    # @todo: add a warning if the user specifies a phpPackage and a phpVersion.
+    services.phpfpm.phpPackage = lib.mkIf
+      (cfg.phpVersion != "")
+      (lib.mkForce (configurePackage (customPhpPackage cfg) cfg));
 
-      systemd.slices.app-phpfpm = {
-        description = "PHP FastCGI Process Manager Slice";
-      };
-
-      systemd.targets.phpfpm = {
-        description = "PHP FastCGI Process manager pools target";
-        wantedBy = [ "default.target" ];
-      };
-
-      systemd.services = lib.mapAttrs'
-        (pool: poolOpts:
-          lib.nameValuePair "phpfpm-${pool}" {
-            description = "PHP FastCGI Process Manager service for pool ${pool}";
-            after = [ "network.target" ];
-            wantedBy = [ "phpfpm.target" ];
-            partOf = [ "phpfpm.target" ];
-            serviceConfig =
-              let
-                cfgFile = fpmCfgFile pool poolOpts;
-                iniFile = phpIni poolOpts;
-              in
-              {
-                Slice = "app-phpfpm.slice";
-                Type = "notify";
-                ExecStart = "${poolOpts.phpPackage}/bin/php-fpm -y ${cfgFile} -c ${iniFile}";
-                ExecReload = "${pkgs.coreutils}/bin/kill -USR2 $MAINPID";
-                Restart = "always";
-              };
-          }
-        )
-        cfg.pools;
+    services.phpfpm.settings = {
+      error_log = "syslog";
+      daemonize = false;
     };
+
+    systemd.slices.app-phpfpm = {
+      description = "PHP FastCGI Process Manager Slice";
+    };
+
+    systemd.targets.phpfpm = {
+      description = "PHP FastCGI Process manager pools target";
+      wantedBy = [ "default.target" ];
+    };
+
+    systemd.services = lib.mapAttrs'
+      (pool: poolOpts:
+        lib.nameValuePair "phpfpm-${pool}" {
+          description = "PHP FastCGI Process Manager service for pool ${pool}";
+          after = [ "network.target" ];
+          wantedBy = [ "phpfpm.target" ];
+          partOf = [ "phpfpm.target" ];
+          serviceConfig =
+            let
+              cfgFile = fpmCfgFile pool poolOpts;
+              iniFile = phpIni poolOpts;
+            in
+            {
+              Slice = "app-phpfpm.slice";
+              Type = "notify";
+              ExecStart = "${poolOpts.phpPackage}/bin/php-fpm -y ${cfgFile} -c ${iniFile}";
+              ExecReload = "${pkgs.coreutils}/bin/kill -USR2 $MAINPID";
+              Restart = "always";
+            };
+        }
+      )
+      cfg.pools;
+  };
 }
