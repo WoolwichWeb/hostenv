@@ -302,5 +302,27 @@ in
         }
       )
       cfg.pools;
+
+    profile =
+      let
+        mkPoolCnf = pool: poolOpts: pkgs.runCommand "${pool}.conf" { } ''
+          mkdir -p $out/etc/php-fpm.d
+          ln -s ${fpmCfgFile pool poolOpts} $out/etc/php-fpm.d/${pool}.conf
+        '';
+        mkPoolIni = pool: poolOpts: pkgs.runCommand "${pool}.ini" { } ''
+          mkdir -p $out/etc/php-fpm.d
+          ln -s ${phpIni poolOpts} $out/etc/php-fpm.d/${pool}.ini
+        '';
+        mkPoolPhp = pool: poolOpts: pkgs.runCommand "${pool}-php" { } ''
+          mkdir -p $out/etc/php-fpm.d
+          ln -s ${poolOpts.phpPackage} $out/etc/php-fpm.d/${pool}-php
+        '';
+        pools = lib.flatten (lib.mapAttrsToList
+          (pool: poolOpts:
+            [ (mkPoolCnf pool poolOpts) (mkPoolIni pool poolOpts) (mkPoolPhp pool poolOpts) ]
+          )
+          cfg.pools);
+      in
+      pools ++ [ cfg.phpPackage ];
   };
 }

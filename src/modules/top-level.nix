@@ -101,8 +101,16 @@ in
 
     #### Internal
 
+    profile = lib.mkOption {
+      type = types.listOf types.path;
+      default = [ ];
+      description = "List of paths to build into a profile, visible to the user under 'result/' after `nix build`.";
+      internal = true;
+    };
+
     activatePackage = lib.mkOption {
       type = types.package;
+      description = "Profile package containing configuration files and software, plus an activation script.";
       internal = true;
     };
   };
@@ -117,11 +125,18 @@ in
     ./restic.nix
   ];
 
-  config = {
-    activate = lib.mkBefore ''
-      ## Top level activation script.
-    '';
+  config =
+    let
+      activateScript = pkgs.writeShellScriptBin "activate" config.activate;
+    in
+    {
+      activate = lib.mkBefore ''
+        ## Top level activation script.
+      '';
 
-    activatePackage = pkgs.writeShellScriptBin "activate" config.activate;
-  };
+      activatePackage = pkgs.buildEnv {
+        name = "hostenv-profile";
+        paths = config.profile ++ [ activateScript ];
+      };
+    };
 }

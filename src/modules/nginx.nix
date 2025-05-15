@@ -242,5 +242,15 @@ in
         RestartSec = "10s";
       };
     };
+
+    profile =
+      let
+        confInEtc = pkgs.runCommand "nginx-conf" { } ''
+          mkdir -p $out/etc/nginx
+          ln -s ${configFile} $out/etc/nginx/nginx.conf
+        '';
+      in
+      [ cfg.package confInEtc ];
+
   };
 }

@@ -517,5 +517,16 @@ in
       mkdir -p "${cfg.filesDir}"
       mkdir -p "${cfg.privateFilesDir}"
     '';
+
+    profile =
+      let
+        drush = pkgs.writeShellScriptBin "drush" cfg.drushPath;
+        composer = pkgs.buildEnv {
+          name = "composer";
+          paths = [ cfg.composer.package ];
+          pathsToLink = [ "/bin" ];
+        };
+      in
+      [ project drush composer ];
   };
 }
