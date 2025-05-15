@@ -192,12 +192,28 @@ in
       enableDev = lib.mkEnableOption "dev dependencies in composer";
     };
 
+    maxRequestSize = lib.mkOption {
+      type = lib.types.str;
+      description = ''
+        Maximum allowed size of a client request made to Drupal.
+        
+        Used for PHP and nginx settings: `upload_max_filesize` and
+        `post_max_size` (PHP) and `client_max_body_size` (nginx).
+
+        Note: while these settings mean different things, it is still very
+        convenient to set them all at once. Just pad this value enough to
+        account for client body size always being slightly larger than file
+        upload size, as the former includes headers while the latter does not.
+      '';
+      default = "1G";
+    };
+
     phpPackage = lib.mkPackageOption pkgs "php" { };
     phpOptions = lib.mkOption {
       type = lib.types.lines;
       default = ''
-        upload_max_filesize = 1G
-        post_max_size = 1G
+        upload_max_filesize = ${cfg.maxRequestSize}
+        post_max_size = ${cfg.maxRequestSize}
         memory_limit = 512M
         error_log = syslog
         syslog.ident = php
@@ -345,10 +361,7 @@ in
       };
     };
 
-    services.nginx.commonHttpConfig = ''
-      client_max_body_size 1G;
-    '';
-
+    services.nginx.clientMaxBodySize = cfg.maxRequestSize;
     services.nginx.virtualHosts = {
       "${cfg.codebase.name}" = lib.mkDefault {
         serverName = "_";
