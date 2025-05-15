@@ -93,21 +93,7 @@ let
     '';
   };
 
-  project =
-    if cfg.composer.enable then
-      pkgs.buildEnv
-        {
-          name = "${cfg.codebase.name}-project";
-          paths = [
-            composerPackage
-            projectWithSettings
-          ];
-          ignoreCollisions = true;
-        }
-    else
-      projectWithSettings;
-
-  projectWithSettings = pkgs.stdenvNoCC.mkDerivation
+  project = pkgs.stdenvNoCC.mkDerivation
     {
       pname = cfg.codebase.name;
       version = cfg.codebase.version;
@@ -144,6 +130,7 @@ let
 
           ln -s "${cfg.filesDir}" "$WEBROOT"sites/default/files
           ln -s "${hostenvSettingsFile}" "$WEBROOT"sites/default/hostenv.settings.php
+          cp -r ${composerPackage}/share/php/${projectInnerDir}/. .
         '';
 
       installPhase = ''
