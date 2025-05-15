@@ -346,7 +346,7 @@ in
     };
 
     services.nginx.commonHttpConfig = ''
-      client_max_body_size = 1G
+      client_max_body_size = 1G;
     '';
 
     services.nginx.virtualHosts = {
