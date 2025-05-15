@@ -544,7 +544,9 @@ in
 
     profile =
       let
-        drush = pkgs.writeShellScriptBin "drush" cfg.drushPath;
+        drush = pkgs.writeShellScriptBin "drush" ''
+          ${cfg.drushPath} --root=${project} $@
+        '';
         composer = pkgs.buildEnv {
           name = "composer";
           paths = [ cfg.composer.package ];
