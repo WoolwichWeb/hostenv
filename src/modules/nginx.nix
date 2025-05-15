@@ -13,9 +13,7 @@ let
       else pkgs.writeText
     ) "nginx.conf" ''
       pid ${config.hostenv.runtimeDir}/nginx.pid;
-      error_log syslog:server=unix:/dev/log info;
-      access_log syslog:server=unix:/dev/log,facility=local7,tag=nginx_access;
-
+      error_log syslog:server=unix:/dev/log debug;
       daemon off;
 
       events {
