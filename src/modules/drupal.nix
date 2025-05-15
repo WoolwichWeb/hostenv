@@ -99,8 +99,8 @@ let
         {
           name = "${cfg.codebase.name}-project";
           paths = [
-            projectWithSettings
             composerPackage
+            projectWithSettings
           ];
           ignoreCollisions = true;
         }
