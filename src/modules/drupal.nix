@@ -59,43 +59,50 @@ let
   });
 
   projectInnerDir = if cfg.composer.enable then "composer-" + cfg.codebase.name else cfg.codebase.name;
+  composerPackage = pkgs.stdenvNoCC.mkDerivation {
+    name = projectInnerDir + "-scaffold";
+    version = cfg.codebase.version;
+    dontPatchShebangs = true;
+    buildInputs = [ cfg.composer.package ];
+
+    src = cfg.phpPackage.buildComposerProject2 (finalAttrs: {
+      pname = projectInnerDir;
+      version = cfg.codebase.version;
+      src = lib.cleanSourceWith {
+        src = config.hostenv.root;
+        filter = path: type: baseNameOf path == "composer.json"
+          || baseNameOf path == "composer.lock";
+      };
+      composerLock = config.hostenv.root + /composer.lock;
+      vendorHash = cfg.composer.dependencyHash;
+      composerNoPlugins = !cfg.composer.enablePlugins;
+      composerNoScripts = !cfg.composer.enableScripts;
+      composerNoDev = !cfg.composer.enableDev;
+    });
+
+    buildPhase = ''
+      pushd share/php/${projectInnerDir}
+      # Scaffold Drupal files, like 'web/{index.php,autoload.php}' etc.
+      composer drupal:scaffold
+      popd
+    '';
+
+    installPhase = ''
+      mkdir -p $out
+      cp -r . $out/
+    '';
+  };
+
   project =
     if cfg.composer.enable then
-      pkgs.stdenvNoCC.mkDerivation
+      pkgs.buildEnv
         {
-          pname = "scaffold-" + cfg.codebase.name;
-          version = cfg.codebase.version;
-          buildInputs = [ cfg.composer.package ];
-          dontPatchShebangs = true;
-
-          # This installs composer dependencies, and creates the 'vendor',
-          # 'web/modules/contrib', 'web/themes/contrib' etc. directories.
-          # It does not know about or track files created by the 
-          # `composer drupal:scaffold` plugin, so there is a call to
-          # `mkDerivation` wrapping this, which fulfills that purpose.
-          src = cfg.phpPackage.buildComposerProject2
-            (finalAttrs: {
-              pname = projectInnerDir;
-              version = cfg.codebase.version;
-              src = projectWithSettings;
-              composerLock = config.hostenv.root + /composer.lock;
-              vendorHash = cfg.composer.dependencyHash;
-              composerNoPlugins = !cfg.composer.enablePlugins;
-              composerNoScripts = !cfg.composer.enableScripts;
-              composerNoDev = !cfg.composer.enableDev;
-            });
-
-          buildPhase = ''
-            pushd share/php/composer-${cfg.codebase.name}
-            # Scaffold Drupal files, like 'web/{index.php,autoload.php}' etc.
-            composer drupal:scaffold
-            popd
-          '';
-
-          installPhase = ''
-            mkdir -p $out
-            cp -r . $out/
-          '';
+          name = "${cfg.codebase.name}-project";
+          paths = [
+            projectWithSettings
+            composerPackage
+          ];
+          ignoreCollisions = true;
         }
     else
       projectWithSettings;
@@ -140,21 +147,14 @@ let
         '';
 
       installPhase = ''
-        if [ -d web ]; then
-          export WEBROOT="web/"
-        else
-          export WEBROOT=""
-        fi
-
         # This standardises on web accessible files being in `/web`, allowing
         # unofficial support for Drupal 7.
-        if [ -n "$WEBROOT" ]; then
-          mkdir -p $out
-          cp -r . $out/
+        if [ -d web ]; then
+          mkdir -p $out/share/php/${projectInnerDir}
+          cp -r . $out/share/php/${projectInnerDir}/
         else
-          # $out/web does not exist already, so create it.
-          mkdir -p $out/web
-          cp -r . $out/web/
+          mkdir -p $out/share/php/${projectInnerDir}/web
+          cp -r . $out/share/php/${projectInnerDir}/web/
         fi
       '';
 
@@ -193,6 +193,24 @@ in
     };
 
     phpPackage = lib.mkPackageOption pkgs "php" { };
+    phpOptions = lib.mkOption {
+      type = lib.types.lines;
+      default = ''
+        upload_max_filesize = 1G
+        post_max_size = 1G
+        memory_limit = 512M
+        error_log = syslog
+        syslog.ident = php
+        syslog.facility = user
+      '';
+      example =
+        ''
+          date.timezone = "CET"
+        '';
+      description = ''
+        Options appended to the PHP configuration file {file}`php.ini`.
+      '';
+    };
 
     drushPath = lib.mkOption {
       type = lib.types.str;
@@ -307,8 +325,7 @@ in
 
     systemd.services =
       let
-        withoutWeb = "${project}/share/php/${projectInnerDir}";
-        withWeb = "${project}/share/php/${projectInnerDir}/web";
+        rootPath = "${project}/share/php/${projectInnerDir}/web";
       in
       lib.mkIf cfg.cron.enable {
         "${cfg.codebase.name}-cron" = {
@@ -317,7 +334,7 @@ in
           restartIfChanged = lib.mkDefault false;
           serviceConfig = lib.mkDefault {
             Type = "oneshot";
-            ExecStart = cfg.drushPath + " cron" + (if lib.pathIsDirectory (withWeb) then " --root=${withWeb}" else " --root=${withoutWeb}");
+            ExecStart = cfg.drushPath + " cron --root=${rootPath}";
           };
         };
       };
@@ -424,14 +441,8 @@ in
     services.phpfpm.pools."${cfg.codebase.name}" = {
       inherit phpPackage;
 
-      phpOptions = lib.mkDefault ''
-        upload_max_filesize = 1G
-        post_max_size = 1G
-        memory_limit = 512M
-        error_log = syslog
-        syslog.ident = php
-        syslog.facility = user
-      '';
+      phpOptions = cfg.phpOptions;
+
       settings = {
         "pm" = lib.mkDefault "dynamic";
         "pm.max_children" = lib.mkDefault 16;
