@@ -201,7 +201,7 @@ in
       default = ''
         upload_max_filesize = ${cfg.maxRequestSize}
         post_max_size = ${cfg.maxRequestSize}
-        memory_limit = 512M
+        memory_limit = 1024M
         error_log = syslog
         syslog.ident = php
         syslog.facility = user
