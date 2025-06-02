@@ -46,7 +46,7 @@ let
     ];
   '';
 
-  phpPackage = (cfg.phpPackage.buildEnv {
+  phpPackage = (package: package.buildEnv {
     extensions = ({ enabled, all }: enabled ++ (with all; [
       apcu
       pdo
@@ -196,7 +196,12 @@ in
       default = "1G";
     };
 
-    phpPackage = lib.mkPackageOption pkgs "php" { };
+    phpPackage = lib.mkOption {
+      type = lib.types.package;
+      default = phpPackage pkgs.php;
+      defaultText = "pkgs.php";
+    };
+
     phpOptions = lib.mkOption {
       type = lib.types.lines;
       default = ''
@@ -219,8 +224,8 @@ in
     drushPath = lib.mkOption {
       type = lib.types.str;
       description = "Drush command-line script location.";
-      default = "${config.services.phpfpm.pools.${cfg.codebase.name}.phpPackage}/bin/php ${toString project}/share/php/${projectInnerDir}/vendor/drush/drush/drush.php";
-      defaultText = lib.literalExpression "${config.services.phpfpm.pools.${config.services.drupal.codebase.name}.phpPackage}/bin/php ${toString project}share/php/${projectInnerDir}/vendor/drush/drush/drush.php";
+      default = "${config.services.phpfpm.pools.${cfg.codebase.name}.phpPackage}/bin/php -d memory_limit=-1 ${toString project}/share/php/${projectInnerDir}/vendor/drush/drush/drush.php";
+      defaultText = lib.literalExpression "${config.services.phpfpm.pools.${config.services.drupal.codebase.name}.phpPackage}/bin/php -d memory_limit=-1 ${toString project}share/php/${projectInnerDir}/vendor/drush/drush/drush.php";
     };
 
     codebase = {
@@ -440,7 +445,7 @@ in
     };
 
     services.phpfpm.pools."${cfg.codebase.name}" = {
-      inherit phpPackage;
+      phpPackage = cfg.phpPackage;
 
       phpOptions = cfg.phpOptions;
 
