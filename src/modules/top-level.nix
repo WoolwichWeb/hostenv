@@ -54,6 +54,20 @@ in
     };
 
     hostenv = {
+      organisation = lib.mkOption {
+        type = types.str;
+        description = "Business account name or organisation name of the project. Should be short, lowercase, and with no special characters.";
+        example = "fooinc";
+      };
+      project = lib.mkOption {
+        type = types.str;
+        description = "Name of the project. Should be short, lowercase, and contain no special characters.";
+        example = "coolproject";
+      };
+      environmentName = lib.mkOption {
+        type = types.str;
+        description = "Name of the current environment. Usually corresponds to a git branch, but can be something else, e.g. an MR slug or number. Should be short, lowercase, and with no special characters.";
+      };
       userName = lib.mkOption {
         type = types.str;
         description = "UNIX username (on server) of this project.";
@@ -91,6 +105,11 @@ in
         type = types.str;
         description = "Path (on server) where secret access key for accessing backups may be found.";
       };
+      projectNameHash = lib.mkOption {
+        type = types.str;
+        description = "Hash of organisation, project, and environment names.";
+        internal = true;
+      };
     };
 
     activate = lib.mkOption {
@@ -116,6 +135,7 @@ in
   };
 
   imports = [
+    ./hostenv.nix
     ./systemd.nix
     ./mysql.nix
     ./nginx.nix
