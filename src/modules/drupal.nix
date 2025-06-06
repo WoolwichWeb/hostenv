@@ -130,7 +130,9 @@ let
 
           ln -s "${cfg.filesDir}" "$WEBROOT"sites/default/files
           ln -s "${hostenvSettingsFile}" "$WEBROOT"sites/default/hostenv.settings.php
+          ${lib.optionalString cfg.composer.enable ''
           cp -r ${composerPackage}/share/php/${projectInnerDir}/. .
+          ''}
         '';
 
       installPhase = ''
