@@ -44,7 +44,7 @@ let
         then lib.concatStringsSep "-" resultWords
         else lib.substring 0 maxLen sanitised;
 
-      slug = buildSlug 12;
+      slug = buildSlug 11;
     in
     lib.toLower (
       if slug != "" then slug else lib.concatStringsSep "-" (lib.take 1 words)
