@@ -68,6 +68,10 @@ in
         type = types.str;
         description = "Name of the current environment. Usually corresponds to a git branch, but can be something else, e.g. an MR slug or number. Should be short, lowercase, and with no special characters.";
       };
+      safeEnvironmentName = lib.mkOption {
+        type = types.str;
+        description = "Name of the current environment, shortened and with special characters removed.";
+      };
       userName = lib.mkOption {
         type = types.str;
         description = "UNIX username (on server) of this project.";
@@ -136,6 +140,7 @@ in
 
   imports = [
     ./hostenv.nix
+    ./environments.nix
     ./systemd.nix
     ./mysql.nix
     ./nginx.nix
