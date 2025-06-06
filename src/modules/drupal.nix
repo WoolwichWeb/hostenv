@@ -164,7 +164,7 @@ in
 
         By default, this will be enabled if a 'composer.json' file is found in
         the project root, and that file is in version control.
-      '' // { default = lib.pathExists (config.hostenv.root + /composer.json); };
+      '' // { default = lib.pathExists (config.hostenv.root + /composer.lock); };
 
       package = lib.mkPackageOption pkgs.phpPackages "composer" { };
 
