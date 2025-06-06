@@ -52,7 +52,6 @@ let
       pdo
       pdo_mysql
       redis
-      xml
     ]));
     extraConfig = ''
       apc.enable_cli = 1
