@@ -30,6 +30,8 @@ in
   options.environments = with lib.types; lib.mkOption {
     type = attrsOf (submodule {
 
+      enable = lib.mkEnableOption "this environment on hostenv.";
+
       users = lib.mkOption {
         type = attrsOf (submodule user);
         default = { };
