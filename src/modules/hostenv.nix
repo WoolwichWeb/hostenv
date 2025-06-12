@@ -1,5 +1,5 @@
 # Basic Hostenv configuration: paths, project hash.
-{ config, lib, pkgs, ... }:
+{ config, lib, ... }:
 let
   cfg = config.hostenv;
 
@@ -68,6 +68,7 @@ in
         ) + "-" + lib.substring 0 7 slugHash
     );
 
+    safeEnvironmentName = lib.mkForce (cleanDashes (sanitise cfg.environmentName));
     projectNameHash = lib.mkForce slugHash;
     runtimeDir = lib.mkForce "/run/hostenv/user/${cfg.userName}";
     upstreamRuntimeDir = lib.mkForce "/run/hostenv/nginx/${cfg.userName}";
