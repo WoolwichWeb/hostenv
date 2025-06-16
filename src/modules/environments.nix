@@ -111,14 +111,16 @@ in
 
   options.defaultEnvironment = with lib.types; lib.mkOption {
     type = str;
-    default = "main";
+    description = "Environment built when the default is not specified by the user.";
+    example = "production";
   };
 
-  config.defaultEnvironment =
+  config.defaultEnvironment = lib.mkDefault (
     let
-      productionEnvs = builtins.attrNames (lib.filterAttrs (n: v: v.type == "production" && v.enable) cfg);
+      productionEnvs = lib.filterAttrs (n: v: v.type == "production" && v.enable) cfg;
+      names = builtins.attrNames productionEnvs;
     in
-    lib.mkIf (builtins.length productionEnvs > 0)
-      (lib.mkDefault (builtins.elemAt productionEnvs));
+    if names != [ ] then builtins.head names else "main"
+  );
 
 }
