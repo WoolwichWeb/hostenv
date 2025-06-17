@@ -51,18 +51,19 @@ let
               '';
             };
 
-            globalRedirect = mkOption {
-              type = types.nullOr types.str;
+            globalRedirect = lib.mkOption {
+              type = nullOr str;
               default = null;
               example = "newserver.example.org";
               description = ''
-                If set, all requests for this host are redirected (defaults to 301,
-                configurable with `redirectCode`) to the given hostname.
+                If set, all requests for this host are redirected to the given
+                hostname (the HTTP status code defaults to 301, configurable
+                with `redirectCode`).
               '';
             };
 
-            redirectCode = mkOption {
-              type = types.ints.between 300 399;
+            redirectCode = lib.mkOption {
+              type = ints.between 300 399;
               default = 301;
               example = 308;
               description = ''
@@ -73,8 +74,8 @@ let
               '';
             };
 
-            basicAuthFile = mkOption {
-              type = types.nullOr types.path;
+            basicAuthFile = lib.mkOption {
+              type = nullOr path;
               default = null;
               description = ''
                 Basic Auth password file for a vhost.
