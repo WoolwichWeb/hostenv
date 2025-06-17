@@ -6,7 +6,7 @@ let
   user = with lib.types; {
     options = {
       email = lib.mkOption {
-        type = strMatching "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}";
+        type = str;
         description = "A valid email address for the user.";
       };
       publicKeys = lib.mkOption {
