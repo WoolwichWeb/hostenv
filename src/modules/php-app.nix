@@ -226,7 +226,7 @@ in
         paths = [
           "/home/${config.hostenv.userName}/.local/state/mariabackup"
         ];
-        passwordFile = config.hostenv.backupsSecret;
+        passwordFile = config.hostenv.backupsSecretFile;
         environmentFile = cfg.backups.restic.environmentFile;
         initialize = true;
         wantsUnits = [ "mysql.service" ];

@@ -326,7 +326,7 @@ in
           "/home/${config.hostenv.userName}/.local/share/files"
           "/home/${config.hostenv.userName}/.local/share/private_files"
         ];
-        passwordFile = config.hostenv.backupsSecret;
+        passwordFile = config.hostenv.backupsSecretFile;
         environmentFile = cfg.backups.restic.environmentFile;
         initialize = true;
         wantsUnits = [ "mysql.service" ];

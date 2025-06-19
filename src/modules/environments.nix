@@ -1,7 +1,8 @@
 # Server environments, their routes, and the users that may access them.
-{ config, lib, pkgs, ... }:
+{ config, lib, ... }:
 let
   cfg = config.environments;
+  topLevel = config.hostenv or { };
 
   user = with lib.types; {
     options = {
@@ -19,7 +20,7 @@ let
     };
   };
 
-  environment = with lib.types; {
+  environment = with lib.types; { config, name, ... }: {
     options = {
       enable = lib.mkEnableOption "this environment on hostenv";
 
@@ -88,8 +89,29 @@ let
         default = { };
       };
 
+      hostenv = lib.mkOption {
+        type = with lib.types; submoduleWith {
+          modules = [
+            (import ./hostenv.nix)
+            {
+              config.organisation = topLevel.organisation;
+              config.project = topLevel.project;
+              # Environment name is what changes on a per-environment basis,
+              # everything else remains the same.
+              config.environmentName = name;
+              config.root = topLevel.root;
+            }
+          ];
+        };
+        default = { };
+        description = ''
+          Per-environment Hostenv configuration.
+        '';
+      };
+
     };
   };
+
 in
 {
 
