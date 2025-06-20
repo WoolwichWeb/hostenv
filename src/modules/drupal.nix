@@ -458,7 +458,7 @@ in
             try_files $uri /index.php?$query_string;
           '';
         };
-        locations."= build-ref.txt" = {
+        locations."= /build-ref.txt" = {
           return = "200 '${config.buildReference}'";
         };
 
