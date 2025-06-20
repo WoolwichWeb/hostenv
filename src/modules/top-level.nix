@@ -64,6 +64,15 @@ in
       description = "Bash code to activate a module.";
     };
 
+    buildReference = lib.mkOption {
+      type = types.nullOr types.str;
+      description = ''
+        Optional. Some way of uniquely identifying the current project build,
+        e.g. git commit ref, build number, version tag, etc.
+      '';
+      default = null;
+    };
+
     #### Internal
 
     profile = lib.mkOption {

@@ -458,6 +458,9 @@ in
             try_files $uri /index.php?$query_string;
           '';
         };
+        locations."= build-ref.txt" = {
+          return = "200 '${config.buildReference}'";
+        };
 
         listen = [{ addr = "unix:${config.hostenv.upstreamRuntimeDir}/in.sock"; }];
       };
