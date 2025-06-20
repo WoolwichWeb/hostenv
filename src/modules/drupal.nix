@@ -2,6 +2,18 @@
 let
   cfg = config.services.drupal;
 
+  # Note on PHP packaging: the PHP version or package is chosen by the
+  # user through the `services.drupal.phpVersion/phpPackage` options, this
+  # is fed to the Drupal PHP pool options.
+  #
+  # The `phpfpm` service builds the PHP package for the Drupal pool (building
+  # the package is tricky, as the desired PHP package may be set using a
+  # version string) and the let binding below gets that package.
+  #
+  # This final PHP package is then used in various places in the code, so
+  # the same version of PHP is used everywhere.
+  drupalPhpPool = config.services.phpfpm.pools."${cfg.codebase.name}";
+
   utils = import (pkgs.path + "/nixos/lib/utils.nix") { inherit pkgs lib config; };
   # Type for a valid systemd unit option. Needed for correctly passing "timerConfig" to "systemd.timers"
   inherit (utils.systemdUtils.unitOptions) unitOption;
@@ -46,26 +58,14 @@ let
     ];
   '';
 
-  phpPackage = (package: package.buildEnv {
-    extensions = ({ enabled, all }: enabled ++ (with all; [
-      apcu
-      pdo
-      pdo_mysql
-      redis
-    ]));
-    extraConfig = ''
-      apc.enable_cli = 1
-    '';
-  });
-
   projectInnerDir = if cfg.composer.enable then "composer-" + cfg.codebase.name else cfg.codebase.name;
   composerPackage = pkgs.stdenvNoCC.mkDerivation {
     name = projectInnerDir + "-scaffold";
     version = cfg.codebase.version;
     dontPatchShebangs = true;
-    buildInputs = [ cfg.composer.package ];
+    buildInputs = [ drupalPhpPool.phpPackage.packages.composer ];
 
-    src = cfg.phpPackage.buildComposerProject2 (finalAttrs: {
+    src = drupalPhpPool.phpPackage.buildComposerProject2 (finalAttrs: {
       pname = projectInnerDir;
       version = cfg.codebase.version;
       src = lib.cleanSourceWith {
@@ -148,6 +148,10 @@ let
       '';
 
     };
+
+  drush = pkgs.writeShellScriptBin "drush" ''
+    ${toString project}/share/php/${projectInnerDir}/vendor/bin/drush --root=${project} $@
+  '';
 in
 {
   options.services.drupal = {
@@ -167,8 +171,6 @@ in
         By default, this will be enabled if a 'composer.json' file is found in
         the project root, and that file is in version control.
       '' // { default = lib.pathExists (config.hostenv.root + /composer.lock); };
-
-      package = lib.mkPackageOption pkgs.phpPackages "composer" { };
 
       dependencyHash = lib.mkOption {
         type = lib.types.str;
@@ -199,8 +201,35 @@ in
 
     phpPackage = lib.mkOption {
       type = lib.types.package;
-      default = phpPackage pkgs.php;
+      default = pkgs.php;
       defaultText = "pkgs.php";
+    };
+
+    phpVersion = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      description = "The PHP version to use. If not set, will default to the latest version.";
+    };
+
+    phpExtensions = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [
+        "apcu"
+        "pdo"
+        "pdo_mysql"
+        "redis"
+      ];
+      description = ''
+        PHP extensions to enable for Drupal.
+      '';
+    };
+
+    phpDisableExtensions = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = ''
+        PHP extensions to disable for Drupal.
+      '';
     };
 
     phpOptions = lib.mkOption {
@@ -220,13 +249,6 @@ in
       description = ''
         Options appended to the PHP configuration file {file}`php.ini`.
       '';
-    };
-
-    drushPath = lib.mkOption {
-      type = lib.types.str;
-      description = "Drush command-line script location.";
-      default = "${config.services.phpfpm.pools.${cfg.codebase.name}.phpPackage}/bin/php -d memory_limit=-1 ${toString project}/share/php/${projectInnerDir}/vendor/drush/drush/drush.php";
-      defaultText = lib.literalExpression "${config.services.phpfpm.pools.${config.services.drupal.codebase.name}.phpPackage}/bin/php -d memory_limit=-1 ${toString project}share/php/${projectInnerDir}/vendor/drush/drush/drush.php";
     };
 
     codebase = {
@@ -333,21 +355,17 @@ in
       };
     };
 
-    systemd.services =
-      let
-        rootPath = "${project}/share/php/${projectInnerDir}/web";
-      in
-      lib.mkIf cfg.cron.enable {
-        "${cfg.codebase.name}-cron" = {
-          wants = lib.mkDefault [ "network-online.target" ];
-          after = lib.mkDefault [ "network-online.target" ];
-          restartIfChanged = lib.mkDefault false;
-          serviceConfig = lib.mkDefault {
-            Type = "oneshot";
-            ExecStart = cfg.drushPath + " cron --root=${rootPath}";
-          };
+    systemd.services = lib.mkIf cfg.cron.enable {
+      "${cfg.codebase.name}-cron" = {
+        wants = lib.mkDefault [ "network-online.target" ];
+        after = lib.mkDefault [ "network-online.target" ];
+        restartIfChanged = lib.mkDefault false;
+        serviceConfig = lib.mkDefault {
+          Type = "oneshot";
+          ExecStart = "${drush}/bin/drush";
         };
       };
+    };
     systemd.timers = lib.mkIf cfg.cron.enable {
       "${cfg.codebase.name}-cron" = {
         wantedBy = [ "timers.target" ];
@@ -447,8 +465,11 @@ in
 
     services.phpfpm.pools."${cfg.codebase.name}" = {
       phpPackage = cfg.phpPackage;
+      phpVersion = cfg.phpVersion;
 
       phpOptions = cfg.phpOptions;
+      extensions = cfg.phpExtensions;
+      disableExtensions = cfg.phpDisableExtensions;
 
       settings = {
         "pm" = lib.mkDefault "dynamic";
@@ -502,6 +523,7 @@ in
         slaveHost = "localhost";
       };
 
+      # @todo: sensible defaults that scale according to available resources.
       settings = {
         mysqld = {
           max_connections = lib.mkDefault 1000;
@@ -538,12 +560,9 @@ in
 
     profile =
       let
-        drush = pkgs.writeShellScriptBin "drush" ''
-          ${cfg.drushPath} --root=${project} $@
-        '';
         composer = pkgs.buildEnv {
           name = "composer";
-          paths = [ cfg.composer.package ];
+          paths = [ drupalPhpPool.phpPackage.packages.composer ];
           pathsToLink = [ "/bin" ];
         };
       in
