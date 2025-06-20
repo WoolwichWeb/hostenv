@@ -174,8 +174,6 @@ in
           # The following is snagged from Home Manager:
           # https://github.com/nix-community/home-manager/blob/9a9fef316ad191b3086edda465e850af282de4e0/modules/systemd.nix#L340C1-L368C26
 
-          set -x
-
           if [ ! -n "$XDG_CONFIG_HOME" ]; then
             echo '$XDG_CONFIG_HOME is not set, cannot continue'
             exit 1
@@ -215,7 +213,7 @@ in
             # This compares the existing units with the ones in the new
             # derivation, with help from the excellent `sd-switch`.
             # https://git.sr.ht/~rycee/sd-switch
-            ${ensureSystemd} ${lib.getExe pkgs.sd-switch} --user --verbose \
+            ${ensureSystemd} ${lib.getExe pkgs.sd-switch} --user \
               ''${oldUnitsDir:+--old-units "$oldUnitsDir"} \
               --new-units "$XDG_CONFIG_HOME"/systemd/user
 
