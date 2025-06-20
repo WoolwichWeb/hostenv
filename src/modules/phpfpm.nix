@@ -13,7 +13,7 @@ let
   configurePackage = package: cfg_:
     package.buildEnv {
       extensions = { all, enabled }: with all; (builtins.filter (filterDefaultExtensions cfg_) (enabled ++ lib.attrsets.attrValues (lib.attrsets.getAttrs cfg_.extensions package.extensions)));
-      extraConfig = cfg_.phpPackage.extraConfig or "";
+      extraConfig = cfg_.phpOptions or "";
     };
 
   toStr = value:
