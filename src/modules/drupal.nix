@@ -353,7 +353,7 @@ in
     };
 
     systemd.services = lib.mkIf cfg.cron.enable {
-      "${cfg.codebase.name}-cron" = {
+      "cron-${cfg.codebase.name}" = {
         wants = lib.mkDefault [ "network-online.target" ];
         after = lib.mkDefault [ "network-online.target" ];
         restartIfChanged = lib.mkDefault false;
@@ -364,7 +364,7 @@ in
       };
     };
     systemd.timers = lib.mkIf cfg.cron.enable {
-      "${cfg.codebase.name}-cron" = {
+      "cron-${cfg.codebase.name}" = {
         wantedBy = [ "timers.target" ];
         timerConfig = cfg.cron.timerConfig;
       };
