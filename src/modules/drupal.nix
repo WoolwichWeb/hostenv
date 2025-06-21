@@ -265,22 +265,8 @@ in
 
       version = lib.mkOption {
         type = lib.types.str;
-        default =
-          let
-            shortRef =
-              if config.buildReference != null then
-                if builtins.stringLength config.buildReference >= 7 then
-                  "#" + builtins.substring 0 7 config.buildReference
-                else
-                  "#" + config.buildReference
-              else
-                "";
-          in
-          "dev-${config.hostenv.safeEnvironmentName}${shortRef}";
+        default = "dev-${config.hostenv.safeEnvironmentName}";
         description = "Optional. Define a version. Must be a valid version according to composer.";
-        defaultText = lib.literalExpression ''
-          "dev-" + config.safeEnvironmentName + "#" + (builtins.subString 0 7 config.buildReference)
-        '';
       };
     };
 
