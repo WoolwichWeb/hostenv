@@ -58,15 +58,14 @@ let
     ];
   '';
 
-  projectInnerDir = if cfg.composer.enable then "composer-" + cfg.codebase.name else cfg.codebase.name;
   composerPackage = pkgs.stdenvNoCC.mkDerivation {
-    name = projectInnerDir + "-scaffold";
+    name = cfg.codebase.name + "-scaffold";
     version = cfg.codebase.version;
     dontPatchShebangs = true;
     buildInputs = [ drupalPhpPool.phpPackage.packages.composer ];
 
     src = drupalPhpPool.phpPackage.buildComposerProject2 (finalAttrs: {
-      pname = projectInnerDir;
+      pname = cfg.codebase.name;
       version = cfg.codebase.version;
       src = lib.cleanSourceWith {
         src = config.hostenv.root;
@@ -81,7 +80,7 @@ let
     });
 
     buildPhase = ''
-      pushd share/php/${projectInnerDir}
+      pushd share/php/${cfg.codebase.name}
       # Scaffold Drupal files, like 'web/{index.php,autoload.php}' etc.
       composer drupal:scaffold
       popd
@@ -131,7 +130,7 @@ let
           ln -s "${cfg.filesDir}" "$WEBROOT"sites/default/files
           ln -s "${hostenvSettingsFile}" "$WEBROOT"sites/default/hostenv.settings.php
           ${lib.optionalString cfg.composer.enable ''
-          cp -r ${composerPackage}/share/php/${projectInnerDir}/. .
+          cp -r ${composerPackage}/share/php/${cfg.codebase.name}/. .
           ''}
         '';
 
@@ -139,18 +138,18 @@ let
         # This standardises on web accessible files being in `/web`, allowing
         # unofficial support for Drupal 7.
         if [ -d web ]; then
-          mkdir -p $out/share/php/${projectInnerDir}
-          cp -r . $out/share/php/${projectInnerDir}/
+          mkdir -p $out/share/php/${cfg.codebase.name}
+          cp -r . $out/share/php/${cfg.codebase.name}/
         else
-          mkdir -p $out/share/php/${projectInnerDir}/web
-          cp -r . $out/share/php/${projectInnerDir}/web/
+          mkdir -p $out/share/php/${cfg.codebase.name}/web
+          cp -r . $out/share/php/${cfg.codebase.name}/web/
         fi
       '';
 
     };
 
   drush = pkgs.writeShellScriptBin "drush" ''
-    ${toString project}/share/php/${projectInnerDir}/vendor/bin/drush --root=${project} $@
+    ${toString project}/share/php/${cfg.codebase.name}/vendor/bin/drush --root=${project} $@
   '';
 in
 {
@@ -261,15 +260,12 @@ in
           May be any alphanumeric name, just ensure it only contains letters
           and numbers to avoid confusing errors when starting services.
         '';
-        default = config.hostenv.userName + "-application";
-        defaultText = lib.literalExpression ''
-          config.hostenv.userName + "-application"
-        '';
+        default = config.hostenv.project;
       };
 
       version = lib.mkOption {
         type = lib.types.str;
-        default = "1.0.0-dev";
+        default = if config.buildReference != null then config.buildReference else "1.0.0-dev";
         description = "Optional. Define a version number, will be used when generating directory names and such.";
       };
     };
@@ -363,7 +359,7 @@ in
         restartIfChanged = lib.mkDefault false;
         serviceConfig = lib.mkDefault {
           Type = "oneshot";
-          ExecStart = "${drush}/bin/drush";
+          ExecStart = "${drush}/bin/drush core:cron";
         };
       };
     };
@@ -380,7 +376,7 @@ in
         serverName = "_";
         default = true;
         forceSSL = false;
-        root = "${project}/share/php/${projectInnerDir}/web";
+        root = "${project}/share/php/${cfg.codebase.name}/web";
 
         # Set up nginx for Drupal.
         locations."~ '\.php$|^/update.php'" = {
@@ -459,7 +455,7 @@ in
             try_files $uri /index.php?$query_string;
           '';
         };
-        locations."= /build-ref.txt" = {
+        locations."= /build-ref.txt" = lib.mkIf (config.buildReference != null) {
           return = "200 '${config.buildReference}'";
         };
 
