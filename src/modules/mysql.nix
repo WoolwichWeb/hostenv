@@ -446,5 +446,13 @@ in
       ];
     };
 
+    profile =
+      let
+        mysqlScript = pkgs.writeShellScriptBin "mysql" ''
+          ${cfg.package}/bin/mysql -u ${cfg.user} --socket=${cfg.runtimeDir}/mysql.sock
+        '';
+      in
+      [ mysqlScript ];
+
   };
 }
