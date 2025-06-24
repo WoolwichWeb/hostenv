@@ -501,6 +501,7 @@ in
       initialDatabases = [
         { name = "drupal"; }
       ];
+      ensureDatabases = [ "drupal" ];
 
       ensureUsers = [
         {

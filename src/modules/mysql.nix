@@ -448,8 +448,10 @@ in
 
     profile =
       let
+        defaultDb = if lib.length cfg.ensureDatabases == 1 then builtins.head cfg.ensureDatabases else "";
+
         mysqlScript = pkgs.writeShellScriptBin "mysql" ''
-          ${cfg.package}/bin/mysql -u ${cfg.user} --socket=${cfg.runtimeDir}/mysql.sock
+          ${cfg.package}/bin/mysql -u ${cfg.user} --socket=${cfg.runtimeDir}/mysql.sock ${defaultDb}
         '';
       in
       [ mysqlScript ];
