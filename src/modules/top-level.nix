@@ -91,6 +91,7 @@ in
 
   imports = [
     ./environments.nix
+    ./hostenv-cli.nix
     ./systemd.nix
     ./mysql.nix
     ./nginx.nix
