@@ -1,10 +1,13 @@
+# Builds a full hostenv environment.
+#
 # Liberally cribs from:
 # https://github.com/cachix/devenv/blob/e17a6a604e478bab6ba88fb049c5bdbe494fb0cf/src/modules/top-level.nix
-{ config, pkgs, lib, system, ... }:
+{ config, pkgs, lib, ... }:
 let
 
   types = lib.types;
 
+  # @todo: make these assertions work.
   failedAssertions = builtins.map (x: x.message) (builtins.filter (x: !x.assertion) config.assertions);
 
   performAssertions =
@@ -54,7 +57,7 @@ in
     };
 
     hostenv = lib.mkOption {
-      type = types.submodule (import ./hostenv.nix);
+      type = types.submodule (import ../hostenv.nix);
       description = "Hostenv configuration for the current environment.";
     };
 
@@ -90,15 +93,15 @@ in
   };
 
   imports = [
-    ./environments.nix
-    ./hostenv-cli.nix
-    ./systemd.nix
-    ./mysql.nix
-    ./nginx.nix
-    ./phpfpm.nix
-    ./drupal.nix
-    ./php-app.nix
-    ./restic.nix
+    ../environments.nix
+    ../hostenv-cli.nix
+    ../systemd.nix
+    ../mysql.nix
+    ../nginx.nix
+    ../phpfpm.nix
+    ../drupal.nix
+    ../php-app.nix
+    ../restic.nix
   ];
 
   config =
