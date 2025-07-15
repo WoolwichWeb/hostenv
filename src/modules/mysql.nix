@@ -451,10 +451,13 @@ in
         defaultDb = if lib.length cfg.ensureDatabases == 1 then builtins.head cfg.ensureDatabases else "";
 
         mysqlScript = pkgs.writeShellScriptBin "mysql" ''
-          ${cfg.package}/bin/mysql -u ${cfg.user} --socket=${cfg.runtimeDir}/mysql.sock ${defaultDb}
+          ${cfg.package}/bin/mysql -u ${cfg.user} --socket=${cfg.runtimeDir}/mysql.sock ${defaultDb} $@
+        '';
+        mysqldumpScript = pkgs.writeShellScriptBin "mysqldump" ''
+          ${cfg.package}/bin/mysqldump -u ${cfg.user} --socket=${cfg.runtimeDir}/mysql.sock ${defaultDb} $@
         '';
       in
-      [ mysqlScript ];
+      [ mysqlScript mysqldumpScript ];
 
   };
 }
