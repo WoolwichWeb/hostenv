@@ -454,7 +454,7 @@ in
           ${cfg.package}/bin/mysql -u ${cfg.user} --socket=${cfg.runtimeDir}/mysql.sock ${defaultDb} $@
         '';
         mysqldumpScript = pkgs.writeShellScriptBin "mysqldump" ''
-          ${cfg.package}/bin/mysqldump -u ${cfg.user} --socket=${cfg.runtimeDir}/mysql.sock ${defaultDb} $@
+          ${cfg.package}/bin/mysqldump --single-transaction -u ${cfg.user} --socket=${cfg.runtimeDir}/mysql.sock ${defaultDb} $@
         '';
       in
       [ mysqlScript mysqldumpScript ];
