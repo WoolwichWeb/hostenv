@@ -40,7 +40,7 @@ let
         '';
       };
 
-      hosts = lib.mkOption {
+      virtualHosts = lib.mkOption {
         type = attrsOf (submodule {
           options = {
 
