@@ -78,6 +78,11 @@ in
       type = types.str;
       description = "Name of the current environment, shortened and with special characters removed.";
     };
+    gitRef = lib.mkOption {
+      type = types.str;
+      description = "Git branch or tag of this environment. Defaults to the `environmentName`.";
+      example = "main";
+    };
     userName = lib.mkOption {
       type = types.str;
       description = "UNIX username (on server) of this project.";
@@ -151,6 +156,7 @@ in
       userName = lib.mkForce shortName;
       hostname = lib.mkForce "${shortName}.${config.hostenvHostname}";
       safeEnvironmentName = lib.mkForce (cleanDashes (sanitise config.environmentName));
+      gitRef = lib.mkDefault (config.safeEnvironmentName or "main");
       projectNameHash = lib.mkForce slugHash;
       runtimeDir = lib.mkForce "/run/hostenv/user/${config.userName}";
       upstreamRuntimeDir = lib.mkForce "/run/hostenv/nginx/${config.userName}";
