@@ -9,6 +9,8 @@
   # to set it here).
   # services.drupal.cron.timerConfig.OnCalendar = "*:0/15";
 
+  # @todo: instructions for adding an SSH key.
+
   environments.main = {
     enable = true;
   };
