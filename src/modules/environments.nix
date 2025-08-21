@@ -2,14 +2,21 @@
 { config, lib, ... }:
 let
   cfg = config.environments;
+
+  # `config.hostenv` is not mandatory, as this module may be evaluated as
+  # part of a full hostenv build, or separately.
+  # This allows hostenv to make environment config available, without having
+  # to build a full hostenv system.
   topLevel = config.hostenv or { };
 
   user = with lib.types; {
     options = {
+
       email = lib.mkOption {
         type = str;
         description = "A valid email address for the user.";
       };
+
       publicKeys = lib.mkOption {
         type = listOf singleLineStr;
         description = ''
@@ -18,6 +25,7 @@ let
         '';
       };
     };
+
   };
 
   environment = with lib.types; { config, name, ... }: {
