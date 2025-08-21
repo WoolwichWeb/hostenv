@@ -156,7 +156,10 @@ in
       userName = lib.mkForce shortName;
       hostname = lib.mkForce "${shortName}.${config.hostenvHostname}";
       safeEnvironmentName = lib.mkForce (cleanDashes (sanitise config.environmentName));
-      gitRef = lib.mkDefault (config.safeEnvironmentName or "main");
+      # Note: we use environmentName and not safeEnvironmentName as the latter
+      # is stripped of some characters that are valid in git branch names,
+      # '/' and '--' for example.
+      gitRef = lib.mkDefault (config.environmentName or "main");
       projectNameHash = lib.mkForce slugHash;
       runtimeDir = lib.mkForce "/run/hostenv/user/${config.userName}";
       upstreamRuntimeDir = lib.mkForce "/run/hostenv/nginx/${config.userName}";
