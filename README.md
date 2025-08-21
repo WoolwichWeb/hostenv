@@ -4,7 +4,7 @@ Wow, you found hostenv before it was cool.
 
 Hostenv isn't ready for general use, but feel free to explore the modules.
 
-## Getting started - hostenv project
+## Getting started - project
 
 1. Install [Nix](https://nixos.org/download/#download-nix)
 2. `cd` into your project directory, and run:
