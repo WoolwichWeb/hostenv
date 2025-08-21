@@ -20,6 +20,12 @@ let
           ssh -t ${cfg.userName}@${cfg.hostname} "mysql $@"
         '';
 
+        mysqldump = pkgs.writeShellScriptBin "mysqldump" ''
+          echo
+          echo "${emoji}  Running mysqldump on '${environmentName}'"
+          ssh ${cfg.userName}@${cfg.hostname} "mysqldump $@ | gzip"
+        '';
+
         drush = pkgs.writeShellScriptBin "drush" ''
           echo
           echo "${emoji}  Running drush on '${environmentName}' "
@@ -233,7 +239,7 @@ let
           '';
       in
       pkgs.mkShell {
-        buildInputs = [ hostenvApp drush mysql pkgs.restic ];
+        buildInputs = [ hostenvApp drush mysql mysqldump pkgs.restic ];
         shellHook = ''
           currentBranch=$(git symbolic-ref --short HEAD)
 
