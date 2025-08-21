@@ -9,6 +9,21 @@
 { lib, config, pkgs, ... }:
 
 let
+  # @todo: Put this type in a `lib.types` module.
+  appType = lib.types.submodule ({ name, ... }: {
+    options = {
+      type = lib.mkOption {
+        type = lib.types.enum [ "app" ];
+        default = "app";
+        description = "Nix flake app type.";
+      };
+      program = lib.mkOption {
+        type = lib.types.str;
+        description = "Executable or derivation path to run.";
+      };
+    };
+  });
+
   hostenvShells = lib.mapAttrs
     (environmentName: environment:
       let
@@ -275,12 +290,32 @@ let
     };
   };
 
+  hostenvApps =
+    let
+      envs = pkgs.writeShellScriptBin "hostenv-environments" ''
+        echo '${builtins.toJSON config.environments}' | ${pkgs.jq}/bin/jq
+      '';
+    in
+    {
+      # This is used in the template `.envrc` file for information about
+      # available environments.
+      hostenv-environments = {
+        type = "app";
+        program = "${envs}/bin/hostenv-environments";
+      };
+    };
+
 in
 {
   options.hostenv.devShells = lib.mkOption {
     type = lib.types.attrsOf lib.types.package;
     description = "Shell environments for working with hostenv projects";
   };
+  options.hostenv.apps = lib.mkOption {
+    type = lib.types.attrsOf appType;
+    description = "Apps for working with hostenv projects";
+  };
 
   config.hostenv.devShells = hostenvShells;
+  config.hostenv.apps = hostenvApps;
 }
