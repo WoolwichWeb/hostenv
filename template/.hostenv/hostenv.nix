@@ -2,11 +2,11 @@
 
   services.drupal.enable = true;
   # services.drupal.backups.enable = true;
-  # services.drupal.composer.dependencyHash = "[ Fill the hash Nix gives you here ]";
-  # services.drupal.phpVersion = "8.3";
+  # services.drupal.composer.dependencyHash = "REPLACE THIS WITH THE HASH FROM HOSTENV/NIX";
+  # services.drupal.phpVersion = "8.4";
 
   # Run cron every fifteen minutes (this is the default for Drupal, so no need
-  # to set it here).
+  # to set it here, this is just an example).
   # services.drupal.cron.timerConfig.OnCalendar = "*:0/15";
 
   # @todo: instructions for adding an SSH key.
