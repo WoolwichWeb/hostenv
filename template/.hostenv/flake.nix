@@ -1,3 +1,7 @@
+#
+# This file contains boilerplate for Nix. To configure your hostenv, edit
+# the `hostenv.nix` file in this directory.
+#
 {
   description = "Hostenv";
 

@@ -23,7 +23,8 @@ Hostenv isn't ready for general use, but feel free to explore the modules.
 
    Consult the [direnv hook docs](https://direnv.net/docs/hook.html) for other shells.
 4. Open up `.hostenv/hostenv.nix` and configure hostenv for your project.
-5. From your project directory run `cd .hostenv` then `direnv allow`.
-6. Wait while hostenv builds bespoke tooling, just for your project.
-7. Run `hostenv` for hostenv specific commands.
-8. Once your project is deployed, commands like `drush status` or `mysql` will JustWork™ with the remote environment, so there's no need to faff with SSH yourself or setup tunnels.
+5. Nix only sees files added to git. So allow Nix to see your hostenv configuration by running `git add .hostenv`.
+6. From your project directory run `cd .hostenv` then `direnv allow`.
+7. Wait while hostenv builds bespoke tooling, just for your project.
+8. Run `hostenv` for hostenv specific commands.
+9. Once your project is deployed, commands like `drush status` or `mysql` will JustWork™ with the remote environment, so there's no need to faff with SSH yourself or setup tunnels.
