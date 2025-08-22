@@ -129,6 +129,14 @@ in
       type = types.str;
       description = "Path (on server) where an environment file with information related to accessing backups may be found.";
     };
+    authorizedKeys = lib.mkOption {
+      type = types.listOf types.singleLineStr;
+      description = ''
+        A list of verbatim OpenSSH public keys that should be added to the
+        environment's authorized keys.
+      '';
+      default = [ ];
+    };
     projectNameHash = lib.mkOption {
       type = types.str;
       description = "Hash of organisation, project, and environment names.";
@@ -159,8 +167,7 @@ in
       # Note: we use environmentName and not safeEnvironmentName as the latter
       # is stripped of some characters that are valid in git branch names,
       # '/' and '--' for example.
-      gitRef = lib.mkDefault (config.environmentName or "main");
-      projectNameHash = lib.mkForce slugHash;
+      gitRef = lib.mkForce (config.environmentName or "main");
       runtimeDir = lib.mkForce "/run/hostenv/user/${config.userName}";
       upstreamRuntimeDir = lib.mkForce "/run/hostenv/nginx/${config.userName}";
       dataDir = lib.mkForce "/home/${config.userName}/.local/share";
@@ -168,5 +175,7 @@ in
       cacheDir = lib.mkForce "/home/${config.userName}/.cache";
       backupsSecretFile = lib.mkForce "/run/secrets/${config.userName}/backups_secret";
       backupsEnvFile = lib.mkForce "/run/secrets/${config.userName}/backups_env";
+      authorizedKeys = lib.mkForce config.authorizedKeys;
+      projectNameHash = lib.mkForce slugHash;
     };
 }
