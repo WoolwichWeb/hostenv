@@ -52,6 +52,27 @@ let
         type = attrsOf (submodule {
           options = {
 
+            locations = lib.mkOption {
+              type = attrsOf (submodule {
+                options = {
+                  return = lib.mkOption {
+                    type =
+                      with types;
+                      nullOr (oneOf [
+                        str
+                        int
+                      ]);
+                    default = null;
+                    example = "301 http://example.com$request_uri";
+                    description = ''
+                      Adds a return directive, for e.g. redirections.
+                    '';
+                  };
+                };
+              });
+              default = { "/" = { }; };
+            };
+
             enableLetsEncrypt = lib.mkOption {
               default = true;
               type = bool;
