@@ -68,7 +68,7 @@
               # This way services are restarted when tzdata changes.
               systemd.globalEnvironment.TZDIR = "${pkgs.tzdata}/share/zoneinfo";
             }
-            ../hostenv.nix
+            ./hostenv.nix
           ];
         };
 
