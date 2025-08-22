@@ -28,13 +28,13 @@ let
 
   };
 
-  environment = with lib.types; { config, name, ... }: {
+  environment = with lib.types; { config, name, allUsers, ... }: {
     options = {
       enable = lib.mkEnableOption "this environment on hostenv";
 
       users = lib.mkOption {
         type = attrsOf (submodule user);
-        default = { };
+        default = allUsers;
       };
 
       # @todo: enforce the 'only one environment may be production' rule.
@@ -132,12 +132,17 @@ in
         };
       };
     });
-    default = { };
+    default = { users = { }; };
     description = "Settings applied across all environments.";
   };
 
   options.environments = with lib.types; lib.mkOption {
-    type = attrsOf (submodule environment);
+    type = attrsOf (submoduleWith {
+      modules = [ environment ];
+      specialArgs = {
+        allUsers = config.allEnvironments.users;
+      };
+    });
     default = { };
   };
 
