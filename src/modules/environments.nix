@@ -124,7 +124,7 @@ in
 {
 
   options.allEnvironments = with lib.types; lib.mkOption {
-    type = attrsOf (submodule {
+    type = (submodule {
       options = {
         users = lib.mkOption {
           type = attrsOf (submodule user);
@@ -133,6 +133,7 @@ in
       };
     });
     default = { };
+    description = "Settings applied across all environments.";
   };
 
   options.environments = with lib.types; lib.mkOption {

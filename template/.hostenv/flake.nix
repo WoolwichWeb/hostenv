@@ -32,7 +32,10 @@
           modules = [
             (inputs.hostenv.modules + /top-level/minimal-env.nix)
             # The project environments.
-            { environments = projectEnv.environments; }
+            {
+              environments = projectEnv.environments;
+              allEnvironments = projectEnv.allEnvironments;
+            }
             ({ config, ... }: {
               hostenv.organisation = organisation;
               hostenv.project = project;
@@ -84,7 +87,7 @@
             in defaultHostenv.config.activatePackage;
         };
 
-        hostenv.environments = minimalHostenv.config.environments;
+        hostenv = minimalHostenv.config;
 
         apps = minimalHostenv.config.hostenv.apps;
 
