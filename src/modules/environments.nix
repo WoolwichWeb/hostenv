@@ -107,9 +107,6 @@ let
               # Environment name is what changes on a per-environment basis,
               # everything else remains the same.
               config.environmentName = name;
-              config.authorizedKeys =
-                let allUsers = lib.foldAttrs (item: acc: [ item ] ++ acc) [ ] (builtins.attrValues config.users);
-                in allUsers.publicKeys;
               config.root = topLevel.root;
             }
           ];
