@@ -116,6 +116,18 @@ let
           };
         });
         default = { };
+        apply = v:
+          let
+            hostname = config.hostenv.hostname;
+            # Virtual hosts that are valid redirection targets for the hostenv
+            # assigned *.hostenv.sh hostname.
+            targetVHosts = lib.filterAttrs (n: val: n != hostname && val.globalRedirect == null) v;
+          in
+          # Tests if there is a valid target to redirect to, and that the user
+            # hasn't already set a redirect target.
+          if builtins.length (builtins.attrValues targetVHosts) > 0 && v.${hostname}.globalRedirect == null
+          then v // { ${hostname} = v.${hostname} // { globalRedirect = (builtins.head (lib.attrsToList targetVHosts)).name; }; }
+          else v;
       };
 
       hostenv = lib.mkOption {
@@ -139,6 +151,7 @@ let
       };
 
     };
+    config.virtualHosts.${config.hostenv.hostname} = lib.mkDefault { };
   };
 
 in
