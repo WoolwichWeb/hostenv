@@ -64,6 +64,11 @@ in
       type = types.str;
       description = "Business account name or organisation name of the project. Should be short, lowercase, and with no special characters.";
       example = "fooinc";
+      # Note on the additional removal of '-' characters:
+      # This name is used when generating systemd slice names, which are
+      # split by '-' characters, allowing '-'s would introduce an extra layer
+      # into the systemd slice hierarchy.
+      apply = v: builtins.replaceStrings [ "-" ] [ "" ] (sanitise (lib.strings.toLower v));
     };
     project = lib.mkOption {
       type = types.str;
@@ -160,7 +165,6 @@ in
       # is stripped of some characters that are valid in git branch names,
       # '/' and '--' for example.
       gitRef = lib.mkDefault (config.environmentName or "main");
-      projectNameHash = lib.mkForce slugHash;
       runtimeDir = lib.mkForce "/run/hostenv/user/${config.userName}";
       upstreamRuntimeDir = lib.mkForce "/run/hostenv/nginx/${config.userName}";
       dataDir = lib.mkForce "/home/${config.userName}/.local/share";
@@ -168,5 +172,6 @@ in
       cacheDir = lib.mkForce "/home/${config.userName}/.cache";
       backupsSecretFile = lib.mkForce "/run/secrets/${config.userName}/backups_secret";
       backupsEnvFile = lib.mkForce "/run/secrets/${config.userName}/backups_env";
+      projectNameHash = lib.mkForce slugHash;
     };
 }
