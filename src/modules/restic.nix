@@ -122,7 +122,7 @@ in
 
         repository = lib.mkOption {
           type = with lib.types; nullOr str;
-          default = null;
+          default = "${config.hostenv.backupsRepoHost}/${config.hostenv.organisation}-${config.hostenv.project}/${config.hostenv.userName}/restic";
           description = ''
             repository to backup to.
           '';

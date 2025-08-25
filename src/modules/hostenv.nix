@@ -74,6 +74,7 @@ in
       type = types.str;
       description = "Name of the project. Should be short, lowercase, and contain no special characters.";
       example = "coolproject";
+      apply = v: builtins.replaceStrings [ "-" ] [ "" ] (sanitise (lib.strings.toLower v));
     };
     environmentName = lib.mkOption {
       type = types.str;
@@ -133,6 +134,11 @@ in
     backupsEnvFile = lib.mkOption {
       type = types.str;
       description = "Path (on server) where an environment file with information related to accessing backups may be found.";
+    };
+    backupsRepoHost = lib.mkOption {
+      type = types.str;
+      description = "URL of backups hosting service (without the trailing slash).";
+      default = "s3:https://s3.amazonaws.com";
     };
     projectNameHash = lib.mkOption {
       type = types.str;
