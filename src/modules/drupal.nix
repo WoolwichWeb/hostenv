@@ -569,7 +569,7 @@ in
       
       projectFiles = "${toString project}/share/php/${cfg.codebase.name}/project_files"
       if [ -d $projectFiles ]; then
-        cp -r $projectFiles/* ${cfg.filesDir}
+        cp -r $projectFiles/* ${cfg.filesDir}/
       fi
     '';
 
