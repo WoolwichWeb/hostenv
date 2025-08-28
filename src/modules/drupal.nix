@@ -127,6 +127,8 @@ let
           ${settingsPhp}
           EOF
 
+          [ -d "$WEBROOT"sites/default/files ] && mv "$WEBROOT"sites/default/files ./project_files
+
           ln -s "${cfg.filesDir}" "$WEBROOT"sites/default/files
           ln -s "${hostenvSettingsFile}" "$WEBROOT"sites/default/hostenv.settings.php
           ${lib.optionalString cfg.composer.enable ''
@@ -564,6 +566,11 @@ in
       # Activate the Drupal application
       mkdir -p "${cfg.filesDir}"
       mkdir -p "${cfg.privateFilesDir}"
+      
+      projectFiles = "${toString project}/share/php/${cfg.codebase.name}/project_files"
+      if [ -d $projectFiles ]; then
+        cp -r $projectFiles/* ${cfg.filesDir}
+      fi
     '';
 
     profile =
