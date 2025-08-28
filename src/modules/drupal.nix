@@ -571,6 +571,9 @@ in
       if [ ! -z $projectFiles ] && [  -d $projectFiles ]; then
         cp -r $projectFiles/* ${cfg.filesDir}/
       fi
+
+      find ${cfg.filesDir}/ -type d -name '__MACOSX' -print0 | xargs -0 rm -rf
+      find ${cfg.filesDir}/ -type f -name '.DS_Store' -delete
     '';
 
     profile =
