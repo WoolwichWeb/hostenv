@@ -70,7 +70,7 @@ let
                   };
                 };
               });
-              default = { "/" = { }; };
+              default = { };
             };
 
             enableLetsEncrypt = lib.mkOption {
