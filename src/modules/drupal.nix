@@ -567,7 +567,7 @@ in
       mkdir -p "${cfg.filesDir}"
       mkdir -p "${cfg.privateFilesDir}"
       
-      projectFiles = "${toString project}/share/php/${cfg.codebase.name}/project_files"
+      projectFiles="${toString project}/share/php/${cfg.codebase.name}/project_files"
       if [ -d $projectFiles ]; then
         cp -r $projectFiles/* ${cfg.filesDir}/
       fi
