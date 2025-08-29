@@ -121,7 +121,7 @@ let
             hostname = config.hostenv.hostname;
             # Virtual hosts that are valid redirection targets for the hostenv
             # assigned *.hostenv.sh hostname.
-            targetVHosts = lib.filterAttrs (n: val: n != hostname && val.globalRedirect == null) v;
+            targetVHosts = lib.filterAttrs (n: val: n != hostname && val.globalRedirect == null && val.enableLetsEncrypt == true) v;
           in
           # Tests if there is a valid target to redirect to, and that the user
             # hasn't already set a redirect target.
