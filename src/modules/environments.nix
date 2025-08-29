@@ -121,6 +121,11 @@ let
             hostname = config.hostenv.hostname;
             # Virtual hosts that are valid redirection targets for the hostenv
             # assigned *.hostenv.sh hostname.
+            # Note about Let's Encrypt: the `enableLetsEncrypt` option may be
+            # disabled if the user is still pointing the domain, so we do not
+            # consider the hostname a valid target in that case. This will
+            # probably have to be revisited later, especially once support for
+            # custom certificates is added.
             targetVHosts = lib.filterAttrs (n: val: n != hostname && val.globalRedirect == null && val.enableLetsEncrypt == true) v;
           in
           # Tests if there is a valid target to redirect to, and that the user
