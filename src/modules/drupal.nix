@@ -1,6 +1,7 @@
 { lib, config, pkgs, ... }:
 let
   cfg = config.services.drupal;
+  env = config.environments.${config.hostenv.environmentName};
 
   # Note on PHP packaging: the PHP version or package is chosen by the
   # user through the `services.drupal.phpVersion/phpPackage` options, this
@@ -36,7 +37,7 @@ let
         builtins.map (s: ''
           '^${builtins.replaceStrings ["."] ["\\."] s}$',
         '')
-        (builtins.attrNames config.environments.${config.hostenv.environmentName}.virtualHosts)
+        (builtins.attrNames env.virtualHosts)
       )}
     ]);
 
@@ -204,6 +205,14 @@ in
       '';
       default = "1G";
     };
+
+    enableRouteDebugging = (lib.mkEnableOption "route debug information in HTTP headers") //
+      {
+        description = ''
+          This will help when determining if a route is being served by PHP or just nginx.
+        '';
+        default = env.type != "production";
+      };
 
     phpPackage = lib.mkOption {
       type = lib.types.package;
@@ -388,6 +397,9 @@ in
         # Set up nginx for Drupal.
         locations."~ '\.php$|^/update.php'" = {
           extraConfig = ''
+            ${lib.optionalString cfg.enableRouteDebugging ''
+            add_header X-Handled "php";
+            ''}
             fastcgi_pass unix:${config.hostenv.runtimeDir}/${cfg.codebase.name}.sock;
             fastcgi_index index.php;
  
@@ -431,6 +443,9 @@ in
         };
         locations."/" = {
           extraConfig = ''
+            ${lib.optionalString cfg.enableRouteDebugging ''
+            add_header X-Handled "slash";
+            ''}
             try_files $uri /index.php?$query_string;
           '';
         };
@@ -442,6 +457,9 @@ in
         locations."~ /vendor/.*\.php$" = {
           return = 404;
           extraConfig = ''
+            ${lib.optionalString cfg.enableRouteDebugging ''
+            add_header X-Handled "vendor";
+            ''}
             deny all;
           '';
         };
