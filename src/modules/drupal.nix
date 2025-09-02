@@ -31,14 +31,14 @@ let
 
     $settings['file_private_path'] = "${cfg.privateFilesDir}";
     $settings['trusted_host_patterns'] = array_merge(
-      $settings['trusted_host_patterns'] ?? [],
+      $settings['trusted_host_patterns'] ?? [], [
       ${builtins.concatStringsSep "\n" (
         builtins.map (s: ''
-          '${s}',
+          '^${builtins.replaceStrings ["."] ["\\."] s}$',
         '')
         (builtins.attrNames config.environments.${config.hostenv.environmentName}.virtualHosts)
       )}
-    );
+    ]);
 
     // For secrets and other things that should not be world-readable in the
     // Nix store.
