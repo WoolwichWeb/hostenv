@@ -5,6 +5,7 @@
 
 let
   cfg = config.services.phpfpm;
+  env = config.environments.${config.hostenv.environmentName};
 
   phps = inputs.phps or { };
 
@@ -267,9 +268,29 @@ in
       (lib.mkForce (configurePackage (customPhpPackage cfg) cfg));
 
     services.phpfpm.settings = {
-      error_log = "syslog";
-      daemonize = false;
+      error_log = lib.mkDefault "syslog";
+      daemonize = lib.mkDefault false;
     };
+
+    services.phpfpm.phpOptions = lib.mkDefault (
+      if env.type == "production"
+      then ''
+        error_reporting = E_ALL & ~E_DEPRECATED
+        display_errors = Off
+        display_startup_errors = Off
+        log_errors = On
+      ''
+      else ''
+        error_reporting = E_ALL
+      ''
+      + ''
+        error_log = syslog
+        syslog.ident = php
+        syslog.facility = user
+        memory_limit = 1024M
+        max_execution_time = 300
+      ''
+    );
 
     systemd.slices.app-phpfpm = {
       description = "PHP FastCGI Process Manager Slice";
