@@ -273,7 +273,7 @@ in
     };
 
     services.phpfpm.phpOptions = lib.mkDefault (
-      if env.type == "production"
+      (if env.type == "production"
       then ''
         error_reporting = E_ALL & ~E_DEPRECATED
         display_errors = Off
@@ -283,6 +283,7 @@ in
       else ''
         error_reporting = E_ALL
       ''
+      )
       + ''
         error_log = syslog
         syslog.ident = php
