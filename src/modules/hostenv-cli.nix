@@ -190,9 +190,9 @@ let
             cd /home/${cfg.userName}/code/project/.hostenv
             git reset --hard
             git clean --force
-            nom build .#$currentBranch && result/bin/activate || exit 1
-            nom profile remove .hostenv >/dev/null 2>&1
-            nom profile install .#$currentBranch
+            ${pkgs.nix-output-monitor}/bin/nom build .#$currentBranch && result/bin/activate || exit 1
+            ${pkgs.nix-output-monitor}/bin/nom profile remove .hostenv >/dev/null 2>&1
+            ${pkgs.nix-output-monitor}/bin/nom profile install .#$currentBranch
             EOF
             }
 
@@ -254,7 +254,7 @@ let
           '';
       in
       pkgs.mkShell {
-        buildInputs = [ hostenvApp drush mysql mysqldump pkgs.restic pkgs.nix-output-monitor ];
+        buildInputs = [ hostenvApp drush mysql mysqldump pkgs.restic ];
         shellHook = ''
           currentBranch=$(git symbolic-ref --short HEAD)
 
