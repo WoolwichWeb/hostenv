@@ -190,9 +190,9 @@ let
             cd /home/${cfg.userName}/code/project/.hostenv
             git reset --hard
             git clean --force
-            nix build .#$currentBranch && result/bin/activate || exit 1
-            nix profile remove .hostenv >/dev/null 2>&1
-            nix profile install .#$currentBranch
+            ${pkgs.nix-output-monitor}/bin/nom build .#$currentBranch && result/bin/activate || exit 1
+            ${pkgs.nix-output-monitor}/bin/nom profile remove .hostenv >/dev/null 2>&1
+            ${pkgs.nix-output-monitor}/bin/nom profile install .#$currentBranch
             EOF
             }
 
