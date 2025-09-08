@@ -3,7 +3,7 @@
 { lib, ... }:
 {
   options.hostenv = lib.mkOption {
-    type = lib.types.submodule (import ../hostenv.nix);
+    type = lib.types.submodule ../hostenv.nix;
     description = "Hostenv configuration for the current environment.";
   };
 

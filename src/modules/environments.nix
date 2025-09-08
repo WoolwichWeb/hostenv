@@ -138,7 +138,7 @@ let
       hostenv = lib.mkOption {
         type = with lib.types; submoduleWith {
           modules = [
-            (import ./hostenv.nix)
+            ./hostenv.nix
             {
               config.organisation = topLevel.organisation;
               config.project = topLevel.project;
