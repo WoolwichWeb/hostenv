@@ -36,9 +36,7 @@ let
         '';
 
         mysqldump = pkgs.writeShellScriptBin "mysqldump" ''
-          echo
-          echo "${emoji}  Running mysqldump on '${environmentName}'"
-          ssh ${cfg.userName}@${cfg.hostname} "mysqldump $@ | gzip"
+          ssh ${cfg.userName}@${cfg.hostname} "mysqldump $@ | gzip" | gunzip
         '';
 
         drush = pkgs.writeShellScriptBin "drush" ''
