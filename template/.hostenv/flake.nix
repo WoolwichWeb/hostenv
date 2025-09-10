@@ -26,22 +26,17 @@
         organisation = "yourcompany";
         project = "projectname";
 
-        projectEnv = pkgs.callPackage ./hostenv.nix { };
         minimalHostenv = pkgs.lib.evalModules {
           specialArgs = inputs // { inherit inputs pkgs; };
           modules = [
             (inputs.hostenv.modules + /top-level/minimal-env.nix)
-            # The project environments.
-            {
-              environments = projectEnv.environments;
-              allEnvironments = projectEnv.allEnvironments;
-            }
             ({ config, ... }: {
               hostenv.organisation = organisation;
               hostenv.project = project;
               hostenv.environmentName = config.defaultEnvironment;
               hostenv.root = ../.;
             })
+            ./hostenv.nix
           ];
         };
 
