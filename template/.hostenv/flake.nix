@@ -88,5 +88,8 @@
 
         devShells = minimalHostenv.config.hostenv.devShells;
 
+        # Helpful for debugging
+        inherit makeHostenv;
+
       });
 }
