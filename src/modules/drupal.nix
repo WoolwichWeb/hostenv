@@ -274,11 +274,26 @@ in
         default = config.hostenv.project;
       };
 
-      version = lib.mkOption {
-        type = lib.types.str;
-        default = "dev-${config.hostenv.safeEnvironmentName}";
-        description = "Optional. Define a version. Must be a valid version according to composer.";
-      };
+      version =
+        let
+          lockFile = config.hostenv.root + /composer.lock;
+          # If there is a composer.lock file present, we use its 'content-hash'
+          # to ensure the FOD is rebuilt when the composer dependencies change.
+          calculatedVersion =
+            if builtins.pathExists lockFile
+            then
+              let
+                lockJson = builtins.fromJSON (builtins.readFile lockFile);
+                lockFileHash = builtins.hashFile "sha256" lockFile;
+              in
+              builtins.substring 0 7 (lockJson."content-hash" or lockFileHash)
+            else config.hostenv.safeEnvironmentName;
+        in
+        lib.mkOption {
+          type = lib.types.str;
+          default = "dev-${calculatedVersion}";
+          description = "Optional. Define a version. Must be a valid version according to composer.";
+        };
     };
 
     filesDir = lib.mkOption {
