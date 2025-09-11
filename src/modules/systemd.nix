@@ -184,8 +184,8 @@ in
 
           systemdStatus=$(${systemctl} --user is-system-running 2>&1 || true)
 
-          if [ $systemdStatus == 'running' ] || [ $systemdStatus == 'degraded' ]; then
-            if [ $systemdStatus == 'degraded' ]; then
+          if [ "$systemdStatus" == 'running' ] || [ "$systemdStatus" == 'degraded' ]; then
+            if [ "$systemdStatus" == 'degraded' ]; then
               echo "⚠️ The user systemd session is degraded:"
               ${systemctl} --user --no-pager --state=failed
               echo "⚠️ Attempting to reload services anyway... ⚠️"
