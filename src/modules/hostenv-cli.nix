@@ -9,6 +9,8 @@
 { lib, config, pkgs, ... }:
 
 let
+  inherit (pkgs) pog;
+
   # @todo: Put this type in a `lib.types` module.
   appType = lib.types.submodule ({ name, ... }: {
     options = {
@@ -24,6 +26,182 @@ let
     };
   });
 
+  # JSON blobs we already embed today
+  envJson = builtins.toJSON config.environments;
+  defaultEnvName = config.defaultEnvironment or "";
+
+  hostenvCli =
+    let
+      subCommands = [
+        "help"
+        "environments"
+        "environment"
+        "default-environment"
+        "ssh"
+        "deploy"
+        "cex"
+        "git-log"
+        "app-log"
+        "sync-from"
+      ];
+    in
+    pog.pog {
+      name = "hostenv";
+      description = ''Interact with your hosting environments.
+
+  SUBCOMMAND may be one of: ${builtins.concatStringsSep " " subCommands}
+      '';
+      version = "0.1.0";
+
+      # Flags you actually use
+      flags = [
+        {
+          name = "env";
+          short = "e";
+          description = "Target environment (defaults to current branch or '${defaultEnvName}')";
+          # tab completion from embedded environments
+          completion = "jq -r 'keys[]' <<< '${envJson}'";
+          argument = "ENV";
+        }
+        { name = "force"; short = "f"; description = "Skip confirmations"; bool = true; }
+      ];
+
+      arguments = [{ name = "subcommand"; }];
+      argumentCompletion = ''printf '%s\n' \
+        "${builtins.concatStringsSep " " subCommands}"; :'';
+
+      runtimeInputs = with pkgs; [ jq openssh rsync boxes git ];
+
+      bashBible = true;
+      strict = true;
+
+      script = h: with h; ''
+        set -o pipefail
+
+        # Derives the env name in this order:
+        # 1) --env, 2) current branch, 3) defaultEnvironment
+        env_name="''${env:-$(
+          git symbolic-ref -q --short HEAD 2>/dev/null || true
+        )}"
+        if [ -z "$env_name" ]; then env_name="${defaultEnvName}"; fi
+
+        # jq helpers over embedded JSON
+        env_or_null() { jq -c --arg e "$1" '.[$e] // null' <<< '${envJson}'; }
+        env_cfg="$(env_or_null "$env_name")"
+        if [ -z "$env_cfg" ] || [ "$env_cfg" == "null" ]; then
+          die "Unknown environment: $env_name" 2
+        fi
+
+        user="$(jq -r '.hostenv.userName' <<< "$env_cfg")"
+        host="$(jq -r '.hostenv.hostname' <<< "$env_cfg")"
+        typ="$(jq -r '.type' <<< "$env_cfg")"
+        emoji="$(
+          case "$typ" in
+            production)  echo "🚨" ;;
+            testing)     echo "🧪" ;;
+            development) echo "🛠️" ;;
+            *)           echo "📦" ;;
+          esac
+        )"
+
+        banner() {
+          echo
+          echo " $emoji  Hostenv - $env_name ($typ)" | boxes -d whirly
+          echo
+        }
+
+        sub="''${1:-help}"; shift || true
+
+        case "$sub" in
+          environments)
+            jq <<< '${envJson}'
+            ;;
+
+          environment)
+            jq <<< "$env_cfg"
+            # jq --arg e "$env_name" '.[$e] | {($e): .}' <<< '${envJson}'
+            ;;
+
+          default-environment)
+            jq --arg e "${defaultEnvName}" '.[$e]' <<< '${envJson}'
+            ;;
+
+          ssh)
+            exec ssh "$user"@"$host" "$@"
+            ;;
+
+          git-log)
+            exec ssh -t "$user"@"$host" 'cd ~/code/project && git log'
+            ;;
+
+          app-log)
+            exec ssh -t "$user"@"$host" 'resize; journalctl --user -xe '"$*"
+            ;;
+
+          cex)
+            # remote drush cex with temp dir + rsync back
+            dest="/tmp/hostenv-''${user}-cex"
+            if ssh -q "$user"@"$host" bash -s -- "$dest" "$@" <<'RS'; then
+          set -euo pipefail
+          dest="$1"; shift
+          [ -d "$dest" ] && rm -rf -- "$dest"
+          mkdir -p -- "$dest"
+          chmod o-rw -- "$dest"
+          drush --quiet cex --destination="$dest" "$@"
+        RS
+              rsync -az --delete "$user@$host:$dest/" ../config/sync/
+              # shellcheck disable=SC2016
+              ssh -q "$user"@"$host" "rm -rf -- $(printf %q '$dest')" || true
+              green "🗂️  Config exported from '$env_name'"
+            else
+              # shellcheck disable=SC2016
+              ssh -q "$user"@"$host" "rm -rf -- $(printf %q '$dest')" || true
+              die "Config export failed" 1
+            fi
+            ;;
+
+          deploy)
+            currentBranch="$(git symbolic-ref --short HEAD)"
+            if ${notFlag "force"}; then
+              ${confirm { prompt = "Deploy '$currentBranch'?"; exit_code = 69; }}
+            fi
+            ssh "$user"@"$host" 'mkdir -p /home/'"$user"'/code/project'
+            rsync --delete \
+              --exclude-from=../.gitignore \
+              --exclude '.hostenv/result' --exclude '.devenv' \
+              --exclude '*.sql' --exclude '*.sql.gz' \
+              -avz ../ "$user@$host:/home/$user/code/project/"
+
+            ${spinner {
+              title   = "Building & activating $currentBranch...";
+              command = ''
+                ssh "$user"@"$host" bash -lc '
+                  set -euo pipefail
+                  cd /home/'"$user"'/code/project/.hostenv
+                  git reset --hard
+                  git clean -fdx
+                  nix build .#'"$currentBranch"' && result/bin/activate
+                '
+              '';
+            }}
+            green "✅ Deploy complete"
+            ;;
+
+          sync-from)
+            die "not implemented yet" 3
+            ;;
+
+          help|"")
+            help
+            ;;
+
+          *)
+            die "Unknown subcommand: $sub" 2
+            ;;
+        esac
+      '';
+    };
+
   hostenvShells = lib.mapAttrs
     (environmentName: environment:
       let
@@ -36,7 +214,8 @@ let
         '';
 
         mysqldump = pkgs.writeShellScriptBin "mysqldump" ''
-          ssh ${cfg.userName}@${cfg.hostname} "mysqldump $@ | gzip" | gunzip
+          echo "${emoji}  Running mysql on '${environmentName}'"
+          exec ssh ${cfg.userName}@${cfg.hostname} "mysqldump $@ | gzip" | gunzip
         '';
 
         drush = pkgs.writeShellScriptBin "drush" ''
@@ -52,207 +231,9 @@ let
         };
         emoji = emojiMap.${environment.type} or "📦";
 
-        hostenvApp =
-          let
-            cexDestination = "/tmp/hostenv-${cfg.userName}-cex";
-          in
-          pkgs.writeShellScriptBin "hostenv" ''
-            # Help
-            Help() {
-              echo
-              echo "${emoji}  Hostenv - ${environmentName} (${environment.type})" | ${pkgs.boxes}/bin/boxes -d whirly
-              echo
-              echo "Usage:"
-              echo "  hostenv sync-from ENVIRONMENT_NAME"
-              echo "  hostenv environment [ENVIRONMENT_NAME]"
-              echo "  hostenv [app-log|cex|default-environment|deploy|environments|environment-config|git-log|ssh]"
-              echo
-            }
-
-            ExitError() {
-              if test -n "$1"; then
-                echo
-                echo "$1"
-                echo
-              fi
-              exit 1
-            }
-
-            SyncFrom() {
-              ExitError "not implemented yet"
-
-              set -x
-
-              currentBranch=$(git symbolic-ref --short HEAD) || exit 1
-              from=$(Environments | ${pkgs.jq}/bin/jq '.["'"$1"'"]') || exit 1
-              to=$(Environments | ${pkgs.jq}/bin/jq '.["'"$currentBranch"'"]') || exit 1
-
-              [ $from = null ] || [ $to = null ] && ExitError "error: could not determine environment configuration"
-
-              # Destination file name for the backup source
-              # environment file.
-              backupsEnvTmp=$(echo $from | ${pkgs.jq}/bin/jq \
-                --raw-output \
-                '.hostenv | .userName + "_" + (now | tostring) + "_backupsenv"' \
-              ) || exit 1
-
-              fromBackupsEnv=$(echo $from | ${pkgs.jq}/bin/jq \
-                --raw-output \
-                '.hostenv | .userName + "@" + .hostname + ":" + .backupsEnvFile' \
-              ) || exit 1
-
-              toBackupsEnv=$(echo $to | ${pkgs.jq}/bin/jq \
-                --raw-output \
-                '.hostenv | .userName + "@" + .hostname + ":/tmp/'"$backupsEnvTmp"'"' \
-              ) || exit 1
-                  
-              fromSsh=$(echo $from | ${pkgs.jq}/bin/jq \
-                --raw-output \
-                '.hostenv | .userName + "@" + .hostname' \
-              ) || exit 1
-
-              toSsh=$(echo $to | ${pkgs.jq}/bin/jq \
-                --raw-output \
-                '.hostenv | .userName + "@" + .hostname' \
-              ) || exit 1
-
-              fromEnvFile=$(echo $from | ${pkgs.jq}/bin/jq \
-                --raw-output \
-                '.hostenv | .backupsEnvFile' \
-              ) || exit 1
-                  
-              # Take a backup in the from environment, and find the backup
-              # repository URL.
-              fromRepo=$(ssh "$fromSsh" bash <<EOF
-            systemctl --user start restic-backups-drupal.service
-            cat $fromEnvFile | grep 'RESTIC_REPOSITORY' | cut -d '"' -f 2
-            EOF
-            )
-
-              # @todo: replace this, it's very slow and hard on space.
-              ssh "$toSsh" "~/.local/bin/restic-drupal copy --from-repo $fromRepo latest"
-
-              set +x
-            }
-
-            Cex() {
-              ssh -q ${cfg.userName}@${cfg.hostname} bash <<EOF
-            if [ -d ${cexDestination} ]; then
-              rm -r ${cexDestination} || exit 1
-            fi
-            mkdir -p ${cexDestination} || exit 1
-            chmod o-rw ${cexDestination} || exit 1
-            drush --quiet cex --destination=${cexDestination} $@ || exit 1
-            EOF
-              if [ $? = 0 ]; then
-                rsync -az --delete ${cfg.userName}@${cfg.hostname}:${cexDestination}/ ../config/sync/
-              else
-                # clean up
-                ssh -t -q ${cfg.userName}@${cfg.hostname} 'rm -r ${cexDestination} 2> /dev/null' 2> /dev/null
-                ExitError "config export failed"
-                exit
-              fi
-              ssh -q ${cfg.userName}@${cfg.hostname} 'rm -r ${cexDestination}' || exit 1
-              echo "🗂️ ⬇️  Config successfully exported from '${environmentName}'"
-            }
-
-            Environments() {
-              echo '${builtins.toJSON config.environments}' | ${pkgs.jq}/bin/jq
-            }
-
-            DefaultEnvironment() {
-              echo '${builtins.toJSON config.environments."${config.defaultEnvironment}"}' | ${pkgs.jq}/bin/jq
-            }
-
-            Environment() {
-              environmentName=$([ "$1" = "" ] && echo "${environmentName}" || echo "$1")
-              Environments | ${pkgs.jq}/bin/jq '.["'"$environmentName"'"] | { "'"$environmentName"'": . }'
-            }
-
-            HostenvConfig() {
-              echo '${builtins.toJSON cfg}' | ${pkgs.jq}/bin/jq
-            }
-
-            Ssh() {
-              exec ssh ${cfg.userName}@${cfg.hostname} "$@"
-            }
-
-            # Hacky remote builds, due to not having found how to
-            # run 'result/bin/activate' on a remote build yet.
-            Deploy() {
-              currentBranch=$(git symbolic-ref --short HEAD) || exit 1
-
-              ssh ${cfg.userName}@${cfg.hostname} 'mkdir -p /home/${cfg.userName}/code/project'
-              rsync --delete --exclude-from=../.gitignore --exclude '.hostenv/result' --exclude '.devenv' --exclude '*.sql' --exclude '*.sql.gz' -avz ../ "${cfg.userName}@${cfg.hostname}:/home/${cfg.userName}/code/project/" || exit 1
-              Ssh bash <<EOF
-            cd /home/${cfg.userName}/code/project/.hostenv
-            git reset --hard
-            git clean --force
-            nix build .#$currentBranch && result/bin/activate || exit 1
-            nix profile remove .hostenv >/dev/null 2>&1
-            nix profile install .#$currentBranch
-            EOF
-            }
-
-            GitLog() {
-              ssh -t ${cfg.userName}@${cfg.hostname} 'cd ~/code/project && git log'
-            }
-
-            AppLog() {
-              ssh -t ${cfg.userName}@${cfg.hostname} "resize; journalctl --user -xe $@"
-            }
-
-            # Main
-            case $1 in
-              app-log)
-                shift
-                AppLog "$@"
-                exit;;
-              cex)
-                shift
-                Cex "$@"
-                exit;;
-              default-environment)
-                DefaultEnvironment
-                exit;;
-              deploy)
-                Deploy
-                exit;;
-              environment)
-                Environment "$2"
-                exit;;
-              environments)
-                Environments
-                exit;;
-              environment-config)
-                HostenvConfig
-                exit;;
-              git-log)
-                GitLog
-                exit;;
-              ssh)
-                shift
-                Ssh "$@"
-                exit;;
-              sync-from)
-                echo "Syncing"
-                SyncFrom "$2"
-                exit;;
-              help)
-                Help
-                exit;;
-              "")
-                Help
-                exit;;
-              *)
-                echo "Invalid parameters"
-                Help
-                exit;;
-            esac
-          '';
       in
       pkgs.mkShell {
-        buildInputs = [ hostenvApp drush mysql mysqldump pkgs.restic ];
+        buildInputs = [ hostenvCli drush mysql mysqldump pkgs.restic pkgs.boxes ];
         shellHook = ''
           currentBranch=$(git symbolic-ref --short HEAD)
 
@@ -263,7 +244,11 @@ let
           fi
 
           echo
-          echo "${emoji}  Working in hostenv environment: '"'${environmentName}'"' (${environment.type})" | ${pkgs.boxes}/bin/boxes -d whirly
+          cat <<'RS' | ${pkgs.boxes}/bin/boxes -d whirly
+          ${emoji}  Working in hostenv environment: "${environmentName}" (${environment.type}) 
+
+          Remote environment commands: drush mysql mysqldump
+          RS
           echo
         '';
       }
@@ -272,18 +257,24 @@ let
   // {
     default = pkgs.mkShell {
       shellHook = ''
-        gitRef=$(git symbolic-ref -q --short HEAD)
-        detachedHead="$?"
-        [ ! "$detachedHead" = 0 ] \
-          && echo "⚠️  Cannot load hostenv - git is in detached head state"
-        refInOutputs=$([ ! -z "$gitRef" ] && echo "$envs" | grep -x "$gitRef" | wc -l || exit 0) || exit 1
-        [ "$detachedHead" = 0 ] && [ "$refInOutputs" = 0 ] \
-          && echo "
-        ⚠️  Cannot load hostenv - '$gitRef' is not a hostenv environment
+        ENV_JSON='${builtins.toJSON (lib.filterAttrs (n: v: v.enable) config.environments)}'
 
-        ℹ️  Add 'environments.$gitRef.enable = true;' to your hostenv.nix
-           if you would like to make it a hostenv environment.
-        "
+        if gitRef=$(git symbolic-ref -q --short HEAD 2>/dev/null); then
+          # Is current branch a hostenv environment?
+          if jq -e --arg ref "$gitRef" 'has($ref)' <<<"$ENV_JSON" >/dev/null; then
+            : # OK
+          else
+            printf '%s\n\n%s\n' \
+        "⚠️  Cannot load hostenv — '$gitRef' is not a hostenv environment" \
+        "ℹ️  Add 'environments.$gitRef.enable = true;' to your hostenv.nix if you would like to make it a hostenv environment."
+          fi
+        else
+          if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            echo "⚠️  Cannot load hostenv — git is in detached HEAD state"
+          else
+            echo "⚠️  Cannot load hostenv — this is not a git repository"
+          fi
+        fi
       '';
     };
   };
@@ -314,6 +305,6 @@ in
     description = "Apps for working with hostenv projects";
   };
 
-  config.hostenv.devShells = hostenvShells;
-  config.hostenv.apps = hostenvApps;
+  config.hostenv.devShells = lib.mkDefault hostenvShells;
+  config.hostenv.apps = lib.mkDefault hostenvApps;
 }

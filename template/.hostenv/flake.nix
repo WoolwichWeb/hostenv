@@ -15,81 +15,76 @@
         utils.follows = "flake-utils";
       };
     };
-    hostenv.url = "gitlab:woolwichweb/hostenv?dir=src/modules";
+    hostenv = {
+      url = "gitlab:woolwichweb/hostenv?dir=src/modules";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+      };
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, ... } @ inputs: flake-utils.lib.eachDefaultSystem
+  outputs = { self, nixpkgs, flake-utils, hostenv, ... } @ inputs: flake-utils.lib.eachDefaultSystem
     (system:
       let
         pkgs = import nixpkgs { inherit system; };
 
-        organisation = "yourcompany";
-        project = "projectname";
+        organisation = "yourorganisation";
+        project = "yourproject";
 
-        minimalHostenv = pkgs.lib.evalModules {
-          specialArgs = inputs // { inherit inputs pkgs; };
-          modules = [
-            (inputs.hostenv.modules + /top-level/minimal-env.nix)
-            ({ config, ... }: {
-              hostenv.organisation = organisation;
-              hostenv.project = project;
-              hostenv.environmentName = config.defaultEnvironment;
-              hostenv.root = ../.;
-            })
-            ./hostenv.nix
-          ];
-        };
+        # Uses hostenv from inputs to build an environment's config.
+        makeHostenv = environmentName:
+          let
 
-        # Given an environment name, creates a hostenv environment.
-        # Usually environment names will correspond with git branches or
-        # tags, but this is not enforced (mostly because Flakes don't seem
-        # to support retrieving git metadata from the current environment,
-        # beyond the current commit ref).
-        makeHostenv = environmentName: pkgs.lib.evalModules {
-          specialArgs = inputs // { inherit inputs pkgs; };
-          modules = [
-            (inputs.hostenv.modules + /top-level/full-env.nix)
-            {
-              hostenv.organisation = organisation;
-              hostenv.project = project;
-              hostenv.environmentName = environmentName;
-              hostenv.root = ../.;
-              buildReference = self.rev or null;
-            }
-            # systemd stuff from nixpkgs.
-            {
-              # From:
-              # https://github.com/NixOS/nixpkgs/blob/release-24.11/nixos/modules/config/locale.nix#L87
-              # This way services are restarted when tzdata changes.
-              systemd.globalEnvironment.TZDIR = "${pkgs.tzdata}/share/zoneinfo";
-            }
-            ./hostenv.nix
-          ];
-        };
+            # Added to the config if an environmentName is set,
+            # if it's not this tells hostenv to use the default.
+            # As for why it does this, it's for bootstrapping purposes.
+            # So the CLI and other tooling can find which environments
+            # are available, without having to pick one.
+            addendum =
+              if environmentName == null
+              then { }
+              else { inherit environmentName; };
+
+            # Put together the configuration hostenv needs to build an
+            # environment.
+            envConfig =
+              {
+                inherit organisation project;
+                root = ../.;
+                buildReference = self.rev or null;
+                modules = [ ./hostenv.nix ];
+              } // addendum;
+
+          in
+          # Call the function that builds the environment.
+            # Note the use of `${system}`, this is because Flake outputs are
+            # often separated by CPU / platform architecture.
+          hostenv.makeHostenv.${system} envConfig;
+
+        # This default hostenv sans environmentName is for bootstrapping
+        # purposes.
+        defaultHostenv = makeHostenv null;
 
       in
       {
+        # Helpful for debugging.
+        inherit makeHostenv;
 
         packages = with pkgs.lib; mapAttrs
           (environmentName: environment:
             let hostenv = makeHostenv environmentName;
             in hostenv.config.activatePackage
           )
-          (filterAttrs (n: v: v.enable) minimalHostenv.config.environments)
+          (filterAttrs (n: v: v.enable) defaultHostenv.config.environments)
         // {
-          default =
-            let defaultHostenv = makeHostenv minimalHostenv.config.defaultEnvironment;
-            in defaultHostenv.config.activatePackage;
+          default = defaultHostenv.config.activatePackage;
         };
 
-        hostenv = minimalHostenv.config;
+        hostenv = defaultHostenv.config;
 
-        apps = minimalHostenv.config.hostenv.apps;
+        apps = defaultHostenv.config.hostenv.apps;
 
-        devShells = minimalHostenv.config.hostenv.devShells;
-
-        # Helpful for debugging
-        inherit makeHostenv;
+        devShells = defaultHostenv.config.hostenv.devShells;
 
       });
 }
