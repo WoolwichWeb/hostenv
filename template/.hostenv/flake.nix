@@ -19,6 +19,7 @@
       url = "gitlab:woolwichweb/hostenv?dir=src/modules";
       inputs = {
         nixpkgs.follows = "nixpkgs";
+        flake-utils.follows = "flake-utils";
       };
     };
   };
