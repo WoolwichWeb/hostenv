@@ -3,7 +3,7 @@
 # the `hostenv.nix` file in this directory.
 #
 {
-  description = "Hostenv";
+  description = "Hostenv project";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
