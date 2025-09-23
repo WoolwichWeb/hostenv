@@ -446,6 +446,29 @@ in
       ];
     };
 
+    hostenv.subCommands = {
+
+      mysql = {
+        exec = helpers: ''
+          echo
+          echo "$emoji  Running mysql on '$env_name'" >&2
+          exec ssh -t "$user"@"$host" "mysql $*"
+        '';
+        makeScript = true;
+        description = "Run mysql on the remote hostenv environment.";
+      };
+
+      mysqldump = {
+        exec = helpers: ''
+          echo "$emoji  Running mysqldump on '$env_name'" >&2
+          exec ssh "$user"@"$host" "mysqldump $* | gzip" | gunzip
+        '';
+        makeScript = true;
+        description = "Run mysqldump on the remote hostenv environment, printing the result on stdout (as if it were run locally).";
+      };
+
+    };
+
     profile =
       let
         defaultDb = if lib.length cfg.ensureDatabases == 1 then builtins.head cfg.ensureDatabases else "";

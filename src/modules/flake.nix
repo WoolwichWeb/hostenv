@@ -1,5 +1,5 @@
 {
-  description = "Hostenv";
+  description = "Hostenv upstream";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
@@ -21,6 +21,8 @@
       };
     in
     {
+      inherit inputs;
+
       # Create a hostenv environment. 
       #
       # Usually environment names will correspond with git branches or 

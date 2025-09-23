@@ -595,6 +595,17 @@ in
 
     };
 
+    hostenv.subCommands = {
+      drush = {
+        exec = helpers: ''
+          echo
+          echo "$emoji  Running drush on '$env_name' " >&2
+          exec ssh -t "$user"@"$host" "drush $*"
+        '';
+        makeScript = true;
+      };
+    };
+
     activate = ''
       # Activate the Drupal application
       mkdir -p "${cfg.filesDir}"

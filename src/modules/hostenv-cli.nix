@@ -11,7 +11,6 @@
 let
   inherit (pkgs) pog;
 
-  # @todo: Put this type in a `lib.types` module.
   appType = lib.types.submodule ({ name, ... }: {
     options = {
       type = lib.mkOption {
@@ -26,9 +25,38 @@ let
     };
   });
 
-  # JSON blobs we already embed today
+  scriptType = lib.types.submodule (
+    { config, name, ... }:
+    {
+      options = {
+        exec = lib.mkOption {
+          type = lib.types.functionTo lib.types.lines;
+          description = "Shell code to execute when the hostenv sub-command is run.";
+        };
+        description = lib.mkOption {
+          type = lib.types.str;
+          description = "Description of the script.";
+          default = "";
+        };
+        runtimeInputs = lib.mkOption {
+          type = lib.types.listOf lib.types.package;
+          description = "Packages to be available in PATH when the sub-command is run.";
+          default = [ ];
+          example = "[ pkgs.boxes pkgs.mysql ]";
+        };
+        makeScript = lib.mkOption {
+          type = lib.types.bool;
+          description = "Whether to make this sub-command a top-level script, e.g. the command `hostenv mysql` might become runnable using only `mysql` if mysql's `makeScript = true;`.";
+          default = false;
+        };
+      };
+    }
+  );
+
   envJson = builtins.toJSON config.environments;
   defaultEnvName = config.defaultEnvironment or "";
+
+  subCommandList = lib.attrsToList config.hostenv.subCommands;
 
   hostenvCli =
     let
@@ -43,7 +71,7 @@ let
         "git-log"
         "app-log"
         "sync-from"
-      ];
+      ] ++ builtins.attrNames config.hostenv.subCommands;
     in
     pog.pog {
       name = "hostenv";
@@ -70,7 +98,7 @@ let
       argumentCompletion = ''printf '%s\n' \
         "${builtins.concatStringsSep " " subCommands}"; :'';
 
-      runtimeInputs = with pkgs; [ jq openssh rsync boxes git ];
+      runtimeInputs = with pkgs; [ jq openssh rsync boxes git ] ++ builtins.concatLists (builtins.map (v: v.value.runtimeInputs) subCommandList);
 
       bashBible = true;
       strict = true;
@@ -106,7 +134,12 @@ let
 
         banner() {
           echo
-          echo " $emoji  Hostenv - $env_name ($typ)" | boxes -d whirly
+          # echo " $emoji  Hostenv - $env_name ($typ)" | boxes -d whirly
+          cat <<RS | boxes -d whirly
+        $emoji  Working in hostenv environment: "$env_name" ($typ) 
+
+        Commands: ${builtins.concatStringsSep ", " (builtins.map (cmd: cmd.name) subCommandList ++ [ "hostenv" ])}
+        RS
           echo
         }
 
@@ -190,6 +223,16 @@ let
           sync-from)
             die "not implemented yet" 3
             ;;
+          
+          ${builtins.concatStringsSep "\n" (builtins.map (cmd: ''
+              ${cmd.name})
+                ${cmd.value.exec h}
+                ;;
+          '') subCommandList)}
+
+          banner)
+            banner
+            ;;
 
           help|"")
             help
@@ -205,35 +248,14 @@ let
   hostenvShells = lib.mapAttrs
     (environmentName: environment:
       let
-        cfg = environment.hostenv;
-
-        mysql = pkgs.writeShellScriptBin "mysql" ''
-          echo
-          echo "${emoji}  Running mysql on '${environmentName}'"
-          ssh -t ${cfg.userName}@${cfg.hostname} "mysql $@"
-        '';
-
-        mysqldump = pkgs.writeShellScriptBin "mysqldump" ''
-          echo "${emoji}  Running mysql on '${environmentName}'"
-          exec ssh ${cfg.userName}@${cfg.hostname} "mysqldump $@ | gzip" | gunzip
-        '';
-
-        drush = pkgs.writeShellScriptBin "drush" ''
-          echo
-          echo "${emoji}  Running drush on '${environmentName}' "
-          ssh -t ${cfg.userName}@${cfg.hostname} "drush $@"
-        '';
-
-        emojiMap = {
-          production = "🚨";
-          testing = "🧪";
-          development = "🛠️";
-        };
-        emoji = emojiMap.${environment.type} or "📦";
-
+        scripts = builtins.map
+          (cmd: pkgs.writeShellScriptBin cmd.name ''
+            exec hostenv ${cmd.name} -- "$@"
+          '')
+          (builtins.filter (cmd: cmd.value.makeScript) subCommandList);
       in
       pkgs.mkShell {
-        buildInputs = [ hostenvCli drush mysql mysqldump pkgs.restic pkgs.boxes ];
+        buildInputs = [ hostenvCli pkgs.restic pkgs.boxes ] ++ scripts;
         shellHook = ''
           currentBranch=$(git symbolic-ref --short HEAD)
 
@@ -243,13 +265,7 @@ let
             fi
           fi
 
-          echo
-          cat <<'RS' | ${pkgs.boxes}/bin/boxes -d whirly
-          ${emoji}  Working in hostenv environment: "${environmentName}" (${environment.type}) 
-
-          Remote environment commands: drush mysql mysqldump
-          RS
-          echo
+          hostenv banner
         '';
       }
     )
@@ -303,6 +319,11 @@ in
   options.hostenv.apps = lib.mkOption {
     type = lib.types.attrsOf appType;
     description = "Apps for working with hostenv projects";
+  };
+  options.hostenv.subCommands = lib.mkOption {
+    type = lib.types.attrsOf scriptType;
+    default = { };
+    description = "Sub-commands available when running the `hostenv` CLI application.";
   };
 
   config.hostenv.devShells = lib.mkDefault hostenvShells;
