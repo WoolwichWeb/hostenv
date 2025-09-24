@@ -145,8 +145,9 @@ let
         [global]
         hide_env_diff = true
         EOF
-        bold "Created a direnv config file at: '$cfg'"
+        bold "Note: Created a direnv config file at: '$cfg'"
         green "You may change the settings there and hostenv will not overwrite them"
+        echo
         fi
 
         banner() {
