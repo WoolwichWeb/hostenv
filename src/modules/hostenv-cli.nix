@@ -132,6 +132,20 @@ let
           esac
         )"
 
+        # If the user hasn't already setup a direnv configuration file
+        # make one for them with sensible defaults.
+        cfg="''${XDG_CONFIG_HOME:-$HOME/.config}/direnv/direnv.toml"
+
+        if [ ! -f "$cfg" ]; then
+          mkdir -p "$(dirname "$cfg")"
+          cat >"$cfg" <<'EOF'
+        [global]
+        hide_env_diff = true
+        EOF
+        bold "Created a direnv config file at: '$cfg'"
+        green "You may change the settings there and hostenv will not overwrite them"
+        fi
+
         banner() {
           echo
           # echo " $emoji  Hostenv - $env_name ($typ)" | boxes -d whirly
