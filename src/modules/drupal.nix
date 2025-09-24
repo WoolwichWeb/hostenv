@@ -605,6 +605,30 @@ in
         description = "Run Drush on the remote Drupal";
         makeScript = true;
       };
+      cex = {
+        exec = helpers: ''
+              # remote drush cex with temp dir + rsync back
+              dest="/tmp/hostenv-''${user}-cex"
+              if ssh -q "$user"@"$host" bash -s -- "$dest" "$@" <<'RS'; then
+            set -euo pipefail
+            dest="$1"; shift
+            [ -d "$dest" ] && rm -rf -- "$dest"
+            mkdir -p -- "$dest"
+            chmod o-rw -- "$dest"
+            drush --quiet cex --destination="$dest" "$@"
+          RS
+                rsync -az --delete "$user@$host:$dest/" ../config/sync/
+                # shellcheck disable=SC2016
+                ssh -q "$user"@"$host" "rm -rf -- $(printf %q '$dest')" || true
+                green "🗂️  Config exported from '$env_name'"
+              else
+                # shellcheck disable=SC2016
+                ssh -q "$user"@"$host" "rm -rf -- $(printf %q '$dest')" || true
+                die "Config export failed" 1
+              fi
+        '';
+        description = "Get a config export from the remote Drupal environment and copy it to your local 'config/sync' directory.";
+      };
     };
 
     activate = ''

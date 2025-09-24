@@ -49,6 +49,11 @@ let
           description = "Whether to make this sub-command a top-level script, e.g. the command `hostenv mysql` might become runnable using only `mysql` if mysql's `makeScript = true;`.";
           default = false;
         };
+        internal = lib.mkOption {
+          type = lib.types.bool;
+          description = "Hides this sub-command from 'hostenv list'.";
+          default = false;
+        };
       };
     }
   );
@@ -57,21 +62,11 @@ let
   defaultEnvName = config.defaultEnvironment or "";
 
   subCommandList = lib.attrsToList config.hostenv.subCommands;
+  scripts = builtins.filter (cmd: cmd.value.makeScript) subCommandList;
 
   hostenvCli =
     let
       subCommands = [
-        "help"
-        "list"
-        "environments"
-        "environment"
-        "default-environment"
-        "ssh"
-        "deploy"
-        "cex"
-        "git-log"
-        "app-log"
-        "sync-from"
       ] ++ builtins.attrNames config.hostenv.subCommands;
     in
     pog.pog {
@@ -156,7 +151,7 @@ let
           cat <<RS | boxes -d whirly
         $emoji  Working in hostenv environment: "$env_name" ($typ) 
 
-        Commands: ${builtins.concatStringsSep ", " (builtins.map (cmd: cmd.name) subCommandList ++ [ "hostenv" ])}
+        Commands: ${builtins.concatStringsSep ", " (builtins.map (cmd: cmd.name) scripts ++ [ "hostenv" ])}
         RS
           echo
         }
@@ -164,101 +159,14 @@ let
         sub="''${1:-help}"; shift || true
 
         case "$sub" in
-          environments)
-            jq <<< '${envJson}'
-            ;;
 
-          environment)
-            jq <<< "$env_cfg"
-            # jq --arg e "$env_name" '.[$e] | {($e): .}' <<< '${envJson}'
-            ;;
-
-          default-environment)
-            jq --arg e "${defaultEnvName}" '.[$e]' <<< '${envJson}'
-            ;;
-
-          ssh)
-            exec ssh "$user"@"$host" "$@"
-            ;;
-
-          git-log)
-            exec ssh -t "$user"@"$host" 'cd ~/code/project && git log'
-            ;;
-
-          app-log)
-            exec ssh -t "$user"@"$host" 'resize; journalctl --user -xe '"$*"
-            ;;
-
-          cex)
-            # remote drush cex with temp dir + rsync back
-            dest="/tmp/hostenv-''${user}-cex"
-            if ssh -q "$user"@"$host" bash -s -- "$dest" "$@" <<'RS'; then
-          set -euo pipefail
-          dest="$1"; shift
-          [ -d "$dest" ] && rm -rf -- "$dest"
-          mkdir -p -- "$dest"
-          chmod o-rw -- "$dest"
-          drush --quiet cex --destination="$dest" "$@"
-        RS
-              rsync -az --delete "$user@$host:$dest/" ../config/sync/
-              # shellcheck disable=SC2016
-              ssh -q "$user"@"$host" "rm -rf -- $(printf %q '$dest')" || true
-              green "🗂️  Config exported from '$env_name'"
-            else
-              # shellcheck disable=SC2016
-              ssh -q "$user"@"$host" "rm -rf -- $(printf %q '$dest')" || true
-              die "Config export failed" 1
-            fi
-            ;;
-
-          deploy)
-            currentBranch="$(git symbolic-ref --short HEAD)"
-            if ${notFlag "force"}; then
-              ${confirm { prompt = "Deploy '$currentBranch'?"; exit_code = 69; }}
-            fi
-            ssh "$user"@"$host" 'mkdir -p /home/'"$user"'/code/project'
-            rsync --delete \
-              --exclude-from=../.gitignore \
-              --exclude '.hostenv/result' --exclude '.devenv' \
-              --exclude '*.sql' --exclude '*.sql.gz' \
-              -avz ../ "$user@$host:/home/$user/code/project/"
-
-            ${spinner {
-              title   = "Building & activating $currentBranch...";
-              command = ''
-                ssh "$user"@"$host" bash -lc '
-                  set -euo pipefail
-                  cd /home/'"$user"'/code/project/.hostenv
-                  git reset --hard
-                  git clean -fdx
-                  nix build .#'"$currentBranch"' && result/bin/activate
-                '
-              '';
-            }}
-            green "✅ Deploy complete"
-            ;;
-
-          sync-from)
-            die "not implemented yet" 3
-            ;;
-          
           ${builtins.concatStringsSep "\n" (builtins.map (cmd: ''
               ${cmd.name})
                 ${cmd.value.exec h}
                 ;;
           '') subCommandList)}
 
-          banner)
-            banner
-            ;;
-
-          list)
-            ${builtins.concatStringsSep "\n" (builtins.map (cmd: ''
-              echo "${cmd.name} ${lib.optionalString (cmd.value.description != "") "- ${cmd.value.description}"}"
-            '') subCommandList)
-            }
-            ;;
-          help|"")
+          "")
             help
             ;;
 
@@ -272,14 +180,14 @@ let
   hostenvShells = lib.mapAttrs
     (environmentName: environment:
       let
-        scripts = builtins.map
+        scriptDerivations = builtins.map
           (cmd: pkgs.writeShellScriptBin cmd.name ''
             exec hostenv ${cmd.name} -- "$@"
           '')
-          (builtins.filter (cmd: cmd.value.makeScript) subCommandList);
+          scripts;
       in
       pkgs.mkShell {
-        buildInputs = [ hostenvCli pkgs.restic pkgs.boxes ] ++ scripts;
+        buildInputs = [ hostenvCli pkgs.restic pkgs.boxes ] ++ scriptDerivations;
         shellHook = ''
           currentBranch=$(git symbolic-ref --short HEAD)
 
@@ -352,4 +260,89 @@ in
 
   config.hostenv.devShells = lib.mkDefault hostenvShells;
   config.hostenv.apps = lib.mkDefault hostenvApps;
+  config.hostenv.subCommands = {
+    help = {
+      exec = helpers: ''
+        help
+      '';
+      description = "Print help for the hostenv command.";
+    };
+    banner = {
+      exec = helpers: ''
+        banner
+      '';
+      internal = true;
+    };
+    list = {
+      exec = helpers: ''
+        ${builtins.concatStringsSep "\n" (builtins.map (cmd: ''
+          echo
+          bold "${cmd.name}"
+          ${lib.optionalString (cmd.value.description != "") ''
+            cat <<'EOF'
+          ${cmd.value.description}
+          EOF
+          ''}
+        '') (builtins.filter (cmd: ! cmd.value.internal) subCommandList))
+        }
+      '';
+      description = "List available hostenv sub-commands. Then run one like 'hostenv SUBCOMMAND'.";
+    };
+    ssh = {
+      exec = helpers: ''
+        exec ssh "$user"@"$host" "$@"
+      '';
+      description = "Connect to the remote hostenv environment over SSH.";
+    };
+    app-log = {
+      exec = helpers: ''
+        exec ssh -t "$user"@"$host" 'resize; journalctl --user -xe '"$*"
+      '';
+      description = "View remote application logs.";
+    };
+    deploy = {
+      exec = helpers: ''
+        currentBranch="$(git symbolic-ref --short HEAD)"
+        if ${helpers.notFlag "force"}; then
+          ${helpers.confirm { prompt = "Deploy '$currentBranch'?"; exit_code = 69; }}
+        fi
+        ssh "$user"@"$host" 'mkdir -p /home/'"$user"'/code/project'
+        rsync --delete \
+          --exclude-from=../.gitignore \
+          --exclude '.hostenv/result' --exclude '.devenv' \
+          --exclude '*.sql' --exclude '*.sql.gz' \
+          -avz ../ "$user@$host:/home/$user/code/project/"
+
+        ${helpers.spinner {
+          title   = "Building & activating $currentBranch...";
+          command = ''
+            ssh "$user"@"$host" bash -lc '
+              set -euo pipefail
+              cd /home/'"$user"'/code/project/.hostenv
+              git reset --hard
+              git clean -fdx
+              nix build .#'"$currentBranch"' && result/bin/activate
+            '
+          '';
+        }}
+        green "✅ Deploy complete"
+      '';
+      description = ''
+        Deploy your local codebase to the remote hostenv environment.
+        Caution: Another developer could clobber your deployment if this is not used with care.'';
+    };
+    environment = {
+      exec = helpers: ''
+        jq <<< "$env_cfg"
+      '';
+      description = "Print hostenv environment information as JSON (defaults to your current environment).";
+    };
+    environments = {
+      exec = helpers: ''
+        jq <<< '${envJson}'
+      '';
+      description = "Print hostenv environment information as JSON (for all environments).";
+    };
+  };
 }
+
