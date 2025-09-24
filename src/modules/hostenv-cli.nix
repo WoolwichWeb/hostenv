@@ -62,6 +62,7 @@ let
     let
       subCommands = [
         "help"
+        "list"
         "environments"
         "environment"
         "default-environment"
@@ -78,6 +79,8 @@ let
       description = ''Interact with your hosting environments.
 
   SUBCOMMAND may be one of: ${builtins.concatStringsSep " " subCommands}
+  
+  Use 'hostenv list' to see a list of sub-commands and their descriptions
       '';
       version = "0.1.0";
 
@@ -248,6 +251,12 @@ let
             banner
             ;;
 
+          list)
+            ${builtins.concatStringsSep "\n" (builtins.map (cmd: ''
+              echo "${cmd.name} ${lib.optionalString (cmd.value.description != "") "- ${cmd.value.description}"}"
+            '') subCommandList)
+            }
+            ;;
           help|"")
             help
             ;;
