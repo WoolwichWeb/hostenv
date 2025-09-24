@@ -602,6 +602,7 @@ in
           echo "$emoji  Running drush on '$env_name' " >&2
           exec ssh -t "$user"@"$host" "drush $*"
         '';
+        description = "Run Drush on the remote Drupal";
         makeScript = true;
       };
     };
