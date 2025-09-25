@@ -62,120 +62,116 @@ let
   defaultEnvName = config.defaultEnvironment or "";
 
   subCommandList = lib.attrsToList config.hostenv.subCommands;
+  userFacingSubCommands = builtins.filter (cmd: !cmd.value.internal) subCommandList;
+  # List of sub-command names, with internal names filtered out.
+  # (so this list is good for user-facing output only)
+  subCommandNames = builtins.map (cmd: cmd.name) userFacingSubCommands;
   scripts = builtins.filter (cmd: cmd.value.makeScript) subCommandList;
 
-  hostenvCli =
-    let
-      subCommands = [
-      ] ++ builtins.attrNames config.hostenv.subCommands;
-    in
-    pog.pog {
-      name = "hostenv";
-      description = ''Interact with your hosting environments.
+  hostenvCli = pog.pog {
+    name = "hostenv";
+    description = ''Interact with your hosting environments.
 
-  SUBCOMMAND may be one of: ${builtins.concatStringsSep " " subCommands}
+  SUBCOMMAND may be one of: ${builtins.concatStringsSep " " subCommandNames}
   
   Use 'hostenv list' to see a list of sub-commands and their descriptions
       '';
-      version = "0.1.0";
+    version = "0.1.0";
 
-      # Flags you actually use
-      flags = [
-        {
-          name = "env";
-          short = "e";
-          description = "Target environment (defaults to current branch or '${defaultEnvName}')";
-          # tab completion from embedded environments
-          completion = "jq -r 'keys[]' <<< '${envJson}'";
-          argument = "ENV";
-        }
-        { name = "force"; short = "f"; description = "Skip confirmations"; bool = true; }
-      ];
+    flags = [
+      {
+        name = "env";
+        short = "e";
+        description = "Target environment (defaults to current branch or '${defaultEnvName}')";
+        completion = ''"$(command -v hostenv)" environments | jq -r 'keys[]' '';
+        argument = "ENV";
+      }
+      { name = "force"; short = "f"; description = "Skip confirmations"; bool = true; }
+    ];
 
-      arguments = [{ name = "subcommand"; }];
-      argumentCompletion = ''printf '%s\n' \
-        "${builtins.concatStringsSep " " subCommands}"; :'';
+    arguments = [{ name = "subcommand"; }];
+    argumentCompletion = ''"$(command -v hostenv)" __complete-subcommands'';
 
-      runtimeInputs = with pkgs; [ jq openssh rsync boxes git ] ++ builtins.concatLists (builtins.map (v: v.value.runtimeInputs) subCommandList);
+    runtimeInputs = with pkgs; [ jq openssh rsync boxes git ] ++ builtins.concatLists (builtins.map (v: v.value.runtimeInputs) subCommandList);
 
-      bashBible = true;
-      strict = true;
+    bashBible = true;
+    strict = true;
 
-      script = h: with h; ''
-        set -o pipefail
+    script = helpers: with helpers; ''
+      set -o pipefail
 
-        # Derives the env name in this order:
-        # 1) --env, 2) current branch, 3) defaultEnvironment
-        env_name="''${env:-$(
-          git symbolic-ref -q --short HEAD 2>/dev/null || true
-        )}"
-        if [ -z "$env_name" ]; then env_name="${defaultEnvName}"; fi
+      # Derives the env name in this order:
+      # 1) --env, 2) current branch, 3) defaultEnvironment
+      env_name="''${env:-$(
+        git symbolic-ref -q --short HEAD 2>/dev/null || true
+      )}"
+      if ${var.empty "env_name"}; then env_name="${defaultEnvName}"; fi
 
-        # jq helpers over embedded JSON
-        env_or_null() { jq -c --arg e "$1" '.[$e] // null' <<< '${envJson}'; }
-        env_cfg="$(env_or_null "$env_name")"
-        if [ -z "$env_cfg" ] || [ "$env_cfg" == "null" ]; then
-          die "Unknown environment: $env_name" 2
-        fi
+      # jq helpers over embedded JSON
+      env_or_null() { jq -c --arg e "$1" '.[$e] // null' <<< '${envJson}'; }
+      env_cfg="$(env_or_null "$env_name")"
+      if ${var.empty "env_cfg"} || [ "$env_cfg" == "null" ]; then
+        die "Unknown environment: $env_name" 2
+      fi
 
-        user="$(jq -r '.hostenv.userName' <<< "$env_cfg")"
-        host="$(jq -r '.hostenv.hostname' <<< "$env_cfg")"
-        typ="$(jq -r '.type' <<< "$env_cfg")"
-        emoji="$(
-          case "$typ" in
-            production)  echo "🚨" ;;
-            testing)     echo "🧪" ;;
-            development) echo "🛠️" ;;
-            *)           echo "📦" ;;
-          esac
-        )"
-
-        # If the user hasn't already setup a direnv configuration file
-        # make one for them with sensible defaults.
-        cfg="''${XDG_CONFIG_HOME:-$HOME/.config}/direnv/direnv.toml"
-
-        if [ ! -f "$cfg" ]; then
-          mkdir -p "$(dirname "$cfg")"
-          cat >"$cfg" <<'EOF'
-        [global]
-        hide_env_diff = true
-        EOF
-        bold "Note: Created a direnv config file at: '$cfg'"
-        green "You may change the settings there and hostenv will not overwrite them"
-        echo
-        fi
-
-        banner() {
-          echo
-          # echo " $emoji  Hostenv - $env_name ($typ)" | boxes -d whirly
-          cat <<RS | boxes -d whirly
-        $emoji  Working in hostenv environment: "$env_name" ($typ) 
-
-        Commands: ${builtins.concatStringsSep ", " (builtins.map (cmd: cmd.name) scripts ++ [ "hostenv" ])}
-        RS
-          echo
-        }
-
-        sub="''${1:-help}"; shift || true
-
-        case "$sub" in
-
-          ${builtins.concatStringsSep "\n" (builtins.map (cmd: ''
-              ${cmd.name})
-                ${cmd.value.exec h}
-                ;;
-          '') subCommandList)}
-
-          "")
-            help
-            ;;
-
-          *)
-            die "Unknown subcommand: $sub" 2
-            ;;
+      user="$(jq -r '.hostenv.userName' <<< "$env_cfg")"
+      host="$(jq -r '.hostenv.hostname' <<< "$env_cfg")"
+      typ="$(jq -r '.type' <<< "$env_cfg")"
+      emoji="$(
+        case "$typ" in
+          production)  echo "🚨" ;;
+          testing)     echo "🧪" ;;
+          development) echo "🛠️" ;;
+          *)           echo "📦" ;;
         esac
-      '';
-    };
+      )"
+
+      # If the user hasn't already setup a direnv configuration file
+      # make one for them with sensible defaults.
+      cfg="''${XDG_CONFIG_HOME:-$HOME/.config}/direnv/direnv.toml"
+
+      if [ ! -f "$cfg" ]; then
+        mkdir -p "$(dirname "$cfg")"
+        cat >"$cfg" <<'EOF'
+      [global]
+      hide_env_diff = true
+      EOF
+      bold "Note: Created a direnv config file at: '$cfg'"
+      green "You may change the settings there and hostenv will not overwrite them"
+      echo
+      fi
+
+      banner() {
+        echo
+        # echo " $emoji  Hostenv - $env_name ($typ)" | boxes -d whirly
+        cat <<RS | boxes -d whirly
+      $emoji  Working in hostenv environment: "$env_name" ($typ) 
+
+      Commands: ${builtins.concatStringsSep ", " (builtins.map (cmd: cmd.name) scripts ++ [ "hostenv" ])}
+      RS
+        echo
+      }
+
+      sub="''${1:-help}"; shift || true
+
+      case "$sub" in
+
+        ${builtins.concatStringsSep "\n" (builtins.map (cmd: ''
+            ${cmd.name})
+              ${cmd.value.exec helpers}
+              ;;
+        '') subCommandList)}
+
+        "")
+          help
+          ;;
+
+        *)
+          die "Unknown subcommand: $sub" 2
+          ;;
+      esac
+    '';
+  };
 
   hostenvShells = lib.mapAttrs
     (environmentName: environment:
@@ -283,7 +279,7 @@ in
           ${cmd.value.description}
           EOF
           ''}
-        '') (builtins.filter (cmd: ! cmd.value.internal) subCommandList))
+        '') userFacingSubCommands)
         }
       '';
       description = "List available hostenv sub-commands. Then run one like 'hostenv SUBCOMMAND'.";
@@ -342,6 +338,15 @@ in
         jq <<< '${envJson}'
       '';
       description = "Print hostenv environment information as JSON (for all environments).";
+    };
+    __complete-subcommands = {
+      exec = helpers: ''
+          cat <<'EOF'
+        ${builtins.concatStringsSep "\n" subCommandNames}
+        EOF
+      '';
+      internal = true;
+      description = "List internal commands for Bash completion.";
     };
   };
 }
