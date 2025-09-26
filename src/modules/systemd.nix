@@ -180,7 +180,7 @@ in
           fi
 
           # Ensure the config directory exists, if this is a new user there's a good chance it hasn't been created yet.
-          mkdir -p "$XDG_CONFIG_HOME"
+          mkdir -p "$XDG_CONFIG_HOME" || exit 1
 
           systemdStatus=$(${systemctl} --user is-system-running 2>&1 || true)
 
@@ -191,7 +191,7 @@ in
               echo "⚠️ Attempting to reload services anyway... ⚠️"
             fi
 
-            mkdir -p "${config.hostenv.stateDir}/hostenv/current-state"
+            mkdir -p "${config.hostenv.stateDir}/hostenv/current-state" || exit 1
             oldUnitsDir="${config.hostenv.stateDir}/hostenv/current-state/systemd/user"
 
             if [ ! -e "$oldUnitsDir" ]; then
@@ -207,14 +207,14 @@ in
               fi
             fi
 
-            ln -sf "${newUnits}/systemd" "$XDG_CONFIG_HOME"/systemd
+            ln -sf ${newUnits}/systemd "$XDG_CONFIG_HOME"/systemd || exit 1
 
             # This compares the existing units with the ones in the new
             # derivation, with help from the excellent `sd-switch`.
             # https://git.sr.ht/~rycee/sd-switch
             ${ensureSystemd} ${lib.getExe pkgs.sd-switch} --user \
               ''${oldUnitsDir:+--old-units "$oldUnitsDir"} \
-              --new-units "$XDG_CONFIG_HOME"/systemd/user
+              --new-units "$XDG_CONFIG_HOME"/systemd/user || exit 1
 
             # The new units become the old in the next activation.
             if [ -e "$XDG_STATE_HOME"/hostenv/current-state/systemd ]; then
@@ -224,7 +224,7 @@ in
               fi
             fi
 
-            ln -sf "${newUnits}/systemd" "$XDG_STATE_HOME"/hostenv/current-state/systemd
+            ln -sf ${newUnits}/systemd "$XDG_STATE_HOME"/hostenv/current-state/systemd || exit 1
 
             unset oldUnitsDir newUnits
 
