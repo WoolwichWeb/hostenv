@@ -199,16 +199,15 @@ in
             fi
 
             if [ -e "$XDG_CONFIG_HOME"/systemd ]; then
-              if [ -L "$XDG_CONFIG_HOME"/systemd ]; then
-                rm "$XDG_CONFIG_HOME"/systemd
-              else
+              # Error out if the file exists and is not a symlink.
+              if [ ! -L "$XDG_CONFIG_HOME"/systemd ]; then
                 echo "Couldn't unlink old systemd user directory at '$XDG_CONFIG_HOME/systemd'. Please check and delete it manually, then try again."
                 echo "hostenv takes over the user systemd directory, so run 'ls -lah $XDG_CONFIG_HOME/systemd' to see what's in the directory, then 'mv $XDG_CONFIG_HOME/systemd' once you have checked there isn't anything important in that directory."
                 exit 1
               fi
             fi
 
-            ln -s "${newUnits}/systemd" "$XDG_CONFIG_HOME"/systemd
+            ln -sf "${newUnits}/systemd" "$XDG_CONFIG_HOME"/systemd
 
             # This compares the existing units with the ones in the new
             # derivation, with help from the excellent `sd-switch`.
@@ -219,15 +218,13 @@ in
 
             # The new units become the old in the next activation.
             if [ -e "$XDG_STATE_HOME"/hostenv/current-state/systemd ]; then
-              if [ -L "$XDG_STATE_HOME"/hostenv/current-state/systemd ]; then
-                rm "$XDG_STATE_HOME"/hostenv/current-state/systemd
-              else
+              if [ ! -L "$XDG_STATE_HOME"/hostenv/current-state/systemd ]; then
                 echo "Couldn't unlink old systemd user directory at '$XDG_STATE_HOME/hostenv/current-state/systemd'. Please check and delete it manually, then try again."
                 exit 1
               fi
             fi
 
-            ln -s "${newUnits}/systemd" "$XDG_STATE_HOME"/hostenv/current-state/systemd
+            ln -sf "${newUnits}/systemd" "$XDG_STATE_HOME"/hostenv/current-state/systemd
 
             unset oldUnitsDir newUnits
 
