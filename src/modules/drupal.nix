@@ -448,6 +448,9 @@ in
         };
         locations."~ ^/sites/[^/]+/files/.*\.php$" = {
           extraConfig = ''
+            ${lib.optionalString cfg.enableRouteDebugging ''
+            add_header X-Handled "sites-files-php";
+            ''}
             deny all;
           '';
         };
@@ -461,6 +464,9 @@ in
         };
         locations."@rewrite" = {
           extraConfig = ''
+            ${lib.optionalString cfg.enableRouteDebugging ''
+            add_header X-Handled "@rewrite";
+            ''}
             rewrite ^ /index.php;
           '';
         };
