@@ -199,14 +199,20 @@ in
             fi
 
             if [ -e "$XDG_CONFIG_HOME"/systemd ]; then
-              # Error out if the file exists and is not a symlink.
-              if [ ! -L "$XDG_CONFIG_HOME"/systemd ]; then
+              # If the file is a symlink to a directory that exists...
+              if [ -L "$XDG_CONFIG_HOME"/systemd ]; then
+                # ...then delete it.
+                rm "$XDG_CONFIG_HOME"/systemd
+              else
+                # Otherwise the file exists, but is not a symlink.
                 echo "Couldn't unlink old systemd user directory at '$XDG_CONFIG_HOME/systemd'. Please check and delete it manually, then try again."
                 echo "hostenv takes over the user systemd directory, so run 'ls -lah $XDG_CONFIG_HOME/systemd' to see what's in the directory, then 'mv $XDG_CONFIG_HOME/systemd' once you have checked there isn't anything important in that directory."
                 exit 1
               fi
             fi
 
+            # -f covers the case where "XDG_CONFIG_HOME" is a symlink to
+            # a file/directory that doesn't exist.
             ln -sf ${newUnits}/systemd "$XDG_CONFIG_HOME"/systemd || exit 1
 
             # This compares the existing units with the ones in the new
@@ -218,7 +224,9 @@ in
 
             # The new units become the old in the next activation.
             if [ -e "$XDG_STATE_HOME"/hostenv/current-state/systemd ]; then
-              if [ ! -L "$XDG_STATE_HOME"/hostenv/current-state/systemd ]; then
+              if [ -L "$XDG_STATE_HOME"/hostenv/current-state/systemd ]; then
+                rm "$XDG_STATE_HOME"/hostenv/current-state/systemd
+              else
                 echo "Couldn't unlink old systemd user directory at '$XDG_STATE_HOME/hostenv/current-state/systemd'. Please check and delete it manually, then try again."
                 exit 1
               fi
