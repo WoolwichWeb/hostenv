@@ -156,9 +156,24 @@ let
 
     };
 
-  drush = pkgs.writeShellScriptBin "drush" ''
-    ${toString project}/share/php/${cfg.codebase.name}/vendor/bin/drush --root=${project} $@
-  '';
+  drush =
+    let
+      vHosts = config.environments.${config.hostenv.environmentName}.virtualHosts;
+      vHost = vHosts.${config.hostenv.hostname};
+      canonicalVHost =
+        if vHost.globalRedirect != null && vHosts ? ${vHost.globalRedirect}
+        then vHost.globalRedirect
+        else config.hostenv.hostname;
+      protocol =
+        if vHosts.${canonicalVHost}.enableLetsEncrypt
+        then "https://"
+        else "";
+      uri = protocol + canonicalVHost;
+      drushPath = "${toString project}/share/php/${cfg.codebase.name}/vendor/bin/drush";
+    in
+    pkgs.writeShellScriptBin "drush" ''
+      ${drushPath} --root=${project} --uri=${uri} $@
+    '';
 in
 {
   options.services.drupal = {
