@@ -300,7 +300,13 @@ in
       exec = helpers: ''
         currentBranch="$(git symbolic-ref --short HEAD)"
         if ${helpers.notFlag "force"}; then
-          ${helpers.confirm { prompt = "Deploy '$currentBranch'?"; exit_code = 69; }}
+          if [ ! "$currentBranch" = "$env_name" ]; then
+            deploy_msg="Deploy '$currentBranch' to environment '$env_name'?"
+          else
+            deploy_msg="Deploy '$currentBranch'?"
+          fi
+          ${pkgs.gum}/bin/gum confirm --affirmative="Deploy" --negative="Cancel" "$deploy_msg" || exit 67
+          unset deploy_msg
         fi
         ssh "$user"@"$host" 'mkdir -p /home/'"$user"'/code/project'
         rsync --delete \
