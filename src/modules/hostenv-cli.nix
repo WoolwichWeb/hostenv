@@ -335,7 +335,7 @@ in
           tries=0
           while :; do
             tries=$((tries + 1))
-            if out="$(nix build ".#$branch" >/dev/null 2>&1)"; then
+            if out="$(nix build ".#$branch" 2>&1)"; then
               break
             fi
 
@@ -363,7 +363,6 @@ in
                 echo "ERROR: $target not found."
                 exit 1
               fi
-
 
               if [ "$tries" -ge 10 ]; then
                 echo "ERROR: Too many FOD fix attempts (>=10). Bailing."
