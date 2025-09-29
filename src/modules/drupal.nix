@@ -65,7 +65,12 @@ let
   '';
 
   composerPackage = pkgs.stdenvNoCC.mkDerivation {
-    name = cfg.codebase.name + "-scaffold";
+    # Only change this derivation's name if there is a good reason.
+    # It's named this to make it possible to find which git branch needs its
+    # FOD hash updated when there's a mismatch. Otherwise - because
+    # it will happen during a system deployment - Nix doesn't say which
+    # user profile failed to build.
+    name = config.hostenv.safeEnvironmentName + "-scaffold";
     version = cfg.codebase.version;
     dontPatchShebangs = true;
     buildInputs = [ drupalPhpPool.phpPackage.packages.composer ];
