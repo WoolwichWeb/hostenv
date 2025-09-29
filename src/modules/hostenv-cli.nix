@@ -315,16 +315,30 @@ in
             unset deploy_msg
           fi
 
-          ssh "$user"@"$host" 'mkdir -p /home/'"$user"'/code/project'
-          rsync --delete \
-            --exclude-from=../.gitignore --exclude-from=.gitignore \
-            --exclude '.hostenv/result' --exclude '.devenv' \
-            --exclude '*.sql' --exclude '*.sql.gz' \
-            -avz ../ "$user@$host:/home/$user/code/project/"
+          ${spinner {
+            title = "Preparing remote directory for project code...";
+            command = ''
+              --show-error -- ssh "$user"@"$host" 'mkdir -p /home/'"$user"'/code/project'
+            '';
+          }}
+          ${spinner {
+            title = "Deploying project code...";
+            command = ''
+              --show-error -- rsync --delete \
+                --exclude-from=../.gitignore --exclude-from=.gitignore \
+                --exclude '.hostenv/result' --exclude '.devenv' \
+                --exclude '*.sql' --exclude '*.sql.gz' \
+                -avz ../ "$user@$host:/home/$user/code/project/"
+            '';
+          }}
 
           # Remote build (with FOD auto-fix).
-          ssh "$user@$host" bash -s -- "$currentBranch" "$user" <<'REMOTE_SCRIPT' || exit 1
+          ${spinner {
+            title = "Building & activating $currentBranch...";
+            command = ''
+          --show-output --show-error -- ssh -T "$user@$host" bash -s -- "$currentBranch" "$user" <<'REMOTE_SCRIPT'
           set -euo pipefail
+
           branch="$1"
           ruser="$2"
 
@@ -335,11 +349,10 @@ in
           tries=0
           while :; do
             tries=$((tries + 1))
-            if out="$(nix build ".#$branch" 2>&1)"; then
-              break
-            fi
-
+            set +e
+            out="$(nix build ".#$branch" 2>&1)"
             status=$?
+            set -e
             if [ "$status" -eq 0 ]; then
               # No FOD errors, continue the deployment.
               break
@@ -349,41 +362,48 @@ in
             specified_hash="$(printf '%s' "$out" | sed -n 's/.*specified:[[:space:]]*\(sha256-[A-Za-z0-9+\/=]\+\).*/\1/p' | tail -n1)"
             got_hash="$(printf '%s' "$out" | sed -n 's/.*got:[[:space:]]*\(sha256-[A-Za-z0-9+\/=]\+\).*/\1/p' | tail -n1)"
 
-            if ${var.notEmpty "got_hash"}; then
+            if ${var.notEmpty "specified_hash"} && ${var.notEmpty "got_hash"}; then
               target="./hostenv.nix"
-              if ${file.exists "$target"}; then
-                if sed -Ei 's|(^[^\n]+")'"$specified_hash"'[^"]+(";)|\1'"$got_hash"'\2|' "$target"; then
+              if ${file.exists "target"}; then
+                if sed -i "s|\"$specified_hash\"|\"$got_hash\"|" "$target"; then
                   echo "Updated $specified_hash -> $got_hash in $target"
                 else
                   echo "Could not update $specified_hash in $target." >&2
-                  printf '%s\n' "$out"
+                  printf '%s\n' "$out" >&2
                   exit 1
                 fi
               else
-                echo "ERROR: $target not found."
+                echo "ERROR: $target not found." >&2
                 exit 1
               fi
 
               if [ "$tries" -ge 10 ]; then
-                echo "ERROR: Too many FOD fix attempts (>=10). Bailing."
+                echo "ERROR: Too many FOD fix attempts (>=10). Bailing." >&2
                 exit 1
               fi
               continue
             fi
 
-            # Not a fixable FOD mismatch; surface the original error
-            printf '%s\n' "$out"
+            # Not a fixable FOD mismatch; print the original error.
+            printf '%s\n' "$out" >&2
             exit 1
           done
 
           # Final build & activate
-          nix build ".#$branch"
+          nix --quiet --quiet build ".#$branch"
           result/bin/activate
           REMOTE_SCRIPT
+          '';
+          }}
 
-          rsync -avz \
-            "$user@$host:/home/$user/code/project/.hostenv/hostenv.nix" \
-            hostenv.nix
+          ${spinner {
+            title = "Updating local hostenv.nix...";
+            command = ''
+              --show-error -- rsync -az \
+                "$user@$host:/home/$user/code/project/.hostenv/hostenv.nix" \
+                hostenv.nix
+            '';
+          }}
 
           green "✅ Deploy complete"
         '';
