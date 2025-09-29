@@ -143,7 +143,6 @@ let
 
       banner() {
         echo
-        # echo " $emoji  Hostenv - $env_name ($typ)" | boxes -d whirly
         cat <<RS | boxes -d whirly
       $emoji  Working in hostenv environment: "$env_name" ($typ) 
 
@@ -257,18 +256,21 @@ in
   config.hostenv.devShells = lib.mkDefault hostenvShells;
   config.hostenv.apps = lib.mkDefault hostenvApps;
   config.hostenv.subCommands = {
+
     help = {
       exec = helpers: ''
         help
       '';
       description = "Print help for the hostenv command.";
     };
+
     banner = {
       exec = helpers: ''
         banner
       '';
       internal = true;
     };
+
     list = {
       exec = helpers: ''
         ${builtins.concatStringsSep "\n" (builtins.map (cmd: ''
@@ -284,67 +286,127 @@ in
       '';
       description = "List available hostenv sub-commands. Then run one like 'hostenv SUBCOMMAND'.";
     };
+
     ssh = {
       exec = helpers: ''
         exec ssh "$user"@"$host" "$@"
       '';
       description = "Connect to the remote hostenv environment over SSH.";
     };
+
     app-log = {
       exec = helpers: ''
         exec ssh -t "$user"@"$host" 'resize; journalctl --user -xe '"$*"
       '';
       description = "View remote application logs.";
     };
-    deploy = {
-      exec = helpers: ''
-        currentBranch="$(git symbolic-ref --short HEAD)"
-        if ${helpers.notFlag "force"}; then
-          if [ ! "$currentBranch" = "$env_name" ]; then
-            deploy_msg="Deploy '$currentBranch' to environment '$env_name'?"
-          else
-            deploy_msg="Deploy '$currentBranch'?"
-          fi
-          ${pkgs.gum}/bin/gum confirm --affirmative="Deploy" --negative="Cancel" "$deploy_msg" || exit 67
-          unset deploy_msg
-        fi
-        ssh "$user"@"$host" 'mkdir -p /home/'"$user"'/code/project'
-        rsync --delete \
-          --exclude-from=../.gitignore \
-          --exclude '.hostenv/result' --exclude '.devenv' \
-          --exclude '*.sql' --exclude '*.sql.gz' \
-          -avz ../ "$user@$host:/home/$user/code/project/"
 
-        ${helpers.spinner {
-          title   = "Building & activating $currentBranch...";
-          command = ''
-            ssh "$user"@"$host" bash -lc '
-              set -euo pipefail
-              cd /home/'"$user"'/code/project/.hostenv
-              git reset --hard
-              git clean -fdx
-              nix build .#'"$currentBranch"' && result/bin/activate
-            '
-          '';
-        }}
-        green "✅ Deploy complete"
-      '';
+    deploy = {
+      exec = helpers: with helpers;
+        ''
+          currentBranch="$(git symbolic-ref --short HEAD)"
+          if ${helpers.notFlag "force"}; then
+            if [ ! "$currentBranch" = "$env_name" ]; then
+              deploy_msg="Deploy '$currentBranch' to environment '$env_name'?"
+            else
+              deploy_msg="Deploy '$currentBranch'?"
+            fi
+            ${pkgs.gum}/bin/gum confirm --affirmative="Deploy" --negative="Cancel" "$deploy_msg" || exit 67
+            unset deploy_msg
+          fi
+
+          ssh "$user"@"$host" 'mkdir -p /home/'"$user"'/code/project'
+          rsync --delete \
+            --exclude-from=../.gitignore --exclude-from=.gitignore \
+            --exclude '.hostenv/result' --exclude '.devenv' \
+            --exclude '*.sql' --exclude '*.sql.gz' \
+            -avz ../ "$user@$host:/home/$user/code/project/"
+
+          # Remote build (with FOD auto-fix).
+          ssh "$user@$host" bash -s -- "$currentBranch" "$user" <<'REMOTE_SCRIPT' || exit 1
+          set -euo pipefail
+          branch="$1"
+          ruser="$2"
+
+          cd "/home/$ruser/code/project/.hostenv"
+          git reset --hard
+          git clean -fdx
+
+          tries=0
+          while :; do
+            tries=$((tries + 1))
+            if out="$(nix build ".#$branch" >/dev/null 2>&1)"; then
+              break
+            fi
+
+            status=$?
+            if [ "$status" -eq 0 ]; then
+              # No FOD errors, continue the deployment.
+              break
+            fi
+
+            # Extract FOD error message from nix build output.
+            specified_hash="$(printf '%s' "$out" | sed -n 's/.*specified:[[:space:]]*\(sha256-[A-Za-z0-9+\/=]\+\).*/\1/p' | tail -n1)"
+            got_hash="$(printf '%s' "$out" | sed -n 's/.*got:[[:space:]]*\(sha256-[A-Za-z0-9+\/=]\+\).*/\1/p' | tail -n1)"
+
+            if ${var.notEmpty "got_hash"}; then
+              target="./hostenv.nix"
+              if ${file.exists "$target"}; then
+                if sed -Ei 's|(^[^\n]+")'"$specified_hash"'[^"]+(";)|\1'"$got_hash"'\2|' "$target"; then
+                  echo "Updated $specified_hash -> $got_hash in $target"
+                else
+                  echo "Could not update $specified_hash in $target." >&2
+                  printf '%s\n' "$out"
+                  exit 1
+                fi
+              else
+                echo "ERROR: $target not found."
+                exit 1
+              fi
+
+
+              if [ "$tries" -ge 10 ]; then
+                echo "ERROR: Too many FOD fix attempts (>=10). Bailing."
+                exit 1
+              fi
+              continue
+            fi
+
+            # Not a fixable FOD mismatch; surface the original error
+            printf '%s\n' "$out"
+            exit 1
+          done
+
+          # Final build & activate
+          nix build ".#$branch"
+          result/bin/activate
+          REMOTE_SCRIPT
+
+          rsync -avz \
+            "$user@$host:/home/$user/code/project/.hostenv/hostenv.nix" \
+            hostenv.nix
+
+          green "✅ Deploy complete"
+        '';
       description = ''
         Deploy your local codebase to the remote hostenv environment.
         Caution: Another developer could clobber your deployment if this is not used with care.'';
     };
+
     environment = {
       exec = helpers: ''
         jq <<< "$env_cfg"
       '';
       description = "Print hostenv environment information as JSON (defaults to your current environment).";
     };
+
     environments = {
       exec = helpers: ''
         jq <<< '${envJson}'
       '';
       description = "Print hostenv environment information as JSON (for all environments).";
     };
+
     __complete-subcommands = {
       exec = helpers: ''
           cat <<'EOF'
