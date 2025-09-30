@@ -330,7 +330,7 @@ in
               --show-error -- rsync --delete \
                 --exclude-from=../.gitignore --exclude-from=.gitignore \
                 --exclude '.hostenv/result' --exclude '.devenv' \
-                --exclude '*.sql' --exclude '*.sql.gz' \
+                --exclude '*.sql' --exclude '*.sql.gz' --exclude '../web/sites/default/files' \
                 -avz ../ "$user@$host:/home/$user/code/project/"
             '';
           }}
