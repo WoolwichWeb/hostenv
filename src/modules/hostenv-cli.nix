@@ -307,9 +307,9 @@ in
           currentBranch="$(git symbolic-ref --short HEAD)"
           if ${helpers.notFlag "force"}; then
             if [ ! "$currentBranch" = "$env_name" ]; then
-              deploy_msg="Deploy '$currentBranch' to environment '$env_name'?"
+              deploy_msg="$emoji  Deploy '$currentBranch' to environment '$env_name'?"
             else
-              deploy_msg="Deploy '$currentBranch'?"
+              deploy_msg="$emoji  Deploy '$currentBranch'?"
             fi
             ${pkgs.gum}/bin/gum confirm --affirmative="Deploy" --negative="Cancel" "$deploy_msg" || exit 67
             unset deploy_msg
@@ -321,6 +321,7 @@ in
               --show-error -- ssh "$user"@"$host" 'mkdir -p /home/'"$user"'/code/project'
             '';
           }}
+
           ${spinner {
             title = "Deploying project code...";
             command = ''
