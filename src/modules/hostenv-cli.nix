@@ -396,7 +396,7 @@ in
           nix --quiet --quiet build ".#$branch"
           result/bin/activate
           nix profile remove .hostenv >/dev/null 2>&1
-          nix profile install .#$branch
+          nix profile install .#$branch --priority 4
           REMOTE_SCRIPT
           '';
           }}
