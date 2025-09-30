@@ -11,11 +11,18 @@ let
 
   filterDefaultExtensions = cfg_: ext: builtins.length (builtins.filter (inner: inner == ext.extensionName) cfg_.disableExtensions) == 0;
 
-  configurePackage = package: cfg_:
-    package.buildEnv {
-      extensions = { all, enabled }: with all; (builtins.filter (filterDefaultExtensions cfg_) (enabled ++ lib.attrsets.attrValues (lib.attrsets.getAttrs cfg_.extensions package.extensions)));
-      extraConfig = cfg_.phpOptions or "";
-    };
+  mkPackageWithExtensionsOnly = package: cfg_: package.buildEnv {
+    extensions = { all, enabled }: builtins.filter (filterDefaultExtensions cfg_)
+      (enabled ++ lib.attrValues (lib.getAttrs cfg_.extensions package.extensions));
+    extraConfig = "";
+  };
+
+  mkPackageForCLI = package: cfg_: package.buildEnv {
+    extensions = { all, enabled }: builtins.filter (filterDefaultExtensions cfg_)
+      (enabled ++ lib.attrValues (lib.getAttrs cfg_.extensions package.extensions));
+    extraConfig = cfg_.phpOptions or "";
+  };
+
 
   toStr = value:
     if true == value then "yes"
@@ -59,7 +66,7 @@ let
 
   poolOpts = { name, ... }:
     let
-      poolOpts = cfg.pools.${name};
+      poolCfg = cfg.pools.${name};
     in
     {
       options = {
@@ -90,13 +97,15 @@ let
           description = ''
             Allows you to [override the default used package](https://nixos.org/manual/nixpkgs/stable/#ssec-php-user-guide)
             to adjust the settings or add more extensions.
+
+            If you pass a package with `extraConfig`, those settings will still
+            appear in the pool's base `php.ini` (which we merge), but the
+            recommended approach is to keep packages extension-only and set
+            the pool INI in `phpOptions`.
           '';
           example = lib.literalExpression ''
             pkgs.php.buildEnv {
               extensions = { all, enabled }: with all; enabled ++ [ apcu ];
-              extraConfig = '''
-                memory_limit=1G
-              ''';
             };
           '';
         };
@@ -166,12 +175,27 @@ let
       };
 
       config = {
-        phpPackage = lib.mkIf (poolOpts.phpVersion != "") (lib.mkForce (configurePackage (customPhpPackage poolOpts) poolOpts));
+        phpPackage = lib.mkMerge [
+          # Default: use the top-level base package, and layer pool extensions.
+          (lib.mkDefault (
+            mkPackageWithExtensionsOnly cfg.phpPackage poolCfg
+          ))
+
+          # If the pool sets a phpVersion, use `customPhpPackage` to grab the
+          # desired version.
+          (lib.mkIf (poolCfg.phpVersion != "") (lib.mkForce (
+            let
+              base = customPhpPackage poolCfg;
+            in
+            mkPackageWithExtensionsOnly base poolCfg
+          )))
+        ];
+
         socket = "${config.hostenv.runtimeDir}/${name}.sock";
         phpOptions = lib.mkBefore cfg.phpOptions;
 
-        settings = lib.mapAttrs (name: lib.mkDefault) {
-          listen = poolOpts.socket;
+        settings = lib.mapAttrs (_n: lib.mkDefault) {
+          listen = poolCfg.socket;
         };
       };
     };
@@ -219,7 +243,7 @@ in
 
       phpPackage = lib.mkOption {
         type = lib.types.package;
-        default = configurePackage pkgs.php cfg;
+        default = pkgs.php;
         defaultText = lib.literalExpression "pkgs.php";
       };
 
@@ -257,6 +281,41 @@ in
           service is disabled.
         '';
       };
+
+      cli = {
+        phpVersion = lib.mkOption {
+          type = lib.types.str;
+          default = cfg.phpVersion;
+          description = "PHP version for the CLI php on PATH.";
+        };
+
+        extensions = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = cfg.extensions;
+          description = "Extensions enabled in CLI php.";
+        };
+
+        disableExtensions = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = cfg.disableExtensions;
+          description = "Extensions disabled in CLI php.";
+        };
+
+        phpOptions = lib.mkOption {
+          type = lib.types.lines;
+          default = ''
+            memory_limit = -1
+          '';
+          description = "Additional php.ini for the CLI (not used by FPM pools).";
+        };
+
+        phpPackage = lib.mkOption {
+          type = lib.types.package;
+          default = cfg.phpPackage;
+          description = "The package that provides the CLI /bin/php put onto PATH.";
+        };
+      };
+
     };
   };
 
@@ -265,7 +324,19 @@ in
     # @todo: add a warning if the user specifies a phpPackage and a phpVersion.
     services.phpfpm.phpPackage = lib.mkIf
       (cfg.phpVersion != "")
-      (lib.mkForce (configurePackage (customPhpPackage cfg) cfg));
+      (lib.mkForce (customPhpPackage cfg));
+
+    services.phpfpm.cli.phpPackage = lib.mkMerge [
+      (lib.mkDefault (
+        mkPackageForCLI cfg.phpPackage cfg.cli
+      ))
+      (lib.mkIf (cfg.cli.phpVersion != "") (lib.mkForce (
+        let
+          pkg = customPhpPackage cfg.cli;
+        in
+        mkPackageForCLI pkg cfg.cli
+      )))
+    ];
 
     services.phpfpm.settings = {
       error_log = lib.mkDefault "syslog";
@@ -339,12 +410,15 @@ in
           mkdir -p $out/etc/php-fpm.d
           ln -s ${poolOpts.phpPackage} $out/etc/php-fpm.d/${pool}-php
         '';
+        mkPoolPhpCli = pool: poolOpts: pkgs.writeShellScriptBin "php@${pool}" ''
+          exec ${poolOpts.phpPackage}/bin/php -c ${phpIni poolOpts} "$@"
+        '';
         pools = lib.flatten (lib.mapAttrsToList
           (pool: poolOpts:
-            [ (mkPoolCnf pool poolOpts) (mkPoolIni pool poolOpts) (mkPoolPhp pool poolOpts) ]
+            [ (mkPoolCnf pool poolOpts) (mkPoolIni pool poolOpts) (mkPoolPhp pool poolOpts) (mkPoolPhpCli pool poolOpts) ]
           )
           cfg.pools);
       in
-      pools ++ [ cfg.phpPackage ];
+      pools ++ [ cfg.cli.phpPackage ];
   };
 }
