@@ -308,10 +308,12 @@ in
           if ${helpers.notFlag "force"}; then
             if [ ! "$currentBranch" = "$env_name" ]; then
               deploy_msg="$emoji  Deploy '$currentBranch' to environment '$env_name'?"
+              default="--default=false"
             else
               deploy_msg="$emoji  Deploy '$currentBranch'?"
+              default=""
             fi
-            ${pkgs.gum}/bin/gum confirm --affirmative="Deploy" --negative="Cancel" "$deploy_msg" || exit 67
+            ${pkgs.gum}/bin/gum confirm $default --affirmative="Deploy" --negative="Cancel" "$deploy_msg" || exit 67
             unset deploy_msg
           fi
 
