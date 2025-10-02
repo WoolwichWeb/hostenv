@@ -9,20 +9,17 @@ let
 
   phps = inputs.phps or { };
 
-  filterDefaultExtensions = cfg_: ext: builtins.length (builtins.filter (inner: inner == ext.extensionName) cfg_.disableExtensions) == 0;
-
-  mkPackageWithExtensionsOnly = package: cfg_: package.buildEnv {
-    extensions = { all, enabled }: builtins.filter (filterDefaultExtensions cfg_)
-      (enabled ++ lib.attrValues (lib.getAttrs cfg_.extensions package.extensions));
-    extraConfig = "";
+  mkPackageWithConfig = package: cfg_: package.buildEnv {
+    extensions = { all, enabled }:
+      let
+        selected = lib.attrValues (lib.getAttrs cfg_.extensions all);
+        isWanted = drv: !lib.elem drv.extensionName cfg_.disableExtensions;
+      in
+      lib.unique (builtins.filter isWanted (enabled ++ selected));
+    extraConfig = cfg_.phpOptions;
   };
 
-  mkPackageForCLI = package: cfg_: package.buildEnv {
-    extensions = { all, enabled }: builtins.filter (filterDefaultExtensions cfg_)
-      (enabled ++ lib.attrValues (lib.getAttrs cfg_.extensions package.extensions));
-    extraConfig = cfg_.phpOptions or "";
-  };
-
+  mkPackageWithExtensionsOnly = package: cfg_: mkPackageWithConfig package (cfg_ // { extraConfig = ""; });
 
   toStr = value:
     if true == value then "yes"
@@ -110,6 +107,15 @@ let
           '';
         };
 
+        effectivePhpPackage = lib.mkOption {
+          type = lib.types.package;
+          readOnly = true;
+          internal = true;
+          description = ''
+            Computed pool PHP with extensions layered in.
+          '';
+        };
+
         phpOptions = lib.mkOption {
           type = lib.types.lines;
           description = ''
@@ -175,7 +181,7 @@ let
       };
 
       config = {
-        phpPackage = lib.mkMerge [
+        effectivePhpPackage = lib.mkMerge [
           # Default: use the top-level base package, and layer pool extensions.
           (lib.mkDefault (
             mkPackageWithExtensionsOnly cfg.phpPackage poolCfg
@@ -328,13 +334,13 @@ in
 
     services.phpfpm.cli.phpPackage = lib.mkMerge [
       (lib.mkDefault (
-        mkPackageForCLI cfg.phpPackage cfg.cli
+        mkPackageWithConfig cfg.phpPackage cfg.cli
       ))
       (lib.mkIf (cfg.cli.phpVersion != "") (lib.mkForce (
         let
           pkg = customPhpPackage cfg.cli;
         in
-        mkPackageForCLI pkg cfg.cli
+        mkPackageWithConfig pkg cfg.cli
       )))
     ];
 
@@ -363,6 +369,7 @@ in
         max_execution_time = 300
         apc.enabled = 1
         apc.shm_size = 512M
+        ; wibble
       ''
     );
 
@@ -390,7 +397,7 @@ in
             {
               Slice = "app-phpfpm.slice";
               Type = "notify";
-              ExecStart = "${poolOpts.phpPackage}/bin/php-fpm -y ${cfgFile} -c ${iniFile}";
+              ExecStart = "${poolOpts.effectivePhpPackage}/bin/php-fpm -y ${cfgFile} -c ${iniFile}";
               ExecReload = "${pkgs.coreutils}/bin/kill -USR2 $MAINPID";
               Restart = "always";
             };
@@ -410,10 +417,10 @@ in
         '';
         mkPoolPhp = pool: poolOpts: pkgs.runCommand "${pool}-php" { } ''
           mkdir -p $out/etc/php-fpm.d
-          ln -s ${poolOpts.phpPackage} $out/etc/php-fpm.d/${pool}-php
+          ln -s ${poolOpts.effectivePhpPackage} $out/etc/php-fpm.d/${pool}-php
         '';
         mkPoolPhpCli = pool: poolOpts: pkgs.writeShellScriptBin "php@${pool}" ''
-          exec ${poolOpts.phpPackage}/bin/php -c ${phpIni poolOpts} "$@"
+          exec ${poolOpts.effectivePhpPackage}/bin/php -c ${phpIni poolOpts} "$@"
         '';
         pools = lib.flatten (lib.mapAttrsToList
           (pool: poolOpts:
