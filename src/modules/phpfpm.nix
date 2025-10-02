@@ -361,6 +361,8 @@ in
         syslog.facility = user
         memory_limit = 1024M
         max_execution_time = 300
+        apc.enabled = 1
+        apc.shm_size = 512M
       ''
     );
 
