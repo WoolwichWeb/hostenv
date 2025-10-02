@@ -525,9 +525,6 @@ in
     };
 
     services.phpfpm.phpPackage = lib.mkDefault drupalPhpPool.phpPackage;
-    services.phpfpm.phpOptions = lib.mkDefault ''
-      memory_limit = -1
-    '';
     services.phpfpm.extensions = lib.mkDefault cfg.phpExtensions;
     services.phpfpm.disableExtensions = lib.mkDefault cfg.phpDisableExtensions;
 
