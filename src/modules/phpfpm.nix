@@ -116,6 +116,15 @@ let
           '';
         };
 
+        effectivePhpCliPackage = lib.mkOption {
+          type = lib.types.package;
+          readOnly = true;
+          internal = true;
+          description = ''
+            Computed pool PHP with extensions and CLI configuration layered in.
+          '';
+        };
+
         phpOptions = lib.mkOption {
           type = lib.types.lines;
           description = ''
@@ -181,10 +190,12 @@ let
       };
 
       config = {
+        # The pool PHP package with only extensions layered in.
+        # PHP options are applied by the systemd unit.
         effectivePhpPackage = lib.mkMerge [
-          # Default: use the top-level base package, and layer pool extensions.
+          # Default: use the base package.
           (lib.mkDefault (
-            mkPackageWithExtensionsOnly cfg.phpPackage poolCfg
+            mkPackageWithExtensionsOnly poolCfg.phpPackage poolCfg
           ))
 
           # If the pool sets a phpVersion, use `customPhpPackage` to grab the
@@ -196,6 +207,22 @@ let
             mkPackageWithExtensionsOnly base poolCfg
           )))
         ];
+
+        # The pool PHP package with PHP options from global CLI.
+        effectivePhpCliPackage = lib.mkMerge [
+          (lib.mkIf (poolCfg.phpVersion != "") (lib.mkForce (
+            mkPackageWithConfig poolCfg.phpPackage cfg.cli
+          )))
+
+          (lib.mkIf (poolCfg.phpVersion == "") (lib.mkForce (
+            let
+              base = customPhpPackage poolCfg;
+            in
+            mkPackageWithConfig base cfg.cli
+          )))
+        ];
+
+        # effectivePhpCliPackage = mkPhpWith mkPackageWithConfig cfg.cli;
 
         socket = "${config.hostenv.runtimeDir}/${name}.sock";
         phpOptions = lib.mkBefore cfg.phpOptions;
@@ -419,7 +446,7 @@ in
           ln -s ${poolOpts.effectivePhpPackage} $out/etc/php-fpm.d/${pool}-php
         '';
         mkPoolPhpCli = pool: poolOpts: pkgs.writeShellScriptBin "php@${pool}" ''
-          exec ${poolOpts.effectivePhpPackage}/bin/php -c ${phpIni poolOpts} "$@"
+          exec ${poolOpts.effectivePhpCliPackage}/bin/php "$@"
         '';
         pools = lib.flatten (lib.mapAttrsToList
           (pool: poolOpts:

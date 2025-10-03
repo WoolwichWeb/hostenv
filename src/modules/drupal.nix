@@ -64,46 +64,44 @@ let
     ];
   '';
 
-  composerPackage =
-    let phpPkg = config.services.phpfpm.cli.phpPackage;
-    in pkgs.stdenvNoCC.mkDerivation {
-      # Only change this derivation's name if there is a good reason.
-      # It's named this to make it possible to find which git branch needs its
-      # FOD hash updated when there's a mismatch. Otherwise - because
-      # it will happen during a system deployment - Nix doesn't say which
-      # user profile failed to build.
-      name = config.hostenv.safeEnvironmentName + "-scaffold";
+  composerPackage = pkgs.stdenvNoCC.mkDerivation {
+    # Only change this derivation's name if there is a good reason.
+    # It's named this to make it possible to find which git branch needs its
+    # FOD hash updated when there's a mismatch. Otherwise - because
+    # it will happen during a system deployment - Nix doesn't say which
+    # user profile failed to build.
+    name = config.hostenv.safeEnvironmentName + "-scaffold";
+    version = cfg.codebase.version;
+    dontPatchShebangs = true;
+    buildInputs = [ drupalPhpPool.effectivePhpCliPackage.packages.composer ];
+
+    src = drupalPhpPool.effectivePhpCliPackage.buildComposerProject2 (finalAttrs: {
+      pname = cfg.codebase.name;
       version = cfg.codebase.version;
-      dontPatchShebangs = true;
-      buildInputs = [ phpPkg.packages.composer ];
+      src = lib.cleanSourceWith {
+        src = config.hostenv.root;
+        filter = path: type: baseNameOf path == "composer.json"
+          || baseNameOf path == "composer.lock";
+      };
+      composerLock = config.hostenv.root + /composer.lock;
+      vendorHash = cfg.composer.dependencyHash;
+      composerNoPlugins = !cfg.composer.enablePlugins;
+      composerNoScripts = !cfg.composer.enableScripts;
+      composerNoDev = !cfg.composer.enableDev;
+    });
 
-      src = phpPkg.buildComposerProject2 (finalAttrs: {
-        pname = cfg.codebase.name;
-        version = cfg.codebase.version;
-        src = lib.cleanSourceWith {
-          src = config.hostenv.root;
-          filter = path: type: baseNameOf path == "composer.json"
-            || baseNameOf path == "composer.lock";
-        };
-        composerLock = config.hostenv.root + /composer.lock;
-        vendorHash = cfg.composer.dependencyHash;
-        composerNoPlugins = !cfg.composer.enablePlugins;
-        composerNoScripts = !cfg.composer.enableScripts;
-        composerNoDev = !cfg.composer.enableDev;
-      });
+    buildPhase = ''
+      pushd share/php/${cfg.codebase.name}
+      # Scaffold Drupal files, like 'web/{index.php,autoload.php}' etc.
+      composer drupal:scaffold
+      popd
+    '';
 
-      buildPhase = ''
-        pushd share/php/${cfg.codebase.name}
-        # Scaffold Drupal files, like 'web/{index.php,autoload.php}' etc.
-        composer drupal:scaffold
-        popd
-      '';
-
-      installPhase = ''
-        mkdir -p $out
-        cp -r . $out/
-      '';
-    };
+    installPhase = ''
+      mkdir -p $out
+      cp -r . $out/
+    '';
+  };
 
   project = pkgs.stdenvNoCC.mkDerivation
     {
@@ -675,7 +673,7 @@ in
       let
         composer = pkgs.buildEnv {
           name = "composer";
-          paths = [ drupalPhpPool.phpPackage.packages.composer ];
+          paths = [ drupalPhpPool.effectivePhpCliPackage.packages.composer ];
           pathsToLink = [ "/bin" ];
         };
       in
