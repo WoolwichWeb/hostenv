@@ -177,7 +177,7 @@ let
       drushPath = "${toString project}/share/php/${cfg.codebase.name}/vendor/bin/drush";
     in
     pkgs.writeShellScriptBin "drush" ''
-      exec -a ${drushPath} --root=${project} --uri=${uri} "$@"
+      exec -a drush ${drushPath} --root=${project} --uri=${uri} "$@"
     '';
 in
 {
