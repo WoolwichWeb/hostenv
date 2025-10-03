@@ -109,9 +109,21 @@ in
       activateScript = pkgs.writeShellScriptBin "activate" config.activate;
     in
     {
-      activate = lib.mkBefore ''
-        ## Top level activation script.
-      '';
+      activate = lib.mkMerge [
+        (lib.mkBefore ''
+          ## Top level activation script.
+        '')
+        # Remove hostenv profile from user account. This is safe since either:
+        # 1) the user is running 'hostenv deploy' and that will re-add the
+        # profile anyway, or
+        # 2) the profile is being deployed by serokell/deploy-rs and the
+        # .hostenv profile needs to be removed to make way for
+        # users.users.<name>.packages (.hostenv profile has higher
+        # priority than entries in users.users.<name>.packages).
+        (lib.mkAfter ''
+          nix profile remove .hostenv >/dev/null 2>&1
+        '')
+      ];
 
       activatePackage = pkgs.buildEnv {
         name = "hostenv-profile";
