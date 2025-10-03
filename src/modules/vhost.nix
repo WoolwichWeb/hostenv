@@ -250,7 +250,7 @@ concatStringsSep
         ${mkLocations vhost.locations}
 
         ${vhost.extraConfig}
-        ${optionalString enableRouteDebugging "add_header X-Handled $hostenv_handled always"}
+        ${optionalString enableRouteDebugging "add_header X-Handled $hostenv_handled always;"}
       }
     ''
     )
