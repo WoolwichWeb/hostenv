@@ -229,7 +229,7 @@ in
     enableRouteDebugging = (lib.mkEnableOption "route debug information in HTTP headers") //
       {
         description = ''
-          This will help when determining if a route is being served by PHP or just nginx.
+          Emit X-Handled tracing headers to show which Nginx location handled the request; enabled by default outside production.
         '';
         default = env.type != "production";
       };
@@ -425,11 +425,8 @@ in
         root = "${project}/share/php/${cfg.codebase.name}/web";
 
         # Set up nginx for Drupal.
-        locations."~ '\.php$|^/update.php'" = {
+        locations."~ \.php$|^/update.php" = {
           extraConfig = ''
-            ${lib.optionalString cfg.enableRouteDebugging ''
-            add_header X-Handled "php";
-            ''}
             fastcgi_pass unix:${config.hostenv.runtimeDir}/${cfg.codebase.name}.sock;
             fastcgi_index index.php;
  
@@ -468,34 +465,22 @@ in
         };
         locations."~ ^/sites/[^/]+/files/.*\.php$" = {
           extraConfig = ''
-            ${lib.optionalString cfg.enableRouteDebugging ''
-            add_header X-Handled "sites-files-php";
-            ''}
             deny all;
           '';
         };
         locations."/" = {
           extraConfig = ''
-            ${lib.optionalString cfg.enableRouteDebugging ''
-            add_header X-Handled "slash";
-            ''}
             try_files $uri /index.php?$query_string;
           '';
         };
         locations."@rewrite" = {
           extraConfig = ''
-            ${lib.optionalString cfg.enableRouteDebugging ''
-            add_header X-Handled "@rewrite";
-            ''}
             rewrite ^ /index.php;
           '';
         };
         locations."~ /vendor/.*\.php$" = {
           return = 404;
           extraConfig = ''
-            ${lib.optionalString cfg.enableRouteDebugging ''
-            add_header X-Handled "vendor";
-            ''}
             deny all;
           '';
         };

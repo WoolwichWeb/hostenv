@@ -1,6 +1,6 @@
 # Liberally cribbed from:
 # https://github.com/NixOS/nixpkgs/blob/nixos-24.11/nixos/modules/services/web-servers/nginx/default.nix#L298
-{ lib, virtualHosts }:
+{ lib, virtualHosts, enableRouteDebugging }:
 
 with lib;
 
@@ -65,6 +65,9 @@ let
   mkLocations = locations: concatStringsSep "\n" (map
     (config: ''
       location ${config.location} {
+        ${optionalString enableRouteDebugging
+        ''set $hostenv_handled "${sanitizeForHeader config.location}";''
+        }
         ${optionalString (config.proxyPass != null && !cfg.proxyResolveWhileRunning)
           "proxy_pass ${config.proxyPass};"
         }
@@ -92,6 +95,19 @@ let
       }
     '')
     (sortProperties (mapAttrsToList (k: v: v // { location = k; }) locations)));
+
+  sanitizeForHeader = s:
+    # allow [A-Za-z0-9._~:/@+-] and '/' and '%'; everything else -> '_'
+    lib.concatMapStrings
+      (c:
+        let
+          ok =
+            (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9")
+            || lib.elem c [ "_" "." "-" "/" "@" "+" ":" "~" "%" ];
+        in
+        if ok then c else "_"
+      )
+      (lib.stringToCharacters s);
 in
 concatStringsSep
   "\n"
@@ -234,6 +250,7 @@ concatStringsSep
         ${mkLocations vhost.locations}
 
         ${vhost.extraConfig}
+        ${optionalString enableRouteDebugging "add_header X-Handled $hostenv_handled always"}
       }
     ''
     )

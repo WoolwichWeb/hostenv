@@ -1,10 +1,11 @@
 { lib, config, pkgs, ... }:
 let
   cfg = config.services.nginx;
+  env = config.environments.${config.hostenv.environmentName};
   # @todo: this includes some unsupported options, such as acme certificates
   # for Let's Encrypt; maybe find a way to override or fork this module.
   vhostOptions = (pkgs.path + "/nixos/modules/services/web-servers/nginx/vhost-options.nix");
-  vhostValues = pkgs.callPackage ./vhost.nix { inherit (cfg) virtualHosts; };
+  vhostValues = pkgs.callPackage ./vhost.nix { inherit (cfg) virtualHosts enableRouteDebugging; };
 
   configFile =
     (
@@ -218,6 +219,14 @@ in
         at the appropriate location.
       '';
     };
+
+    enableRouteDebugging = (lib.mkEnableOption "route debug information in HTTP headers") //
+      {
+        description = ''
+          Emit X-Handled tracing headers to show which Nginx location handled the request; enabled by default outside production.
+        '';
+        default = env.type != "production";
+      };
 
     validateConfig = lib.mkEnableOption "validation of the nginx config." // { default = true; };
   };
