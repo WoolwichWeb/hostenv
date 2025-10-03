@@ -350,7 +350,7 @@ in
     };
 
     services.phpfpm.phpOptions = lib.mkDefault (
-      (if env.type == "production"
+      (if env.type == "production" || env.type == "testing"
       then ''
         error_reporting = E_ALL & ~E_DEPRECATED
         display_errors = Off
@@ -368,8 +368,7 @@ in
         memory_limit = 1024M
         max_execution_time = 300
         apc.enabled = 1
-        apc.shm_size = 512M
-        ; wibble
+        apc.shm_size = 256M
       ''
     );
 
