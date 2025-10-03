@@ -425,7 +425,7 @@ in
         root = "${project}/share/php/${cfg.codebase.name}/web";
 
         # Set up nginx for Drupal.
-        locations."~ \.php$|^/update.php" = {
+        locations."~ \\.php$|^/update.php" = {
           extraConfig = ''
             fastcgi_pass unix:${config.hostenv.runtimeDir}/${cfg.codebase.name}.sock;
             fastcgi_index index.php;
@@ -457,13 +457,13 @@ in
             access_log off;
           '';
         };
-        locations."~ \..*/.*\.php$" = {
+        locations."~ \\..*/.*\\.php$" = {
           return = 403;
         };
         locations."~ ^/sites/.*/private/" = {
           return = 403;
         };
-        locations."~ ^/sites/[^/]+/files/.*\.php$" = {
+        locations."~ ^/sites/[^/]+/files/.*\\.php$" = {
           extraConfig = ''
             deny all;
           '';
@@ -478,13 +478,13 @@ in
             rewrite ^ /index.php;
           '';
         };
-        locations."~ /vendor/.*\.php$" = {
+        locations."~ /vendor/.*\\.php$" = {
           return = 404;
           extraConfig = ''
             deny all;
           '';
         };
-        locations."~* \.(js|css|png|jpg|jpeg|gif|ico|svg|avif|wasm)$" = {
+        locations."~* \\.(js|css|png|jpg|jpeg|gif|ico|svg|avif|wasm)$" = {
           extraConfig = ''
             try_files $uri @rewrite;
             expires max;
@@ -496,7 +496,7 @@ in
             try_files $uri @rewrite;
           '';
         };
-        locations."~ ^(/[a-z\-]+)?/system/files/" = {
+        locations."~ ^(/[a-z\\-]+)?/system/files/" = {
           extraConfig = ''
             try_files $uri /index.php?$query_string;
           '';
