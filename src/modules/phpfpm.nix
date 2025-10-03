@@ -352,7 +352,7 @@ in
     services.phpfpm.phpOptions = lib.mkDefault (
       (if env.type == "production" || env.type == "testing"
       then ''
-        error_reporting = E_ALL & ~E_DEPRECATED
+        error_reporting = E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED & ~E_NOTICE
         display_errors = Off
         display_startup_errors = Off
         log_errors = On
