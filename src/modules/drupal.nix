@@ -345,7 +345,7 @@ in
 
       databases = lib.mkOption {
         type = lib.types.lines;
-        defaultText = ''
+        defaultText = lib.literalExpression ''
           // Socket authentication is used here, so there is no password.
           $databases['default']['default'] = [
             'database' => 'drupal',
@@ -388,14 +388,17 @@ in
 
   config = lib.mkIf cfg.enable {
 
-    # Guard that ensures the database server is accessible.
     services.drupal.settings.databases = lib.mkMerge [
+
+      # Guard that ensures the database server is accessible.
       (lib.mkBefore ''
         if (!file_exists('${config.hostenv.runtimeDir}/mysql.sock')) {
           throw new Exception('Socket file at \'${config.hostenv.runtimeDir}/mysql.sock\' does not exist');
         }
       '')
-      (lib.mkAfter ''
+
+      # Default database connection.
+      (lib.mkOrder 1000 ''
         // Socket authentication is used here, so there is no password.
         $databases['default']['default'] = [
           'database' => 'drupal',
@@ -406,6 +409,7 @@ in
           'prefix' => ''',
         ];
       '')
+
     ];
 
     services.restic.backups = lib.mkIf cfg.backups.enable {
