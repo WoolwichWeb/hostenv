@@ -22,46 +22,15 @@ let
   hostenvSettingsFile = pkgs.writeText "settings.hostenv.php" ''
     <?php
 
-    if (!empty(getenv('XDG_CONFIG_HOME'))) {
-      $configDir = getenv('XDG_CONFIG_HOME');
-    } else if (!empty(getenv('HOME'))) {
-      $configDir = getenv('HOME') . '/.config';
-    } else {
-      throw new Exception('Could not find config dir using $XDG_CONFIG_DIR or $HOME');
-    }
-
     $settings['file_private_path'] = "${cfg.privateFilesDir}";
     $settings['trusted_host_patterns'] = array_merge(
       $settings['trusted_host_patterns'] ?? [], [
       ${builtins.concatStringsSep "\n" (
-        builtins.map (s: ''
-          '^${builtins.replaceStrings ["."] ["\\."] s}$',
-        '')
-        (builtins.attrNames env.virtualHosts)
+        builtins.map (pattern: "'${pattern}',") cfg.settings.trustedHostPatterns
       )}
     ]);
 
-    // For secrets and other things that should not be world-readable in the
-    // Nix store.
-    if (file_exists($configDir . '/drupal/settings.php')) {
-      include $configDir . '/drupal/settings.php';
-    }
-
-    if (file_exists('${config.hostenv.runtimeDir}/mysql.sock')) {
-      $dbSocket = '${config.hostenv.runtimeDir}/mysql.sock';
-    } else {
-      throw new Exception('Socket file at \'${config.hostenv.runtimeDir}/mysql.sock\' does not exist');
-    }
-
-    // Socket authentication is used here, so there is no password.
-    $databases['default']['default'] = [
-      'database' => 'drupal',
-      'username' => '${config.hostenv.userName}',
-      'password' => ''',
-      'unix_socket' => $dbSocket,
-      'driver' => 'mysql',
-      'prefix' => ''',
-    ];
+    ${cfg.settings.databases}
   '';
 
   composerPackage = pkgs.stdenvNoCC.mkDerivation {
@@ -330,7 +299,7 @@ in
       description = "Location of Drupal private files directory (must be an absolute path).";
       default = config.hostenv.dataDir + "/private_files";
       defaultText = lib.literalExpression ''
-        config.hostenv.dataDir + "private_files"
+        config.hostenv.dataDir + "/private_files"
       '';
     };
 
@@ -370,9 +339,75 @@ in
         };
       };
     };
+
+    settings = {
+      description = "Drupal settings included in {file}`settings.php`.";
+
+      databases = lib.mkOption {
+        type = lib.types.lines;
+        defaultText = ''
+          // Socket authentication is used here, so there is no password.
+          $databases['default']['default'] = [
+            'database' => 'drupal',
+            'username' => '${config.hostenv.userName}',
+            'password' => ''',
+            'unix_socket' => '${config.hostenv.runtimeDir}/mysql.sock',
+            'driver' => 'mysql',
+            'prefix' => ''',
+          ];
+        '';
+        description = "Drupal {file}`settings.php` code that defines database connections.";
+      };
+
+      trustedHostPatterns = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = (builtins.map
+          (hostname: "^${builtins.replaceStrings ["."] ["\\."] hostname}$")
+          (builtins.attrNames env.virtualHosts)
+        );
+        defaultText = lib.literalExpression ''
+          let
+            env = config.environments.''${config.hostenv.environmentName};
+          in
+          (builtins.map
+            (hostname: "^''${builtins.replaceStrings ["."] ["\\."] hostname}$")
+            (builtins.attrNames env.virtualHosts)
+          ))
+        '';
+        description = "List of strings hostenv uses to build `$settings['trusted_host_patterns']`.";
+        example = lib.literalExpression ''
+          [
+            "^www\.example\.com$"
+            "^example\.com$"
+          ]
+        '';
+      };
+
+    };
   };
 
   config = lib.mkIf cfg.enable {
+
+    # Guard that ensures the database server is accessible.
+    services.drupal.settings.databases = lib.mkMerge [
+      (lib.mkBefore ''
+        if (!file_exists('${config.hostenv.runtimeDir}/mysql.sock')) {
+          throw new Exception('Socket file at \'${config.hostenv.runtimeDir}/mysql.sock\' does not exist');
+        }
+      '')
+      (lib.mkAfter ''
+        // Socket authentication is used here, so there is no password.
+        $databases['default']['default'] = [
+          'database' => 'drupal',
+          'username' => '${config.hostenv.userName}',
+          'password' => ''',
+          'unix_socket' => '${config.hostenv.runtimeDir}/mysql.sock',
+          'driver' => 'mysql',
+          'prefix' => ''',
+        ];
+      '')
+    ];
+
     services.restic.backups = lib.mkIf cfg.backups.enable {
       drupal = {
         backupPrepareCommand = ''
