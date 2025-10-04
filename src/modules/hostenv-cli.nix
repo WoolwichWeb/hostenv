@@ -87,12 +87,19 @@ let
         argument = "ENV";
       }
       { name = "force"; short = "f"; description = "Skip confirmations"; bool = true; }
+      {
+        name = "tty_mode";
+        description = "TTY mode for remote commands: auto|on|off";
+        argument = "MODE";
+        default = "auto";
+        completion = ''printf "%s\n" auto on off'';
+      }
     ];
 
     arguments = [{ name = "subcommand"; }];
     argumentCompletion = ''"$(command -v hostenv)" __complete-subcommands'';
 
-    runtimeInputs = with pkgs; [ jq openssh rsync boxes git ] ++ builtins.concatLists (builtins.map (v: v.value.runtimeInputs) subCommandList);
+    runtimeInputs = with pkgs; [ jq openssh rsync boxes git gum ] ++ builtins.concatLists (builtins.map (v: v.value.runtimeInputs) subCommandList);
 
     bashBible = true;
     strict = true;
@@ -289,14 +296,50 @@ in
 
     ssh = {
       exec = helpers: ''
-        exec ssh "$user"@"$host" "$@"
+        case "$tty_mode" in
+          auto|"")
+            if [ -t 0 ]; then SSH_TTY="-tt"; else SSH_TTY="-T"; fi
+            ;;
+          on|force|yes|true|1)
+            SSH_TTY="-tt"
+            ;;
+          off|no|false|0)
+            SSH_TTY="-T"
+            ;;
+          *)
+            die "invalid --tty value: '$tty_mode' (use: auto|on|off)" 2
+            ;;
+        esac
+
+        debug "tty_mode=$tty_mode ssh_flag=$SSH_TTY stdin_is_tty=$([ -t 0 ] && echo yes || echo no)"
+        exec ssh $SSH_TTY "$user"@"$host" "$@"
       '';
       description = "Connect to the remote hostenv environment over SSH.";
     };
 
     app-log = {
       exec = helpers: ''
-        exec ssh -t "$user"@"$host" 'resize; journalctl --user -xe '"$*"
+          case "$tty_mode" in
+            auto|"")
+              if [ -t 0 ]; then SSH_TTY="-tt"; else SSH_TTY="-T"; fi
+              ;;
+            on|force|yes|true|1)
+              SSH_TTY="-tt"
+              ;;
+            off|no|false|0)
+              SSH_TTY="-T"
+              ;;
+            *)
+              die "invalid --tty value: '$tty_mode' (use: auto|on|off)" 2
+              ;;
+          esac
+
+          debug "tty_mode=$tty_mode ssh_flag=$SSH_TTY stdin_is_tty=$([ -t 0 ] && echo yes || echo no)"
+          exec ssh $SSH_TTY "$user"@"$host" bash -s -- "$@" <<'REMOTE'
+        set -euo pipefail
+        resize
+        exec journalctl --user -xe "$@"
+        REMOTE
       '';
       description = "View remote application logs.";
     };
@@ -305,6 +348,7 @@ in
       exec = helpers: with helpers;
         ''
           currentBranch="$(git symbolic-ref --short HEAD)"
+          debug "currentBranch=''${currentBranch}"
           if ${helpers.notFlag "force"}; then
             if [ ! "$currentBranch" = "$env_name" ]; then
               deploy_msg="$emoji  Deploy '$currentBranch' to environment '$env_name'?"
@@ -313,17 +357,38 @@ in
               deploy_msg="$emoji  Deploy '$currentBranch'?"
               default=""
             fi
-            ${pkgs.gum}/bin/gum confirm $default --affirmative="Deploy" --negative="Cancel" "$deploy_msg" || exit 67
+            gum confirm $default --affirmative="Deploy" --negative="Cancel" "$deploy_msg" || exit 67
             unset deploy_msg
+          else
+            debug "--force detected, skipping confirmation"
           fi
+
+          case "$tty_mode" in
+            auto|"")
+              if [ -t 0 ]; then SSH_TTY="-tt"; else SSH_TTY="-T"; fi
+              ;;
+            on|force|yes|true|1)
+              SSH_TTY="-tt"
+              ;;
+            off|no|false|0)
+              SSH_TTY="-T"
+              ;;
+            *)
+              die "invalid --tty value: '$tty_mode' (use: auto|on|off)" 2
+              ;;
+          esac
+
+          debug "tty_mode=$tty_mode ssh_flag=$SSH_TTY stdin_is_tty=$([ -t 0 ] && echo yes || echo no)"
+          debug 'mkdir -p /home/'"$user"'/code/project'
 
           ${spinner {
             title = "Preparing remote directory for project code...";
             command = ''
-              --show-error -- ssh "$user"@"$host" 'mkdir -p /home/'"$user"'/code/project'
+              --show-error -- ssh $SSH_TTY "$user"@"$host" 'mkdir -p /home/'"$user"'/code/project'
             '';
           }}
 
+          debug "rsync to $user@$host:/home/$user/code/project/"
           ${spinner {
             title = "Deploying project code...";
             command = ''
@@ -336,6 +401,8 @@ in
           }}
 
           # Remote build (with FOD auto-fix).
+          debug "running ssh -T $user@$host bash -s -- $currentBranch $user <<'REMOTE_SCRIPT'"
+          debug "ignoring SSH_TTY='$SSH_TTY' while building and activating remote. Using '-T'"
           ${spinner {
             title = "Building & activating $currentBranch...";
             command = ''
@@ -400,6 +467,8 @@ in
           '';
           }}
 
+          debug "rsync $user@$host:/home/$user/code/project/.hostenv/hostenv.nix → hostenv.nix"
+          debug "the remote build updates FOD hashes and this downloads them"
           ${spinner {
             title = "Updating local hostenv.nix...";
             command = ''
