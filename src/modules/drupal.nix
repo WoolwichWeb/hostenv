@@ -132,21 +132,50 @@ let
 
   drush =
     let
-      vHosts = config.environments.${config.hostenv.environmentName}.virtualHosts;
-      vHost = vHosts.${config.hostenv.hostname};
-      canonicalVHost =
-        if vHost.globalRedirect != null && vHosts ? ${vHost.globalRedirect}
-        then vHost.globalRedirect
-        else config.hostenv.hostname;
+      hasHost = builtins.hasAttr config.hostenv.hostname env.virtualHosts;
+
+      vHost =
+        if hasHost then env.virtualHosts.${config.hostenv.hostname} else
+        builtins.throw ''
+          ${config.hostenv.hostname} was not in the environment's hosts.
+          Available virtualHosts: ${builtins.toJSON (builtins.attrNames env.virtualHosts)}
+        '';
+
+      redirected =
+        vHost ? globalRedirect
+        && vHost.globalRedirect != null
+        && builtins.hasAttr vHost.globalRedirect env.virtualHosts;
+
+      canonicalVHost = if redirected then vHost.globalRedirect else config.hostenv.hostname;
+
       protocol =
-        if vHosts.${canonicalVHost}.enableLetsEncrypt
+        if env.virtualHosts.${canonicalVHost}.enableLetsEncrypt
         then "https://"
-        else "";
+        else "http://";
+
       uri = protocol + canonicalVHost;
-      drushPath = "${toString project}/share/php/${cfg.codebase.name}/vendor/bin/drush";
+
+      rootDir = "${toString project}/share/php/${cfg.codebase.name}";
+
+      webRoot = "${rootDir}/web";
     in
     pkgs.writeShellScriptBin "drush" ''
-      exec -a drush ${drushPath} --root=${project} --uri=${uri} "$@"
+      set -euo pipefail
+      
+      # Only add --uri if caller didn't specify one.
+      add_uri=true
+      for arg in "$@"; do
+        case "$arg" in
+          --uri=*|-l|--uri) add_uri=false; break;;
+        esac
+      done
+
+      args=("--root=${webRoot}")
+      if $add_uri; then
+        args+=("--uri=${uri}")
+      fi
+
+      exec -a drush ${rootDir}/vendor/bin/drush "''${args[@]}" "$@"
     '';
 in
 {
