@@ -23,6 +23,9 @@ let
     <?php
 
     $settings['file_private_path'] = "${cfg.privateFilesDir}";
+
+    error_reporting(${cfg.settings.errorReporting});
+
     $settings['trusted_host_patterns'] = array_merge(
       $settings['trusted_host_patterns'] ?? [], [
       ${builtins.concatStringsSep "\n" (
@@ -410,6 +413,14 @@ in
             "^example\.com$"
           ]
         '';
+      };
+
+      errorReporting = lib.mkOption {
+        type = lib.types.str;
+        default =
+          if env.type == "production" || env.type == "testing"
+          then "E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED & ~E_NOTICE"
+          else "E_ALL";
       };
 
     };
