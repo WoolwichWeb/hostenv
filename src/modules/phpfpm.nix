@@ -222,8 +222,6 @@ let
           )))
         ];
 
-        # effectivePhpCliPackage = mkPhpWith mkPackageWithConfig cfg.cli;
-
         socket = "${config.hostenv.runtimeDir}/${name}.sock";
         phpOptions = lib.mkBefore cfg.phpOptions;
 
