@@ -22,10 +22,13 @@ let
   hostenvSettingsFile = pkgs.writeText "settings.hostenv.php" ''
     <?php
 
+    // config.services.drupal.settings.privateFilesDir
     $settings['file_private_path'] = "${cfg.privateFilesDir}";
 
+    // config.services.drupal.settings.errorReporting
     error_reporting(${cfg.settings.errorReporting});
 
+    // config.services.drupal.settings.trustedHostPatterns
     $settings['trusted_host_patterns'] = array_merge(
       $settings['trusted_host_patterns'] ?? [], [
       ${builtins.concatStringsSep "\n" (
@@ -33,8 +36,10 @@ let
       )}
     ]);
 
+    // config.services.drupal.settings.databases
     ${cfg.settings.databases}
 
+    // config.services.drupal.settings.extraSettings
     ${cfg.settings.extraSettings}
   '';
 
