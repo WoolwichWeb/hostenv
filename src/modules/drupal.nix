@@ -34,6 +34,8 @@ let
     ]);
 
     ${cfg.settings.databases}
+
+    ${cfg.settings.extraSettings}
   '';
 
   composerPackage = pkgs.stdenvNoCC.mkDerivation {
@@ -421,6 +423,15 @@ in
           if env.type == "production" || env.type == "testing"
           then "E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED & ~E_NOTICE"
           else "E_ALL";
+      };
+
+      extraSettings = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        example = lib.literalExpression ''
+          $settings['update_free_access'] = true;
+        '';
+        description = "Additional settings added to Drupal {file}`settings.php`.";
       };
 
     };
