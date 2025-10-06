@@ -1,10 +1,46 @@
 # Hostenv
 
-Wow, you found hostenv before it was cool.
+*Wow, you found hostenv before it was cool.* hostenv isn't ready for general use yet, but we're working on it! In the meantime, feel free to look around and check out the Nix modules, use the code for learning, or report bugs and create merge requests. Contributions are welcome.
 
-Hostenv isn't ready for general use, but feel free to explore the modules.
+hostenv is a Platform as a Service (PaaS) that belongs to all of us.
+
+Use a JSON-like language to simply setup your hosting by toggling basic options:
+
+```nix
+# hostenv.nix
+{ pkgs, config ... }: {
+
+  services.drupal.enable = true;
+  services.drupal.phpVersion = "8.3";
+
+  # Run cron every five minutes.
+  services.drupal.cron.timerConfig.OnCalendar = "*:0/5";
+
+  environments.main = {
+    enable = true;
+    type = "production";
+    virtualHosts = {
+      "example.com" = {
+        globalRedirect = "www.example.com";
+      };
+      "www.example.com" = {
+        locations."/old-url" = {
+          redirect = "/new-url";
+        };
+      };
+    };
+  };
+
+  environments.test = {
+    enable = true;
+    type = "testing";
+  };
+}
+```
 
 ## Getting started - project
+
+*Audience: hostenv user setting up a project's hosting*
 
 1. Install [Nix](https://nixos.org/download/#download-nix)
 2. `cd` into your project directory, and run:
