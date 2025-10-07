@@ -334,7 +334,15 @@ in
 
         phpOptions = lib.mkOption {
           type = lib.types.lines;
-          default = ''
+          default = (
+            if env.type == "production" || env.type == "testing"
+            then ''
+              error_reporting = E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED & ~E_NOTICE
+            ''
+            else ''
+              error_reporting = E_ALL
+            ''
+          ) + ''
             memory_limit = -1
           '';
           description = "Additional php.ini for the CLI (not used by FPM pools).";
