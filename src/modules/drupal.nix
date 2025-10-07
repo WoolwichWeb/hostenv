@@ -380,7 +380,7 @@ in
     };
 
     settings = {
-      description = "Drupal settings included in {file}`settings.php`.";
+      # Drupal settings included in {file}`settings.php`.
 
       databases = lib.mkOption {
         type = lib.types.lines;
@@ -605,6 +605,7 @@ in
     };
 
     services.phpfpm.phpPackage = lib.mkDefault cfg.phpPackage;
+    services.phpfpm.phpVersion = lib.mkDefault cfg.phpVersion;
     services.phpfpm.extensions = lib.mkDefault cfg.phpExtensions;
     services.phpfpm.disableExtensions = lib.mkDefault cfg.phpDisableExtensions;
 
