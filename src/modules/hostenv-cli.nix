@@ -419,25 +419,32 @@ in
           branch="$1"
           ruser="$2"
 
+          debug "moving into hostenv dir: /home/$ruser/code/project/.hostenv"
           cd "/home/$ruser/code/project/.hostenv"
+          debug "running 'git reset --hard'"
           git reset --hard
+          debug "running 'git clean -fdx'"
           git clean -fdx
 
           tries=0
           while :; do
             tries=$((tries + 1))
             set +e
+            debug "running 'nix build .#$branch'
             out="$(nix build ".#$branch" 2>&1)"
             status=$?
+            debug "build status was '$status'"
             set -e
             if [ "$status" -eq 0 ]; then
-              # No FOD errors, continue the deployment.
+              debug "no FOD errors detected, continuing deployment"
               break
             fi
 
             # Extract FOD error message from nix build output.
+            debug "got a FOD error"
             specified_hash="$(printf '%s' "$out" | sed -n 's/.*specified:[[:space:]]*\(sha256-[A-Za-z0-9+\/=]\+\).*/\1/p' | tail -n1)"
             got_hash="$(printf '%s' "$out" | sed -n 's/.*got:[[:space:]]*\(sha256-[A-Za-z0-9+\/=]\+\).*/\1/p' | tail -n1)"
+            debug "FOD mismatch. Specified '$specified_hash' got '$got_hash'"
 
             if ${var.notEmpty "specified_hash"} && ${var.notEmpty "got_hash"}; then
               target="./hostenv.nix"
@@ -466,10 +473,13 @@ in
             exit 1
           done
 
-          # Final build & activate
+          debug "final build"
           nix --quiet --quiet build ".#$branch"
+          debug "running result/bin/activate"
           result/bin/activate
+          debug "running 'nix profile install .#$branch --priority 4"
           nix profile install .#$branch --priority 4
+          debug "remote deploy script finished"
           REMOTE_SCRIPT
           '';
           }}
@@ -504,6 +514,21 @@ in
         jq <<< '${envJson}'
       '';
       description = "Print hostenv environment information as JSON (for all environments).";
+    };
+
+    files-dump = {
+      exec = helpers: with helpers; ''
+        debug "rsync $user@$host:/home/$user/.local/share/{files,private_files} → files/"
+        mkdir -p files
+        ${spinner {
+          title = "Updating local hostenv.nix...";
+          command = ''
+            --show-error -- rsync -az \
+              "$user@$host:/home/$user/.local/share/{files,private_files}" \
+              files/
+          '';
+        }}
+      '';
     };
 
     __complete-subcommands = {
