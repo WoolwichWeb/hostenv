@@ -189,7 +189,14 @@ let
           scripts;
       in
       pkgs.mkShell {
-        buildInputs = [ hostenvCli pkgs.restic pkgs.boxes ] ++ scriptDerivations;
+
+        buildInputs = with pkgs; [
+          hostenvCli
+          restic
+          boxes
+          jq
+        ] ++ scriptDerivations;
+
         shellHook = ''
           currentBranch=$(git symbolic-ref --short HEAD)
 
@@ -201,8 +208,8 @@ let
 
           hostenv banner
         '';
-      }
-    )
+
+      })
     (lib.filterAttrs (n: v: v.enable) config.environments)
   // {
     default = pkgs.mkShell {
