@@ -518,17 +518,19 @@ in
 
     files-dump = {
       exec = helpers: with helpers; ''
-        debug "rsync $user@$host:/home/$user/.local/share/{files,private_files} → files/"
+        debug "running rsync -az $user@$host:/home/$user/.local/share/{files,private_files} files/"
         mkdir -p files
         ${spinner {
-          title = "Updating local hostenv.nix...";
+          title = "Downloading files...";
           command = ''
             --show-error -- rsync -az \
-              "$user@$host:/home/$user/.local/share/{files,private_files}" \
+              "$user@$host:/home/$user/.local/share/"{files,private_files} \
               files/
           '';
         }}
       '';
+      description = "Download files from hostenv environment. Downloads to 'files/'. See also: files-up.";
+    };
     };
 
     __complete-subcommands = {
