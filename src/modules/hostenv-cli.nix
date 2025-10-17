@@ -531,6 +531,21 @@ in
       '';
       description = "Download files from hostenv environment. Downloads to 'files/'. See also: files-up.";
     };
+
+    files-up = {
+      exec = helpers: with helpers; ''
+        debug "running rsync -az files/{files,private_files} $user@$host:/home/$user/.local/share/"
+        mkdir -p files
+        ${spinner {
+          title = "Uploading files...";
+          command = ''
+            --show-error -- rsync -az \
+              files/{files,private_files} \
+              "$user@$host:/home/$user/.local/share/"
+          '';
+        }}
+      '';
+      description = "Upload files to hostenv environment from 'files/'. See also: files-dump.";
     };
 
     __complete-subcommands = {
