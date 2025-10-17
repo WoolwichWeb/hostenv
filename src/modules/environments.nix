@@ -89,6 +89,18 @@ let
                   '';
                 };
 
+                allowIndexing = lib.mkOption {
+                  default = if envConfig.type == "production" then true else false;
+                  type = bool;
+                  description = ''
+                    Advise search engines whether they are allowed to crawl
+                    this site (or not).
+
+                    Defaults to `true` on production environments, and `false`
+                    on all other environment types.
+                  '';
+                };
+
                 globalRedirect = lib.mkOption {
                   type = nullOr str;
                   default = null;
