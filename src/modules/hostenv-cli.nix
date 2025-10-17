@@ -521,7 +521,7 @@ in
         debug "running rsync -az $user@$host:/home/$user/.local/share/{files,private_files} files/"
         mkdir -p files
         ${spinner {
-          title = "Downloading files...";
+          title = "Downloading files from '$env_name'...";
           command = ''
             --show-error -- rsync -az \
               "$user@$host:/home/$user/.local/share/"{files,private_files} \
@@ -537,7 +537,7 @@ in
         debug "running rsync -az files/{files,private_files} $user@$host:/home/$user/.local/share/"
         mkdir -p files
         ${spinner {
-          title = "Uploading files...";
+          title = "Uploading files to '$env_name'...";
           command = ''
             --show-error -- rsync -az \
               files/{files,private_files} \
