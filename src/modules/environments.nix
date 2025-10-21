@@ -101,6 +101,13 @@ let
                   '';
                 };
 
+                csp = lib.mkOption {
+                  type = submodule ./csp.nix;
+                  description = ''
+                    Contents to put in each response's `Content-Security-Policy` header.
+                  '';
+                };
+
                 globalRedirect = lib.mkOption {
                   type = nullOr str;
                   default = null;
