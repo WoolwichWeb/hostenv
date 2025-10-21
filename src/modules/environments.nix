@@ -247,4 +247,21 @@ in
     if names != [ ] then builtins.head names else "main"
   );
 
+  # Collect assertions from all CSP submodules across all environments.
+  config.assertions = lib.flatten (
+    lib.mapAttrsToList
+      (envName: envCfg:
+        lib.mapAttrsToList
+          (vhostName: vhostCfg:
+            map
+              (assertion: assertion // {
+                message = "Environment '${envName}', vhost '${vhostName}': ${assertion.message}";
+              })
+              (vhostCfg.csp.assertions or [ ])
+          )
+          (envCfg.virtualHosts or { })
+      )
+      cfg
+  );
+
 }
