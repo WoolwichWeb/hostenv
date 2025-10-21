@@ -1,38 +1,47 @@
-# Builds a full hostenv environment.
-#
-# Liberally cribs from:
-# https://github.com/cachix/devenv/blob/e17a6a604e478bab6ba88fb049c5bdbe494fb0cf/src/modules/top-level.nix
+# Builds a hostenv user environment.
 { config, pkgs, lib, ... }:
 let
 
   types = lib.types;
 
-  # @todo: make these assertions work.
   failedAssertions = builtins.map (x: x.message) (builtins.filter (x: !x.assertion) config.assertions);
 
+  inherit (lib) splitString concatStringsSep mkOption mkPackageOption mkMerge
+    mkBefore mkAfter;
+  inherit (lib.trivial) showWarnings;
+
+  # You may be wondering: how is this function used as a wrapper? It doesn't
+  # even take any parameters.
+  # See below, this really is a function with a single parameter.
   performAssertions =
     let
       formatAssertionMessage = message:
         let
-          lines = lib.splitString "\n" message;
+          lines = splitString "\n" message;
         in
-        "- ${lib.concatStringsSep "\n  " lines}";
+        "- ${concatStringsSep "\n  " lines}";
     in
     if failedAssertions != [ ]
     then
       throw ''
         Failed assertions:
-        ${lib.concatStringsSep "\n" (builtins.map formatAssertionMessage failedAssertions)}
+        ${concatStringsSep "\n" (builtins.map formatAssertionMessage failedAssertions)}
       ''
-    else lib.trivial.showWarnings config.warnings;
+    # `showWarnings` is key to how this function works.
+    # It takes a list of warnings and some polymorphic value, prints the
+    # warnings and returns the polymorphic value. `performAssertions`
+    # therefore returns whatever value it is passed, allowing it to wrap
+    # any variable.
+    # Side-note: throw above also accepts a parameter, but doesn't return.
+    else showWarnings config.warnings;
 in
 {
 
   options = {
 
-    programs.ssh.package = lib.mkPackageOption pkgs "openssh" { };
+    programs.ssh.package = mkPackageOption pkgs "openssh" { };
 
-    assertions = lib.mkOption {
+    assertions = mkOption {
       type = types.listOf types.unspecified;
       internal = true;
       default = [ ];
@@ -44,7 +53,7 @@ in
       '';
     };
 
-    warnings = lib.mkOption {
+    warnings = mkOption {
       type = types.listOf types.str;
       internal = true;
       default = [ ];
@@ -56,18 +65,18 @@ in
       '';
     };
 
-    hostenv = lib.mkOption {
+    hostenv = mkOption {
       type = types.submodule ../hostenv.nix;
       description = "Hostenv configuration for the current environment.";
     };
 
-    activate = lib.mkOption {
+    activate = mkOption {
       type = types.lines;
       default = "";
       description = "Bash code to activate a module.";
     };
 
-    buildReference = lib.mkOption {
+    buildReference = mkOption {
       type = types.nullOr types.str;
       description = ''
         Optional. Some way of uniquely identifying the current project build,
@@ -78,14 +87,14 @@ in
 
     #### Internal
 
-    profile = lib.mkOption {
+    profile = mkOption {
       type = types.listOf types.path;
       default = [ ];
       description = "List of paths to build into a profile, visible to the user under 'result/' after `nix build`.";
       internal = true;
     };
 
-    activatePackage = lib.mkOption {
+    activatePackage = mkOption {
       type = types.package;
       description = "Profile package containing configuration files and software, plus an activation script.";
       internal = true;
@@ -109,8 +118,8 @@ in
       activateScript = pkgs.writeShellScriptBin "activate" config.activate;
     in
     {
-      activate = lib.mkMerge [
-        (lib.mkBefore ''
+      activate = performAssertions (mkMerge [
+        (mkBefore ''
           ## Top level activation script.
         '')
         # Remove hostenv profile from user account. This is safe since either:
@@ -120,10 +129,10 @@ in
         # .hostenv profile needs to be removed to make way for
         # users.users.<name>.packages (.hostenv profile has higher
         # priority than entries in users.users.<name>.packages).
-        (lib.mkAfter ''
+        (mkAfter ''
           nix profile remove .hostenv >/dev/null 2>&1
         '')
-      ];
+      ]);
 
       activatePackage = pkgs.buildEnv {
         name = "hostenv-profile";
