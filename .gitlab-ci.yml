@@ -1,0 +1,57 @@
+# GitLab CI configuration for hostenv
+#
+# This runs Nix flake checks on every merge request and push to main
+# to ensure code quality and prevent regressions.
+
+image: nixos/nix:latest
+
+# Enable Nix flakes and configure binary cache
+before_script:
+  - mkdir -p ~/.config/nix .nix-cache
+  - echo "experimental-features = nix-command flakes" >> ~/.config/nix/nix.conf
+  # Use local file cache in addition to the official cache
+  - echo "extra-substituters = file://$PWD/.nix-cache" >> ~/.config/nix/nix.conf
+  # Trust the local cache (needed for file:// substituters)
+  - echo "trusted-substituters = file://$PWD/.nix-cache" >> ~/.config/nix/nix.conf
+  # Export built paths to the cache after each job
+  - echo "post-build-hook = $PWD/.gitlab-cache-hook.sh" >> ~/.config/nix/nix.conf
+  # Create the post-build hook script
+  - |
+    cat > .gitlab-cache-hook.sh << 'EOF'
+    #!/bin/sh
+    set -eu
+    set -f # disable globbing
+    export IFS=' '
+    echo "Caching paths: $OUT_PATHS"
+    exec nix copy --to "file://$PWD/.nix-cache" $OUT_PATHS
+    EOF
+  - chmod +x .gitlab-cache-hook.sh
+
+# Cache Nix store between runs to speed up builds
+# This caches built derivations in .nix-cache/ which is restored on subsequent runs
+cache:
+  key: nix-store
+  paths:
+    - .nix-cache/
+
+stages:
+  - check
+
+# Job: Run nix flake check
+# This validates flake structure and runs all checks defined in checks.*
+flake-check:
+  stage: check
+  script:
+    - nix flake check --show-trace
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# Nightly builds
+nightly-full-check:
+  stage: check
+  script:
+    - nix flake check --show-trace --all-systems
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  allow_failure: true

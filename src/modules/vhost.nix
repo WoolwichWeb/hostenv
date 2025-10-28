@@ -1,10 +1,15 @@
-# Liberally cribbed from:
+# Also see:
 # https://github.com/NixOS/nixpkgs/blob/nixos-24.11/nixos/modules/services/web-servers/nginx/default.nix#L298
-{ lib, virtualHosts, enableRouteDebugging }:
-
-with lib;
+# This module fills the same Nix options, but has been updated.
+# @todo: refactor this and the use of upstream module from nixpkgs
+# (in nginx.nix).
+{ lib, config, virtualHosts, enableRouteDebugging, pkgs }:
 
 let
+  inherit (lib)
+    optionalString concatStringsSep mapAttrsToList optionalAttrs sortProperties
+    filter any concatMapStringsSep;
+
   mkBasicAuth = name: zone: optionalString (zone.basicAuthFile != null || zone.basicAuth != { }) (
     let
       auth_file =
@@ -68,13 +73,9 @@ let
         ${optionalString enableRouteDebugging
         ''set $hostenv_handled "${sanitizeForHeader config.location}";''
         }
-        ${optionalString (config.proxyPass != null && !cfg.proxyResolveWhileRunning)
+        ${optionalString (config.proxyPass != null)
           "proxy_pass ${config.proxyPass};"
         }
-        ${optionalString (config.proxyPass != null && cfg.proxyResolveWhileRunning) ''
-          set $nix_proxy_target "${config.proxyPass}";
-          proxy_pass $nix_proxy_target;
-        ''}
         ${optionalString config.proxyWebsockets ''
           proxy_http_version 1.1;
           proxy_set_header Upgrade $http_upgrade;
@@ -117,36 +118,10 @@ concatStringsSep
       onlySSL = vhost.onlySSL || vhost.enableSSL;
       hasSSL = onlySSL || vhost.addSSL || vhost.forceSSL;
 
-      # First evaluation of defaultListen based on a set of listen lines.
-      mkDefaultListenVhost = listenLines:
-        # If this vhost has SSL or is a SSL rejection host.
-        # We enable a TLS variant for lines without explicit ssl or ssl = true.
-        optionals (hasSSL || vhost.rejectSSL)
-          (map (listen: { port = cfg.defaultSSLListenPort; ssl = true; } // listen)
-            (filter (listen: !(listen ? ssl) || listen.ssl) listenLines))
-        # If this vhost is supposed to serve HTTP
-        # We provide listen lines for those without explicit ssl or ssl = false.
-        ++ optionals (!onlySSL)
-          (map (listen: { port = cfg.defaultHTTPListenPort; ssl = false; } // listen)
-            (filter (listen: !(listen ? ssl) || !listen.ssl) listenLines));
-
-      defaultListen =
+      hostListen =
         if vhost.listen != [ ] then vhost.listen
         else
-          if cfg.defaultListen != [ ] then
-            mkDefaultListenVhost
-              # Cleanup nulls which will mess up with //.
-              # TODO: is there a better way to achieve this? i.e. mergeButIgnoreNullPlease?
-              (map (listenLine: filterAttrs (_: v: (v != null)) listenLine) cfg.defaultListen)
-          else
-            let addrs = if vhost.listenAddresses != [ ] then vhost.listenAddresses else cfg.defaultListenAddresses;
-            in mkDefaultListenVhost (map (addr: { inherit addr; }) addrs);
-
-
-      hostListen =
-        if vhost.forceSSL
-        then filter (x: x.ssl) defaultListen
-        else defaultListen;
+          [{ addr = "unix:${config.hostenv.upstreamRuntimeDir}/in.sock"; }];
 
       listenString = { addr, port, ssl, proxyProtocol ? false, extraParameters ? [ ], ... }:
         # UDP listener for QUIC transport protocol.
@@ -165,15 +140,12 @@ concatStringsSep
         + ";"))
         + "
             listen ${addr}${optionalString (port != null) ":${toString port}"} "
-        + optionalString (ssl && vhost.http2 && oldHTTP2) "http2 "
         + optionalString ssl "ssl "
         + optionalString vhost.default "default_server "
         + optionalString vhost.reuseport "reuseport "
         + optionalString proxyProtocol "proxy_protocol "
         + optionalString (extraParameters != [ ]) (concatStringsSep " " extraParameters)
         + ";";
-
-      redirectListen = filter (x: !x.ssl) defaultListen;
 
       # The acme-challenge location doesn't need to be added if we are not using any automated
       # certificate provisioning and can also be omitted when we use a certificate obtained via a DNS-01 challenge
@@ -200,23 +172,10 @@ concatStringsSep
 
     in
     ''
-      ${optionalString vhost.forceSSL ''
-        server {
-          ${concatMapStringsSep "\n" listenString redirectListen}
-
-          server_name ${vhost.serverName} ${concatStringsSep " " vhost.serverAliases};
-
-          location / {
-            return ${toString vhost.redirectCode} https://$host$request_uri;
-          }
-          ${acmeLocation}
-        }
-      ''}
-
       server {
         ${concatMapStringsSep "\n" listenString hostListen}
         server_name ${vhost.serverName} ${concatStringsSep " " vhost.serverAliases};
-        ${optionalString (hasSSL && vhost.http2 && !oldHTTP2) ''
+        ${optionalString (hasSSL && vhost.http2) ''
           http2 on;
         ''}
         ${optionalString (hasSSL && vhost.quic) ''

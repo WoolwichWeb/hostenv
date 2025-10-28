@@ -5,7 +5,10 @@ let
   # @todo: this includes some unsupported options, such as acme certificates
   # for Let's Encrypt; maybe find a way to override or fork this module.
   vhostOptions = (pkgs.path + "/nixos/modules/services/web-servers/nginx/vhost-options.nix");
-  vhostValues = pkgs.callPackage ./vhost.nix { inherit (cfg) virtualHosts enableRouteDebugging; };
+  vhostValues = pkgs.callPackage ./vhost.nix {
+    inherit (cfg) virtualHosts enableRouteDebugging;
+    inherit config;
+  };
 
   configFile =
     (

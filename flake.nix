@@ -11,15 +11,21 @@
         nixpkgs.follows = "nixpkgs";
       };
     };
+    hostenv-internal = {
+      url = ./src/modules;
+      inputs.flake-utils.follows = "flake-utils";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { nixpkgs, flake-utils, search, ... }:
+  outputs = { self, nixpkgs, flake-utils, hostenv-internal, search, ... }:
     flake-utils.lib.eachDefaultSystem
       (system:
         let
           pkgs = (import nixpkgs) {
             inherit system;
           };
+          makeHostenv = hostenv-internal.makeHostenv.${system};
 
           docSearch = search.packages.${system}.mkMultiSearch {
             title = "hostenv options search";
@@ -68,25 +74,68 @@
               http-server ${docSearch} "''${server_flags[@]}"
             '';
           };
+
+          tests = {
+            # Test Drupal environment (production)
+            # Uses the main environment from tests/drupal/hostenv.nix
+            drupalProduction = makeHostenv {
+              organisation = "test-drupal";
+              project = "test-drupal-project";
+              buildReference = self.rev or null;
+              environmentName = "main";
+              root = ./tests/drupal;
+              modules = [ ./tests/drupal/hostenv.nix ];
+            };
+
+            # Test Drupal environment (development)
+            # Used to verify that debug headers work in non-production environments.
+            # Note: hostenv will automatically generate a consistent URL for this environment
+            drupalDev = makeHostenv {
+              organisation = "test-drupal";
+              project = "test-drupal-project";
+              buildReference = self.rev or null;
+              environmentName = "dev";
+              root = ./tests/drupal;
+              modules = [
+                ./tests/drupal/hostenv.nix
+                {
+                  environments.dev = {
+                    enable = true;
+                    type = "development";
+                  };
+                }
+              ];
+            };
+          };
+
         in
         {
-          apps.default = flake-utils.lib.mkApp { drv = serveDocs; };
+          inherit tests;
+          apps.default = (flake-utils.lib.mkApp { drv = serveDocs; }) // {
+            meta.description = "Serve hostenv documentation site";
+          };
           packages = {
             # Searchable documentation package.
             inherit docSearch;
+            testDrupalProduction = tests.drupalProduction.config.activatePackage;
+            testDrupalDev = tests.drupalDev.config.activatePackage;
+          };
+
+          # Import test suite from external file
+          checks = import ./tests/drupal/tests.nix {
+            inherit pkgs tests;
           };
         }) //
     {
       templates = {
         default = {
           path = ./template;
+          description = "Hostenv project template";
           welcomeText = ''
             ## Thank you for using Hostenv
 
             What's next:
 
-             - If you haven't already, install Nix:
-               https://nixos.org/download/#download-nix
              - Configure your project in `.hostenv/hostenv.nix`.
              - Check the project README.md for more instructions:
                https://gitlab.com/woolwichweb/hostenv/-/blob/main/README.md?ref_type=heads
