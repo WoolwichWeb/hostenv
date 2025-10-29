@@ -46,12 +46,36 @@ flake-check:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
+  tags:
+    - saas-linux-small-arm64
 
-# Nightly builds
+# Nightly updates and builds.
+# Note: to start updates are run nightly and are automatically committed to
+# main, this will hold while the project is in early development, however,
+# this should change as hostenv matures.
+#
+# Further into the project we will slow the cadence (to weekly updates?),
+# use a stable version of nixpkgs, and probably move to using MRs for updates
+# instead of slinging changes onto main.
+#
+# It's worth noting that downstream projects won't especially be affected by
+# these updates as they have their own `flake.lock` files that lock nixpkgs.
 nightly-full-check:
   stage: check
-  script:
-    - nix flake check --show-trace --all-systems
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  script:
+    - git checkout main
+    - nix flake update
+    - if ! git diff --quiet --exit-code; then
+        nix flake check --show-trace --all-systems || exit 1;
+        git config --global user.name "Gitlab CI";
+        git config --global user.email "";
+        git commit -m "(chore) update flake.lock dependencies" flake.lock;
+        git push "https://SelfCI:${GITLAB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git";
+      else
+        echo "No updates available"
+      fi
+  tags:
+    - saas-linux-small-arm64
   allow_failure: true
