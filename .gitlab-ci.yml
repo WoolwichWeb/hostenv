@@ -26,6 +26,8 @@ before_script:
     exec nix copy --to "file://$PWD/.nix-cache" $OUT_PATHS
     EOF
   - chmod +x .gitlab-cache-hook.sh
+  - nix profile install --accept-flake-config nixpkgs#cachix
+  - cachix use fossar
 
 # Cache Nix store between runs to speed up builds
 # This caches built derivations in .nix-cache/ which is restored on subsequent runs
