@@ -4,10 +4,9 @@ This directory contains test environments and test suites for hostenv.
 
 ## Directory Structure
 
-- `drupal/` - Test environment for Drupal CMS
+- `*/` - Test environments
   - `hostenv.nix` - Hostenv configuration for test Drupal site
   - `tests.nix` - Test suite checking Drupal functionality
-  - `composer.json`, `composer.lock` - Drupal dependencies
 
 ## Running Tests Locally
 
@@ -22,10 +21,17 @@ This will run all checks defined in `checks.*` for your system.
 ### Run a specific test
 
 ```bash
-nix build .#checks.x86_64-linux.test-nginx-conf-exists
+nix build .#checks.x86_64-linux.drupal-test-nginx-config-valid
 ```
 
-Replace `test-nginx-conf-exists` with any test name from `tests/drupal/tests.nix`.
+Replace `drupal-test-nginx-config-valid` with any test name. Hint: use tab
+completion:
+
+```bash
+nix build .#checks.x86_64-linux.<TAB>
+```
+
+to see and narrow down the full list of available tests.
 
 ### List all available tests
 
@@ -33,32 +39,24 @@ Replace `test-nginx-conf-exists` with any test name from `tests/drupal/tests.nix
 nix flake show
 ```
 
-### Build test packages
-
-```bash
-# Production environment (main)
-nix build .#testDrupalProduction
-
-# Development environment (dev)
-nix build .#testDrupalDev
-```
-
-The built packages will be symlinked to `./result`.
-
 ### Inspect test environment output
 
 After building, you can inspect the generated configuration:
 
 ```bash
 # View nginx configuration
-cat result/etc/nginx/nginx.conf
+cat result/attachments/env/etc/nginx/nginx.conf
 
 # View PHP-FPM pool configuration
-ls result/etc/php-fpm.d/
+ls result/attachments/env/etc/php-fpm.d/
 
 # View systemd services
-ls result/systemd/user/
+ls result/attachments/env/systemd/user/
 ```
+
+Other files related to the specific test you built will be in
+`result/attachements`, while the test script itself will be in
+`result/bin`.
 
 ## CI/CD Integration
 
@@ -74,25 +72,14 @@ See `.gitlab-ci.yml` for configuration.
 
 Tests are just Nix derivations that fail (exit non-zero) on test failure.
 
-Example test structure:
+See files under `tests/*/tests.nix` for examples.
 
-```nix
-test-example = pkgs.runCommand "test-example" {
-  buildInputs = [ pkgs.gnugrep pkgs.coreutils ];
-} ''
-  echo "Running test..."
+Add new tests to `tests/*/tests.nix` and they'll automatically be included
+in `nix flake check`.
 
-  if some-check-fails; then
-    echo "FAIL: description of what failed"
-    exit 1
-  fi
-
-  echo "PASS: test succeeded"
-  touch $out
-'';
-```
-
-Add new tests to `tests/*/tests.nix` and they'll automatically be included in `nix flake check`.
+To add a new test suite, create `tests/[SUITE NAME]/tests.nix`, then wire
+your new `tests.nix` file up in `tests/default.nix`. Your tests will
+automatically be included in `nix flake check`.
 
 ## Updating Composer Dependencies
 
@@ -114,7 +101,11 @@ If you modify `tests/drupal/composer.json`:
 3. Build to get the correct hash:
 
    ```bash
-   nix build .#testDrupal
+   nix build .#checks.x86-linux.drupal-dev-test-drupal-structure
+   #                  ^_______^ ^______________________________^                            
+   #                      |             |
+   #                      |             | Or some other Drupal test
+   #                      | Or your architecture
    ```
 
 4. Copy the hash from the error message into `tests/drupal/hostenv.nix`:

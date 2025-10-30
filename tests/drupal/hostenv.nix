@@ -5,7 +5,7 @@
 
   # To update this hash when dependencies change:
   # 1. Set to lib.fakeHash
-  # 2. Run `nix build .#testDrupalDev`
+  # 2. Run `nix build .#checks.x86-linux.test-name`
   # 3. Copy the correct hash from the error message
   services.drupal.composer.dependencyHash = "sha256-i1EnECV5GCbXYBn5RY7LLdXJ3R23ExivkrHE2m0/vWM=";
 
@@ -20,6 +20,11 @@
       };
       "www.example.com" = { };
     };
+  };
+
+  environments.dev = {
+    enable = true;
+    type = "development";
   };
 
   environments.test = {
