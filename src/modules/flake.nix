@@ -1,5 +1,5 @@
 {
-  description = "Hostenv upstream";
+  description = "Hostenv client";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
@@ -10,7 +10,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     phps = {
-      url = "github:fossar/nix-phps";
+      url = "github:fossar/nix-phps?ref=update_flake_lock_action";
       inputs = {
         nixpkgs.follows = "nixpkgs";
         utils.follows = "flake-utils";

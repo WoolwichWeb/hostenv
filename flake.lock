@@ -126,15 +126,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1760894074,
-        "narHash": "sha256-z2EYR3CA5PWTkUr5WkDni2CZQ326msHLPghJLx11pZ0=",
+        "lastModified": 1761775859,
+        "narHash": "sha256-hU21phioqDZMzNzYqiTuMi4F4mH6SIT9fnADBauZI/w=",
         "owner": "fossar",
         "repo": "nix-phps",
-        "rev": "d2807871f18ab2150b1e46b7ee126fe0bf200d4c",
+        "rev": "449e3a7a05c27f720f3f81e743555f4e594a78d4",
         "type": "github"
       },
       "original": {
         "owner": "fossar",
+        "ref": "update_flake_lock_action",
         "repo": "nix-phps",
         "type": "github"
       }

@@ -5,7 +5,7 @@
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     phps = {
-      url = "github:fossar/nix-phps";
+      url = "github:fossar/nix-phps?ref=update_flake_lock_action";
       inputs = {
         nixpkgs.follows = "nixpkgs";
         utils.follows = "flake-utils";
