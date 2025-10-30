@@ -66,12 +66,14 @@
         # purposes.
         defaultHostenv = makeHostenv null;
 
+        inherit (pkgs.lib) mapAttrs filterAttrs;
+
       in
       {
         # Helpful for debugging.
         inherit makeHostenv;
 
-        packages = with pkgs.lib; mapAttrs
+        packages = mapAttrs
           (environmentName: environment:
             let hostenv = makeHostenv environmentName;
             in hostenv.config.activatePackage
