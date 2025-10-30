@@ -9,6 +9,13 @@
       inputs.flake-utils.follows = "flake-utils";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    phps = {
+      url = "github:fossar/nix-phps";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        utils.follows = "flake-utils";
+      };
+    };
   };
 
   outputs = { self, nixpkgs, flake-utils, pog, ... } @ inputs: {
