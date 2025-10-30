@@ -1,5 +1,6 @@
 { lib, config, pkgs, ... }:
 let
+  inherit (lib) all;
   cfg = config.services.nginx;
   env = config.environments.${config.hostenv.environmentName};
   # @todo: this includes some unsupported options, such as acme certificates
@@ -11,92 +12,44 @@ let
   };
 
   configFile =
-    (
-      if cfg.validateConfig
-      then pkgs.writers.writeNginxConfig
-      else pkgs.writeText
-    ) "nginx.conf" ''
-      pid ${config.hostenv.runtimeDir}/nginx.pid;
-      error_log syslog:server=unix:/dev/log debug;
-      daemon off;
+    (if cfg.validateConfig then pkgs.writers.writeNginxConfig else pkgs.writeText) "nginx.conf"
+      ''
+        ${cfg.prependConfig}
 
-      events {
-        ${cfg.eventsConfig}
-      }
+        pid ${config.hostenv.runtimeDir}/nginx.pid;
+        error_log syslog:server=unix:/dev/log debug;
+        daemon off;
 
-      http {
-        ${cfg.commonHttpConfig}
+        ${cfg.config}
 
-        ${lib.optionalString cfg.recommendedOptimisation ''
-        # Recommended optimisation.
-        sendfile on;
-        tcp_nopush on;
-        tcp_nodelay on;
-        keepalive_timeout 65;
+        ${lib.optionalString (cfg.eventsConfig != "" || cfg.config == "") ''
+          events {
+            ${cfg.eventsConfig}
+          }
         ''}
 
-        ${lib.optionalString cfg.recommendedCompression ''
-        # Recommended Brotli and gzip settings.
-        # https://github.com/NixOS/nixpkgs/blob/nixos-24.11/nixos/modules/services/web-servers/nginx/default.nix#L202
-        brotli on;
-        brotli_static on;
-        brotli_comp_level 5;
-        brotli_window 512k;
-        brotli_min_length 256;
-        brotli_types ${pkgs.lib.concatStringsSep " " compressMimeTypes};
+        ${lib.optionalString (cfg.config == "") ''
+          http {
+            ${cfg.commonHttpConfig}
 
-        gzip on;
-        gzip_static on;
-        gzip_vary on;
-        gzip_comp_level 5;
-        gzip_min_length 256;
-        gzip_proxied expired no-cache no-store private auth;
-        gzip_types ${pkgs.lib.concatStringsSep " " compressMimeTypes};
+            ${lib.optionalString cfg.recommendedOptimisation ''
+            # Recommended optimisation.
+            sendfile on;
+            tcp_nopush on;
+            tcp_nodelay on;
+            keepalive_timeout 65;
+            ''}
+
+            ${vhostValues}
+          }
         ''}
 
-        ${vhostValues}
-      }
-    '';
+        ${cfg.appendConfig}
+      '';
 
-  # Mime.types values are taken from brotli sample configuration - https://github.com/google/ngx_brotli
-  # and Nginx Server Configs - https://github.com/h5bp/server-configs-nginx
-  # "text/html" is implicitly included in {brotli,gzip,zstd}_types
-  compressMimeTypes = [
-    "application/atom+xml"
-    "application/geo+json"
-    "application/javascript" # Deprecated by IETF RFC 9239, but still widely used
-    "application/json"
-    "application/ld+json"
-    "application/manifest+json"
-    "application/rdf+xml"
-    "application/vnd.ms-fontobject"
-    "application/wasm"
-    "application/x-rss+xml"
-    "application/x-web-app-manifest+json"
-    "application/xhtml+xml"
-    "application/xliff+xml"
-    "application/xml"
-    "font/collection"
-    "font/otf"
-    "font/ttf"
-    "image/bmp"
-    "image/svg+xml"
-    "image/vnd.microsoft.icon"
-    "text/cache-manifest"
-    "text/calendar"
-    "text/css"
-    "text/csv"
-    "text/javascript"
-    "text/markdown"
-    "text/plain"
-    "text/vcard"
-    "text/vnd.rim.location.xloc"
-    "text/vtt"
-    "text/x-component"
-    "text/xml"
-  ];
+  configPath = if cfg.enableReload then "$XDG_CONFIG_HOME/nginx.conf" else configFile;
 
-  execCommand = "${cfg.package}/bin/nginx -e stderr -c ${configFile}";
+  execCommand = "${cfg.package}/bin/nginx -e stderr -c \"${configPath}\"";
 in
 {
   options.services.nginx = {
@@ -112,7 +65,7 @@ in
     };
 
     additionalModules = lib.mkOption {
-      default = [ pkgs.nginxModules.brotli ];
+      default = [ ];
       defaultText = lib.literalExpression "[ pkgs.nginxModules.brotli ]";
       type = lib.types.listOf (lib.types.attrsOf lib.types.anything);
       example = lib.literalExpression "[ pkgs.nginxModules.echo ]";
@@ -148,17 +101,6 @@ in
       '';
     };
 
-    recommendedCompression = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = ''
-        Enable recommended compression settings.
-        Learn more about compression in Brotli format [here](https://github.com/google/ngx_brotli/).
-
-        This adds `pkgs.nginxModules.brotli` to `services.nginx.additionalModules`.
-      '';
-    };
-
     serverTokens = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -177,6 +119,46 @@ in
         worker_connections 1024;
       '';
       description = "The nginx events configuration.";
+    };
+
+    config = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      description = ''
+        Verbatim {file}`nginx.conf` configuration.
+        This is mutually exclusive to any other config option for
+        {file}`nginx.conf` except for:
+        - [](#opt-services.nginx.prependConfig)
+        - [](#opt-services.nginx.appendConfig)
+
+        If additional verbatim config in addition to other options is needed,
+        [](#opt-services.nginx.appendConfig) should be used instead.
+      '';
+    };
+
+    prependConfig = lib.mkOption {
+      type = lib.types.lines;
+      default = "";
+      description = ''
+        Configuration lines prepended to the generated Nginx
+        configuration file. Can for example be used to load modules.
+        {option}`prependConfig` can be specified more than once
+        and its value will be concatenated (contrary to {option}`config`
+        which can be set only once).
+      '';
+    };
+
+    appendConfig = lib.mkOption {
+      type = lib.types.lines;
+      default = "";
+      description = ''
+        Configuration lines appended to the generated Nginx
+        configuration file. Commonly used by different modules
+        providing http snippets. {option}`appendConfig`
+        can be specified more than once and its value will be
+        concatenated (contrary to {option}`config` which
+        can be set only once).
+      '';
     };
 
     commonHttpConfig = lib.mkOption {
@@ -205,7 +187,6 @@ in
 
         default_type application/octet-stream;
 
-        # log_format scripts '$document_root$fastcgi_script_name > $request';
         access_log syslog:server=unix:/dev/log combined;
       '';
       example = ''
@@ -232,9 +213,31 @@ in
       };
 
     validateConfig = lib.mkEnableOption "validation of the nginx config." // { default = true; };
+
+    enableReload = lib.mkOption {
+      default = false;
+      type = lib.types.bool;
+      description = ''
+        Reload nginx when configuration file changes (instead of restart).
+        The configuration file is exposed at {file}`$XDG_CONFIG_HOME/nginx.conf`.
+      '';
+    };
   };
 
   config = lib.mkIf (cfg.enable && cfg.virtualHosts != null) {
+    assertions = [
+      {
+        assertion = all
+          (host:
+            all (location: !(location.proxyPass != null && location.uwsgiPass != null)) (lib.attrValues host.locations))
+          (lib.attrValues cfg.virtualHosts);
+        message = ''
+          Options services.nginx.service.virtualHosts.<name>.proxyPass and
+          services.nginx.virtualHosts.<name>.uwsgiPass are mutually exclusive.
+        '';
+      }
+    ];
+
     systemd.services.nginx = {
       description = "Nginx Web Server for ${config.hostenv.userName}";
       wantedBy = [ "default.target" ];
@@ -252,8 +255,37 @@ in
         ];
         Restart = "always";
         RestartSec = "10s";
+        PassEnvironment = "XDG_CONFIG_HOME";
       };
     };
+
+    # @todo: need a hostenv lib containing helpers to generate code like
+    # the check for $XDG_CONFIG_HOME below, which is duplicated from the
+    # systemd activation script.
+    activate = lib.optionalString cfg.enableReload ''
+      ## nginx activation script.
+
+      if [ ! -n "$XDG_CONFIG_HOME" ]; then
+        echo '$XDG_CONFIG_HOME is not set, cannot continue'
+        exit 1
+      fi
+
+      mkdir -p "$XDG_CONFIG_HOME" || exit 1
+
+      if [ -e "$XDG_CONFIG_HOME"/nginx.conf ]; then
+        # If the file is a symlink to a directory that exists...
+        if [ -L "$XDG_CONFIG_HOME"/nginx.conf ]; then
+          # ...then delete it.
+          rm "$XDG_CONFIG_HOME"/nginx.conf
+        else
+          # Otherwise the file exists, but is not a symlink.
+          echo "Couldn't unlink old 'nginx.conf' at '$XDG_CONFIG_HOME/nginx.conf'. Please check and delete it manually, then try again."
+          exit 1
+        fi
+      fi
+
+      ln -sf ${configFile} "$XDG_CONFIG_HOME"/nginx.conf || exit 1
+    '';
 
     profile =
       let

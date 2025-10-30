@@ -4,6 +4,13 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    phps = {
+      url = "github:fossar/nix-phps";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        utils.follows = "flake-utils";
+      };
+    };
     search = {
       url = "github:NuschtOS/search";
       inputs = {
@@ -15,10 +22,11 @@
       url = ./src/modules;
       inputs.flake-utils.follows = "flake-utils";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.phps.follows = "phps";
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, hostenv-internal, search, ... }:
+  outputs = { nixpkgs, flake-utils, hostenv-internal, search, ... }:
     flake-utils.lib.eachDefaultSystem
       (system:
         let
@@ -75,56 +83,20 @@
             '';
           };
 
-          tests = {
-            # Test Drupal environment (production)
-            # Uses the main environment from tests/drupal/hostenv.nix
-            drupalProduction = makeHostenv {
-              organisation = "test-drupal";
-              project = "test-drupal-project";
-              buildReference = self.rev or null;
-              environmentName = "main";
-              root = ./tests/drupal;
-              modules = [ ./tests/drupal/hostenv.nix ];
-            };
-
-            # Test Drupal environment (development)
-            # Used to verify that debug headers work in non-production environments.
-            # Note: hostenv will automatically generate a consistent URL for this environment
-            drupalDev = makeHostenv {
-              organisation = "test-drupal";
-              project = "test-drupal-project";
-              buildReference = self.rev or null;
-              environmentName = "dev";
-              root = ./tests/drupal;
-              modules = [
-                ./tests/drupal/hostenv.nix
-                {
-                  environments.dev = {
-                    enable = true;
-                    type = "development";
-                  };
-                }
-              ];
-            };
-          };
+          envs = import ./tests/environments.nix { inherit pkgs makeHostenv; };
 
         in
         {
-          inherit tests;
           apps.default = (flake-utils.lib.mkApp { drv = serveDocs; }) // {
             meta.description = "Serve hostenv documentation site";
           };
           packages = {
             # Searchable documentation package.
             inherit docSearch;
-            testDrupalProduction = tests.drupalProduction.config.activatePackage;
-            testDrupalDev = tests.drupalDev.config.activatePackage;
+            default = docSearch;
           };
 
-          # Import test suite from external file
-          checks = import ./tests/drupal/tests.nix {
-            inherit pkgs tests;
-          };
+          checks = import ./tests { inherit pkgs envs; };
         }) //
     {
       templates = {
