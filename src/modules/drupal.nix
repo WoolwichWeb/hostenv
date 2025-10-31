@@ -490,6 +490,12 @@ in
         environmentFile = cfg.backups.restic.environmentFile;
         initialize = true;
         wantsUnits = [ "mysql.service" ];
+        pruneOpts = [
+          "--keep-daily 10"
+          "--keep-weekly 5"
+          "--keep-monthly 12"
+          "--keep-yearly 75"
+        ];
       };
     };
 
