@@ -86,6 +86,10 @@ in {
     [ "$uid1" -ne "$uid2" ] || { echo "uid collision"; exit 1; }
     jq -e ".environments.env1.extras.uid == $uid1" "$plan" > /dev/null
 
+    # Node merge: both envs should appear under the same node
+    jq -e '.nodes.node1.users.users | has("env1") and has("env2")' "$plan" > /dev/null
+    jq -e '.nodes.node1.services.nginx.virtualHosts | has("env1.example") and has("env2.example")' "$plan" > /dev/null
+
     # Alias preservation even with existing state for this env
     plan2=$(mktemp)
     cp ${planWithState} "$plan2"
