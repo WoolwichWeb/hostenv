@@ -244,12 +244,15 @@ in
     defaultEnvironment = lib.mkDefault defaultEnv;
 
     # Invariant: at most one production environment.
-    assertions = [
-      {
-        assertion = (lib.length (builtins.attrNames (lib.filterAttrs (_: v: v.type == "production" && v.enable) cfg))) <= 1;
-        message = "Only one environment may have type=production (see src/modules/environments.nix).";
-      }
-    ];
+    assertions =
+      let
+        productionCount = lib.length (builtins.attrNames (lib.filterAttrs (_: v: v.type == "production" && v.enable) cfg));
+      in [
+        {
+          assertion = productionCount <= 1;
+          message = "Only one environment may have type=production (found ${toString productionCount}).";
+        }
+      ];
 
     # Bridge to the hostenv.* trunk used by feature modules so there is one canonical
     # view of environments.
