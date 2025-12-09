@@ -220,6 +220,7 @@ in
             localSystem = system;
             nodesPath = cfg.nodesPath;
             secretsPath = cfg.secretsPath;
+            nodeSystems = cfg.nodeSystems;
           };
 
           deployNodes =
