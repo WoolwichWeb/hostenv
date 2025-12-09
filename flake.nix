@@ -96,7 +96,7 @@
             default = docSearch;
           };
 
-          checks = import ./tests { inherit pkgs envs; };
+          checks = import ./tests { inherit pkgs envs makeHostenv; };
 
           devShells.default = pkgs.mkShell {
             buildInputs = [

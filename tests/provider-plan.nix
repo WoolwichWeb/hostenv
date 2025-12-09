@@ -1,6 +1,76 @@
-{ pkgs }:
+{ pkgs, makeHostenv }:
 let
   lib = pkgs.lib;
+
+  # Build sample environments from an actual hostenv evaluation to stay
+  # aligned with the module defaults.
+  sampleProjects =
+    let
+      envsEval = makeHostenv {
+        organisation = "org";
+        project = "proj";
+        root = ./.;
+        modules = [
+          ({ ... }: {
+            defaultEnvironment = "env1";
+            environments = {
+              env1 = {
+                enable = true;
+                type = "development";
+                hostenv.userName = "env1";
+                hostenv.hostname = "env1.example";
+                virtualHosts."env1.example" = {
+                  enableLetsEncrypt = true;
+                  globalRedirect = null;
+                  locations = { };
+                };
+                virtualHosts."alias.example" = {
+                  enableLetsEncrypt = true;
+                  globalRedirect = null;
+                  locations = { };
+                };
+              };
+              env2 = {
+                enable = true;
+                type = "development";
+                hostenv.userName = "env2";
+                hostenv.hostname = "env2.example";
+                virtualHosts."env2.example" = {
+                  enableLetsEncrypt = true;
+                  globalRedirect = null;
+                  locations = { };
+                };
+              };
+            };
+          })
+        ];
+      };
+      baseRepo = {
+        type = "git";
+        dir = ".";
+        ref = "main";
+        url = "https://example.invalid";
+        owner = "";
+        repo = "";
+      };
+    in
+    lib.attrValues (lib.mapAttrs
+      (_name: envCfg:
+        let
+          hostenv' = envCfg.hostenv or { } // {
+            gitRef = envCfg.hostenv.gitRef or baseRepo.ref;
+            hostenvHostname = "ignored.example";
+          };
+        in {
+          hostenv = hostenv';
+          node = "node1";
+          authorizedKeys = [ ];
+          type = envCfg.type;
+          users = envCfg.users or { };
+          virtualHosts = envCfg.virtualHosts;
+          repo = baseRepo // { ref = hostenv'.gitRef; };
+        })
+      envsEval.config.environments);
 
   mkPlan = { hostenvHostname ? "custom.host", state ? {}, lockData ? {}, projects ? null }:
     (import ../src/provider/plan.nix {
@@ -20,59 +90,22 @@ let
       testProjects = projects;
     }).plan;
 
-  sampleProjects = [
-    {
-      hostenv = {
-        organisation = "org";
-        project = "proj";
-        userName = "env1";
-        hostname = "env1.example";
-        gitRef = "main";
-        environmentName = "main";
-        hostenvHostname = "ignored.example";
-        root = ./.;
-      };
-      node = "node1";
-      authorizedKeys = [];
-      type = "development";
-      users = {};
-      virtualHosts = {
-        "env1.example" = { enableLetsEncrypt = true; globalRedirect = null; locations = {}; };
-        "alias.example" = { enableLetsEncrypt = true; globalRedirect = null; locations = {}; };
-      };
-      repo = { type = "git"; dir = "."; ref = "main"; url = "https://example.invalid"; owner = ""; repo = ""; };
-    }
-    {
-      hostenv = {
-        organisation = "org";
-        project = "proj";
-        userName = "env2";
-        hostname = "env2.example";
-        gitRef = "dev";
-        environmentName = "dev";
-        hostenvHostname = "ignored.example";
-        root = ./.;
-      };
-      node = "node1";
-      authorizedKeys = [];
-      type = "development";
-      users = {};
-      virtualHosts = {
-        "env2.example" = { enableLetsEncrypt = true; globalRedirect = null; locations = {}; };
-      };
-      repo = { type = "git"; dir = "."; ref = "dev"; url = "https://example.invalid"; owner = ""; repo = ""; };
-    }
-  ];
+  user1 = (lib.head sampleProjects).hostenv.userName;
+  user2 = (lib.head (lib.tail sampleProjects)).hostenv.userName;
 
-in let
   planNoState = mkPlan { projects = sampleProjects; };
   planWithState = mkPlan {
     projects = sampleProjects;
-    state = { env1 = { uid = 2001; virtualHosts = [ "env1.example" "alias.example" ]; }; };
+    state = {
+      ${user1} = { uid = 2001; virtualHosts = [ "env1.example" "alias.example" ]; };
+    };
   };
 in {
   provider-plan-regressions = pkgs.runCommand "provider-plan-regressions" { buildInputs = [ pkgs.jq ]; } ''
     set -euo pipefail
+    user1="${user1}"
+    user2="${user2}"
+
     plan=$(mktemp)
     cp ${planNoState} "$plan"
 
@@ -80,20 +113,20 @@ in {
     jq -e '.hostenvHostname=="custom.host"' "$plan" > /dev/null
 
     # UID uniqueness and extras present
-    uid1=$(jq -r '.environments.env1.uid' "$plan")
-    uid2=$(jq -r '.environments.env2.uid' "$plan")
+    uid1=$(jq -r ".environments.\"$user1\".uid" "$plan")
+    uid2=$(jq -r ".environments.\"$user2\".uid" "$plan")
     [ "$uid1" != null ] && [ "$uid2" != null ] || { echo "missing uid"; exit 1; }
     [ "$uid1" -ne "$uid2" ] || { echo "uid collision"; exit 1; }
-    jq -e ".environments.env1.extras.uid == $uid1" "$plan" > /dev/null
+    jq -e ".environments.\"$user1\".extras.uid == $uid1" "$plan" > /dev/null
 
     # Node merge: both envs should appear under the same node
-    jq -e '.nodes.node1.users.users | has("env1") and has("env2")' "$plan" > /dev/null
+    jq -e ".nodes.node1.users.users | has(\"$user1\") and has(\"$user2\")" "$plan" > /dev/null
     jq -e '.nodes.node1.services.nginx.virtualHosts | has("env1.example") and has("env2.example")' "$plan" > /dev/null
 
     # Alias preservation even with existing state for this env
     plan2=$(mktemp)
     cp ${planWithState} "$plan2"
-    jq -e '.environments.env1.virtualHosts | has("alias.example")' "$plan2" > /dev/null
+    jq -e ".environments.\"$user1\".virtualHosts | has(\"alias.example\")" "$plan2" > /dev/null
 
     echo ok > $out
   '';
