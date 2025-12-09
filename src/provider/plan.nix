@@ -26,8 +26,13 @@ let
   projectInputs = if testProjects != null then [ ] else builtins.filter
     (name:
       builtins.hasAttr "hostenv" inputs.${name} &&
-      builtins.hasAttr system inputs.${name}.hostenv &&
-      builtins.hasAttr "environments" inputs.${name}.hostenv.${system}
+      (
+        builtins.hasAttr "environments" inputs.${name}.hostenv
+        || (
+          builtins.hasAttr system inputs.${name}.hostenv
+          && builtins.hasAttr "environments" inputs.${name}.hostenv.${system}
+        )
+      )
     )
     (builtins.attrNames inputs);
 

@@ -72,9 +72,9 @@ let
         })
       envsEval.config.environments);
 
-  mkPlan = { hostenvHostname ? "custom.host", state ? {}, lockData ? {}, projects ? null }:
+  mkPlan = { hostenvHostname ? "custom.host", state ? {}, lockData ? {}, projects ? null, inputsOverride ? { } }:
     (import ../src/provider/plan.nix {
-      inputs = {};
+      inputs = inputsOverride;
       system = "x86_64-linux";
       inherit lib pkgs hostenvHostname;
       letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
