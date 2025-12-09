@@ -46,12 +46,12 @@ let
 
   lockData =
     if testLockData != null then testLockData
-    else if builtins.pathExists ./flake.lock
-    then builtins.fromJSON (builtins.readFile ./flake.lock)
+    else if builtins.pathExists ../flake.lock
+    then builtins.fromJSON (builtins.readFile ../flake.lock)
     else
       builtins.throw ''
-        flake.lock is missing in ${builtins.toString ./.}.
-        Please run: nix flake lock (or nix flake update)
+        flake.lock is missing in ${builtins.toString ../.}.
+        Please run: nix flake lock (or nix flake update) at repo root
       '';
 
   nextUid =

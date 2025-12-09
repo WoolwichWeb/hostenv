@@ -59,6 +59,7 @@ in
         goldenPlanPath = null;
       };
       pkgsLocal = import inputs.nixpkgs { system = "x86_64-linux"; };
+      pkgsAll = inputs.nixpkgs.legacyPackages;
 
       mkPlan = { system, pkgs' }:
         let
@@ -93,7 +94,7 @@ in
         config = planJSONTop;
         inherit node inputs;
         nixpkgs = inputs.nixpkgs;
-        pkgs = pkgsLocal;
+        pkgs = pkgsAll;
         localSystem = "x86_64-linux";
         nodesPath = cfg.nodesPath;
         secretsPath = cfg.secretsPath;
