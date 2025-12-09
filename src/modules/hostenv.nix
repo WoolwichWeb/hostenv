@@ -80,6 +80,17 @@ in
       type = types.str;
       description = "Name of the current environment. Usually corresponds to a git branch, but can be something else, e.g. an MR slug or number. Should be short, lowercase, and with no special characters.";
     };
+    defaultEnvironment = lib.mkOption {
+      type = types.str;
+      description = "Default environment name for the project.";
+      default = "main";
+    };
+    environments = lib.mkOption {
+      type = types.attrs;
+      default = { };
+      description = "Canonical environment tree (filled by environments.nix).";
+      internal = true;
+    };
     safeEnvironmentName = lib.mkOption {
       type = types.str;
       description = "Name of the current environment, shortened and with special characters removed.";

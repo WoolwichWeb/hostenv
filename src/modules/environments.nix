@@ -232,14 +232,16 @@ in
     example = "production";
   };
 
-  config = {
-    defaultEnvironment = lib.mkDefault (
-      let
-        productionEnvs = lib.filterAttrs (n: v: v.type == "production" && v.enable) cfg;
-        names = builtins.attrNames productionEnvs;
-      in
-      if names != [ ] then builtins.head names else "main"
-    );
+  config =
+    let
+      defaultEnv =
+        let
+          productionEnvs = lib.filterAttrs (n: v: v.type == "production" && v.enable) cfg;
+          names = builtins.attrNames productionEnvs;
+        in
+        if names != [ ] then builtins.head names else "main";
+    in {
+    defaultEnvironment = lib.mkDefault defaultEnv;
 
     # Invariant: at most one production environment.
     assertions = [
@@ -252,7 +254,7 @@ in
     # Bridge to the hostenv.* trunk used by feature modules so there is one canonical
     # view of environments.
     hostenv.environments = lib.mkDefault cfg;
-    hostenv.defaultEnvironment = lib.mkDefault config.defaultEnvironment;
+    hostenv.defaultEnvironment = lib.mkDefault defaultEnv;
   };
 
 }

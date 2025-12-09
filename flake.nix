@@ -32,7 +32,6 @@
       systems = nixpkgs.lib.systems.flakeExposed;
       imports = [
         ./src/provider/flake-module.nix
-        ./src/modules/hostenv-environments.nix
       ];
 
       perSystem = { system, pkgs, self', ... }:
