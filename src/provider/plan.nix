@@ -290,10 +290,13 @@ let
               ${elem.hostenv.userName} = elem;
             };
             nodes = acc.nodes // {
-              ${elem.node} = {
-                security.acme = {
-                  acceptTerms = letsEncrypt.acceptTerms;
-                  defaults.email = letsEncrypt.adminEmail;
+              ${elem.node} =
+                let
+                  existing = acc.nodes.${elem.node} or { };
+                in lib.recursiveUpdate existing {
+                  security.acme = {
+                    acceptTerms = letsEncrypt.acceptTerms;
+                    defaults.email = letsEncrypt.adminEmail;
                 };
 
                 users.groups.${elem.hostenv.userName} = {

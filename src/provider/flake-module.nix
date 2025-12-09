@@ -227,10 +227,13 @@ in
 
           deployEnvs =
             if hasPlan then builtins.mapAttrs
-              (name: environment: pkgs.buildEnv {
-                inherit name;
-                paths = [ inputs.${name}.packages.${system}.${environment.hostenv.environmentName} ];
-              })
+              (name: environment:
+                let
+                  inputName = "${environment.hostenv.organisation}__${environment.hostenv.project}";
+                in pkgs.buildEnv {
+                  inherit name;
+                  paths = [ inputs.${inputName}.packages.${system}.${environment.hostenv.environmentName} ];
+                })
               planJSON.environments
             else { };
 
