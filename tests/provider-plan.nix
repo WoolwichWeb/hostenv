@@ -73,8 +73,21 @@ let
       envsEval.config.environments);
 
   mkPlan = { hostenvHostname ? "custom.host", state ? {}, lockData ? {}, projects ? null, inputsOverride ? { } }:
-    (import ../src/provider/plan.nix {
-      inputs = inputsOverride;
+    let
+      inputsEffective =
+        if inputsOverride == { }
+        then {
+          hostenv =
+            let outPath = ../src/modules;
+            in {
+              inherit outPath;
+              modules = outPath;
+              __toString = self: toString outPath;
+            };
+        }
+        else inputsOverride;
+    in import ../src/provider/plan.nix {
+      inputs = inputsEffective;
       system = "x86_64-linux";
       inherit lib pkgs hostenvHostname;
       letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
@@ -88,20 +101,21 @@ let
       testLockData = lockData;
       testState = state;
       testProjects = projects;
-    }).plan;
+    };
 
   user1 = (lib.head sampleProjects).hostenv.userName;
   user2 = (lib.head (lib.tail sampleProjects)).hostenv.userName;
 
-  planNoState = mkPlan { projects = sampleProjects; };
-  planWithState = mkPlan {
+  planNoState = (mkPlan { projects = sampleProjects; }).plan;
+  flakeNoState = (mkPlan { projects = sampleProjects; }).flake;
+  planWithState = (mkPlan {
     projects = sampleProjects;
     state = {
       ${user1} = { uid = 2001; virtualHosts = [ "env1.example" "alias.example" ]; };
     };
-  };
+  }).plan;
 in {
-  provider-plan-regressions = pkgs.runCommand "provider-plan-regressions" { buildInputs = [ pkgs.jq ]; } ''
+  provider-plan-regressions = pkgs.runCommand "provider-plan-regressions" { buildInputs = [ pkgs.jq pkgs.gnugrep ]; } ''
     set -euo pipefail
     user1="${user1}"
     user2="${user2}"
@@ -127,6 +141,13 @@ in {
     plan2=$(mktemp)
     cp ${planWithState} "$plan2"
     jq -e ".environments.\"$user1\".virtualHosts | has(\"alias.example\")" "$plan2" > /dev/null
+
+    # Generated flake should include hostenv input and both environment inputs
+    flake=$(mktemp)
+    cp ${flakeNoState} "$flake"
+    grep -q 'hostenv.url' "$flake"
+    grep -q "$user1 =" "$flake"
+    grep -q "$user2 =" "$flake"
 
     echo ok > $out
   '';
