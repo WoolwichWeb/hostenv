@@ -253,6 +253,9 @@ in
           "${execCommand} -t"
           "${pkgs.coreutils}/bin/kill -HUP $MAINPID"
         ];
+        # Ensure unix socket inherits group 'nginx' from the setgid upstreamRuntimeDir
+        # and is created with 0660 permissions so system nginx can connect.
+        UMask = "0007";
         Restart = "always";
         RestartSec = "10s";
         PassEnvironment = "XDG_CONFIG_HOME";

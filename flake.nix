@@ -4,6 +4,7 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    flake-parts.url = "github:hercules-ci/flake-parts";
     phps = {
       url = "github:fossar/nix-phps?ref=update_flake_lock_action";
       inputs = {
@@ -26,13 +27,16 @@
     };
   };
 
-  outputs = { nixpkgs, flake-utils, hostenv-internal, search, ... }:
-    flake-utils.lib.eachDefaultSystem
-      (system:
+  outputs = inputs@{ self, nixpkgs, flake-parts, search, hostenv-internal, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = nixpkgs.lib.systems.flakeExposed;
+      imports = [
+        ./src/provider/flake-module.nix
+        ./src/modules/hostenv-environments.nix
+      ];
+
+      perSystem = { system, pkgs, self', ... }:
         let
-          pkgs = (import nixpkgs) {
-            inherit system;
-          };
           makeHostenv = hostenv-internal.makeHostenv.${system};
 
           docSearch = search.packages.${system}.mkMultiSearch {
@@ -69,13 +73,8 @@
             name = "serve-docs";
             runtimeInputs = [ pkgs.http-server ];
             runtimeEnv.server_flags = [
-              # Search for available port
               "--port=0"
-
-              # Disable browser cache
               "-c-1"
-
-              # Open using xdg-open
               "-o"
             ];
             text = ''
@@ -84,34 +83,60 @@
           };
 
           envs = import ./tests/environments.nix { inherit pkgs makeHostenv; };
-
         in
         {
-          apps.default = (flake-utils.lib.mkApp { drv = serveDocs; }) // {
+          apps.default = {
+            type = "app";
+            program = "${serveDocs}/bin/serve-docs";
             meta.description = "Serve hostenv documentation site";
           };
+
           packages = {
-            # Searchable documentation package.
             inherit docSearch;
             default = docSearch;
           };
 
           checks = import ./tests { inherit pkgs envs; };
-        }) //
-    {
-      templates = {
-        default = {
-          path = ./template;
-          description = "Hostenv project template";
-          welcomeText = ''
-            ## Thank you for using Hostenv
 
-            What's next:
+          devShells.default = pkgs.mkShell {
+            buildInputs = [
+              self'.packages.hostenv-provider
+              self'.packages.hostenv-provider-plan
+              pkgs.sops
+              pkgs.age
+              pkgs.jq
+              pkgs.bind
+              pkgs.deploy-rs
+              pkgs.git
+              pkgs.haskellPackages.haskell-language-server
+            ];
+            shellHook = ''
+              export HOSTENV_PROVIDER_OUT=''${HOSTENV_PROVIDER_OUT:-generated}
+            '';
+          };
+        };
 
-             - Configure your project in `.hostenv/hostenv.nix`.
-             - Check the project README.md for more instructions:
-               https://gitlab.com/woolwichweb/hostenv/-/blob/main/README.md?ref_type=heads
-          '';
+      flake = {
+        # Expose provider module under lib to avoid nonstandard top-level outputs.
+        lib = {
+          hostenv = {
+            providerModule = ./src/provider/flake-module.nix;
+          };
+        };
+        templates = {
+          default = {
+            path = ./template;
+            description = "Hostenv project template";
+            welcomeText = ''
+              ## Thank you for using Hostenv
+
+              What's next:
+
+               - Configure your project in `.hostenv/hostenv.nix`.
+               - Check the project README.md for more instructions:
+                 https://gitlab.com/woolwichweb/hostenv/-/blob/main/README.md?ref_type=heads
+            '';
+          };
         };
       };
     };

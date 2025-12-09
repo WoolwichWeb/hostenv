@@ -107,6 +107,8 @@ in
     ../systemd.nix
     ../mysql.nix
     ../nginx.nix
+    ../nginx-fastcgi-hostenv.nix
+    ../features/cloudflare-hostenv.nix
     ../phpfpm.nix
     ../drupal.nix
     ../php-app.nix

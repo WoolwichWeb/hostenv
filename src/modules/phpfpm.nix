@@ -73,11 +73,11 @@ let
           description = ''
             Path to the unix socket file on which to accept FastCGI requests.
 
-            ::: {.note}
-            This option is read-only and managed by NixOS.
-            :::
+            Defaults to `${config.hostenv.runtimeDir}/<pool>.sock`. User-level nginx should
+            proxy FastCGI to this socket; the system-level nginx talks to the user-level
+            nginx via `${config.hostenv.upstreamRuntimeDir}/in.sock`.
           '';
-          example = "${config.hostenv.runtimeDir}/<name>.sock";
+          example = "${config.hostenv.runtimeDir}/pool.sock";
         };
 
         phpVersion = lib.mkOption {
@@ -222,11 +222,16 @@ let
           )))
         ];
 
+        # Hostenv convention: pool socket lives in the user runtime dir; user-level nginx
+        # proxies FastCGI to it.
         socket = "${config.hostenv.runtimeDir}/${name}.sock";
         phpOptions = lib.mkBefore cfg.phpOptions;
 
         settings = lib.mapAttrs (_n: lib.mkDefault) {
           listen = poolCfg.socket;
+          "listen.owner" = config.hostenv.userName;
+          "listen.group" = config.hostenv.userName;
+          "listen.mode" = "660";
         };
       };
     };
