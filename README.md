@@ -48,70 +48,34 @@ Here's an example hosting environment for the [Drupal](https://www.drupal.org) C
 
 ---
 
-## Getting Started (for projects)
+## Repository Map (for contributors)
 
-**Audience:** developers setting up hosting for a project.
+- `src/modules/` – canonical hostenv modules. The trunk is `config.environments`; feature modules also read `config.hostenv.environments` (bridged automatically).  
+  - `features/` – dendritic feature modules (nginx-hostenv, cloudflare-hostenv, backups-hostenv, users-slices, etc.).  
+  - `top-level/full-env.nix` – assembles a user-level hostenv environment.  
+  - `hostenv.nix` – core hostenv options (paths, hashes, naming).  
+  - `environments.nix` – canonical environment schema and defaults.
+- `src/provider/` – provider-side planning/CLI (plan/state generation, deploy flake, dns-gate scaffolding).
+- `template/.hostenv/` – project template consumed by `flake init`.
+- `tests/` – flake checks; includes provider plan regressions and Drupal fixtures.
+- `docs/` – design notes (dendritic structure, provider quickstart, etc.).
 
-1. **Install Nix**  
-   Follow the [Nix installation guide](https://nixos.org/download/#download-nix).
+## Key Workflows
 
-2. **Initialise your hostenv project**  
-   Inside your project directory, run:
+- **Add an environment**: edit your project’s `.hostenv/hostenv.nix`, add an entry under `environments.<name> { enable = true; type = ...; virtualHosts = { ... }; }`. Run `nix flake check` to ensure feature modules (nginx, php-fpm, backups) pick it up. Only one environment may be `type = "production"` (enforced).
+- **Remove an environment**: delete or set `enable = false` in `.hostenv/hostenv.nix`; regenerate plan/state (`hostenv-provider plan`) and deploy.
+- **Add a host (provider)**: in the provider repo, add a node file under `nodes/` and map it in `provider.nodeSystems`; regenerate plan/state (`hostenv-provider plan`) and deploy via deploy-rs.
+- **Add a feature module**: create `src/modules/features/<name>.nix`; consume `config.hostenv.environments` (already bridged from `config.environments`); import it in `top-level/full-env.nix` (or provider-level if system-only). Add a test in `tests/`.
 
-   ```bash
-   nix --extra-experimental-features "nix-command flakes" flake init --template gitlab:woolwichweb/hostenv
-   ```
+## Getting Started (projects)
 
-3. **Install and configure direnv**  
-   [Install direnv](https://direnv.net/docs/installation.html) and set up the shell hook.  
-   For **Bash**, run:
-
-   ```bash
-   echo 'eval "$(direnv hook bash)"' >> ~/.bashrc
-   ```
-
-   (For other shells, see the [direnv hook documentation](https://direnv.net/docs/hook.html).)
-
-4. **Configure hostenv**  
-   Edit `.hostenv/hostenv.nix` and set options for your project.
-
-5. **Make hostenv visible to Nix**  
-   Since Nix only includes tracked files, run:
-
-   ```bash
-   git add .hostenv
-   ```
-
-6. **Allow direnv to build your environment**
-
-   ```bash
-   cd .hostenv
-   direnv allow
-   ```
-
-7. **Wait for hostenv to build bespoke tooling**  
-   It will automatically prepare a project-specific environment and CLI.
-
-8. **Run hostenv commands**  
-   From your project directory, run:
-
-   ```bash
-   hostenv
-   ```
-
-   to see available commands.
-
-9. **Enjoy automatic integration**  
-   Once deployed, tools such as `drush` and `mysql` will *JustWork™* with the remote environment; no need to manage SSH or tunnels manually, just `cd .hostenv` then `drush`.
-
----
+1) Install Nix.  
+2) `nix flake init --template gitlab:woolwichweb/hostenv`.  
+3) Install/configure direnv, run `direnv allow` inside `.hostenv/`.  
+4) Configure environments in `.hostenv/hostenv.nix`.  
+5) `nix flake check` (or `nix run .#hostenv-provider -- plan` in provider context).  
+6) Deploy via provider flow once ready.
 
 ## Contributing
 
-We don't have formal contribution guidelines yet, but we welcome all kinds of help. Whether it's a merge request, bug report, documentation improvement, or a question about how something works.
-
-If you see something that could be better, feel free to open an issue or submit an MR (merge request). We'll work things out together as the project grows.
-
----
-
-*hostenv: declarative hosting belonging to all of us.*
+PRs, issues, and questions welcome. Focus areas that help most: tests for new feature modules, provider UX, and documentation clarity. Thank you!
