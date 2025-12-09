@@ -37,6 +37,8 @@ perSystem = { config, ... }: {
 - `nodesPath` is a directory of per-node configs (`configuration.nix` + hardware config).
 - Secrets are supplied via `secretsPath` (sops). A fallback example lives at `src/secrets/secrets.yaml.example`.
   - Starter stubs live in `nodes/sample/` and `secrets/secrets.yaml.example`; copy and adapt for a new provider setup.
+- `nodeSystems` maps node name → system (e.g. `x86_64-linux`); required if nodes are heterogeneous.
+- `hostenvProjectDir` sets the default path to client flakes (defaults to `.hostenv`).
 
 ## Leaves
 

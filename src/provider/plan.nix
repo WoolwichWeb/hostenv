@@ -11,6 +11,7 @@
 , statePath ? ./generated/state.json
 , nodeSystems ? { }
 , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
+, hostenvProjectDir ? ".hostenv"
 , testProjects ? null
 , testState ? null
 , testLockData ? null
@@ -195,7 +196,7 @@ let
           val: ''
             ${val.hostenv.userName} = {
               type = "${val.repo.type}";
-              dir = "${if val.repo ? dir then val.repo.dir else ".hostenv"}";
+              dir = "${if val.repo ? dir then val.repo.dir else hostenvProjectDir}";
               ref = "${val.repo.ref}";
               ${lib.optionalString (val.repo ? url) ''
               url = "${val.repo.url}";
@@ -260,6 +261,22 @@ let
   # JSON representation of every environment returned by each hostenv flake.
   generatedConfig =
     let
+      base = {
+        _description = ''
+          Contains a build and deployment plan for hostenv servers on NixOS.
+          There are two data substructures:
+
+          1. Under **environments** is a JSON representation of hostenv's own modules config, retaining the original structure of that representation.
+          2. Each element under **nodes** is NixOS server configuration, and will be merged into the configuration of that server during build.
+
+          Note: all manual changes to this file will be discarded.
+        '';
+        hostenvHostname = cfgHostenvHostname;
+        cloudflare = cloudflare;
+        environments = { };
+        nodes = { };
+      };
+
       configAttrs = builtins.foldl'
         (acc: elem:
           let
@@ -269,21 +286,10 @@ let
             uid_ = builtins.toString elem.uid;
           in
           lib.recursiveUpdate acc {
-            _description = ''
-              Contains a build and deployment plan for hostenv servers on NixOS.
-              There are two data substructures:
-
-              1. Under **environments** is a JSON representation of hostenv's own modules config, retaining the original structure of that representation.
-              2. Each element under **nodes** is NixOS server configuration, and will be merged into the configuration of that server during build.
-
-              Note: all manual changes to this file will be discarded.
-            '';
-            hostenvHostname = cfgHostenvHostname;
-            cloudflare = cloudflare;
-            environments = {
+            environments = acc.environments // {
               ${elem.hostenv.userName} = elem;
             };
-            nodes = {
+            nodes = acc.nodes // {
               ${elem.node} = {
                 security.acme = {
                   acceptTerms = letsEncrypt.acceptTerms;
@@ -334,7 +340,7 @@ let
               };
             };
           })
-        { }
+        base
         allEnvsWithUid;
     in
     pkgs.writers.writeJSON "plan.json" configAttrs;

@@ -21,6 +21,11 @@ in
       default = { };
       description = "Map of node name -> system string (e.g. x86_64-linux, aarch64-linux).";
     };
+    hostenvProjectDir = mkOption {
+      type = types.str;
+      default = ".hostenv";
+      description = "Default flake dir for client projects when dir is absent in flake.lock (e.g. .hostenv).";
+    };
     nodesPath = mkOption { type = types.path; default = ./nodes; };
     secretsPath = mkOption { type = types.path; default = ./secrets/secrets.yaml; };
     statePath = mkOption { type = types.path; default = ./generated/state.json; };
@@ -71,6 +76,7 @@ in
             secretsPath = cfg.secretsPath;
             statePath = cfg.statePath;
             cloudflare = cfg.cloudflare;
+            hostenvProjectDir = cfg.hostenvProjectDir;
           };
         in {
           json = if cfg.planSource == "eval" then pkgs'.lib.importJSON gen.plan
@@ -155,6 +161,8 @@ in
             planPath = ./generated/plan.json;
             planSource = "eval";
             goldenPlanPath = null;
+            hostenvProjectDir = ".hostenv";
+            cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
           };
 
           plan = mkPlan { system = system; pkgs' = pkgs; };
@@ -280,9 +288,6 @@ in
           packages = {
             hostenv-provider = hostenvProviderCLI;
             hostenv-provider-plan = hostenvProviderPlan;
-          } // lib.optionalAttrs hasPlan {
-            deploy-nodes = deployNodes;
-            deploy-envs = deployEnvs;
           };
 
           apps.hostenv-provider-plan = {

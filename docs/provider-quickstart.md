@@ -7,11 +7,13 @@
   inputs.flake-parts.url = "github:hercules-ci/flake-parts";
  outputs = inputs@{ self, flake-parts, hostenv, ... }:
    flake-parts.lib.mkFlake { inherit inputs; } {
-     imports = [ hostenv.lib.hostenv.providerModule ];
+      imports = [ hostenv.lib.hostenv.providerModule ];
       systems = [ "x86_64-linux" "aarch64-linux" ];
       perSystem = { config, ... }: {
         provider = {
           hostenvHostname = "hostenv.sh";
+          hostenvProjectDir = ".hostenv"; # default location of client flake
+          nodeSystems = { backend01 = "aarch64-linux"; backend02 = "aarch64-linux"; backend03 = "x86_64-linux"; backend04 = "aarch64-linux"; };
           nodesPath = ./nodes;
           secretsPath = ./secrets/secrets.yaml;
           planSource = "eval"; # or "disk"
