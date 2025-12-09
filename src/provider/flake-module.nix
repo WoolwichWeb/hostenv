@@ -216,7 +216,7 @@ in
             inherit node inputs;
             config = planJSON;
             nixpkgs = inputs.nixpkgs;
-            pkgs = pkgs;
+            pkgs = inputs.nixpkgs.legacyPackages;
             localSystem = system;
             nodesPath = cfg.nodesPath;
             secretsPath = cfg.secretsPath;
