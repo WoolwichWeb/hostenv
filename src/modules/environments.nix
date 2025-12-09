@@ -240,4 +240,9 @@ in
     if names != [ ] then builtins.head names else "main"
   );
 
+  # Bridge to the hostenv.* trunk used by feature modules so there is one canonical
+  # view of environments.
+  config.hostenv.environments = lib.mkDefault cfg;
+  config.hostenv.defaultEnvironment = lib.mkDefault config.defaultEnvironment;
+
 }
