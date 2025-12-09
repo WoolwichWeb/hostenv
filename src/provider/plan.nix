@@ -4,21 +4,25 @@
 , pkgs
 , letsEncrypt
 , deployPublicKey
+, hostenvHostname
 , nodeFor ? { production = "backend04"; default = "backend02"; testing = "backend02"; development = "backend02"; }
 , nodesPath ? ./nodes
 , secretsPath ? ./secrets/secrets.yaml
 , statePath ? ./generated/state.json
 , nodeSystems ? { }
 , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
-, ...
+, testProjects ? null
+, testState ? null
+, testLockData ? null
 }:
 
 # Provider-side infrastructure generator.
 # Largely ported from for_refactoring/generate-infra.nix, but relocated under src/provider.
 
 let
+  cfgHostenvHostname = hostenvHostname;
   # Detect hostenv project inputs by checking for the presence of evaluated environments.
-  projectInputs = builtins.filter
+  projectInputs = if testProjects != null then [ ] else builtins.filter
     (name:
       builtins.hasAttr "hostenv" inputs.${name} &&
       builtins.hasAttr system inputs.${name}.hostenv &&
@@ -27,14 +31,16 @@ let
     (builtins.attrNames inputs);
 
   state =
-    if builtins.pathExists statePath then
+    if testState != null then testState
+    else if builtins.pathExists statePath then
       let rawValues = lib.importJSON statePath;
       in lib.filterAttrs (name: _: name != "_description") rawValues
     else
       { };
 
   lockData =
-    if builtins.pathExists ./flake.lock
+    if testLockData != null then testLockData
+    else if builtins.pathExists ./flake.lock
     then builtins.fromJSON (builtins.readFile ./flake.lock)
     else
       builtins.throw ''
@@ -77,7 +83,7 @@ let
     { inherit project organisation; };
 
   # Build a list of hostenv projects, then build a list of environments for each project.
-  allEnvs = builtins.concatLists (map
+  realEnvs = builtins.concatLists (map
     (name:
       let
         repo = lockData.nodes.${name}.original or (builtins.throw ''
@@ -114,15 +120,12 @@ let
 
               authorizedKeys =
                 let
-                  allUsers = lib.foldAttrs
-                    (item: acc: [ item ] ++ acc)
-                    [ ]
-                    (builtins.attrValues envCfg.users);
-                in
-                builtins.concatLists (allUsers.publicKeys or [ ]);
+                  allUsers = builtins.attrValues envCfg.users;
+                in builtins.concatLists (map (u: u.publicKeys or [ ]) allUsers);
 
               # Hostname reservation logic (copied from legacy generator).
-              allVHosts = builtins.catAttrs "virtualHosts" (builtins.attrValues (builtins.removeAttrs state [ envName ]));
+              # Remove current env by username (state keyed by hostenv.userName), not envName.
+              allVHosts = builtins.catAttrs "virtualHosts" (builtins.attrValues (builtins.removeAttrs state [ hostenv.userName ]));
               unreservableVHosts = builtins.filter (vhost: vhost != hostenv.hostname) allVHosts;
               filteredEnvVHosts = lib.filterAttrs
                 (
@@ -156,15 +159,33 @@ let
                 )
                 filteredEnvVHosts;
             in
-            envCfg // {
+            let
+              hostenv' = hostenv // { hostenvHostname = cfgHostenvHostname; };
+            in envCfg // {
               inherit node authorizedKeys virtualHosts;
-              repo = repo // { ref = hostenv.gitRef; };
-              uid = state.${hostenv.userName}.uid or nextUid;
+              hostenv = hostenv';
+              repo = repo // { ref = hostenv'.gitRef; };
             }
         )
         minimalHostenv.config.environments
     )
     projectInputs);
+
+  allEnvs = if testProjects != null then testProjects else realEnvs;
+
+  # Assign unique UIDs to new environments; keep existing ones from state or explicit extras.uid.
+  allEnvsWithUid = lib.imap0 (idx: env:
+    let
+      user = env.hostenv.userName;
+      extras = env.extras or { };
+      uidFromState = if builtins.hasAttr user state then state.${user}.uid else null;
+      uidManual = extras.uid or null;
+      uid = if uidFromState != null then uidFromState
+            else if uidManual != null then uidManual
+            else nextUid + idx;
+      extras' = extras // { uid = uid; };
+    in env // { inherit uid; extras = extras'; }
+  ) allEnvs;
 
   generatedFlake =
     let
@@ -174,7 +195,7 @@ let
           val: ''
             ${val.hostenv.userName} = {
               type = "${val.repo.type}";
-              dir = "${val.repo.dir}";
+              dir = "${if val.repo ? dir then val.repo.dir else ".hostenv"}";
               ref = "${val.repo.ref}";
               ${lib.optionalString (val.repo ? url) ''
               url = "${val.repo.url}";
@@ -239,7 +260,6 @@ let
   # JSON representation of every environment returned by each hostenv flake.
   generatedConfig =
     let
-
       configAttrs = builtins.foldl'
         (acc: elem:
           let
@@ -258,7 +278,7 @@ let
 
               Note: all manual changes to this file will be discarded.
             '';
-            hostenvHostname = elem.hostenv.hostenvHostname;
+            hostenvHostname = cfgHostenvHostname;
             cloudflare = cloudflare;
             environments = {
               ${elem.hostenv.userName} = elem;
@@ -315,7 +335,7 @@ let
             };
           })
         { }
-        allEnvs;
+        allEnvsWithUid;
     in
     pkgs.writers.writeJSON "plan.json" configAttrs;
 
@@ -331,7 +351,7 @@ let
             virtualHosts = builtins.attrNames envCfg.virtualHosts;
           };
         })
-        allEnvs);
+        allEnvsWithUid);
       mergedState =
         {
           _description = ''

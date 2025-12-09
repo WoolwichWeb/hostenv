@@ -64,6 +64,7 @@ in
             pkgs = pkgs';
             letsEncrypt = cfg.letsEncrypt;
             deployPublicKey = cfg.deployPublicKey;
+            hostenvHostname = cfg.hostenvHostname;
             nodeFor = cfg.nodeFor;
             nodeSystems = cfg.nodeSystems;
             nodesPath = cfg.nodesPath;
@@ -147,6 +148,7 @@ in
             letsEncrypt = { adminEmail = "admin@hostenv.sh"; acceptTerms = true; };
             deployPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ7jiIqEDu1TAI2OL8cI575ufkhPJ1fxqC6qmJPaj5s0 deployment";
             nodeFor = { production = "backend04"; testing = "backend02"; development = "backend02"; default = "backend02"; };
+            nodeSystems = { };
             nodesPath = ./nodes;
             secretsPath = ./secrets/secrets.yaml;
             statePath = ./generated/state.json;
@@ -172,10 +174,13 @@ in
             pkgs = pkgs;
             letsEncrypt = cfg.letsEncrypt;
             deployPublicKey = cfg.deployPublicKey;
+            hostenvHostname = cfg.hostenvHostname;
             nodeFor = cfg.nodeFor;
+            nodeSystems = cfg.nodeSystems;
             nodesPath = cfg.nodesPath;
             secretsPath = cfg.secretsPath;
             statePath = cfg.statePath;
+            cloudflare = cfg.cloudflare;
           };
 
           hostenvProviderPlan = pkgs.writeShellScriptBin "hostenv-provider-plan" ''
