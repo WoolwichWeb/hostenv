@@ -267,6 +267,7 @@ let
           in
           {
             inherit inputs config;
+            nixosConfigurations = builtins.mapAttrs (n: _: nixosSystem n) config.nodes;
           };
       }
     '';
