@@ -189,6 +189,7 @@ in
             secretsPath = cfg.secretsPath;
             statePath = cfg.statePath;
             cloudflare = cfg.cloudflare;
+            hostenvProjectDir = cfg.hostenvProjectDir;
           };
 
           hostenvProviderPlan = pkgs.writeShellScriptBin "hostenv-provider-plan" ''
