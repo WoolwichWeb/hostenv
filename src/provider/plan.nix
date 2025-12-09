@@ -198,11 +198,19 @@ let
       localSystem = "x86_64-linux";
       inputsBlock = builtins.concatStringsSep "\n" (map
         (
-          val: ''
+          val:
+            let
+              lockNode = lockData.nodes.${val.hostenv.userName} or null;
+              lockedRev = if lockNode != null && lockNode ? locked then lockNode.locked.rev else null;
+              lockedNarHash = if lockNode != null && lockNode ? locked then lockNode.locked.narHash else null;
+              lockedRef = if lockNode != null && lockNode ? locked then lockNode.locked.ref or val.repo.ref else val.repo.ref;
+            in ''
             ${val.hostenv.userName} = {
               type = "${val.repo.type}";
               dir = "${if val.repo ? dir then val.repo.dir else hostenvProjectDir}";
-              ref = "${val.repo.ref}";
+              ref = "${lockedRef}";
+              ${lib.optionalString (lockedRev != null) ''rev = "${lockedRev}";''}
+              ${lib.optionalString (lockedNarHash != null) ''narHash = "${lockedNarHash}";''}
               ${lib.optionalString (val.repo ? url) ''
               url = "${val.repo.url}";
               ''}
