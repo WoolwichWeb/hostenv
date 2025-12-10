@@ -235,7 +235,7 @@ runDnsGate dest writeOut mNode mTok mZone = do
   planExists <- Sh.testfile (fromString (T.unpack planPath))
   when (not planExists) $ do
     BLC.putStrLn "plan.json not found; dns-gate noop"
-    pure ()
+    exitSuccess
   raw <- BL.readFile (T.unpack planPath)
   case A.eitherDecode' raw of
     Left err -> error err

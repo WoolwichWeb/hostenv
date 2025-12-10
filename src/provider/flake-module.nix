@@ -14,7 +14,7 @@ in
     deployPublicKey = mkOption { type = types.str; default = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ7jiIqEDu1TAI2OL8cI575ufkhPJ1fxqC6qmJPaj5s0 deployment"; };
     nodeFor = mkOption {
       type = types.attrs;
-      default = { production = "backend04"; testing = "backend02"; development = "backend02"; default = "backend02"; };
+      default = { default = null; };
     };
     nodeSystems = mkOption {
       type = types.attrs;
@@ -50,7 +50,7 @@ in
         hostenvHostname = "hostenv.sh";
         letsEncrypt = { adminEmail = "admin@hostenv.sh"; acceptTerms = true; };
         deployPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ7jiIqEDu1TAI2OL8cI575ufkhPJ1fxqC6qmJPaj5s0 deployment";
-        nodeFor = { production = "backend04"; testing = "backend02"; development = "backend02"; default = "backend02"; };
+        nodeFor = { default = null; };
         nodesPath = ./nodes;
         secretsPath = ./secrets/secrets.yaml;
         statePath = ./generated/state.json;
@@ -154,7 +154,7 @@ in
             hostenvHostname = "hostenv.sh";
             letsEncrypt = { adminEmail = "admin@hostenv.sh"; acceptTerms = true; };
             deployPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ7jiIqEDu1TAI2OL8cI575ufkhPJ1fxqC6qmJPaj5s0 deployment";
-            nodeFor = { production = "backend04"; testing = "backend02"; development = "backend02"; default = "backend02"; };
+            nodeFor = { default = null; };
             nodeSystems = { };
             nodesPath = ./nodes;
             secretsPath = ./secrets/secrets.yaml;

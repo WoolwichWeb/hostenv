@@ -5,7 +5,7 @@
 , letsEncrypt
 , deployPublicKey
 , hostenvHostname
-, nodeFor ? { production = "backend04"; default = "backend02"; testing = "backend02"; development = "backend02"; }
+, nodeFor ? { default = null; }
 , nodesPath ? ./nodes
 , secretsPath ? ./secrets/secrets.yaml
 , statePath ? ./generated/state.json
