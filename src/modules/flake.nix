@@ -41,9 +41,9 @@
         , project
         , root
         , modules
+        , hostenvHostname
         , buildReference ? null
         , environmentName ? null
-        , hostenvHostname ? null
         }:
 
         pkgs.lib.evalModules {
@@ -53,15 +53,13 @@
             ({ config, ... }: {
               inherit buildReference;
               hostenv =
-                ({ inherit organisation project root;
-                   environmentName =
-                     if environmentName == null
-                     then config.defaultEnvironment
-                     else environmentName;
-                 }
-                 // pkgs.lib.optionalAttrs (hostenvHostname != null) {
-                   hostenvHostname = hostenvHostname;
-                 });
+                {
+                  inherit organisation project root hostenvHostname;
+                  environmentName =
+                    if environmentName == null
+                    then config.defaultEnvironment
+                    else environmentName;
+                };
             })
             # systemd stuff from nixpkgs.
             {

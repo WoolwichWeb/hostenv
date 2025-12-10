@@ -6,6 +6,7 @@ let
     project = "test-project";
     root = ./drupal;
     environmentName = "dev";
+    hostenvHostname = "hosting.test";
     modules = [ ./drupal/hostenv.nix ];
   };
 in

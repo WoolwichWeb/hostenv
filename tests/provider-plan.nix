@@ -9,6 +9,7 @@ let
       envsEval = makeHostenv {
         organisation = "org";
         project = "proj";
+        hostenvHostname = "hosting.test";
         root = ./.;
         modules = [
           ({ ... }: {
@@ -61,7 +62,8 @@ let
             gitRef = envCfg.hostenv.gitRef or baseRepo.ref;
             hostenvHostname = "ignored.example";
           };
-        in {
+        in
+        {
           hostenv = hostenv';
           node = "node1";
           authorizedKeys = [ ];
@@ -72,7 +74,7 @@ let
         })
       envsEval.config.environments);
 
-  mkPlan = { hostenvHostname ? "custom.host", state ? {}, lockData ? {}, projects ? null, inputsOverride ? { } }:
+  mkPlan = { hostenvHostname ? "custom.host", state ? { }, lockData ? { }, projects ? null, inputsOverride ? { } }:
     let
       inputsEffective =
         if inputsOverride == { }
@@ -86,7 +88,8 @@ let
             };
         }
         else inputsOverride;
-    in import ../src/provider/plan.nix {
+    in
+    import ../src/provider/plan.nix {
       inputs = inputsEffective;
       system = "x86_64-linux";
       inherit lib pkgs hostenvHostname;
@@ -96,7 +99,7 @@ let
       nodesPath = ./.;
       secretsPath = ./.;
       statePath = ./dummy-state.json;
-      nodeSystems = {};
+      nodeSystems = { };
       cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
       testLockData = lockData;
       testState = state;
@@ -114,7 +117,8 @@ let
       ${user1} = { uid = 2001; virtualHosts = [ "env1.example" "alias.example" ]; };
     };
   }).plan;
-in {
+in
+{
   provider-plan-regressions = pkgs.runCommand "provider-plan-regressions" { buildInputs = [ pkgs.jq pkgs.gnugrep ]; } ''
     set -euo pipefail
     user1="${user1}"
