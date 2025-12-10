@@ -31,6 +31,7 @@
 
         organisation = "yourorganisation";
         project = "yourproject";
+        hostenvHostname = "your.hostenv.hostname"; # e.g. hostenv.example.com
 
         # Uses hostenv from inputs to build an environment's config.
         makeHostenv = environmentName:
@@ -53,7 +54,10 @@
                 inherit organisation project;
                 root = ../.;
                 buildReference = self.rev or null;
-                modules = [ ./hostenv.nix ];
+                modules = [
+                  ({ ... }: { hostenv.hostenvHostname = hostenvHostname; })
+                  ./hostenv.nix
+                ];
               } // addendum;
 
           in
