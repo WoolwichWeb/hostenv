@@ -203,7 +203,6 @@ let
 
   generatedFlake =
     let
-      localSystem = "x86_64-linux";
       inputsBlock = builtins.concatStringsSep "\n" (map
         (
           val:

@@ -47,42 +47,12 @@ in
     let
       cfgTop = if config ? provider then config.provider
                else throw ''provider flake module: set the `provider.*` options (e.g. by importing src/provider/flake-module.nix in flake-parts and defining provider.hostenvHostname, nodeFor, nodeSystems, paths, etc.)'';
-      mkPlan = { system, pkgs' }:
-        let
-          gen = import ./plan.nix {
-            inputs = inputs // { hostenv = hostenvInput; };
-            inherit system;
-            lib = pkgs'.lib;
-            pkgs = pkgs';
-            letsEncrypt = cfgTop.letsEncrypt;
-            deployPublicKey = cfgTop.deployPublicKey;
-            hostenvHostname = cfgTop.hostenvHostname;
-            nodeFor = cfgTop.nodeFor;
-            nodeSystems = cfgTop.nodeSystems;
-            nodesPath = cfgTop.nodesPath;
-            secretsPath = cfgTop.secretsPath;
-            statePath = cfgTop.statePath;
-            cloudflare = cfgTop.cloudflare;
-            hostenvProjectDir = cfgTop.hostenvProjectDir;
-          };
-        in {
-          json = if cfgTop.planSource == "eval" then pkgs'.lib.importJSON gen.plan
-                 else if builtins.pathExists cfgTop.planPath then pkgs'.lib.importJSON cfgTop.planPath
-                 else { };
-          drv = gen.plan;
-        };
-
     in
     {
       
       perSystem = { system, pkgs, config, ... }:
         let
-          # Use top-level provider config (already validated) to avoid per-system fallback defaults.
           cfg = cfgTop;
-
-          plan = mkPlan { system = system; pkgs' = pkgs; };
-          planJSON = plan.json;
-          hasPlan = planJSON != { };
 
           providerHsDeps = p: [
             p.aeson p.aeson-pretty p.text p.text-conversions p.bytestring
