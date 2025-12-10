@@ -145,7 +145,6 @@ nixpkgs.lib.nixosSystem {
   specialArgs = { inherit inputs system; };
   modules = [
     ./common.nix
-    ../modules/hostenv-environments.nix
     ../modules/features/users-slices.nix
     ../modules/features/nginx-hostenv.nix
     ../modules/features/backups-hostenv.nix

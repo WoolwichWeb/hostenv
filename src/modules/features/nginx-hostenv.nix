@@ -1,6 +1,7 @@
 { lib, pkgs, config, ... }:
 let
-  envs = config.hostenv.environments or { };
+  allEnvs = config.hostenv.environments or { };
+  envs = lib.filterAttrs (_: env: env.enable or true) allEnvs;
   mkUpstream = envName: env:
     let
       user = env.user or envName;
