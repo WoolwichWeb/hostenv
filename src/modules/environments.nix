@@ -183,7 +183,7 @@ let
             {
               config.organisation = topLevel.organisation;
               config.project = topLevel.project;
-              config.hostenvHostname = topLevel.hostenvHostname or null;
+              config.hostenvHostname = topLevel.hostenvHostname;
               # Environment name is what changes on a per-environment basis,
               # everything else remains the same.
               config.environmentName = name;
@@ -241,24 +241,26 @@ in
           names = builtins.attrNames productionEnvs;
         in
         if names != [ ] then builtins.head names else "main";
-    in {
-    defaultEnvironment = lib.mkDefault defaultEnv;
+    in
+    {
+      defaultEnvironment = lib.mkDefault defaultEnv;
 
-    # Invariant: at most one production environment.
-    assertions =
-      let
-        productionCount = lib.length (builtins.attrNames (lib.filterAttrs (_: v: v.type == "production" && v.enable) cfg));
-      in [
-        {
-          assertion = productionCount <= 1;
-          message = "Only one environment may have type=production (found ${toString productionCount}).";
-        }
-      ];
+      # Invariant: at most one production environment.
+      assertions =
+        let
+          productionCount = lib.length (builtins.attrNames (lib.filterAttrs (_: v: v.type == "production" && v.enable) cfg));
+        in
+        [
+          {
+            assertion = productionCount <= 1;
+            message = "Only one environment may have type=production (found ${toString productionCount}).";
+          }
+        ];
 
-    # Bridge to the hostenv.* trunk used by feature modules so there is one canonical
-    # view of environments.
-    hostenv.environments = lib.mkDefault cfg;
-    hostenv.defaultEnvironment = lib.mkDefault defaultEnv;
-  };
+      # Bridge to the hostenv.* trunk used by feature modules so there is one canonical
+      # view of environments.
+      hostenv.environments = lib.mkDefault cfg;
+      hostenv.defaultEnvironment = lib.mkDefault defaultEnv;
+    };
 
 }

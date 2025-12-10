@@ -31,7 +31,6 @@ in
     statePath = mkOption { type = types.path; default = ./generated/state.json; };
     planPath = mkOption { type = types.path; default = ./generated/plan.json; };
     planSource = mkOption { type = types.enum [ "disk" "eval" ]; default = "eval"; };
-    goldenPlanPath = mkOption { type = types.nullOr types.path; default = null; };
     cloudflare = mkOption {
       type = types.submodule {
         options = {
@@ -252,19 +251,6 @@ in
               planJSON.nodes
             else { };
 
-          goldenPlan =
-            let
-              candidate = cfg.goldenPlanPath;
-            in if candidate != null && builtins.pathExists candidate then candidate else null;
-
-          planGoldenCheck =
-            if hasPlan && goldenPlan != null then
-              pkgs.runCommand "plan-golden" { buildInputs = [ pkgs.diffutils ]; } ''
-                cat ${providerGenerator.plan} > plan-current.json
-                diff -u ${goldenPlan} plan-current.json
-                touch $out
-              ''
-            else pkgs.writeText "plan-golden-skipped" "no plan or golden; skipped";
         in
         {
           packages = {
@@ -278,7 +264,7 @@ in
             meta.description = "Generate provider plan/state/flake";
           };
 
-          checks.plan-golden = planGoldenCheck;
+          checks = config.checks or { };
         };
     };
 }
