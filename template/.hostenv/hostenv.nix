@@ -1,5 +1,9 @@
 { pkgs, config, ... }: {
 
+  # Required: control-plane hostname your environments will register under.
+  # Replace with the domain provided by your hostenv provider.
+  hostenv.hostenvHostname = "your.hostenv.hostname"; # e.g. hostenv.example.com
+
   services.drupal.enable = true;
   # services.drupal.backups.enable = true;
   # services.drupal.composer.dependencyHash = "REPLACE THIS WITH THE HASH FROM HOSTENV/NIX";

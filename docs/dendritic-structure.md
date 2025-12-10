@@ -4,12 +4,12 @@ This repo now exposes both project-facing and provider-facing pieces as flake-pa
 
 ## Provider options (trunk)
 
-Set under `perSystem.config.provider` when importing `hostenv.providerModule`:
+Set under `perSystem.config.provider` when importing `hostenv.providerModule` (the public `hostenv` flake stays provider-neutral, so each project must still set `hostenv.hostenvHostname` in its own `.hostenv/hostenv.nix`):
 
 ```nix
 perSystem = { config, ... }: {
   provider = {
-    hostenvHostname = "hostenv.sh";
+    hostenvHostname = "hostenv.example.invalid";
     letsEncrypt = {
       adminEmail = "ops@example.com";
       acceptTerms = true;
