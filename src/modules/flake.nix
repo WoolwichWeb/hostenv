@@ -43,6 +43,7 @@
         , modules
         , buildReference ? null
         , environmentName ? null
+        , hostenvHostname ? null
         }:
 
         pkgs.lib.evalModules {
@@ -51,13 +52,16 @@
             (self.modules + /top-level/full-env.nix)
             ({ config, ... }: {
               inherit buildReference;
-              hostenv = {
-                inherit organisation project root;
-                environmentName =
-                  if environmentName == null
-                  then config.defaultEnvironment
-                  else environmentName;
-              };
+              hostenv =
+                ({ inherit organisation project root;
+                   environmentName =
+                     if environmentName == null
+                     then config.defaultEnvironment
+                     else environmentName;
+                 }
+                 // pkgs.lib.optionalAttrs (hostenvHostname != null) {
+                   hostenvHostname = hostenvHostname;
+                 });
             })
             # systemd stuff from nixpkgs.
             {

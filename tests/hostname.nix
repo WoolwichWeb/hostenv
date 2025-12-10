@@ -6,17 +6,13 @@ let
   env = makeHostenv {
     organisation = "acme";
     project = "demo";
+    hostenvHostname = testHostenvHostname;
     root = ./drupal; # any path is fine, not used by this test
     environmentName = "main";
     modules = [
-      # Project config
       ({ ... }: {
         environments.main.enable = true;
         environments.main.type = "production";
-      })
-      # Provider/hostenv hostname config
-      ({ ... }: {
-        hostenv.hostenvHostname = testHostenvHostname;
       })
     ];
   };
@@ -41,4 +37,3 @@ pkgs.runCommand "hostenv-hostname-test" { } ''
 
   touch "$out"
 ''
-

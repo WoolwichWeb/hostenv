@@ -51,13 +51,10 @@
             # environment.
             envConfig =
               {
-                inherit organisation project;
+                inherit organisation project hostenvHostname;
                 root = ../.;
                 buildReference = self.rev or null;
-                modules = [
-                  ({ ... }: { hostenv.hostenvHostname = hostenvHostname; })
-                  ./hostenv.nix
-                ];
+                modules = [ ./hostenv.nix ];
               } // addendum;
 
           in
