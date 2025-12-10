@@ -63,9 +63,7 @@ in
   users.users.deploy = {
     isNormalUser = true;
     extraGroups = [ "wheel" "keys" ];
-    openssh.authorizedKeys.keys = [
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ7jiIqEDu1TAI2OL8cI575ufkhPJ1fxqC6qmJPaj5s0 liam"
-    ];
+    openssh.authorizedKeys.keys = [ ];
   };
 
   networking.firewall.enable = true;
