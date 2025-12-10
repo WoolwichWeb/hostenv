@@ -67,17 +67,19 @@ nightly-full-check:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
   script:
-    - git checkout main
-    - nix flake update
-    - if ! git diff --quiet --exit-code; then
-        nix flake check --show-trace --all-systems || exit 1;
-        git config --global user.name "Gitlab CI";
-        git config --global user.email "";
-        git commit -m "(chore) update flake.lock dependencies" flake.lock;
-        git push "https://SelfCI:${GITLAB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git";
-      else
-        echo "No updates available"
-      fi
+    - |
+        set -euo pipefail
+        git checkout main
+        nix flake update
+        if ! git diff --quiet --exit-code; then
+          nix flake check --show-trace --all-systems
+          git config --global user.name "Gitlab CI"
+          git config --global user.email ""
+          git commit -m "(chore) update flake.lock dependencies" flake.lock
+          git push "https://SelfCI:${GITLAB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
+        else
+          echo "No updates available"
+        fi
   tags:
     - saas-linux-small-arm64
   allow_failure: true
