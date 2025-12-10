@@ -32,6 +32,15 @@
       systems = nixpkgs.lib.systems.flakeExposed;
       imports = [
         ./src/provider/flake-module.nix
+        # Minimal provider defaults so hostenv's own flake outputs evaluate; real providers override.
+        ({ config.provider = {
+             hostenvHostname = "example.invalid";
+             deployPublicKey = "";
+             letsEncrypt = { adminEmail = "admin@example.invalid"; acceptTerms = true; };
+             nodeFor = { default = "devnode"; };
+             nodeSystems = { devnode = "x86_64-linux"; };
+             hostenvProjectDir = ".hostenv";
+           }; })
       ];
 
       perSystem = { system, pkgs, self', ... }:

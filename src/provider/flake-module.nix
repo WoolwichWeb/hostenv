@@ -46,21 +46,8 @@ in
 
   config =
     let
-      cfg = if config ? provider then config.provider else {
-        hostenvHostname = "example.invalid";
-        letsEncrypt = { adminEmail = "admin@example.invalid"; acceptTerms = true; };
-        deployPublicKey = "";
-        nodeFor = { default = null; };
-        nodeSystems = { };
-        nodesPath = ./nodes;
-        secretsPath = ./secrets/secrets.yaml;
-        statePath = ./generated/state.json;
-        planPath = ./generated/plan.json;
-        planSource = "eval";
-        goldenPlanPath = null;
-        hostenvProjectDir = ".hostenv";
-        cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
-      };
+      cfgTop = if config ? provider then config.provider
+               else throw ''provider flake module: set the `provider.*` options (e.g. by importing src/provider/flake-module.nix in flake-parts and defining provider.hostenvHostname, nodeFor, nodeSystems, paths, etc.)'';
       pkgsLocal = import inputs.nixpkgs { system = "x86_64-linux"; };
       pkgsAll = inputs.nixpkgs.legacyPackages;
 
@@ -71,20 +58,20 @@ in
             inherit system;
             lib = pkgs'.lib;
             pkgs = pkgs';
-            letsEncrypt = cfg.letsEncrypt;
-            deployPublicKey = cfg.deployPublicKey;
-            hostenvHostname = cfg.hostenvHostname;
-            nodeFor = cfg.nodeFor;
-            nodeSystems = cfg.nodeSystems;
-            nodesPath = cfg.nodesPath;
-            secretsPath = cfg.secretsPath;
-            statePath = cfg.statePath;
-            cloudflare = cfg.cloudflare;
-            hostenvProjectDir = cfg.hostenvProjectDir;
+            letsEncrypt = cfgTop.letsEncrypt;
+            deployPublicKey = cfgTop.deployPublicKey;
+            hostenvHostname = cfgTop.hostenvHostname;
+            nodeFor = cfgTop.nodeFor;
+            nodeSystems = cfgTop.nodeSystems;
+            nodesPath = cfgTop.nodesPath;
+            secretsPath = cfgTop.secretsPath;
+            statePath = cfgTop.statePath;
+            cloudflare = cfgTop.cloudflare;
+            hostenvProjectDir = cfgTop.hostenvProjectDir;
           };
         in {
-          json = if cfg.planSource == "eval" then pkgs'.lib.importJSON gen.plan
-                 else if builtins.pathExists cfg.planPath then pkgs'.lib.importJSON cfg.planPath
+          json = if cfgTop.planSource == "eval" then pkgs'.lib.importJSON gen.plan
+                 else if builtins.pathExists cfgTop.planPath then pkgs'.lib.importJSON cfgTop.planPath
                  else { };
           drv = gen.plan;
         };
@@ -99,9 +86,9 @@ in
         nixpkgs = inputs.nixpkgs;
         pkgs = pkgsAll;
         localSystem = "x86_64-linux";
-        nodesPath = cfg.nodesPath;
-        secretsPath = cfg.secretsPath;
-        nodeSystems = cfg.nodeSystems;
+        nodesPath = cfgTop.nodesPath;
+        secretsPath = cfgTop.secretsPath;
+        nodeSystems = cfgTop.nodeSystems;
       };
 
       deployNodesTop = if hasPlanTop then builtins.mapAttrs (n: _: nixosSystemTop n) planJSONTop.nodes else { };
@@ -153,21 +140,8 @@ in
 
       perSystem = { system, pkgs, config, ... }:
         let
-          cfg = if config ? provider then config.provider else {
-            hostenvHostname = "example.invalid";
-            letsEncrypt = { adminEmail = "admin@example.invalid"; acceptTerms = true; };
-            deployPublicKey = "";
-            nodeFor = { default = null; };
-            nodeSystems = { };
-            nodesPath = ./nodes;
-            secretsPath = ./secrets/secrets.yaml;
-            statePath = ./generated/state.json;
-            planPath = ./generated/plan.json;
-            planSource = "eval";
-            goldenPlanPath = null;
-            hostenvProjectDir = ".hostenv";
-            cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
-          };
+          # Use top-level provider config (already validated) to avoid per-system fallback defaults.
+          cfg = cfgTop;
 
           plan = mkPlan { system = system; pkgs' = pkgs; };
           planJSON = plan.json;
