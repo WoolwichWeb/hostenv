@@ -298,9 +298,7 @@ let
             firstPart = builtins.elemAt nameParts 0;
             sliceName = "user-${elem.hostenv.organisation}-${firstPart}";
             uid_ = builtins.toString elem.uid;
-            nodeName = elem.node;
-            nodeAssert = if builtins.isString nodeName && nodeName != "" then null else builtins.throw "nodeFor/default must be set to a node name for environment ${elem.hostenv.userName}";
-            _ = nodeAssert;
+            nodeName = if builtins.isString elem.node && elem.node != "" then elem.node else builtins.throw "nodeFor/default must be set to a node name for environment ${elem.hostenv.userName}";
           in
           lib.recursiveUpdate acc {
             environments = acc.environments // {
