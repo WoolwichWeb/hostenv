@@ -78,65 +78,9 @@ in
       planTop = mkPlan { system = "x86_64-linux"; pkgs' = pkgsLocal; };
       planJSONTop = planTop.json;
       hasPlanTop = planJSONTop != { };
-
-      nixosSystemTop = node: import ./nixos-system.nix {
-        config = planJSONTop;
-        inherit node inputs;
-        nixpkgs = inputs.nixpkgs;
-        pkgs = pkgsAll;
-        localSystem = "x86_64-linux";
-        nodesPath = cfgTop.nodesPath;
-        secretsPath = cfgTop.secretsPath;
-        nodeSystems = cfgTop.nodeSystems;
-      };
-
-      deployNodesTop = if hasPlanTop then builtins.mapAttrs (n: _: nixosSystemTop n) planJSONTop.nodes else { };
-
-      deployWithTop = node:
-        if hasPlanTop then
-          pkgsLocal.lib.filterAttrs (name: _env: node == planJSONTop.environments.${name}.node)
-            (builtins.mapAttrs
-              (name: environment: pkgsLocal.buildEnv {
-                inherit name;
-                paths = [ inputs.${name}.packages."x86_64-linux".${environment.hostenv.environmentName} ];
-              })
-              planJSONTop.environments)
-        else { };
-
-      deploySpecTop =
-        if hasPlanTop then builtins.mapAttrs
-          (node: nodeConfig: {
-            hostname = node + "." + planJSONTop.hostenvHostname;
-            fastConnection = true;
-            remoteBuild = true;
-            profilesOrder = [ "system" ] ++ builtins.attrNames (deployWithTop node);
-            profiles =
-              let
-                remoteSystem = deployNodesTop.${node}.config.nixpkgs.hostPlatform.system;
-              in
-              {
-                system = {
-                  sshUser = "deploy";
-                  user = "root";
-                  path = inputs.deploy-rs.lib.${remoteSystem}.activate.nixos deployNodesTop.${node};
-                };
-              } // builtins.mapAttrs
-                (name: environment: {
-                  user = name;
-                  sshUser = name;
-                  path = inputs.deploy-rs.lib.${remoteSystem}.activate.custom environment "./bin/activate";
-                })
-                (deployWithTop node);
-            checks = { };
-          })
-          planJSONTop.nodes
-        else { };
     in
     {
-  flake = {
-    nixosConfigurations = deployNodesTop;
-  };
-
+      
       perSystem = { system, pkgs, config, ... }:
         let
           # Use top-level provider config (already validated) to avoid per-system fallback defaults.
