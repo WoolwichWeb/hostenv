@@ -13,6 +13,7 @@ let
     let
       primary = env.hostname or name;
       baseVH = env.virtualHosts or { };
+      extras = env.extras.nginx or { };
       defaultLoc = {
         "/" = {
           recommendedProxySettings = true;
@@ -24,18 +25,18 @@ let
           locations = (baseVH.${primary}.locations or { }) // defaultLoc;
           forceSSL = lib.mkDefault true;
           enableACME = lib.mkDefault true;
-          extraConfig = env.extras.nginx.extraConfig or "";
+          extraConfig = extras.extraConfig or "";
           http2 = true;
-          hsts = env.extras.nginx.hsts or true;
-          serverAliases = env.extras.nginx.aliases or [ ];
+          hsts = extras.hsts or true;
+          serverAliases = extras.aliases or [ ];
           # Simple header set (extendable via extras)
-          extraHeaders = env.extras.nginx.headers or {
+          extraHeaders = extras.headers or {
             "Strict-Transport-Security" = "max-age=63072000; includeSubDomains; preload";
             "X-Frame-Options" = "SAMEORIGIN";
             "X-Content-Type-Options" = "nosniff";
           };
-          securityHeaders = lib.mkIf (env.extras.nginx ? csp) {
-            "Content-Security-Policy" = env.extras.nginx.csp;
+          securityHeaders = lib.mkIf (extras ? csp) {
+            "Content-Security-Policy" = extras.csp;
           };
         };
       };
