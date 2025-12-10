@@ -47,9 +47,6 @@ in
     let
       cfgTop = if config ? provider then config.provider
                else throw ''provider flake module: set the `provider.*` options (e.g. by importing src/provider/flake-module.nix in flake-parts and defining provider.hostenvHostname, nodeFor, nodeSystems, paths, etc.)'';
-      pkgsLocal = import inputs.nixpkgs { system = "x86_64-linux"; };
-      pkgsAll = inputs.nixpkgs.legacyPackages;
-
       mkPlan = { system, pkgs' }:
         let
           gen = import ./plan.nix {
@@ -75,9 +72,6 @@ in
           drv = gen.plan;
         };
 
-      planTop = mkPlan { system = "x86_64-linux"; pkgs' = pkgsLocal; };
-      planJSONTop = planTop.json;
-      hasPlanTop = planJSONTop != { };
     in
     {
       
