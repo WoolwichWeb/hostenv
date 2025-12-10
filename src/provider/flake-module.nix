@@ -189,68 +189,6 @@ in
             exec ${providerGhc}/bin/runghc ${cliSrc} "$@"
           '';
 
-          nixosSystem = node: import ./nixos-system.nix {
-            inherit node inputs;
-            config = planJSON;
-            nixpkgs = inputs.nixpkgs;
-            pkgs = inputs.nixpkgs.legacyPackages;
-            localSystem = system;
-            nodesPath = cfg.nodesPath;
-            secretsPath = cfg.secretsPath;
-            nodeSystems = cfg.nodeSystems;
-          };
-
-          deployNodes =
-            if hasPlan then builtins.mapAttrs (n: _: nixosSystem n) planJSON.nodes else { };
-
-          deployEnvs =
-            if hasPlan then builtins.mapAttrs
-              (name: environment:
-                let
-                  inputName = "${environment.hostenv.organisation}__${environment.hostenv.project}";
-                in pkgs.buildEnv {
-                  inherit name;
-                  paths = [ inputs.${inputName}.packages.${system}.${environment.hostenv.environmentName} ];
-                })
-              planJSON.environments
-            else { };
-
-          deployWith = node:
-            if hasPlan then
-              pkgs.lib.filterAttrs
-                (name: _env: node == planJSON.environments.${name}.node)
-                deployEnvs
-            else { };
-
-          deploySpec =
-            if hasPlan then builtins.mapAttrs
-              (node: nodeConfig: {
-                hostname = node + "." + planJSON.hostenvHostname;
-                fastConnection = true;
-                remoteBuild = true;
-                profilesOrder = [ "system" ] ++ builtins.attrNames (deployWith node);
-                profiles =
-                  let
-                    remoteSystem = deployNodes.${node}.config.nixpkgs.hostPlatform.system;
-                  in
-                  {
-                    system = {
-                      sshUser = "deploy";
-                      user = "root";
-                      path = inputs.deploy-rs.lib.${remoteSystem}.activate.nixos deployNodes.${node};
-                    };
-                  } // builtins.mapAttrs
-                    (name: environment: {
-                      user = name;
-                      sshUser = name;
-                      path = inputs.deploy-rs.lib.${remoteSystem}.activate.custom environment "./bin/activate";
-                    })
-                    (deployWith node);
-                checks = { };
-              })
-              planJSON.nodes
-            else { };
-
         in
         {
           packages = {
@@ -264,7 +202,7 @@ in
             meta.description = "Generate provider plan/state/flake";
           };
 
-          checks = config.checks or { };
+          checks = { };
         };
     };
 }

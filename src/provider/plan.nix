@@ -23,7 +23,8 @@
 let
   cfgHostenvHostname = hostenvHostname;
   # Detect hostenv project inputs by checking for the presence of evaluated environments.
-  projectInputs = if testProjects != null then [ ] else builtins.filter
+  projectInputs = if testProjects != null then [ ] else
+  builtins.filter
     (name:
       builtins.hasAttr "hostenv" inputs.${name} &&
       (
@@ -108,6 +109,7 @@ let
               hostenv.project = lib.mkForce orgAndProject.project;
               hostenv.environmentName = lib.mkForce config.defaultEnvironment;
               hostenv.root = lib.mkForce inputs.${name}.hostenv.${system}.environments.${config.defaultEnvironment}.hostenv.root;
+              hostenv.hostenvHostname = lib.mkForce cfgHostenvHostname;
             })
           ];
         };
@@ -127,7 +129,8 @@ let
               authorizedKeys =
                 let
                   allUsers = builtins.attrValues envCfg.users;
-                in builtins.concatLists (map (u: u.publicKeys or [ ]) allUsers);
+                in
+                builtins.concatLists (map (u: u.publicKeys or [ ]) allUsers);
 
               # Hostname reservation logic (copied from legacy generator).
               # Remove current env by username (state keyed by hostenv.userName), not envName.
@@ -167,7 +170,8 @@ let
             in
             let
               hostenv' = hostenv // { hostenvHostname = cfgHostenvHostname; };
-            in envCfg // {
+            in
+            envCfg // {
               inherit node authorizedKeys virtualHosts;
               hostenv = hostenv';
               repo = repo // { ref = hostenv'.gitRef; };
@@ -180,18 +184,22 @@ let
   allEnvs = if testProjects != null then testProjects else realEnvs;
 
   # Assign unique UIDs to new environments; keep existing ones from state or explicit extras.uid.
-  allEnvsWithUid = lib.imap0 (idx: env:
-    let
-      user = env.hostenv.userName;
-      extras = env.extras or { };
-      uidFromState = if builtins.hasAttr user state then state.${user}.uid else null;
-      uidManual = extras.uid or null;
-      uid = if uidFromState != null then uidFromState
-            else if uidManual != null then uidManual
-            else nextUid + idx;
-      extras' = extras // { uid = uid; };
-    in env // { inherit uid; extras = extras'; }
-  ) allEnvs;
+  allEnvsWithUid = lib.imap0
+    (idx: env:
+      let
+        user = env.hostenv.userName;
+        extras = env.extras or { };
+        uidFromState = if builtins.hasAttr user state then state.${user}.uid else null;
+        uidManual = extras.uid or null;
+        uid =
+          if uidFromState != null then uidFromState
+          else if uidManual != null then uidManual
+          else nextUid + idx;
+        extras' = extras // { uid = uid; };
+      in
+      env // { inherit uid; extras = extras'; }
+    )
+    allEnvs;
 
   generatedFlake =
     let
@@ -199,12 +207,13 @@ let
       inputsBlock = builtins.concatStringsSep "\n" (map
         (
           val:
-            let
-              lockNode = lockData.nodes.${val.hostenv.userName} or null;
-              lockedRev = if lockNode != null && lockNode ? locked then lockNode.locked.rev else null;
-              lockedNarHash = if lockNode != null && lockNode ? locked then lockNode.locked.narHash else null;
-              lockedRef = if lockNode != null && lockNode ? locked then lockNode.locked.ref or val.repo.ref else val.repo.ref;
-            in ''
+          let
+            lockNode = lockData.nodes.${val.hostenv.userName} or null;
+            lockedRev = if lockNode != null && lockNode ? locked then lockNode.locked.rev else null;
+            lockedNarHash = if lockNode != null && lockNode ? locked then lockNode.locked.narHash else null;
+            lockedRef = if lockNode != null && lockNode ? locked then lockNode.locked.ref or val.repo.ref else val.repo.ref;
+          in
+          ''
             ${val.hostenv.userName} = {
               type = "${val.repo.type}";
               dir = "${if val.repo ? dir then val.repo.dir else hostenvProjectDir}";
@@ -231,7 +240,8 @@ let
         )
         allEnvs);
 
-    in pkgs.writeText "flake.nix" ''
+    in
+    pkgs.writeText "flake.nix" ''
       {
         inputs = {
           systems.url = "github:nix-systems/default";
@@ -308,54 +318,55 @@ let
               ${nodeName} =
                 let
                   existing = acc.nodes.${elem.node} or { };
-                in lib.recursiveUpdate existing {
+                in
+                lib.recursiveUpdate existing {
                   security.acme = {
                     acceptTerms = letsEncrypt.acceptTerms;
                     defaults.email = letsEncrypt.adminEmail;
-                };
+                  };
 
-                users.groups.${elem.hostenv.userName} = {
-                  gid = elem.uid;
-                };
+                  users.groups.${elem.hostenv.userName} = {
+                    gid = elem.uid;
+                  };
 
-                users.users.${elem.hostenv.userName} = {
-                  uid = elem.uid;
-                  group = elem.hostenv.userName;
-                  openssh.authorizedKeys.keys = elem.authorizedKeys ++ [ deployPublicKey ];
-                  isNormalUser = true;
-                  createHome = true;
-                  linger = true;
-                };
+                  users.users.${elem.hostenv.userName} = {
+                    uid = elem.uid;
+                    group = elem.hostenv.userName;
+                    openssh.authorizedKeys.keys = elem.authorizedKeys ++ [ deployPublicKey ];
+                    isNormalUser = true;
+                    createHome = true;
+                    linger = true;
+                  };
 
-                systemd.slices = {
-                  ${sliceName} = {
-                    description = "${firstPart} slice";
-                    sliceConfig = {
-                      CPUAccounting = "yes";
-                      CPUQuota = "200%";
-                      MemoryAccounting = "yes";
-                      MemoryMax = "12G";
+                  systemd.slices = {
+                    ${sliceName} = {
+                      description = "${firstPart} slice";
+                      sliceConfig = {
+                        CPUAccounting = "yes";
+                        CPUQuota = "200%";
+                        MemoryAccounting = "yes";
+                        MemoryMax = "12G";
+                      };
+                    };
+                    "user-${elem.hostenv.organisation}-" = { };
+                    "${sliceName}-" = { };
+                  };
+
+                  systemd.services."user@${uid_}" = {
+                    overrideStrategy = "asDropin";
+                    serviceConfig.Slice = "${sliceName}-${uid_}.slice";
+                  };
+
+                  services.nginx.virtualHosts = elem.virtualHosts // {
+                    default = {
+                      serverName = "_";
+                      default = true;
+                      rejectSSL = true;
+                      locations."/".return = "444";
                     };
                   };
-                  "user-${elem.hostenv.organisation}-" = { };
-                  "${sliceName}-" = { };
-                };
 
-                systemd.services."user@${uid_}" = {
-                  overrideStrategy = "asDropin";
-                  serviceConfig.Slice = "${sliceName}-${uid_}.slice";
                 };
-
-                services.nginx.virtualHosts = elem.virtualHosts // {
-                  default = {
-                    serverName = "_";
-                    default = true;
-                    rejectSSL = true;
-                    locations."/".return = "444";
-                  };
-                };
-
-              };
             };
           })
         base
