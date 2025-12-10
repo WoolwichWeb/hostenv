@@ -1,6 +1,0 @@
-{
-  "_description": "Golden plan fixture for provider checks. Update deliberately.",
-  "hostenvHostname": "hostenv.sh",
-  "environments": {},
-  "nodes": {}
-}
