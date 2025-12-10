@@ -107,6 +107,12 @@ in
       description = "Show nginx version in headers and error pages.";
     };
 
+    serverNamesHashBucketSize = lib.mkOption {
+      type = lib.types.int;
+      default = 128;
+      description = "nginx server_names_hash_bucket_size; bumped to handle long hostenv hostnames.";
+    };
+
     clientMaxBodySize = lib.mkOption {
       type = lib.types.str;
       default = "100m";

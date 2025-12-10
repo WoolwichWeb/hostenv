@@ -56,8 +56,8 @@ in
     hostenvHostname = lib.mkOption {
       type = types.str;
       description = "Top-level hostname for Hostenv.";
-      example = "yourcompany.com";
-      default = "hostenv.sh";
+      example = "example.com";
+      default = "example.invalid";
       internal = true;
     };
     organisation = lib.mkOption {

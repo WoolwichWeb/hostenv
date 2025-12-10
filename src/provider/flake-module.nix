@@ -9,9 +9,9 @@ let
 in
 {
   options.provider = {
-    hostenvHostname = mkOption { type = types.str; default = "hostenv.sh"; };
-    letsEncrypt = mkOption { type = types.attrs; default = { adminEmail = "admin@hostenv.sh"; acceptTerms = true; }; };
-    deployPublicKey = mkOption { type = types.str; default = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ7jiIqEDu1TAI2OL8cI575ufkhPJ1fxqC6qmJPaj5s0 deployment"; };
+    hostenvHostname = mkOption { type = types.str; default = "example.invalid"; description = "Hostenv control-plane hostname (must be set by provider)."; };
+    letsEncrypt = mkOption { type = types.attrs; default = { adminEmail = "admin@example.invalid"; acceptTerms = true; }; };
+    deployPublicKey = mkOption { type = types.str; default = ""; description = "SSH public key for deploy user; must be set by provider."; };
     nodeFor = mkOption {
       type = types.attrs;
       default = { default = null; };
@@ -47,16 +47,19 @@ in
   config =
     let
       cfg = if config ? provider then config.provider else {
-        hostenvHostname = "hostenv.sh";
-        letsEncrypt = { adminEmail = "admin@hostenv.sh"; acceptTerms = true; };
-        deployPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ7jiIqEDu1TAI2OL8cI575ufkhPJ1fxqC6qmJPaj5s0 deployment";
+        hostenvHostname = "example.invalid";
+        letsEncrypt = { adminEmail = "admin@example.invalid"; acceptTerms = true; };
+        deployPublicKey = "";
         nodeFor = { default = null; };
+        nodeSystems = { };
         nodesPath = ./nodes;
         secretsPath = ./secrets/secrets.yaml;
         statePath = ./generated/state.json;
         planPath = ./generated/plan.json;
         planSource = "eval";
         goldenPlanPath = null;
+        hostenvProjectDir = ".hostenv";
+        cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
       };
       pkgsLocal = import inputs.nixpkgs { system = "x86_64-linux"; };
       pkgsAll = inputs.nixpkgs.legacyPackages;
@@ -151,9 +154,9 @@ in
       perSystem = { system, pkgs, config, ... }:
         let
           cfg = if config ? provider then config.provider else {
-            hostenvHostname = "hostenv.sh";
-            letsEncrypt = { adminEmail = "admin@hostenv.sh"; acceptTerms = true; };
-            deployPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ7jiIqEDu1TAI2OL8cI575ufkhPJ1fxqC6qmJPaj5s0 deployment";
+            hostenvHostname = "example.invalid";
+            letsEncrypt = { adminEmail = "admin@example.invalid"; acceptTerms = true; };
+            deployPublicKey = "";
             nodeFor = { default = null; };
             nodeSystems = { };
             nodesPath = ./nodes;
