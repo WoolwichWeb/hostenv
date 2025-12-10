@@ -254,9 +254,8 @@ in
 
           goldenPlan =
             let
-              candidates = [ cfg.goldenPlanPath ] ++ [ ./tests/golden/plan.json ];
-              existing = builtins.filter (p: p != null && builtins.pathExists p) candidates;
-            in if existing == [ ] then null else builtins.head existing;
+              candidate = cfg.goldenPlanPath;
+            in if candidate != null && builtins.pathExists candidate then candidate else null;
 
           planGoldenCheck =
             if hasPlan && goldenPlan != null then
