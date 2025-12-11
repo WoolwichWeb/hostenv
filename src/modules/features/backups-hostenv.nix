@@ -39,11 +39,18 @@ in
       (lib.filterAttrs (_: env: env.extras ? backups) envs);
 
     # Secrets must be present; warn if missing.
-    assertions = lib.mapAttrsToList
-      (name: env: {
-        assertion = env.extras ? backups;
-        message = "Backups enabled but env.extras.backups missing for ${name}";
-      })
-      envs;
+    assertions =
+      lib.mapAttrsToList
+        (name: env: {
+          assertion = env.extras ? backups;
+          message = "Backups enabled but env.extras.backups missing for ${name}";
+        })
+        envs
+      ++ [
+        {
+          assertion = config.hostenv.backupsRepoHost != null;
+          message = "hostenv.backups.enable is true but hostenv.backupsRepoHost is null; set a repository host.";
+        }
+      ];
   };
 }

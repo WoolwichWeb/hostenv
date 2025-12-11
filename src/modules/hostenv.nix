@@ -147,10 +147,10 @@ in
       description = "Path (on server) where an environment file with information related to accessing backups may be found.";
     };
     backupsRepoHost = lib.mkOption {
-      type = types.str;
+      type = types.nullOr types.str;
       description = "URL of backups hosting service (without the trailing slash).";
       example = "s3:https://s3.amazonaws.com";
-      default = "file:///var/lib/hostenv/backups";
+      default = null;
     };
     projectNameHash = lib.mkOption {
       type = types.str;
