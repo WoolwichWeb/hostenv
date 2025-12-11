@@ -148,8 +148,8 @@ in
     };
     backupsRepoHost = lib.mkOption {
       type = types.str;
-      description = "URL of backups hosting service (without the trailing slash).";
-      default = "s3:https://s3.amazonaws.com";
+      description = "URL of backups hosting service (without the trailing slash). Keep provider-neutral by default.";
+      default = "file:///var/lib/hostenv/backups";
     };
     projectNameHash = lib.mkOption {
       type = types.str;
