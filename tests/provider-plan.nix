@@ -6,46 +6,46 @@ let
   # aligned with the module defaults.
   sampleProjects =
     let
-      envsEval = makeHostenv {
-        organisation = "org";
-        project = "proj";
-        hostenvHostname = "hosting.test";
-        root = ./.;
-        modules = [
-          ({ ... }: {
-            defaultEnvironment = "env1";
-            environments = {
-              env1 = {
-                enable = true;
-                type = "development";
-                hostenv.userName = "env1";
-                hostenv.hostname = "env1.example";
-                virtualHosts."env1.example" = {
-                  enableLetsEncrypt = true;
-                  globalRedirect = null;
-                  locations = { };
-                };
-                virtualHosts."alias.example" = {
-                  enableLetsEncrypt = true;
-                  globalRedirect = null;
-                  locations = { };
-                };
+      envsEval = makeHostenv [
+        ({ ... }: {
+          hostenv = {
+            organisation = "org";
+            project = "proj";
+            hostenvHostname = "hosting.test";
+            root = ./.;
+          };
+          defaultEnvironment = "env1";
+          environments = {
+            env1 = {
+              enable = true;
+              type = "development";
+              hostenv.userName = "env1";
+              hostenv.hostname = "env1.example";
+              virtualHosts."env1.example" = {
+                enableLetsEncrypt = true;
+                globalRedirect = null;
+                locations = { };
               };
-              env2 = {
-                enable = true;
-                type = "development";
-                hostenv.userName = "env2";
-                hostenv.hostname = "env2.example";
-                virtualHosts."env2.example" = {
-                  enableLetsEncrypt = true;
-                  globalRedirect = null;
-                  locations = { };
-                };
+              virtualHosts."alias.example" = {
+                enableLetsEncrypt = true;
+                globalRedirect = null;
+                locations = { };
               };
             };
-          })
-        ];
-      };
+            env2 = {
+              enable = true;
+              type = "development";
+              hostenv.userName = "env2";
+              hostenv.hostname = "env2.example";
+              virtualHosts."env2.example" = {
+                enableLetsEncrypt = true;
+                globalRedirect = null;
+                locations = { };
+              };
+            };
+          };
+        })
+      ] null;
       baseRepo = {
         type = "git";
         dir = ".";

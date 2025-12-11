@@ -30,44 +30,32 @@
     {
       inherit inputs;
 
-      # Create a hostenv environment.
+      # Create a hostenv environment. 
       #
-      # Usage:
-      #   makeHostenv {
-      #     organisation = "acme";
-      #     project = "example";
-      #     hostenvHostname = "hosting.example";
-      #     root = ./.;                 # project root
-      #     environmentName = "main";  # optional, defaults to config.defaultEnvironment
-      #     modules = [ ./hostenv.nix ]; # required project modules
-      #   }
-      #
-      # Rationale: callers nearly always need to set these knobs, so we take a
-      # single attrset instead of the previous curried form (modules -> envName).
-      makeHostenv = {
-        organisation,
-        project,
-        hostenvHostname,
-        root,
-        environmentName ? null,
-        modules ? [ ],
-        buildReference ? null,
-      }: pkgs.lib.evalModules {
+      # FYI: Usually environment names will correspond with git branches or 
+      # tags, but this is not enforced (mostly because Flakes don't seem 
+      # to support retrieving git metadata from the current environment, 
+      # beyond the current commit ref).
+      makeHostenv = modules: environmentName: pkgs.lib.evalModules {
         specialArgs = inputs // { inherit inputs pkgs; };
         modules = [
           (self.modules + /top-level/full-env.nix)
           ({ config, ... }: {
-            hostenv = {
-              inherit organisation project hostenvHostname root;
-              environmentName =
-                if environmentName == null
-                then config.defaultEnvironment
-                else environmentName;
-            };
-            inherit buildReference;
+            # Added to the config if an environmentName is set,
+            # if it's not this tells hostenv to use the default.
+            # As for why it does this, it's for bootstrapping purposes.
+            # So the CLI and other tooling can find which environments
+            # are available, without having to pick one.
+            hostenv.environmentName =
+              if environmentName == null
+              then config.defaultEnvironment
+              else environmentName;
           })
-          # systemd plumbing from nixpkgs so services restart when tzdata changes.
+          # systemd stuff from nixpkgs.
           {
+            # From:
+            # https://github.com/NixOS/nixpkgs/blob/release-24.11/nixos/modules/config/locale.nix#L87
+            # This way services are restarted when tzdata changes.
             systemd.globalEnvironment.TZDIR = "${pkgs.tzdata}/share/zoneinfo";
           }
         ] ++ modules;

@@ -3,19 +3,18 @@
 let
   testHostenvHostname = "cli.test.hostenv";
 
-  env = makeHostenv {
-    organisation = "acme";
-    project = "demo";
-    hostenvHostname = testHostenvHostname;
-    root = ./drupal; # any path is fine, not used by this test
-    environmentName = "main";
-    modules = [
-      ({ ... }: {
-        environments.main.enable = true;
-        environments.main.type = "production";
-      })
-    ];
-  };
+  env = makeHostenv [
+    ({ ... }: {
+      hostenv = {
+        organisation = "acme";
+        project = "demo";
+        hostenvHostname = testHostenvHostname;
+        root = ./drupal; # any path is fine, not used by this test
+      };
+      environments.main.enable = true;
+      environments.main.type = "production";
+    })
+  ] "main";
 in
 pkgs.runCommand "hostenv-hostname-test" { } ''
   set -euo pipefail
