@@ -150,6 +150,7 @@ in
       type = types.str;
       description = "URL of backups hosting service (without the trailing slash).";
       example = "s3:https://s3.amazonaws.com";
+      default = "file:///var/lib/hostenv/backups";
     };
     projectNameHash = lib.mkOption {
       type = types.str;

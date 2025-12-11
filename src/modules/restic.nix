@@ -141,9 +141,12 @@ in
 
             repository = lib.mkOption {
               type = with lib.types; nullOr str;
-              default = "${config.hostenv.backupsRepoHost}/${config.hostenv.organisation}-${config.hostenv.project}/${config.hostenv.userName}/restic";
+              default =
+                if config ? hostenv && config.hostenv ? backupsRepoHost && config.hostenv.backupsRepoHost != null then
+                  "${config.hostenv.backupsRepoHost}/${config.hostenv.organisation}-${config.hostenv.project}/${config.hostenv.userName}/restic"
+                else null;
               description = ''
-                repository to backup to.
+                Repository to back up to. If not set, must be provided via `services.restic.backups.<name>.repo*` options.
               '';
               example = "sftp:backup@192.168.1.100:/backups/${name}";
             };
