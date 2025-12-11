@@ -32,36 +32,26 @@
         organisation = "yourorganisation";
         project = "yourproject";
         hostenvHostname = "your.hostenv.hostname"; # e.g. hostenv.example.com
+        root = ../.;
+        backupsRepoHost = "your.backup.provider"; # Restic format, for example "s3:https://s3.amazonaws.com/"
 
         # Uses hostenv from inputs to build an environment's config.
-        makeHostenv = environmentName:
+        makeHostenv =
           let
-
-            # Added to the config if an environmentName is set,
-            # if it's not this tells hostenv to use the default.
-            # As for why it does this, it's for bootstrapping purposes.
-            # So the CLI and other tooling can find which environments
-            # are available, without having to pick one.
-            addendum =
-              if environmentName == null
-              then { }
-              else { inherit environmentName; };
-
             # Put together the configuration hostenv needs to build an
             # environment.
-            envConfig =
-              {
-                inherit organisation project hostenvHostname;
-                root = ../.;
+            modules = [
+              ./hostenv.nix
+              ({ ... }: {
                 buildReference = self.rev or null;
-                modules = [ ./hostenv.nix ];
-              } // addendum;
-
+                hostenv = { inherit organisation project hostenvHostname root backupsRepoHost; };
+              })
+            ];
           in
           # Call the function that builds the environment.
             # Note the use of `${system}`, this is because Flake outputs are
-            # often separated by CPU / platform architecture.
-          hostenv.makeHostenv.${system} envConfig;
+            # separated by CPU / platform architecture.
+          hostenv.makeHostenv.${system} modules;
 
         # This default hostenv sans environmentName is for bootstrapping
         # purposes.
