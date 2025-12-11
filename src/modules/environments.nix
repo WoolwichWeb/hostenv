@@ -184,6 +184,7 @@ let
               config.organisation = topLevel.organisation;
               config.project = topLevel.project;
               config.hostenvHostname = topLevel.hostenvHostname;
+              config.backupsRepoHost = topLevel.backupsRepoHost;
               # Environment name is what changes on a per-environment basis,
               # everything else remains the same.
               config.environmentName = name;
