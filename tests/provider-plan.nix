@@ -80,7 +80,7 @@ let
         if inputsOverride == { }
         then {
           hostenv =
-            let outPath = ../src/modules;
+            let outPath = ../modules;
             in {
               inherit outPath;
               modules = outPath;

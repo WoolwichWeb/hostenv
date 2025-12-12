@@ -4,7 +4,7 @@
 
 - [ ] Top-level layout is clear and small:
   - `flake.nix` is minimal.
-  - Main logic lives in `modules/` and/or `src/modules/`.
+- Main logic lives in `modules/`.
 - [ ] There is a clear separation between:
   - platform / shared modules (e.g. hostenv environments, services),
   - host-specific or deployment bits (e.g. NixOS host roles, hardware config).

@@ -70,7 +70,7 @@ Conceptually:
 
 ```nix
 {
-  inputs = { nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable"; flake-utils.url = "github:numtide/flake-utils"; phps.url = "github:fossar/nix-phps"; hostenv.url = "gitlab:woolwichweb/hostenv?dir=src/modules"; };
+  inputs = { nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable"; flake-utils.url = "github:numtide/flake-utils"; phps.url = "github:fossar/nix-phps"; hostenv.url = "gitlab:woolwichweb/hostenv?dir=modules"; };
   outputs = { self, nixpkgs, flake-utils, ... }@inputs: flake-utils.lib.eachDefaultSystem (system:
     let
       pkgs = import nixpkgs { inherit system; };

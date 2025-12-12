@@ -149,7 +149,7 @@ nixpkgs.lib.nixosSystem {
     ../modules/nixos/users-slices.nix
     ../modules/nixos/nginx-hostenv.nix
     ../modules/nixos/backups-hostenv.nix
-    ../modules/features/monitoring-hostenv.nix
+    ../modules/nixos/monitoring-hostenv.nix
     # Bridge plan.json → hostenv.environments so dendritic feature modules can consume it.
     ({ ... }: {
       hostenv.environments = builtins.mapAttrs

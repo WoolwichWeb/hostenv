@@ -13,7 +13,7 @@
         scopes = [
           {
             modules = [
-              ./../modules/core/full-env.nix
+              ./../../modules/core/full-env.nix
               { _module.args = { inherit pkgs; }; }
               ({ config, ... }: {
                 hostenv = {

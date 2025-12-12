@@ -82,11 +82,11 @@
         "pog": "pog"
       },
       "locked": {
-        "path": "src/modules",
+        "path": "modules",
         "type": "path"
       },
       "original": {
-        "path": "src/modules",
+        "path": "modules",
         "type": "path"
       },
       "parent": []

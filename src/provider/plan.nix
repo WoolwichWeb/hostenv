@@ -102,7 +102,7 @@ let
         minimalHostenv = pkgs.lib.evalModules {
           specialArgs = inputs // { inherit inputs pkgs; };
           modules = [
-            (inputs.hostenv.modules + /top-level/full-env.nix)
+          (inputs.hostenv.modules + /core/full-env.nix)
             (inputs.${name} + /hostenv.nix)
             ({ config, ... }: {
               hostenv.organisation = lib.mkForce orgAndProject.organisation;

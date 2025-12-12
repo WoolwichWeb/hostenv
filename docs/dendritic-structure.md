@@ -44,10 +44,10 @@ perSystem = { config, ... }: {
 
 - Hostenv project inputs (end-user flakes) provide environments; plan generation discovers them automatically from flake inputs that expose `hostenv`.
 - Feature modules (branches) consume `config.hostenv.environments`:
-  - `features/users-slices.nix` — Unix users + slices per env
-  - `features/nginx-hostenv.nix` — reverse proxy to per-env socket
-  - `features/backups-hostenv.nix` — restic jobs keyed off env extras
-  - `features/monitoring-hostenv.nix` — monitoring labels (placeholder)
+  - `modules/nixos/users-slices.nix` — Unix users + slices per env
+  - `modules/nixos/nginx-hostenv.nix` — reverse proxy to per-env socket
+  - `modules/nixos/backups-hostenv.nix` — restic jobs keyed off env extras
+- `modules/nixos/monitoring-hostenv.nix` — monitoring labels (placeholder)
 
 ## Split of concerns (system vs user level)
 

@@ -103,16 +103,16 @@ in
 
   imports = [
     ../env/environments.nix
-    ../hostenv-cli.nix
-    ../systemd.nix
-    ../mysql.nix
-    ../core/nginx.nix
-    ../nginx-fastcgi-hostenv.nix
-    ../features/cloudflare-hostenv.nix
-    ../phpfpm.nix
-    ../drupal.nix
-    ../php-app.nix
-    ../core/restic.nix
+    ../core/cli.nix
+    ../env/systemd.nix
+    ../env/mysql.nix
+    ../env/nginx.nix
+    ../env/nginx-fastcgi-hostenv.nix
+    ../nixos/cloudflare-hostenv.nix
+    ../env/phpfpm.nix
+    ../env/drupal.nix
+    ../env/php-app.nix
+    ../env/restic.nix
   ];
 
   config =
