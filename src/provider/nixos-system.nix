@@ -96,11 +96,11 @@ nixpkgs.lib.nixosSystem {
   specialArgs = { inherit inputs system; };
   modules = [
     ./common.nix
-    ../modules/hostenv.nix
     ../modules/nixos/top-level.nix
     ../modules/nixos/plan-bridge.nix
     ../modules/nixos/users-slices.nix
     ../modules/nixos/nginx-hostenv.nix
+    ../modules/nixos/nginx-tuning-hostenv.nix
     ../modules/nixos/backups-hostenv.nix
     ../modules/nixos/monitoring-hostenv.nix
     (nodePath + /configuration.nix)
