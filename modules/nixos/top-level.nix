@@ -22,13 +22,21 @@ in
     environment.etc."hostenv/environments.json".text = pkgs.lib.generators.toJSON { } enabledEnvs;
 
     # Ensure runtime directories exist for user-level services and upstream sockets.
+    # Permissions align with the hostenv/nginx contract:
+    # - user/<env>: owned by the env user, setgid to keep group 'users', private to others.
+    # - nginx/<env>: owned by env user but group 'nginx' so system nginx can reach sockets; setgid keeps group.
     systemd.tmpfiles.rules =
       let
-        mkRuntime = name: env: [
-          "d ${config.hostenv.runtimeRoot}/user/${name} 0755 ${env.user or name} ${env.user or name} -"
-          "d ${config.hostenv.runtimeRoot}/nginx/${name} 0755 ${env.user or name} ${env.user or name} -"
+        base = [
+          "d ${config.hostenv.runtimeRoot}         0755 root root  -"
+          "d ${config.hostenv.runtimeRoot}/nginx   0755 root root  -"
+          "d ${config.hostenv.runtimeRoot}/user    0755 root root  -"
         ];
-      in lib.flatten (lib.mapAttrsToList mkRuntime enabledEnvs);
+        perEnv = lib.flatten (lib.mapAttrsToList (name: env: [
+          "d ${config.hostenv.runtimeRoot}/nginx/${name} 2770 ${env.user or name} nginx -"
+          "d ${config.hostenv.runtimeRoot}/user/${name}  2700 ${env.user or name} users -"
+        ]) enabledEnvs);
+      in base ++ perEnv;
 
     # Minimal logging layout; feature modules can add exporters/forwarders.
     systemd.tmpfiles.rules ++= [
