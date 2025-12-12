@@ -3,9 +3,9 @@ let
   inherit (lib) all;
   cfg = config.services.nginx;
   env = config.environments.${config.hostenv.environmentName};
-  # @todo: this includes some unsupported options, such as acme certificates
-  # for Let's Encrypt; maybe find a way to override or fork this module.
-  vhostOptions = (pkgs.path + "/nixos/modules/services/web-servers/nginx/vhost-options.nix");
+  # Use env-local vhost options to avoid importing NixOS host modules and to drop
+  # host-only features like ACME certificate provisioning.
+  vhostOptions = ./nginx-vhost-options.nix;
   vhostValues = pkgs.callPackage ./nginx-vhost.nix {
     inherit (cfg) virtualHosts enableRouteDebugging;
     inherit config;
@@ -98,6 +98,56 @@ in
       type = lib.types.bool;
       description = ''
         Enable recommended optimisation settings.
+      '';
+    };
+
+    recommendedProxySettings = lib.mkOption {
+      default = false;
+      type = lib.types.bool;
+      description = ''
+        Whether to enable recommended proxy settings if a vhost does not specify the option manually.
+      '';
+    };
+
+    proxyTimeout = lib.mkOption {
+      type = lib.types.str;
+      default = "60s";
+      example = "20s";
+      description = ''
+        Change the proxy related timeouts in recommendedProxySettings.
+      '';
+    };
+
+    recommendedUwsgiSettings = lib.mkOption {
+      default = false;
+      type = lib.types.bool;
+      description = ''
+        Whether to enable recommended uwsgi settings if a vhost does not specify the option manually.
+      '';
+    };
+
+    uwsgiTimeout = lib.mkOption {
+      type = lib.types.str;
+      default = "60s";
+      example = "20s";
+      description = ''
+        Change the uwsgi related timeouts in recommendedUwsgiSettings.
+      '';
+    };
+
+    proxyResolveWhileRunning = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Resolve proxyPass targets at runtime, not only at startup. Requires services.nginx.resolver.
+      '';
+    };
+
+    uwsgiResolveWhileRunning = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Resolve uwsgiPass targets at runtime, not only at startup. Requires services.nginx.resolver.
       '';
     };
 
