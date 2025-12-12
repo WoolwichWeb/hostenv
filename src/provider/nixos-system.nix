@@ -4,7 +4,7 @@
 , node
 , inputs
 , localSystem
-, nodesPath ? ./nodes
+, nodesPath ? ../../nodes
 , secretsPath ? ../secrets/secrets.yaml
 , nodeSystems ? { }
 , ...

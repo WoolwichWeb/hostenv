@@ -16,10 +16,16 @@ in
       scrapeConfigs = lib.mkDefault [];
     };
 
-    # Example: label injection for future log/metrics shipping
-    environment.variables = lib.mapAttrs (name: env: {
-      "HOSTENV_ENV" = name;
-      "HOSTENV_PROJECT" = env.extras.project or env.user or name;
-    }) envs;
+    # Example: label injection for future log/metrics shipping.
+    # Keep environment.variables a string->string map by serialising env metadata.
+    environment.variables = {
+      HOSTENV_ENVIRONMENTS_JSON = builtins.toJSON
+        (lib.mapAttrs
+          (name: env: {
+            env = name;
+            project = env.extras.project or env.user or name;
+          })
+          envs);
+    };
   };
 }

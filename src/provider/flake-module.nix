@@ -26,7 +26,8 @@ in
       default = ".hostenv";
       description = "Default flake dir for client projects when dir is absent in flake.lock (e.g. .hostenv).";
     };
-    nodesPath = mkOption { type = types.path; default = ./nodes; };
+    # Default to the repository root `nodes/` directory; provider repos can override.
+    nodesPath = mkOption { type = types.path; default = ../../nodes; };
     secretsPath = mkOption { type = types.path; default = ./secrets/secrets.yaml; };
     statePath = mkOption { type = types.path; default = ./generated/state.json; };
     planPath = mkOption { type = types.path; default = ./generated/plan.json; };

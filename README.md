@@ -51,7 +51,9 @@ Here's an example hosting environment for the [Drupal](https://www.drupal.org) C
 ## Repository Map (for contributors)
 
 - `modules/` – canonical hostenv modules. The trunk is `config.environments`; feature modules also read `config.hostenv.environments` (bridged automatically).  
-  - `features/` – dendritic feature modules (nginx-hostenv, cloudflare-hostenv, backups-hostenv, users-slices, etc.).  
+  - `nixos/` – host-level, provider-neutral building blocks (nginx-hostenv, backups-hostenv, users-slices, etc.).  
+  - `env/` – env-level runtime modules (user services).  
+  - `providers/` – optional provider-specific modules (add your own if needed).  
 - `modules/core/full-env.nix` – assembles a user-level hostenv environment.  
   - `hostenv.nix` – core hostenv options (paths, hashes, naming).  
   - `environments.nix` – canonical environment schema and defaults.
@@ -65,7 +67,7 @@ Here's an example hosting environment for the [Drupal](https://www.drupal.org) C
 - **Add an environment**: edit your project’s `.hostenv/hostenv.nix`, add an entry under `environments.<name> { enable = true; type = ...; virtualHosts = { ... }; }`. Run `nix flake check` to ensure feature modules (nginx, php-fpm, backups) pick it up. Only one environment may be `type = "production"` (enforced).
 - **Remove an environment**: delete or set `enable = false` in `.hostenv/hostenv.nix`; regenerate plan/state (`hostenv-provider plan`) and deploy.
 - **Add a host (provider)**: in the provider repo, add a node file under `nodes/` and map it in `provider.nodeSystems`; regenerate plan/state (`hostenv-provider plan`) and deploy via deploy-rs.
-- **Add a feature module**: create `modules/nixos/<name>.nix` (system-level) or `modules/env/<name>.nix` (user-level); consume `config.hostenv.environments` (already bridged from `config.environments`); import it in `core/full-env.nix` (or provider-level if system-only). Add a test in `tests/`.
+- **Add a feature module**: create `modules/nixos/<name>.nix` (system-level, provider-neutral) or `modules/env/<name>.nix` (user-level), or place provider-specific modules under `modules/providers/<name>.nix`; consume `config.hostenv.environments` (already bridged from `config.environments`); import it in `core/full-env.nix` (or provider-level if system-only). Add a test in `tests/`.
 
 ## Getting Started (projects)
 

@@ -6,7 +6,7 @@
 , deployPublicKey
 , hostenvHostname
 , nodeFor ? { default = null; }
-, nodesPath ? ./nodes
+, nodesPath ? ../../nodes
 , secretsPath ? ./secrets/secrets.yaml
 , statePath ? ./generated/state.json
 , nodeSystems ? { }

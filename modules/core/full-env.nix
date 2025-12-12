@@ -108,7 +108,6 @@ in
     ../env/mysql.nix
     ../env/nginx.nix
     ../env/nginx-fastcgi-hostenv.nix
-    ../nixos/cloudflare-hostenv.nix
     ../env/phpfpm.nix
     ../env/drupal.nix
     ../env/php-app.nix
