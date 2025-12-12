@@ -91,7 +91,7 @@ in
       type =
         if isNestedHostenv then types.attrs else
         types.lazyAttrsOf (types.submoduleWith {
-          modules = [ ../env/environment.nix ];
+          modules = [ ./environment.nix ];
           specialArgs = {
             allUsers = { };
             topLevel = { };

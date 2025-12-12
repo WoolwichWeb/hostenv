@@ -102,7 +102,7 @@ in
   };
 
   imports = [
-    ../env/environments.nix
+    ../core/environments.nix
     ../core/cli.nix
     ../env/systemd.nix
     ../env/mysql.nix
