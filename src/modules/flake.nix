@@ -39,7 +39,7 @@
       makeHostenv = modules: environmentName: pkgs.lib.evalModules {
         specialArgs = inputs // { inherit inputs pkgs; };
         modules = [
-          (self.modules + /top-level/full-env.nix)
+          (self.modules + /core/full-env.nix)
           ({ config, ... }: {
             # Added to the config if an environmentName is set,
             # if it's not this tells hostenv to use the default.

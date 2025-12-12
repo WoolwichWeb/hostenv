@@ -146,9 +146,9 @@ nixpkgs.lib.nixosSystem {
   modules = [
     ./common.nix
     ../modules/hostenv.nix
-    ../modules/features/users-slices.nix
-    ../modules/features/nginx-hostenv.nix
-    ../modules/features/backups-hostenv.nix
+    ../modules/nixos/users-slices.nix
+    ../modules/nixos/nginx-hostenv.nix
+    ../modules/nixos/backups-hostenv.nix
     ../modules/features/monitoring-hostenv.nix
     # Bridge plan.json → hostenv.environments so dendritic feature modules can consume it.
     ({ ... }: {
