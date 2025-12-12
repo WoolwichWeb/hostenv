@@ -8,33 +8,7 @@
   perSystem = { system, pkgs, self', ... }:
     let
       makeHostenv = inputs.hostenv-internal.makeHostenv.${system};
-      docSearch = inputs.search.packages.${system}.mkMultiSearch {
-        title = "hostenv options search";
-        scopes = [
-          {
-            modules = [
-              ./../../modules/core/full-env.nix
-              { _module.args = { inherit pkgs; }; }
-              ({ config, ... }: {
-                hostenv = {
-                  organisation = "org";
-                  project = "example";
-                  root = ./.;
-                  environmentName = "main";
-                };
-              })
-              {
-                environments.main = {
-                  enable = true;
-                  type = "production";
-                  virtualHosts = { "www.example.com" = { }; };
-                };
-              }
-            ];
-            urlPrefix = "https://gitlab.com/woolwichweb/hostenv/-/blob/main/";
-          }
-        ];
-      };
+      docSearch = pkgs.writeTextDir "index.html" "<html><body>docs disabled</body></html>";
 
       serveDocs = pkgs.writeShellApplication {
         name = "serve-docs";
@@ -56,7 +30,7 @@
 
       packages = {
         inherit docSearch;
-        default = docSearch;
+        default = self'.packages.hostenv-provider;
       };
 
       checks = import ./../../tests { inherit pkgs envs makeHostenv; };

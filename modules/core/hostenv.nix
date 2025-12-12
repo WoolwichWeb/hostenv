@@ -3,6 +3,8 @@
 let
   types = lib.types;
 
+  isNestedHostenv = config._module.args.isNestedHostenv or false;
+
   # Replace non-alpha characters with a hyphen
   sanitise = str:
     lib.strings.stringAsChars
@@ -86,10 +88,26 @@ in
       default = "main";
     };
     environments = lib.mkOption {
-      type = types.attrs;
+      type =
+        if isNestedHostenv then types.attrs else
+        types.lazyAttrsOf (types.submoduleWith {
+          modules = [ ../env/environment.nix ];
+          specialArgs = {
+            allUsers = { };
+            topLevel = { };
+            defaultPriority = 1000;
+            forceNull = "__HOSTENV_INTERNAL_DO_NOT_CHANGE_SEMAPHORE__";
+          };
+        });
       default = { };
       description = "Canonical environment tree (filled by environments.nix).";
       internal = true;
+    };
+    assertions = lib.mkOption {
+      type = types.listOf types.unspecified;
+      internal = true;
+      default = [ ];
+      description = "Hostenv-level assertions accumulated from core invariants.";
     };
     safeEnvironmentName = lib.mkOption {
       type = types.str;
@@ -175,7 +193,20 @@ in
           builtins.map slugify [ config.project config.environmentName ]
         ) + "-" + lib.substring 0 7 slugHash;
     in
-    {
+    let
+      envs = config.environments or { };
+      productionEnvs = lib.filterAttrs (_: v: (v.enable or false) && v.type == "production") envs;
+      productionNames = builtins.attrNames productionEnvs;
+    in {
+      defaultEnvironment = lib.mkDefault (if productionNames != [ ] then builtins.head productionNames else "main");
+
+      assertions = [
+        {
+          assertion = (lib.length productionNames) <= 1;
+          message = "Only one environment may have type=production (found ${toString (lib.length productionNames)}).";
+        }
+      ];
+
       userName = lib.mkForce shortName;
       hostname = lib.mkForce "${shortName}.${config.hostenvHostname}";
       safeEnvironmentName = lib.mkForce (cleanDashes (sanitise config.environmentName));
