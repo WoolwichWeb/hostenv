@@ -1,7 +1,8 @@
 { lib, pkgs, config, ... }:
 let
   allEnvs = config.hostenv.environments or { };
-  envs = lib.filterAttrs (_: env: env.enable or true) allEnvs;
+  # Treat enable = false as disabled; default to enabled when unset.
+  envs = lib.filterAttrs (_: env: env.enable != false) allEnvs;
   mkUpstream = envName: env:
     let
       user = env.user or envName;
