@@ -2,6 +2,8 @@
 let
   allEnvs = config.hostenv.environments or { };
   envs = lib.filterAttrs (_: env: env.enable or true) allEnvs;
+  userOf = name: env: env.user or name;
+  uidOf = env: env.extras.uid or null;
 in
 {
   options = {
@@ -19,18 +21,27 @@ in
 
   config = lib.mkIf (envs != { }) {
     users = {
-      users = lib.mapAttrs
-        (name: env: {
-          isNormalUser = true;
-          uid = lib.mkDefault null;
-          group = name;
-          createHome = true;
-          openssh.authorizedKeys.keys = env.extras.publicKeys or [ ];
-          linger = true;
-        })
-        envs;
+      users = lib.listToAttrs (lib.mapAttrsToList
+        (name: env:
+          let user = userOf name env;
+          in {
+            name = user;
+            value = {
+              isNormalUser = true;
+              uid = lib.mkDefault (uidOf env);
+              group = user;
+              createHome = true;
+              openssh.authorizedKeys.keys = env.extras.publicKeys or [ ];
+              linger = true;
+            };
+          })
+        envs);
 
-      groups = lib.mapAttrs (_: env: { }) envs;
+      groups = lib.listToAttrs (lib.mapAttrsToList
+        (name: env:
+          let user = userOf name env;
+          in { name = user; value = { }; })
+        envs);
     };
 
     # For information about slice hierarchy, see:
@@ -48,19 +59,31 @@ in
     # > -.slice). This is similar how in regular file paths, “/” denotes the
     # > root directory.
     systemd = {
-      slices = lib.mapAttrs
-        (name: env: {
-          description = "${name} slice";
-          sliceConfig = config.hostenv.sliceDefaults;
-        })
-        envs;
+      slices = lib.listToAttrs (lib.mapAttrsToList
+        (name: env:
+          let user = userOf name env;
+          in {
+            name = "${user}.slice";
+            value = {
+              description = "${user} slice";
+              sliceConfig = config.hostenv.sliceDefaults;
+            };
+          })
+        envs);
 
-      services = lib.mapAttrs
-        (name: env: {
-          overrideStrategy = "asDropin";
-          serviceConfig.Slice = "${name}-${toString (env.extras.uid or 0)}.slice";
-        })
-        envs;
+      services = lib.listToAttrs (lib.filter (a: a.value != null) (lib.mapAttrsToList
+        (name: env:
+          let
+            user = userOf name env;
+            uid = uidOf env;
+          in if uid == null then { name = ""; value = null; } else {
+            name = "user@${toString uid}";
+            value = {
+              overrideStrategy = "asDropin";
+              serviceConfig.Slice = "${user}.slice";
+            };
+          })
+        envs));
     };
   };
 }

@@ -170,6 +170,11 @@ in
       example = "s3:https://s3.amazonaws.com";
       default = null;
     };
+    extras = lib.mkOption {
+      type = types.attrs;
+      default = { };
+      description = "Unstructured hostenv metadata passed through by providers (provider-facing).";
+    };
     projectNameHash = lib.mkOption {
       type = types.str;
       description = "Hash of organisation, project, and environment names.";

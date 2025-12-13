@@ -15,6 +15,7 @@ let
       primary = env.hostname or name;
       baseVH = env.virtualHosts or { };
       extras = env.extras.nginx or { };
+      enableACMEDefault = config.hostenv.nginx.enableACME;
       defaultLoc = {
         "/" = {
           recommendedProxySettings = true;
@@ -23,9 +24,9 @@ let
       };
       addPrimary = baseVH // {
         ${primary} = (baseVH.${primary} or { }) // {
+          enableACME = lib.mkDefault (baseVH.${primary}.enableACME or baseVH.${primary}.enableLetsEncrypt or enableACMEDefault);
           locations = (baseVH.${primary}.locations or { }) // defaultLoc;
-          forceSSL = lib.mkDefault true;
-          enableACME = lib.mkDefault true;
+          forceSSL = lib.mkDefault (baseVH.${primary}.forceSSL or baseVH.${primary}.enableACME or baseVH.${primary}.enableLetsEncrypt or enableACMEDefault);
           extraConfig = extras.extraConfig or "";
           http2 = true;
           hsts = extras.hsts or true;
@@ -44,6 +45,12 @@ let
     in addPrimary;
 in
 {
+  options.hostenv.nginx.enableACME = lib.mkOption {
+    type = lib.types.bool;
+    default = true;
+    description = "Whether host-level nginx should request ACME certs by default.";
+  };
+
   config = lib.mkIf (envs != { }) {
     assertions = lib.flatten (lib.mapAttrsToList (n: env: [
       {

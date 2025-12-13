@@ -2,6 +2,7 @@
 let
   envs = config.hostenv.environments or { };
   enabledEnvs = lib.filterAttrs (_: env: env.enable or true) envs;
+  envUser = name: env: env.user or name;
 in
 {
   options.hostenv = {
@@ -32,28 +33,40 @@ in
           "d ${config.hostenv.runtimeRoot}/nginx   0755 root root  -"
           "d ${config.hostenv.runtimeRoot}/user    0755 root root  -"
         ];
-        perEnv = lib.flatten (lib.mapAttrsToList (name: env: [
-          "d ${config.hostenv.runtimeRoot}/nginx/${name} 2770 ${env.user or name} nginx -"
-          "d ${config.hostenv.runtimeRoot}/user/${name}  2700 ${env.user or name} users -"
-        ]) enabledEnvs);
+        perEnv = lib.flatten (lib.mapAttrsToList (name: env:
+          let user = envUser name env;
+          in [
+            "d ${config.hostenv.runtimeRoot}/nginx/${user} 2770 ${user} nginx -"
+            "d ${config.hostenv.runtimeRoot}/user/${user}  2700 ${user} users -"
+          ]) enabledEnvs);
         logs = [
           "d ${config.hostenv.logRoot} 0755 root root -"
         ];
       in base ++ perEnv ++ logs;
 
     # Basic users/groups for environments (idempotent; real UID assignment handled in provider plan).
-    users = {
-      users = lib.mapAttrs (name: env: {
-        isNormalUser = true;
-        uid = env.extras.uid or null;
-        group = name;
-        createHome = true;
-        openssh.authorizedKeys.keys = env.extras.publicKeys or [ ];
-        linger = true;
-      }) enabledEnvs;
-
-      groups = lib.mapAttrs (_: _env: { }) enabledEnvs;
-    };
+    users =
+      let
+        userEntries = lib.listToAttrs (lib.mapAttrsToList (name: env:
+          let user = envUser name env;
+          in {
+            name = user;
+            value = {
+              isNormalUser = true;
+              uid = env.extras.uid or null;
+              group = user;
+              createHome = true;
+              openssh.authorizedKeys.keys = env.extras.publicKeys or [ ];
+              linger = true;
+            };
+          }) enabledEnvs);
+        groupEntries = lib.listToAttrs (lib.mapAttrsToList (name: env:
+          let user = envUser name env;
+          in { name = user; value = { }; }) enabledEnvs);
+      in {
+        users = userEntries;
+        groups = groupEntries;
+      };
 
     # Expose a small facts file for debugging/ops.
     environment.etc."hostenv/facts".text = ''

@@ -23,7 +23,8 @@ in
         (lib.mapAttrs
           (name: env: {
             env = name;
-            project = env.extras.project or env.user or name;
+            user = env.user or name;
+            hostname = env.hostname or name;
           })
           envs);
     };

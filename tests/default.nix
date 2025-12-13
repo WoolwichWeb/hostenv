@@ -6,4 +6,4 @@
   // (import ./provider-plan.nix { inherit pkgs makeHostenv; })
   // (import ./socket-contract.nix { inherit pkgs envs; })
   // { hostenv-hostname = import ./hostname.nix { inherit pkgs makeHostenv; }; }
-  // (import ./dendritic.nix { inherit pkgs; })
+  // (import ./dendritic.nix { inherit pkgs makeHostenv; })

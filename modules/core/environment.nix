@@ -154,12 +154,12 @@ in
           {
             # Provide only the per-env bits; keep environments empty to avoid
             # embedding the whole tree here.
-            config.organisation = tl.organisation or "";
-            config.project = tl.project or "";
-            config.hostenvHostname = tl.hostenvHostname or "example.invalid";
-            config.backupsRepoHost = tl.backupsRepoHost or null;
+            config.organisation = lib.mkDefault (tl.organisation or "");
+            config.project = lib.mkDefault (tl.project or "");
+            config.hostenvHostname = lib.mkDefault (tl.hostenvHostname or "example.invalid");
+            config.backupsRepoHost = lib.mkDefault (tl.backupsRepoHost or null);
             config.environmentName = name;
-            config.root = tl.root or ".";
+            config.root = lib.mkDefault (tl.root or ".");
             config.environments = { };
           }
         ];
@@ -174,6 +174,15 @@ in
       type = types.int;
       description = ''
         Priority of the environment, used when resolving host clashes.
+      '';
+    };
+
+    extras = lib.mkOption {
+      type = types.attrs;
+      default = { };
+      description = ''
+        Unstructured per-environment data passed through to host-level modules
+        (e.g. backups, nginx tuning, provider-specific metadata).
       '';
     };
   };
