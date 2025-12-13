@@ -27,6 +27,7 @@ let
             _module.check = false;
             environments = {
               alpha = {
+                _module.check = false;
                 enable = true;
                 user = "alpha";
                 extras.publicKeys = [ ];
@@ -64,6 +65,7 @@ let
             _module.check = false;
             environments = {
               on = {
+                _module.check = false;
                 enable = true;
                 user = "onuser";
                 hostname = "on.example";
@@ -71,6 +73,7 @@ let
                 virtualHosts = { };
               };
               off = {
+                _module.check = false;
                 enable = false;
                 user = "offuser";
                 hostname = "off.example";
