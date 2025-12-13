@@ -9,9 +9,10 @@ let
         specialArgs = { inherit pkgs; };
         modules = [
           ../modules/core/hostenv.nix
+          ../modules/core/environments.nix
           ../modules/nixos/users-slices.nix
           ({ ... }: {
-            hostenv.environments = {
+            environments = {
               alpha = {
                 enable = true;
                 user = "alpha";
@@ -36,9 +37,10 @@ let
         specialArgs = { inherit pkgs; };
         modules = [
           ../modules/core/hostenv.nix
+          ../modules/core/environments.nix
           ../modules/nixos/nginx-hostenv.nix
           ({ ... }: {
-            hostenv.environments = {
+            environments = {
               on = {
                 enable = true;
                 user = "onuser";
