@@ -8,6 +8,9 @@ let
       eval = lib.evalModules {
         specialArgs = { inherit pkgs; };
         modules = [
+          ({ lib, ... }: {
+            options.hostenv = lib.mkOption { type = lib.types.attrs; default = { }; };
+          })
           ../modules/core/hostenv.nix
           ../modules/core/environments.nix
           ../modules/nixos/users-slices.nix
@@ -36,6 +39,9 @@ let
       eval = lib.evalModules {
         specialArgs = { inherit pkgs; };
         modules = [
+          ({ lib, ... }: {
+            options.hostenv = lib.mkOption { type = lib.types.attrs; default = { }; };
+          })
           ../modules/core/hostenv.nix
           ../modules/core/environments.nix
           ../modules/nixos/nginx-hostenv.nix
