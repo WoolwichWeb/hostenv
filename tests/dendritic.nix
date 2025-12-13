@@ -51,6 +51,7 @@ let
       eval = lib.evalModules {
         specialArgs = { inherit pkgs; };
         modules = [
+          { _module.check = false; }
           ({ lib, ... }: {
             options.hostenv = lib.mkOption {
               type = lib.types.submodule { freeformType = lib.types.attrs; };
