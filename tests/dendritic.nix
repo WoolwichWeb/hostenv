@@ -87,14 +87,12 @@ let
         ];
       };
       upstreams = eval.config.services.nginx.upstreams;
-      upstreamsJson = builtins.toFile "upstreams.json" (builtins.toJSON upstreams);
+      _mustHave = if upstreams ? onuser_upstream then null else builtins.throw "onuser_upstream missing";
+      _mustNotHave = if builtins.any (n: lib.hasInfix "offuser" n) (builtins.attrNames upstreams)
+        then builtins.throw "disabled env present in upstreams"
+        else null;
     in pkgs.runCommand "disabled-envs-filtered" { } ''
-      cp ${upstreamsJson} $out
-      grep -q '"onuser_upstream"' $out
-      if grep -q 'offuser' $out; then
-        echo "FAIL: disabled env 'off' still present in upstreams" >&2
-        exit 1
-      fi
+      echo ok > $out
     '';
 in {
   slice_defaults_applied = sliceEval;
