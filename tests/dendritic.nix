@@ -10,6 +10,7 @@ let
         modules = [
           ({ lib, ... }: {
             options.hostenv = lib.mkOption { type = lib.types.submodule { }; default = { }; };
+            options.systemd.slices = lib.mkOption { type = lib.types.attrs; default = { }; };
           })
           ../modules/core/hostenv.nix
           ../modules/core/environments.nix
@@ -41,6 +42,8 @@ let
         modules = [
           ({ lib, ... }: {
             options.hostenv = lib.mkOption { type = lib.types.submodule { }; default = { }; };
+            options.systemd.services = lib.mkOption { type = lib.types.attrs; default = { }; };
+            options.systemd.slices = lib.mkOption { type = lib.types.attrs; default = { }; };
           })
           ../modules/core/hostenv.nix
           ../modules/core/environments.nix
