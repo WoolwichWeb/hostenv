@@ -36,12 +36,10 @@ in
           "d ${config.hostenv.runtimeRoot}/nginx/${name} 2770 ${env.user or name} nginx -"
           "d ${config.hostenv.runtimeRoot}/user/${name}  2700 ${env.user or name} users -"
         ]) enabledEnvs);
-      in base ++ perEnv;
-
-    # Minimal logging layout; feature modules can add exporters/forwarders.
-    systemd.tmpfiles.rules ++= [
-      "d ${config.hostenv.logRoot} 0755 root root -"
-    ];
+        logs = [
+          "d ${config.hostenv.logRoot} 0755 root root -"
+        ];
+      in base ++ perEnv ++ logs;
 
     # Basic users/groups for environments (idempotent; real UID assignment handled in provider plan).
     users = {
