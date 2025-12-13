@@ -8,6 +8,7 @@ let
       eval = lib.evalModules {
         specialArgs = { inherit pkgs; };
         modules = [
+          ../modules/core/hostenv.nix
           ../modules/nixos/users-slices.nix
           ({ ... }: {
             hostenv.environments = {
@@ -34,6 +35,7 @@ let
       eval = lib.evalModules {
         specialArgs = { inherit pkgs; };
         modules = [
+          ../modules/core/hostenv.nix
           ../modules/nixos/nginx-hostenv.nix
           ({ ... }: {
             hostenv.environments = {
@@ -69,4 +71,3 @@ in {
   slice_defaults_applied = sliceEval;
   disabled_envs_filtered = disabledEval;
 }
-
