@@ -12,6 +12,8 @@ let
             options.hostenv = lib.mkOption { type = lib.types.submodule { }; default = { }; };
             options.systemd.services = lib.mkOption { type = lib.types.attrs; default = { }; };
             options.systemd.slices = lib.mkOption { type = lib.types.attrs; default = { }; };
+            options.users.users = lib.mkOption { type = lib.types.attrs; default = { }; };
+            options.users.groups = lib.mkOption { type = lib.types.attrs; default = { }; };
           })
           ../modules/core/hostenv.nix
           ../modules/core/environments.nix
