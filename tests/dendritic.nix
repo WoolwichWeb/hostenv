@@ -168,7 +168,7 @@ let
     in pkgs.runCommand "users-slices-configured" { } ''
       cp ${sliceJson} $out
       grep -q '"CPUAccounting":"yes"' $out
-      grep -E '"MemoryMax":"[^"]+"' $out
+      grep -E '"MemoryMax":"[0-9]+G"' $out
     '';
 
 in {
