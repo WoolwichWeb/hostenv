@@ -9,7 +9,7 @@ let
         specialArgs = { inherit pkgs; };
         modules = [
           ({ lib, ... }: {
-            options.hostenv = lib.mkOption { type = lib.types.attrs; default = { }; };
+            options.hostenv = lib.mkOption { type = lib.types.submodule { }; default = { }; };
           })
           ../modules/core/hostenv.nix
           ../modules/core/environments.nix
@@ -40,7 +40,7 @@ let
         specialArgs = { inherit pkgs; };
         modules = [
           ({ lib, ... }: {
-            options.hostenv = lib.mkOption { type = lib.types.attrs; default = { }; };
+            options.hostenv = lib.mkOption { type = lib.types.submodule { }; default = { }; };
           })
           ../modules/core/hostenv.nix
           ../modules/core/environments.nix
