@@ -40,15 +40,18 @@ Audience: hostenv core/devops maintainers
 
 ## Architecture Notes
 - **Dendritic layout (flake-parts):**
-  - Trunk: provider common module (SOPS, deploy user, tmpfiles, nginx defaults, slices/quotas).
-  - Branches: per-node module files (provider repo keeps hardware/network specifics).
-  - Leaves: per-project hostenv inputs (already exported by projects) merged automatically.
+  - Trunk: canonical data model in `modules/core/{hostenv,environments}.nix` plus bridging (`modules/nixos/plan-bridge.nix`) and host foundations (`modules/nixos/top-level.nix`).
+  - Branches: feature modules:
+    - env-level runtime (`modules/env/*`: nginx, php-fpm, drupal, restic, systemd helpers)
+    - host-level, provider-neutral (`modules/nixos/*`: users/slices, nginx front-door, backups, monitoring, nginx tuning, tmpfiles)
+  - Leaves: provider-layer glue in `src/provider` (plan/state generator, NixOS system assembly) that imports the host-level modules instead of re-implementing them.
 - **State management:** keep `generated/state.json` committed; reserve UIDs and vhosts there; honour existing schema (avoid churn).
 - **ACME/DNS gating:** preserve current behaviour—disable ACME/forceSSL for vhosts not pointing at the node; optional Cloudflare CNAME upsert.
 - **Security:** provider CLI handles secrets only via sops; no secret paths in project CLI.
 
 ## File/Repo Moves
 - New: `src/provider/plan.nix`, `src/provider/nixos-system.nix`, `src/provider/common.nix`, `src/provider/cli/` (CLI sources), `src/provider/flake-parts-module.nix`.
+- New host-level modules under `modules/nixos/` for shared concerns (tmpfiles/top-level, nginx front-door, backups, monitoring, nginx tuning, plan-bridge) consumed by both projects and provider builds.
 - New generated outputs folder (in provider repo): `generated/plan.json`, `generated/state.json`, `generated/flake.lock` (if needed), symlink `generated/flake.nix` produced by flake-parts, not templated.
 - Legacy `for_refactoring/` kept temporarily for reference; scheduled for removal after parity achieved.
 
@@ -89,4 +92,3 @@ Audience: hostenv core/devops maintainers
 - `nix run .#hostenv-provider deploy --node <node>` successfully deploys a node + envs equivalent to current workflow.
 - End-user `hostenv` CLI works unchanged except for a deprecation warning on `deploy`.
 - `for_refactoring/` removable without lost capability.
-

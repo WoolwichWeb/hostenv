@@ -48,26 +48,24 @@ Here's an example hosting environment for the [Drupal](https://www.drupal.org) C
 
 ---
 
-## Repository Map (for contributors)
+## Repository Map (dendritic layout)
 
-- `modules/` – canonical hostenv modules. The trunk is `config.environments`; feature modules also read `config.hostenv.environments` (bridged automatically).  
-  - `nixos/` – host-level, provider-neutral building blocks (nginx-hostenv, backups-hostenv, users-slices, etc.).  
-  - `env/` – env-level runtime modules (user services).  
-  - `providers/` – optional provider-specific modules (add your own if needed).  
-- `modules/core/full-env.nix` – assembles a user-level hostenv environment.  
-  - `hostenv.nix` – core hostenv options (paths, hashes, naming).  
-  - `environments.nix` – canonical environment schema and defaults.
-- `src/provider/` – provider-side planning/CLI (plan/state generation, deploy flake, dns-gate scaffolding).
-- `template/.hostenv/` – project template consumed by `flake init`.
-- `tests/` – flake checks; includes provider plan regressions and Drupal fixtures.
-- `docs/` – design notes (dendritic structure, provider quickstart, etc.).
+- `modules/` – the trunk and feature branches:
+  - `core/` – canonical schemas (`hostenv.nix`, `environments.nix`) and the user environment assembly (`full-env.nix`).
+  - `env/` – env-level runtime modules (user services: nginx, php-fpm, drupal, restic).
+  - `nixos/` – host-level, provider‑neutral modules (top-level runtime dirs, nginx front-door, users/slices, backups, monitoring, plan-bridge, nginx tuning).
+  - `providers/` – reserved for provider-specific modules if you need them.
+- `src/provider/` – provider-facing tooling: plan/state generator, CLI, node flake wiring. It now consumes the dendritic modules instead of carrying host glue.
+- `template/.hostenv/` – project template used by `nix flake init --template`.
+- `tests/` – flake checks and fixtures (provider plan regressions, Drupal).
+- `docs/` – design notes, dendritic structure, provider quickstart, review checklists.
 
 ## Key Workflows
 
 - **Add an environment**: edit your project’s `.hostenv/hostenv.nix`, add an entry under `environments.<name> { enable = true; type = ...; virtualHosts = { ... }; }`. Run `nix flake check` to ensure feature modules (nginx, php-fpm, backups) pick it up. Only one environment may be `type = "production"` (enforced).
 - **Remove an environment**: delete or set `enable = false` in `.hostenv/hostenv.nix`; regenerate plan/state (`hostenv-provider plan`) and deploy.
 - **Add a host (provider)**: in the provider repo, add a node file under `nodes/` and map it in `provider.nodeSystems`; regenerate plan/state (`hostenv-provider plan`) and deploy via deploy-rs.
-- **Add a feature module**: create `modules/nixos/<name>.nix` (system-level, provider-neutral) or `modules/env/<name>.nix` (user-level), or place provider-specific modules under `modules/providers/<name>.nix`; consume `config.hostenv.environments` (already bridged from `config.environments`); import it in `core/full-env.nix` (or provider-level if system-only). Add a test in `tests/`.
+- **Add a feature module**: create `modules/nixos/<name>.nix` (system-level, provider-neutral) or `modules/env/<name>.nix` (user-level); put provider-specific modules under `modules/providers/<name>.nix` if needed. Feature modules read `config.hostenv.environments` (bridged from `config.environments` by `modules/nixos/plan-bridge.nix`). Import new host-level modules in the provider system wiring (`src/provider/nixos-system.nix`) if they’re host-only; import env-level modules in `modules/core/full-env.nix`. Add a test in `tests/`.
 
 ## Getting Started (projects)
 
