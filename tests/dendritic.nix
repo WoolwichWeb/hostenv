@@ -11,6 +11,7 @@ let
           ({ lib, ... }: {
             options.hostenv = lib.mkOption {
               type = lib.types.submodule {
+                freeformType = lib.types.attrs;
                 options.defaultEnvironment = lib.mkOption { type = lib.types.str; default = "main"; };
               };
               default = { };
