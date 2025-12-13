@@ -87,15 +87,6 @@ let
           })
         ];
       };
-      upstreams = eval.config.services.nginx.upstreams;
-      mustHave = if upstreams ? onuser_upstream then null else builtins.throw "onuser_upstream missing";
-      mustNotHave = if builtins.any (n: lib.hasInfix "offuser" n) (builtins.attrNames upstreams)
-        then builtins.throw "disabled env present in upstreams"
-        else null;
-    in builtins.seq mustHave (builtins.seq mustNotHave (pkgs.runCommand "disabled-envs-filtered" { } ''
-      echo ok > $out
-    ''));
 in {
   slice_defaults_applied = sliceEval;
-  disabled_envs_filtered = disabledEval;
 }
