@@ -23,7 +23,7 @@ let
           })
           ../modules/core/environments.nix
           ../modules/nixos/users-slices.nix
-          ({ ... }: {
+          ({ config, ... }: {
             environments = {
               alpha = {
                 enable = true;
@@ -32,7 +32,7 @@ let
                 extras.uid = 123;
               };
             };
-            hostenv.environments = environments;
+            hostenv.environments = config.environments;
           })
         ];
       };
@@ -59,7 +59,7 @@ let
           })
           ../modules/core/environments.nix
           ../modules/nixos/nginx-hostenv.nix
-          ({ ... }: {
+          ({ config, ... }: {
             environments = {
               on = {
                 enable = true;
@@ -76,7 +76,7 @@ let
                 virtualHosts = { };
               };
             };
-            hostenv.environments = environments;
+            hostenv.environments = config.environments;
           })
         ];
       };
