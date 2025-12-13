@@ -56,6 +56,7 @@ let
               type = lib.types.submodule { freeformType = lib.types.attrs; };
               default = { };
             };
+            options.services.nginx = lib.mkOption { type = lib.types.attrs; default = { }; };
             options.systemd.services = lib.mkOption { type = lib.types.attrs; default = { }; };
             options.systemd.slices = lib.mkOption { type = lib.types.attrs; default = { }; };
           })
