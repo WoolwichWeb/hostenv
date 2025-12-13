@@ -61,13 +61,11 @@ let
             options.systemd.services = lib.mkOption { type = lib.types.attrs; default = { }; };
             options.systemd.slices = lib.mkOption { type = lib.types.attrs; default = { }; };
           })
-          ../modules/core/environments.nix
           ../modules/nixos/nginx-hostenv.nix
-          ({ config, ... }: {
+          ({ ... }: {
             _module.check = false;
-            environments = {
+            hostenv.environments = {
               on = {
-                _module.check = false;
                 enable = true;
                 user = "onuser";
                 hostname = "on.example";
@@ -75,7 +73,6 @@ let
                 virtualHosts = { };
               };
               off = {
-                _module.check = false;
                 enable = false;
                 user = "offuser";
                 hostname = "off.example";
@@ -83,7 +80,6 @@ let
                 virtualHosts = { };
               };
             };
-            hostenv.environments = config.environments;
           })
         ];
       };
