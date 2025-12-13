@@ -21,7 +21,6 @@ let
             options.users.users = lib.mkOption { type = lib.types.attrs; default = { }; };
             options.users.groups = lib.mkOption { type = lib.types.attrs; default = { }; };
           })
-          ../modules/core/hostenv.nix
           ../modules/core/environments.nix
           ../modules/nixos/users-slices.nix
           ({ ... }: {
@@ -50,11 +49,13 @@ let
         specialArgs = { inherit pkgs; };
         modules = [
           ({ lib, ... }: {
-            options.hostenv = lib.mkOption { type = lib.types.submodule { }; default = { }; };
+            options.hostenv = lib.mkOption {
+              type = lib.types.submodule { freeformType = lib.types.attrs; };
+              default = { };
+            };
             options.systemd.services = lib.mkOption { type = lib.types.attrs; default = { }; };
             options.systemd.slices = lib.mkOption { type = lib.types.attrs; default = { }; };
           })
-          ../modules/core/hostenv.nix
           ../modules/core/environments.nix
           ../modules/nixos/nginx-hostenv.nix
           ({ ... }: {
