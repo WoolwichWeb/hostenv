@@ -9,8 +9,12 @@ let
         specialArgs = { inherit pkgs; };
         modules = [
           ({ lib, ... }: {
-            options.hostenv = lib.mkOption { type = lib.types.submodule { }; default = { }; };
-            options.hostenv.defaultEnvironment = lib.mkOption { type = lib.types.str; default = "main"; };
+            options.hostenv = lib.mkOption {
+              type = lib.types.submodule {
+                options.defaultEnvironment = lib.mkOption { type = lib.types.str; default = "main"; };
+              };
+              default = { };
+            };
             options.systemd.services = lib.mkOption { type = lib.types.attrs; default = { }; };
             options.systemd.slices = lib.mkOption { type = lib.types.attrs; default = { }; };
             options.users.users = lib.mkOption { type = lib.types.attrs; default = { }; };
