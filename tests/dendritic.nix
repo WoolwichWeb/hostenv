@@ -24,6 +24,7 @@ let
           ../modules/core/environments.nix
           ../modules/nixos/users-slices.nix
           ({ config, ... }: {
+            _module.check = false;
             environments = {
               alpha = {
                 enable = true;
@@ -60,6 +61,7 @@ let
           ../modules/core/environments.nix
           ../modules/nixos/nginx-hostenv.nix
           ({ config, ... }: {
+            _module.check = false;
             environments = {
               on = {
                 enable = true;
