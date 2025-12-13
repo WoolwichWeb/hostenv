@@ -87,6 +87,21 @@ let
           })
         ];
       };
+      upstreams = eval.config.services.nginx.upstreams or { };
+      upstreamsJson = builtins.toFile "upstreams.json" (builtins.toJSON upstreams);
+    in pkgs.runCommand "disabled-envs-filtered" { } ''
+      cp ${upstreamsJson} $out
+      if ! grep -q '"onuser_upstream"' $out; then
+        echo "FAIL: onuser upstream missing" >&2
+        exit 1
+      fi
+      if grep -q 'offuser' $out; then
+        echo "FAIL: disabled env appears in upstreams" >&2
+        exit 1
+      fi
+      echo "ok" > $out
+    '';
 in {
   slice_defaults_applied = sliceEval;
+  disabled_envs_filtered = disabledEval;
 }
