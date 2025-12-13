@@ -23,14 +23,14 @@ in
         virtualHosts = vh;
         phpVersion = envCfg.hostenv.phpVersion or null;
         dbName = envCfg.hostenv.dbName or null;
-        extras = {
-          uid = envCfg.uid or null;
-          publicKeys = allKeys;
-          nginx = envCfg.hostenv.extras.nginx or { };
-        };
+        extras =
+          (envCfg.hostenv.extras or { })
+          // {
+            uid = envCfg.uid or null;
+            publicKeys = allKeys;
+          };
       })
     envs;
 
   config.hostenv.defaultEnvironment = defaultEnv;
 }
-

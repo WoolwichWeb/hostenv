@@ -56,7 +56,14 @@ in
       recommendedProxySettings = true;
       virtualHosts = lib.foldl' lib.recursiveUpdate { }
         (lib.mapAttrsToList (n: env: vhostFromEnv (env.user or n) env) envs);
-      upstreams = lib.mapAttrs (n: env: mkUpstream n env) envs;
+      upstreams = lib.listToAttrs (lib.mapAttrsToList
+        (n: env:
+          let user = env.user or n;
+          in {
+            name = "${user}_upstream";
+            value = mkUpstream n env;
+          })
+        envs);
     };
   };
 }
