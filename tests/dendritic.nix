@@ -32,6 +32,7 @@ let
                 extras.uid = 123;
               };
             };
+            hostenv.environments = environments;
           })
         ];
       };
@@ -75,6 +76,7 @@ let
                 virtualHosts = { };
               };
             };
+            hostenv.environments = environments;
           })
         ];
       };
