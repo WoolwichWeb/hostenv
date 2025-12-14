@@ -213,4 +213,60 @@ in {
       jq -e 'has("customuser")' ${usersJson} >/dev/null
       jq -e '."user@321".serviceConfig.Slice=="customuser.slice"' ${servicesJson} >/dev/null
     '';
+  restic_exclusive_repo =
+    let
+      eval = lib.evalModules {
+        specialArgs = { inherit pkgs; };
+        modules = [
+          ({ lib, ... }: {
+            options = {
+              assertions = lib.mkOption {
+                type = lib.types.listOf (lib.types.submodule {
+                  options = {
+                    assertion = lib.mkOption { type = lib.types.bool; };
+                    message = lib.mkOption { type = lib.types.str; };
+                  };
+                });
+                default = [ ];
+              };
+              activate = lib.mkOption {
+                type = lib.types.str;
+                default = "";
+              };
+              profile = lib.mkOption {
+                type = lib.types.listOf lib.types.path;
+                default = [ ];
+              };
+              systemd.services = lib.mkOption { type = lib.types.attrs; default = { }; };
+              systemd.timers = lib.mkOption { type = lib.types.attrs; default = { }; };
+              systemd.paths = lib.mkOption { type = lib.types.attrs; default = { }; };
+              users.users = lib.mkOption { type = lib.types.attrs; default = { }; };
+              environment.variables = lib.mkOption { type = lib.types.attrs; default = { }; };
+              environment.systemPackages = lib.mkOption { type = lib.types.listOf lib.types.package; default = [ ]; };
+            };
+          })
+          ../modules/env/restic.nix
+          ({ ... }: {
+            _module.check = false;
+            services.restic.enable = true;
+            services.restic.backups.bad = {
+              paths = [ "/data" ];
+              repository = "s3:https://example.invalid";
+              repositoryFile = pkgs.writeText "repo-file" "s3:https://other.invalid";
+              environmentFile = null;
+              passwordFile = "/tmp/pw";
+            };
+          })
+        ];
+      };
+      assertionsJson = builtins.toFile "assertions.json" (builtins.toJSON eval.config.assertions);
+    in pkgs.runCommand "restic-exclusive-repo-assert" { buildInputs = [ pkgs.jq pkgs.coreutils ]; } ''
+      cat ${assertionsJson} > $out
+      if jq -e 'map(.assertion == false) | any' "$out" >/dev/null; then
+        exit 0
+      fi
+      echo "Expected restic assertion to fail when repository and repositoryFile are both set" >&2
+      cat "$out" >&2
+      exit 1
+    '';
 }
