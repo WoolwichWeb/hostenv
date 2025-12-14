@@ -76,10 +76,39 @@ Here's an example hosting environment for the [Drupal](https://www.drupal.org) C
 2) `nix flake init --template gitlab:woolwichweb/hostenv`.  
 3) Install/configure direnv, run `direnv allow` inside `.hostenv/`.  
 4) Configure environments in `.hostenv/hostenv.nix`.  
-5) `nix flake check` (or `nix run .#hostenv-provider -- plan` in provider context).  
+5) `nix flake check` (or `nix run .#hostenv-provider -- plan` in provider context).
    - Run project CLI: `cd .hostenv && nix run .#hostenv`  
    - Enter project dev shell: `cd .hostenv && nix develop`  
 6) Deploy via provider flow once ready.
+
+## Provider Quickstart (use hostenv as an input)
+
+- Add hostenv to your provider flake inputs and reuse its pins:
+  ```nix
+  inputs.hostenv.url = "git+https://gitlab.com/woolwichweb/hostenv";
+  inputs.nixpkgs.follows = "hostenv/nixpkgs";
+  inputs.flake-parts.follows = "hostenv/flake-parts";
+  outputs = inputs@{ flake-parts, hostenv, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = [ "x86_64-linux" "aarch64-linux" ];
+      imports = [ hostenv.lib.hostenv.providerModule ];
+      provider = {
+        hostenvHostname = "hosting.example.com";
+        deployPublicKey = "ssh-ed25519 AAAA...";
+        nodeSystems = { default = "x86_64-linux"; };
+        nodeFor = { default = "edge-01"; };
+        nodesPath = ./nodes;
+        secretsPath = ./secrets/secrets.yaml;
+        statePath = ./generated/state.json;
+        planPath = ./generated/plan.json;
+        planSource = "eval";
+      };
+    };
+  ```
+- Create NixOS node configs under `nodes/<node>/configuration.nix` (plus hardware config); set `system.stateVersion`.
+- Generate plan/state/flake: `nix run .#hostenv-provider-plan` (writes to `generated/` or `$HOSTENV_PROVIDER_OUT`).
+- Deploy using your preferred tool (e.g. deploy-rs) against the generated flake.
+- If client flakes live somewhere other than `.hostenv/`, set `provider.hostenvProjectDir` accordingly.
 
 ## Contributing
 
