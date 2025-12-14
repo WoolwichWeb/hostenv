@@ -71,12 +71,18 @@
           )
           (filterAttrs (n: v: v.enable) defaultHostenv.config.environments)
         // {
+          hostenv-cli = defaultHostenv.config.hostenv.cliPackage;
           default = defaultHostenv.config.activatePackage;
         };
 
         hostenv = defaultHostenv.config;
 
-        apps = defaultHostenv.config.hostenv.apps;
+        apps = defaultHostenv.config.hostenv.apps // {
+          hostenv = {
+            type = "app";
+            program = "${defaultHostenv.config.hostenv.cliPackage}/bin/hostenv";
+          };
+        };
 
         devShells = defaultHostenv.config.hostenv.devShells;
 

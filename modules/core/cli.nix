@@ -249,10 +249,18 @@ let
         type = "app";
         program = "${envs}/bin/hostenv-environments";
       };
+      hostenv = {
+        type = "app";
+        program = "${hostenvCli}/bin/hostenv";
+      };
     };
 
 in
 {
+  options.hostenv.cliPackage = lib.mkOption {
+    type = lib.types.package;
+    description = "The hostenv CLI package for this project.";
+  };
   options.hostenv.devShells = lib.mkOption {
     type = lib.types.attrsOf lib.types.package;
     description = "Shell environments for working with hostenv projects";
@@ -269,6 +277,7 @@ in
 
   config.hostenv.devShells = lib.mkDefault hostenvShells;
   config.hostenv.apps = lib.mkDefault hostenvApps;
+  config.hostenv.cliPackage = lib.mkDefault hostenvCli;
   config.hostenv.subCommands = {
 
     help = {
@@ -559,4 +568,3 @@ in
     };
   };
 }
-

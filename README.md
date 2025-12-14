@@ -66,6 +66,9 @@ Here's an example hosting environment for the [Drupal](https://www.drupal.org) C
 - **Remove an environment**: delete or set `enable = false` in `.hostenv/hostenv.nix`; regenerate plan/state (`hostenv-provider plan`) and deploy.
 - **Add a host (provider)**: in the provider repo, add a node file under `nodes/` and map it in `provider.nodeSystems`; regenerate plan/state (`hostenv-provider plan`) and deploy via deploy-rs.
 - **Add a feature module**: create `modules/nixos/<name>.nix` (system-level, provider-neutral) or `modules/env/<name>.nix` (user-level); put provider-specific modules under `modules/providers/<name>.nix` if needed. Feature modules read `config.hostenv.environments` (bridged from `config.environments` by `modules/nixos/plan-bridge.nix`). Import new host-level modules in the provider system wiring (`src/provider/nixos-system.nix`) if they’re host-only; import env-level modules in `modules/core/full-env.nix`. Add a test in `tests/`.
+- **Run the hostenv CLI**: from a project’s `.hostenv/` directory run `nix run .#hostenv` to use the project-aware CLI (environments come from your `hostenv.nix`). From this repo you can run `nix run .#hostenv` to get a bundled CLI for demos/tests.
+- **Dev shell**: `nix develop` (repo root) drops you into a shell with provider + CLI tooling; inside a project’s `.hostenv/` you can also use `nix develop` for project-scoped tools.
+- **Docs preview**: `nix run .#serve-docs` serves the generated docs locally (uses the flake app defined in `src/flake-modules/root.nix`).
 
 ## Getting Started (projects)
 
@@ -74,6 +77,8 @@ Here's an example hosting environment for the [Drupal](https://www.drupal.org) C
 3) Install/configure direnv, run `direnv allow` inside `.hostenv/`.  
 4) Configure environments in `.hostenv/hostenv.nix`.  
 5) `nix flake check` (or `nix run .#hostenv-provider -- plan` in provider context).  
+   - Run project CLI: `cd .hostenv && nix run .#hostenv`  
+   - Enter project dev shell: `cd .hostenv && nix develop`  
 6) Deploy via provider flow once ready.
 
 ## Contributing

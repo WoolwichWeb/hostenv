@@ -20,6 +20,7 @@
       };
 
       envs = import ./../../tests/environments.nix { inherit pkgs makeHostenv; };
+      cliPkg = envs.drupalProduction.config.hostenv.cliPackage;
     in
     {
       apps.default = {
@@ -27,9 +28,15 @@
         program = "${serveDocs}/bin/serve-docs";
         meta.description = "Serve hostenv documentation site";
       };
+      apps.hostenv = {
+        type = "app";
+        program = "${cliPkg}/bin/hostenv";
+        meta.description = "Hostenv project CLI";
+      };
 
       packages = {
         inherit docSearch;
+        hostenv-cli = cliPkg;
         default = self'.packages.hostenv-provider;
       };
 
