@@ -10,3 +10,4 @@
   // (import ./plan-bridge.nix { inherit pkgs makeHostenv; })
   // (import ./users-slices.nix { inherit pkgs; })
   // (import ./restic.nix { inherit pkgs; })
+  // (import ./hostenv-assertions.nix { inherit pkgs makeHostenv; })

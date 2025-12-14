@@ -119,6 +119,10 @@ in
       activateScript = pkgs.writeShellScriptBin "activate" config.activate;
     in
     {
+      # Promote hostenv (per-environment) invariants to the top-level assertions
+      # so they are actually evaluated by performAssertions.
+      assertions = lib.mkAfter (config.hostenv.assertions or [ ]);
+
       activate = performAssertions (mkMerge [
         (mkBefore ''
           ## Top level activation script.
