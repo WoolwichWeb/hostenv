@@ -30,10 +30,12 @@ let
           dev = drupalEnvs.dev // { enable = false; };
         };
     in
-    lib.mapAttrs (_: env: {
-      inherit (env) enable type virtualHosts users;
-      hostenv = env.hostenv // { extras = env.hostenv.extras or { }; };
-    }) withExtras;
+    lib.mapAttrs
+      (_: env: {
+        inherit (env) enable type virtualHosts users;
+        hostenv = env.hostenv // { extras = env.hostenv.extras or { }; };
+      })
+      withExtras;
 
   planBridgeEval = lib.evalModules {
     specialArgs = { inherit pkgs; };
@@ -43,6 +45,15 @@ let
           type = lib.types.submodule { freeformType = lib.types.attrs; };
           default = { };
         };
+        options.assertions = lib.mkOption {
+          type = lib.types.listOf (lib.types.submodule {
+            options = {
+              assertion = lib.mkOption { type = lib.types.bool; };
+              message = lib.mkOption { type = lib.types.str; };
+            };
+          });
+          default = [ ];
+        };
         options.services.nginx = lib.mkOption { type = lib.types.attrs; default = { }; };
         options.services.restic = lib.mkOption { type = lib.types.attrs; default = { }; };
       })
@@ -51,7 +62,7 @@ let
       ../modules/nixos/nginx-hostenv.nix
       ../modules/nixos/backups-hostenv.nix
       ({ ... }: {
-        _module.check = false;
+        # _module.check = false;
         hostenv = {
           organisation = "test";
           project = "test-project";
@@ -165,13 +176,15 @@ let
       };
       slice = eval.config.systemd.slices."alpha.slice";
       sliceJson = builtins.toFile "slice.json" (builtins.toJSON slice);
-    in pkgs.runCommand "users-slices-configured" { } ''
+    in
+    pkgs.runCommand "users-slices-configured" { } ''
       cp ${sliceJson} $out
       grep -q '"CPUAccounting":"yes"' $out
       grep -E '"MemoryMax":"[0-9]+G"' $out
     '';
 
-in {
+in
+{
   slice_defaults_applied = sliceEval;
   disabled_envs_filtered = upstreamsTest;
   backups_filtered = backupsTest;
@@ -207,7 +220,8 @@ in {
       slicesJson = builtins.toFile "slices.json" (builtins.toJSON eval.config.systemd.slices);
       usersJson = builtins.toFile "users.json" (builtins.toJSON eval.config.users.users);
       servicesJson = builtins.toFile "services.json" (builtins.toJSON eval.config.systemd.services);
-    in pkgs.runCommand "users-slices-custom-user" { buildInputs = [ pkgs.jq pkgs.coreutils ]; } ''
+    in
+    pkgs.runCommand "users-slices-custom-user" { buildInputs = [ pkgs.jq pkgs.coreutils ]; } ''
       cat ${slicesJson} > $out
       jq -e 'has("customuser.slice")' ${slicesJson} >/dev/null
       jq -e 'has("customuser")' ${usersJson} >/dev/null
@@ -260,7 +274,8 @@ in {
         ];
       };
       assertionsJson = builtins.toFile "assertions.json" (builtins.toJSON eval.config.assertions);
-    in pkgs.runCommand "restic-exclusive-repo-assert" { buildInputs = [ pkgs.jq pkgs.coreutils ]; } ''
+    in
+    pkgs.runCommand "restic-exclusive-repo-assert" { buildInputs = [ pkgs.jq pkgs.coreutils ]; } ''
       cat ${assertionsJson} > $out
       if jq -e 'map(.assertion == false) | any' "$out" >/dev/null; then
         exit 0

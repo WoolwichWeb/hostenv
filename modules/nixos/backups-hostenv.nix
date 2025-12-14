@@ -1,7 +1,7 @@
 { lib, pkgs, config, ... }:
 let
   allEnvs = config.hostenv.environments or { };
-  envs = lib.filterAttrs (_: env: env.enable or true) allEnvs;
+  envs = lib.filterAttrs (_: env: env.enable) allEnvs;
 in
 {
   options.hostenv.backups.enable = lib.mkOption {
