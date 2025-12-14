@@ -2,6 +2,9 @@
 
 let
   lib = pkgs.lib;
+  support = import ./support { inherit pkgs lib; };
+  stubs = support.stubs;
+  providerView = support.providerView;
 
   # Reuse the real Drupal fixtures so host-level tests stay aligned with the
   # client/runtime layer.
@@ -30,33 +33,12 @@ let
           dev = drupalEnvs.dev // { enable = false; };
         };
     in
-    lib.mapAttrs
-      (_: env: {
-        inherit (env) enable type virtualHosts users;
-        hostenv = env.hostenv // { extras = env.hostenv.extras or { }; };
-      })
-      withExtras;
+    providerView withExtras;
 
   planBridgeEval = lib.evalModules {
     specialArgs = { inherit pkgs; };
     modules = [
-      ({ lib, ... }: {
-        options.hostenv = lib.mkOption {
-          type = lib.types.submodule { freeformType = lib.types.attrs; };
-          default = { };
-        };
-        options.assertions = lib.mkOption {
-          type = lib.types.listOf (lib.types.submodule {
-            options = {
-              assertion = lib.mkOption { type = lib.types.bool; };
-              message = lib.mkOption { type = lib.types.str; };
-            };
-          });
-          default = [ ];
-        };
-        options.services.nginx = lib.mkOption { type = lib.types.attrs; default = { }; };
-        options.services.restic = lib.mkOption { type = lib.types.attrs; default = { }; };
-      })
+      stubs.base
       ../modules/core/environments.nix
       ../modules/nixos/plan-bridge.nix
       ../modules/nixos/nginx-hostenv.nix
@@ -232,41 +214,7 @@ in
       eval = lib.evalModules {
         specialArgs = { inherit pkgs; };
         modules = [
-          ({ lib, pkgs, ... }: {
-            options = {
-              assertions = lib.mkOption {
-                type = lib.types.listOf (lib.types.submodule {
-                  options = {
-                    assertion = lib.mkOption { type = lib.types.bool; };
-                    message = lib.mkOption { type = lib.types.str; };
-                  };
-                });
-                default = [ ];
-              };
-              hostenv = lib.mkOption {
-                type = lib.types.attrs;
-                default = { };
-              };
-              programs.ssh.package = lib.mkOption {
-                type = lib.types.package;
-                default = pkgs.openssh;
-              };
-              activate = lib.mkOption {
-                type = lib.types.str;
-                default = "";
-              };
-              profile = lib.mkOption {
-                type = lib.types.listOf lib.types.path;
-                default = [ ];
-              };
-              systemd.services = lib.mkOption { type = lib.types.attrs; default = { }; };
-              systemd.timers = lib.mkOption { type = lib.types.attrs; default = { }; };
-              systemd.paths = lib.mkOption { type = lib.types.attrs; default = { }; };
-              users.users = lib.mkOption { type = lib.types.attrs; default = { }; };
-              environment.variables = lib.mkOption { type = lib.types.attrs; default = { }; };
-              environment.systemPackages = lib.mkOption { type = lib.types.listOf lib.types.package; default = [ ]; };
-            };
-          })
+          stubs.base
           ../modules/env/restic.nix
           ({ ... }: {
             hostenv.cacheDir = "/tmp/hostenv-cache";
@@ -303,35 +251,7 @@ in
       eval = lib.evalModules {
         specialArgs = { inherit pkgs; };
         modules = [
-          ({ lib, pkgs, ... }: {
-            options = {
-              assertions = lib.mkOption {
-                type = lib.types.listOf (lib.types.submodule {
-                  options = {
-                    assertion = lib.mkOption { type = lib.types.bool; };
-                    message = lib.mkOption { type = lib.types.str; };
-                  };
-                });
-                default = [ ];
-              };
-              hostenv = lib.mkOption {
-                type = lib.types.attrs;
-                default = { };
-              };
-              programs.ssh.package = lib.mkOption {
-                type = lib.types.package;
-                default = pkgs.openssh;
-              };
-              activate = lib.mkOption { type = lib.types.str; default = ""; };
-              profile = lib.mkOption { type = lib.types.listOf lib.types.path; default = [ ]; };
-              systemd.services = lib.mkOption { type = lib.types.attrs; default = { }; };
-              systemd.timers = lib.mkOption { type = lib.types.attrs; default = { }; };
-              systemd.paths = lib.mkOption { type = lib.types.attrs; default = { }; };
-              users.users = lib.mkOption { type = lib.types.attrs; default = { }; };
-              environment.variables = lib.mkOption { type = lib.types.attrs; default = { }; };
-              environment.systemPackages = lib.mkOption { type = lib.types.listOf lib.types.package; default = [ ]; };
-            };
-          })
+          stubs.base
           ../modules/env/restic.nix
           ({ ... }: {
             hostenv.cacheDir = "/tmp/hostenv-cache";
