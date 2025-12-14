@@ -20,6 +20,9 @@
 
   outputs = { self, nixpkgs, flake-utils, pog, ... } @ inputs: {
     modules = ./.;
+    lib = {
+      cliModule = ./cli-flake-module.nix;
+    };
   } // flake-utils.lib.eachDefaultSystem (system:
     let
       pkgs = import nixpkgs {

@@ -3,6 +3,7 @@
   systems = inputs.nixpkgs.lib.systems.flakeExposed;
   imports = [
     ./../provider/flake-module.nix
+    inputs.hostenv-internal.lib.cliModule
   ];
 
   perSystem = { system, pkgs, self', ... }:
@@ -20,7 +21,6 @@
       };
 
       envs = import ./../../tests/environments.nix { inherit pkgs makeHostenv; };
-      cliPkg = envs.drupalProduction.config.hostenv.cliPackage;
     in
     {
       apps.default = {
@@ -28,16 +28,25 @@
         program = "${serveDocs}/bin/serve-docs";
         meta.description = "Serve hostenv documentation site";
       };
-      apps.hostenv = {
-        type = "app";
-        program = "${cliPkg}/bin/hostenv";
-        meta.description = "Hostenv project CLI";
-      };
-
       packages = {
         inherit docSearch;
-        hostenv-cli = cliPkg;
         default = self'.packages.hostenv-provider;
+      };
+      # Provide hostenv CLI via shared cliModule wiring; reuse test env modules
+      hostenvCli = {
+        modules = [
+          ./../../tests/drupal/hostenv.nix
+          ({ ... }: {
+            hostenv = {
+              organisation = "test";
+              project = "testproject";
+              hostenvHostname = "hosting.test";
+              root = ./../../tests/drupal;
+            };
+          })
+        ];
+        environmentName = "main";
+        makeHostenv = makeHostenv;
       };
 
       checks = import ./../../tests { inherit pkgs envs makeHostenv; };

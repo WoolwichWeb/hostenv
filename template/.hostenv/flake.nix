@@ -24,67 +24,55 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, hostenv, ... } @ inputs: flake-utils.lib.eachDefaultSystem
-    (system:
-      let
-        pkgs = import nixpkgs { inherit system; };
+  outputs = inputs@{ flake-parts, nixpkgs, hostenv, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = inputs.nixpkgs.lib.systems.flakeExposed;
 
-        organisation = "yourorganisation";
-        project = "yourproject";
-        hostenvHostname = "your.hostenv.hostname"; # e.g. hostenv.example.com
-        root = ../.;
-        backupsRepoHost = "your.backup.provider"; # Restic format, for example "s3:https://s3.amazonaws.com/"
+      imports = [ hostenv.lib.cliModule ];
 
-        # Uses hostenv from inputs to build an environment's config.
-        makeHostenv =
-          let
-            # Put together the configuration hostenv needs to build an
-            # environment.
-            modules = [
-              ./hostenv.nix
-              ({ ... }: {
-                buildReference = self.rev or null;
-                hostenv = { inherit organisation project hostenvHostname root backupsRepoHost; };
-              })
-            ];
-          in
-          # Call the function that builds the environment.
-            # Note the use of `${system}`, this is because Flake outputs are
-            # separated by CPU / platform architecture.
-          hostenv.makeHostenv.${system} modules;
+      perSystem = { system, pkgs, config, ... }:
+        let
+          organisation = "yourorganisation";
+          project = "yourproject";
+          hostenvHostname = "your.hostenv.hostname"; # e.g. hostenv.example.com
+          root = ../.;
+          backupsRepoHost = "your.backup.provider"; # Restic format, for example "s3:https://s3.amazonaws.com/"
 
-        # This default hostenv sans environmentName is for bootstrapping
-        # purposes.
-        defaultHostenv = makeHostenv null;
+          baseModules = [
+            ./hostenv.nix
+            ({ ... }: {
+              buildReference = inputs.self.rev or null;
+              hostenv = { inherit organisation project hostenvHostname root backupsRepoHost; };
+            })
+          ];
 
-        inherit (pkgs.lib) mapAttrs filterAttrs;
-
-      in
-      {
-        # Helpful for debugging.
-        inherit makeHostenv;
-
-        packages = mapAttrs
-          (environmentName: environment:
-            let hostenv = makeHostenv environmentName;
-            in hostenv.config.activatePackage
-          )
-          (filterAttrs (n: v: v.enable) defaultHostenv.config.environments)
-        // {
-          hostenv-cli = defaultHostenv.config.hostenv.cliPackage;
-          default = defaultHostenv.config.activatePackage;
-        };
-
-        hostenv = defaultHostenv.config;
-
-        apps = defaultHostenv.config.hostenv.apps // {
-          hostenv = {
-            type = "app";
-            program = "${defaultHostenv.config.hostenv.cliPackage}/bin/hostenv";
+          makeHostenv = hostenv.makeHostenv.${system};
+          defaultHostenv = makeHostenv baseModules null;
+          envs = defaultHostenv.config.environments;
+        in
+        {
+          # Wire CLI via reusable module
+          hostenvCli = {
+            makeHostenv = hostenv.makeHostenv;
+            modules = baseModules;
+            environmentName = null; # use defaultEnvironment
           };
+
+          packages = pkgs.lib.mapAttrs
+            (environmentName: environment:
+              let hostenvEval = makeHostenv baseModules environmentName;
+              in hostenvEval.config.activatePackage
+            )
+            (pkgs.lib.filterAttrs (n: v: v.enable) envs)
+          // {
+            default = defaultHostenv.config.activatePackage;
+          };
+
+          hostenv = defaultHostenv.config;
+
+          apps = defaultHostenv.config.hostenv.apps;
+
+          devShells = defaultHostenv.config.hostenv.devShells;
         };
-
-        devShells = defaultHostenv.config.hostenv.devShells;
-
-      });
+    };
 }
