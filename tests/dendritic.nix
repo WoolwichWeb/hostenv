@@ -60,62 +60,15 @@ let
     ];
   };
 
-  upstreamsJson = builtins.toFile "upstreams.json"
-    (builtins.toJSON (planBridgeEval.config.services.nginx.upstreams or { }));
-  resticJson = builtins.toFile "restic.json"
-    (builtins.toJSON (planBridgeEval.config.services.restic.backups or { }));
-  resticFullJson = builtins.toFile "restic-full.json"
-    (builtins.toJSON (planBridgeEval.config.services.restic or { }));
-  hostenvJson = builtins.toFile "hostenv-envs.json"
-    (builtins.toJSON (planBridgeEval.config.hostenv.environments or { }));
-  providerJson = builtins.toFile "provider-envs.json"
-    (builtins.toJSON providerEnvs);
-  evalEnvsJson = builtins.toFile "eval-envs.json"
-    (builtins.toJSON (planBridgeEval.config.environments or { }));
-  backupsEnabled = builtins.toFile "backups-enabled.txt"
-    (builtins.toJSON (planBridgeEval.config.hostenv.backups.enable or false));
+  upstreamsTest = support.asserts.jqAssert
+    "dendritic-nginx-disabled-envs"
+    "length == 2"
+    (planBridgeEval.config.services.nginx.upstreams or { });
 
-  upstreamsTest = pkgs.runCommand "dendritic-nginx-disabled-envs"
-    { buildInputs = [ pkgs.jq pkgs.coreutils ]; } ''
-    cat ${upstreamsJson} > $out
-    # Enabled envs: main + test (dev is disabled). Upstream count should be 2.
-    count=$(jq 'length' "$out")
-    test "$count" -eq 2 || { echo "expected 2 upstreams, got $count"; exit 1; }
-  '';
-
-  backupsTest = pkgs.runCommand "dendritic-backups-enabled-only"
-    { buildInputs = [ pkgs.jq pkgs.coreutils ]; } ''
-    cat ${resticJson} > $out
-    # Only main carries backups extras; others should be absent.
-    if ! jq -e 'has("main") and (length==1)' "$out" > /dev/null; then
-      echo "restic json:" >&2
-      cat "$out" >&2
-      echo "hostenv environments:" >&2
-      cat ${hostenvJson} >&2
-      echo "hostenv backups.enable:" >&2
-      cat ${backupsEnabled} >&2
-      echo "services.restic:" >&2
-      cat ${resticFullJson} >&2
-      echo "provider environments:" >&2
-      cat ${providerJson} >&2
-      echo "evaluated environments:" >&2
-      cat ${evalEnvsJson} >&2
-      exit 1
-    fi
-    if ! jq -e '.main.paths[] | select(.=="/var/lib/test-data")' "$out" > /dev/null; then
-      echo "restic json:" >&2
-      cat "$out" >&2
-      echo "hostenv environments:" >&2
-      cat ${hostenvJson} >&2
-      echo "hostenv backups.enable:" >&2
-      cat ${backupsEnabled} >&2
-      echo "provider environments:" >&2
-      cat ${providerJson} >&2
-      echo "evaluated environments:" >&2
-      cat ${evalEnvsJson} >&2
-      exit 1
-    fi
-  '';
+  backupsTest = support.asserts.jqAssert
+    "dendritic-backups-enabled-only"
+    ''has("main") and (length==1) and (.main.paths | any(.=="/var/lib/test-data"))''
+    (planBridgeEval.config.services.restic.backups or { });
 
   # Keep the slice regression guard (stubbed options are sufficient).
   sliceEval =
