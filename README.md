@@ -48,7 +48,7 @@ Here's an example hosting environment for the [Drupal](https://www.drupal.org) C
 
 ---
 
-## Repository Map (dendritic layout)
+## Repository Map
 
 - `modules/` – the trunk and feature branches:
   - `core/` – canonical schemas (`hostenv.nix`, `environments.nix`) and the user environment assembly (`full-env.nix`).
@@ -64,7 +64,12 @@ Here's an example hosting environment for the [Drupal](https://www.drupal.org) C
 
 - **Add an environment**: edit your project’s `.hostenv/hostenv.nix`, add an entry under `environments.<name> { enable = true; type = ...; virtualHosts = { ... }; }`. Run `nix flake check` to ensure feature modules (nginx, php-fpm, backups) pick it up. Only one environment may be `type = "production"` (enforced).
 - **Remove an environment**: delete or set `enable = false` in `.hostenv/hostenv.nix`; regenerate plan/state (`hostenv-provider plan`) and deploy.
-- **Add a host (provider)**: in the provider repo, add a node file under `nodes/` and map it in `provider.nodeSystems`; regenerate plan/state (`hostenv-provider plan`) and deploy via deploy-rs.
+- **Add a host (provider)**:
+  - Create `nodes/<name>/hardware-configuration.nix` (copy from the machine) and a minimal `nodes/<name>/configuration.nix`.
+  - Map it in `provider.nodeSystems` and, if needed, in `provider.nodeFor` to steer env types to that node.
+  - Regenerate plan/state/flake: `nix run .#hostenv-provider-plan` (writes to `generated/` or `$HOSTENV_PROVIDER_OUT`).
+  - Deploy using your tool (e.g. deploy-rs) against `generated/flake.nix`, targeting that node.
+  - Update secrets: on the host `ssh-keygen -y -f /etc/ssh/ssh_host_ed25519_key | ssh-to-age`, add the key to `.sops.yaml`/`secrets/secrets.yaml`, then `sops updatekeys secrets/secrets.yaml` locally.
 - **Add a feature module**: create `modules/nixos/<name>.nix` (system-level, provider-neutral) or `modules/env/<name>.nix` (user-level); put provider-specific modules under `modules/providers/<name>.nix` if needed. Feature modules read `config.hostenv.environments` (bridged from `config.environments` by `modules/nixos/plan-bridge.nix`). Import new host-level modules in the provider system wiring (`src/provider/nixos-system.nix`) if they’re host-only; import env-level modules in `modules/core/full-env.nix`. Add a test in `tests/`.
 - **Run the hostenv CLI**: from a project’s `.hostenv/` directory run `nix run .#hostenv` to use the project-aware CLI (environments come from your `hostenv.nix`). From this repo you can run `nix run .#hostenv` to get a bundled CLI for demos/tests.
 - **Dev shell**: `nix develop` (repo root) drops you into a shell with provider + CLI tooling; inside a project’s `.hostenv/` you can also use `nix develop` for project-scoped tools.
@@ -72,18 +77,19 @@ Here's an example hosting environment for the [Drupal](https://www.drupal.org) C
 
 ## Getting Started (projects)
 
-1) Install Nix.  
-2) `nix flake init --template gitlab:woolwichweb/hostenv`.  
-3) Install/configure direnv, run `direnv allow` inside `.hostenv/`.  
-4) Configure environments in `.hostenv/hostenv.nix`.  
-5) `nix flake check` (or `nix run .#hostenv-provider -- plan` in provider context).
+1. Install Nix.  
+2. `nix flake init --template gitlab:woolwichweb/hostenv`.  
+3. Install/configure direnv, run `direnv allow` inside `.hostenv/`.  
+4. Configure environments in `.hostenv/hostenv.nix`.  
+5. `nix flake check` (or `nix run .#hostenv-provider -- plan` in provider context).
    - Run project CLI: `cd .hostenv && nix run .#hostenv`  
    - Enter project dev shell: `cd .hostenv && nix develop`  
-6) Deploy via provider flow once ready.
+6. Deploy via provider flow once ready.
 
-## Provider Quickstart (use hostenv as an input)
+## Getting Started (provider)
 
 - Add hostenv to your provider flake inputs and reuse its pins:
+
   ```nix
   inputs.hostenv.url = "git+https://gitlab.com/woolwichweb/hostenv";
   inputs.nixpkgs.follows = "hostenv/nixpkgs";
@@ -105,6 +111,7 @@ Here's an example hosting environment for the [Drupal](https://www.drupal.org) C
       };
     };
   ```
+
 - Create NixOS node configs under `nodes/<node>/configuration.nix` (plus hardware config); set `system.stateVersion`.
 - Generate plan/state/flake: `nix run .#hostenv-provider-plan` (writes to `generated/` or `$HOSTENV_PROVIDER_OUT`).
 - Deploy using your preferred tool (e.g. deploy-rs) against the generated flake.
