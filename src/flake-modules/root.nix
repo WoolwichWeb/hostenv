@@ -67,8 +67,8 @@
   flake = {
     lib.hostenv.providerModule = ./../provider/flake-module.nix;
     templates.default = {
-      path = ./../../template/.hostenv;
-      description = "Hostenv project template";
+      path = ./../../template/project;
+      description = "Hostenv project template (creates .hostenv/)";
       welcomeText = ''
         ## Thank you for using Hostenv
 
