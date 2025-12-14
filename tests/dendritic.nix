@@ -232,7 +232,7 @@ in
       eval = lib.evalModules {
         specialArgs = { inherit pkgs; };
         modules = [
-          ({ lib, ... }: {
+          ({ lib, pkgs, ... }: {
             options = {
               assertions = lib.mkOption {
                 type = lib.types.listOf (lib.types.submodule {
@@ -242,6 +242,14 @@ in
                   };
                 });
                 default = [ ];
+              };
+              hostenv = lib.mkOption {
+                type = lib.types.attrs;
+                default = { };
+              };
+              programs.ssh.package = lib.mkOption {
+                type = lib.types.package;
+                default = pkgs.openssh;
               };
               activate = lib.mkOption {
                 type = lib.types.str;
@@ -260,6 +268,11 @@ in
             };
           })
           ../modules/env/restic.nix
+          ({ ... }: {
+            hostenv.cacheDir = "/tmp/hostenv-cache";
+            hostenv.userName = "restic-test";
+            hostenv.backupsRepoHost = "s3:https://backups.invalid";
+          })
           ({ ... }: {
             _module.check = false;
             services.restic.enable = true;
@@ -283,5 +296,73 @@ in
       echo "Expected restic assertion to fail when repository and repositoryFile are both set" >&2
       cat "$out" >&2
       exit 1
+    '';
+
+  restic_repo_envfile_ok =
+    let
+      eval = lib.evalModules {
+        specialArgs = { inherit pkgs; };
+        modules = [
+          ({ lib, pkgs, ... }: {
+            options = {
+              assertions = lib.mkOption {
+                type = lib.types.listOf (lib.types.submodule {
+                  options = {
+                    assertion = lib.mkOption { type = lib.types.bool; };
+                    message = lib.mkOption { type = lib.types.str; };
+                  };
+                });
+                default = [ ];
+              };
+              hostenv = lib.mkOption {
+                type = lib.types.attrs;
+                default = { };
+              };
+              programs.ssh.package = lib.mkOption {
+                type = lib.types.package;
+                default = pkgs.openssh;
+              };
+              activate = lib.mkOption { type = lib.types.str; default = ""; };
+              profile = lib.mkOption { type = lib.types.listOf lib.types.path; default = [ ]; };
+              systemd.services = lib.mkOption { type = lib.types.attrs; default = { }; };
+              systemd.timers = lib.mkOption { type = lib.types.attrs; default = { }; };
+              systemd.paths = lib.mkOption { type = lib.types.attrs; default = { }; };
+              users.users = lib.mkOption { type = lib.types.attrs; default = { }; };
+              environment.variables = lib.mkOption { type = lib.types.attrs; default = { }; };
+              environment.systemPackages = lib.mkOption { type = lib.types.listOf lib.types.package; default = [ ]; };
+            };
+          })
+          ../modules/env/restic.nix
+          ({ ... }: {
+            hostenv.cacheDir = "/tmp/hostenv-cache";
+            hostenv.userName = "restic-test";
+            hostenv.backupsRepoHost = "s3:https://backups.invalid";
+          })
+          ({ ... }: {
+            _module.check = false;
+            services.restic.enable = true;
+            services.restic.backups.ok = {
+              paths = [ "/data" ];
+              repository = "s3:https://example.invalid";
+              repositoryFile = null;
+              environmentFile = "/tmp/envfile";
+              passwordFile = "/tmp/pw";
+            };
+          })
+        ];
+      };
+      assertionsJson = pkgs.writeText "assertions.json" (builtins.toJSON eval.config.assertions);
+      serviceJson = pkgs.writeText "service.json" (builtins.toJSON (eval.config.systemd.services or { }));
+    in
+    pkgs.runCommand "restic-repo-envfile-ok" { buildInputs = [ pkgs.jq pkgs.coreutils ]; } ''
+      cat ${assertionsJson} > $out
+      if jq -e 'map(.assertion == false) | any' "$out" >/dev/null; then
+        echo "Unexpected failed restic assertions with repository + environmentFile" >&2
+        cat "$out" >&2
+        exit 1
+      fi
+      jq -e '."restic-backups-ok".environment.RESTIC_REPOSITORY=="s3:https://example.invalid"' ${serviceJson} >/dev/null
+      jq -e '."restic-backups-ok".environment.RESTIC_REPOSITORY_FILE==null' ${serviceJson} >/dev/null
+      exit 0
     '';
 }
