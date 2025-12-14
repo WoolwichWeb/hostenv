@@ -5,4 +5,5 @@
   };
   asserts = import ./assert.nix { inherit pkgs lib; };
   providerView = import ./provider-view.nix { inherit lib; };
+  samples = import ./sample-envs.nix { inherit lib; };
 }

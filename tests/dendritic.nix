@@ -5,6 +5,7 @@ let
   support = import ./support { inherit pkgs lib; };
   stubs = support.stubs;
   providerView = support.providerView;
+  samples = support.samples;
 
   # Reuse the real Drupal fixtures so host-level tests stay aligned with the
   # client/runtime layer.
@@ -73,50 +74,26 @@ let
   # Keep the slice regression guard (stubbed options are sufficient).
   sliceEval =
     let
+      envs = samples.mkSingle { name = "alpha"; userName = "alpha"; publicKeys = [ ]; };
       eval = lib.evalModules {
         specialArgs = { inherit pkgs; };
         modules = [
-          ({ lib, ... }: {
-            options.hostenv = lib.mkOption {
-              type = lib.types.submodule {
-                freeformType = lib.types.attrs;
-                options.defaultEnvironment = lib.mkOption {
-                  type = lib.types.str;
-                  default = "main";
-                };
-              };
-              default = { };
-            };
-            options.systemd.services = lib.mkOption { type = lib.types.attrs; default = { }; };
-            options.systemd.slices = lib.mkOption { type = lib.types.attrs; default = { }; };
-            options.users.users = lib.mkOption { type = lib.types.attrs; default = { }; };
-            options.users.groups = lib.mkOption { type = lib.types.attrs; default = { }; };
-          })
+          stubs.base
           ../modules/core/environments.nix
+          ../modules/nixos/plan-bridge.nix
           ../modules/nixos/users-slices.nix
-          ({ config, ... }: {
+          ({ ... }: {
             _module.check = false;
-            environments = {
-              alpha = {
-                _module.check = false;
-                enable = true;
-                user = "alpha";
-                extras.publicKeys = [ ];
-                extras.uid = 123;
-              };
-            };
-            hostenv.environments = config.environments;
+            environments = envs;
+            defaultEnvironment = "alpha";
           })
         ];
       };
-      slice = eval.config.systemd.slices."alpha.slice";
-      sliceJson = builtins.toFile "slice.json" (builtins.toJSON slice);
+      slice = lib.head (lib.attrValues eval.config.systemd.slices);
     in
-    pkgs.runCommand "users-slices-configured" { } ''
-      cp ${sliceJson} $out
-      grep -q '"CPUAccounting":"yes"' $out
-      grep -E '"MemoryMax":"[0-9]+G"' $out
-    '';
+    support.asserts.jqAssert "users-slices-configured"
+      ''.sliceConfig.CPUAccounting=="yes" and (.sliceConfig.MemoryMax|test("^[0-9]+G$"))''
+      slice;
 
 in
 {
@@ -125,43 +102,31 @@ in
   backups_filtered = backupsTest;
   slice_respects_custom_user =
     let
+      envs = samples.mkSingle {
+        name = "envWithCustomUser";
+        userName = "customuser";
+        publicKeys = [ ];
+      };
       eval = lib.evalModules {
         specialArgs = { inherit pkgs; };
         modules = [
-          ({ lib, ... }: {
-            options.hostenv = lib.mkOption {
-              type = lib.types.submodule { freeformType = lib.types.attrs; };
-              default = { };
-            };
-            options.systemd.services = lib.mkOption { type = lib.types.attrs; default = { }; };
-            options.systemd.slices = lib.mkOption { type = lib.types.attrs; default = { }; };
-            options.users.users = lib.mkOption { type = lib.types.attrs; default = { }; };
-            options.users.groups = lib.mkOption { type = lib.types.attrs; default = { }; };
-          })
+          stubs.base
+          ../modules/core/environments.nix
+          ../modules/nixos/plan-bridge.nix
           ../modules/nixos/users-slices.nix
           ({ ... }: {
             _module.check = false;
-            hostenv.environments = {
-              envWithCustomUser = {
-                enable = true;
-                user = "customuser";
-                extras.uid = 321;
-                extras.publicKeys = [ ];
-              };
-            };
+            environments = envs;
+            defaultEnvironment = "envWithCustomUser";
           })
         ];
       };
-      slicesJson = builtins.toFile "slices.json" (builtins.toJSON eval.config.systemd.slices);
-      usersJson = builtins.toFile "users.json" (builtins.toJSON eval.config.users.users);
-      servicesJson = builtins.toFile "services.json" (builtins.toJSON eval.config.systemd.services);
+      slices = eval.config.systemd.slices;
+      users = eval.config.users.users;
     in
-    pkgs.runCommand "users-slices-custom-user" { buildInputs = [ pkgs.jq pkgs.coreutils ]; } ''
-      cat ${slicesJson} > $out
-      jq -e 'has("customuser.slice")' ${slicesJson} >/dev/null
-      jq -e 'has("customuser")' ${usersJson} >/dev/null
-      jq -e '."user@321".serviceConfig.Slice=="customuser.slice"' ${servicesJson} >/dev/null
-    '';
+    support.asserts.jqAssert "users-slices-custom-user"
+      ''(.slices|keys|length)==1 and (.users|keys|length)==1 and ((.slices|keys)[0]|sub("\\.slice$";"")) == (.users|keys)[0]''
+      { inherit slices users; };
   restic_exclusive_repo =
     let
       eval = lib.evalModules {
