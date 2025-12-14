@@ -399,10 +399,18 @@ in
             {
               assertion =
                 let
-                  repoSources = [ backup.repository backup.repositoryFile backup.environmentFile ];
-                  nonNull = builtins.filter (x: x != null) repoSources;
-                in (lib.length nonNull) == 1;
-              message = "services.restic.backups.${name}: exactly one of repository, repositoryFile or environmentFile should be set";
+                  repoSet = backup.repository != null;
+                  repoFileSet = backup.repositoryFile != null;
+                  envFileSet = backup.environmentFile != null;
+                  repoSourceCount = lib.length (builtins.filter lib.id [ repoSet repoFileSet ]);
+                in
+                  if envFileSet then
+                    # Credentials may live in environmentFile; allow zero or one repo source, but not both.
+                    repoSourceCount <= 1
+                  else
+                    # Without an environmentFile we need exactly one repo source.
+                    repoSourceCount == 1;
+              message = "services.restic.backups.${name}: specify exactly one repository source (repository or repositoryFile); environmentFile may accompany at most one of them.";
             }
             {
               assertion =
