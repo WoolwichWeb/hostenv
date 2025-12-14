@@ -5,7 +5,7 @@ Audience: hostenv core/devops maintainers
 
 ## Goals
 - Split end-user CLI (`hostenv`) from provider/ops tooling.
-- Move backend logic from `for_refactoring` into first-class, maintained code under `src/provider`.
+- Move backend logic from `for_refactoring` into first-class, maintained code under `provider/`.
 - Adopt flake-parts + dendritic module layout to reduce custom glue/templating.
 - Deprecate and ultimately remove `hostenv deploy` from the end-user CLI.
 
@@ -20,7 +20,7 @@ Audience: hostenv core/devops maintainers
 - No redesign of backup strategy or resource planning (just carry current limits forward).
 
 ## Target Deliverables
-1) `src/provider/flake-parts-module.nix` exporting per-system:
+1) `provider/flake-parts-module.nix` exporting per-system:
    - `packages.hostenv-provider` (CLI binary)
    - `apps.plan`, `apps.deploy`, `apps.dns-gate`
    - `packages.nodes.<node>` (NixOS systems)
@@ -32,9 +32,9 @@ Audience: hostenv core/devops maintainers
    - `state list|prune`: inspect/prune UID/vhost reservations.
    - `nodes build <node>`: build a node system closure (for CI/preflight).
 3) Migration of logic from `for_refactoring`:
-   - `generate-infra.nix` → `src/provider/plan.nix` (pure attrset function, no string templating).
+   - `generate-infra.nix` → `provider/plan.nix` (pure attrset function, no string templating).
    - `templates/generated-flake.nix` → deleted; replaced by flake-parts wiring.
-   - `makeNixosSystem.nix` + `nodes/common.nix` → `src/provider/nixos-system.nix` + `src/provider/common.nix`.
+   - `makeNixosSystem.nix` + `nodes/common.nix` → `provider/nixos-system.nix` + `provider/common.nix`.
    - `scripts/postgen.hs` → CLI subcommands (`dns-gate`, `deploy`).
 4) Deprecation message in end-user CLI when `hostenv deploy` is invoked; later removal toggle.
 
@@ -44,20 +44,20 @@ Audience: hostenv core/devops maintainers
   - Branches: feature modules:
     - env-level runtime (`modules/env/*`: nginx, php-fpm, drupal, restic, systemd helpers)
     - host-level, provider-neutral (`modules/nixos/*`: users/slices, nginx front-door, backups, monitoring, nginx tuning, tmpfiles)
-  - Leaves: provider-layer glue in `src/provider` (plan/state generator, NixOS system assembly) that imports the host-level modules instead of re-implementing them.
+  - Leaves: provider-layer glue in `provider/` (plan/state generator, NixOS system assembly) that imports the host-level modules instead of re-implementing them.
 - **State management:** keep `generated/state.json` committed; reserve UIDs and vhosts there; honour existing schema (avoid churn).
 - **ACME/DNS gating:** preserve current behaviour—disable ACME/forceSSL for vhosts not pointing at the node; optional Cloudflare CNAME upsert.
 - **Security:** provider CLI handles secrets only via sops; no secret paths in project CLI.
 
 ## File/Repo Moves
-- New: `src/provider/plan.nix`, `src/provider/nixos-system.nix`, `src/provider/common.nix`, `src/provider/cli/` (CLI sources), `src/provider/flake-parts-module.nix`.
+- New: `provider/plan.nix`, `provider/nixos-system.nix`, `provider/common.nix`, `provider/cli/` (CLI sources), `provider/flake-parts-module.nix`.
 - New host-level modules under `modules/nixos/` for shared concerns (tmpfiles/top-level, nginx front-door, backups, monitoring, nginx tuning, plan-bridge) consumed by both projects and provider builds.
 - New generated outputs folder (in provider repo): `generated/plan.json`, `generated/state.json`, `generated/flake.lock` (if needed), symlink `generated/flake.nix` produced by flake-parts, not templated.
 - Legacy `for_refactoring/` kept temporarily for reference; scheduled for removal after parity achieved.
 
 ## Migration Steps (execution order)
 1. **Scaffold provider module**
-   - Add `src/provider/flake-parts-module.nix` exporting stubs for `plan`, `deploy`, `dns-gate`.
+   - Add `provider/flake-parts-module.nix` exporting stubs for `plan`, `deploy`, `dns-gate`.
    - Wire into top-level `flake.nix` under a guarded import (e.g. enable when `inputs ? provider`).
 2. **Port infra generator**
    - Reimplement `generate-infra.nix` as `plan.nix` returning `{ planJson, stateJson, environments, nodes }`.

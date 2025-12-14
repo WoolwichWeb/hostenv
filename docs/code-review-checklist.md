@@ -8,7 +8,7 @@
 - [ ] There is a clear separation between:
   - trunk: core model (`modules/core/{hostenv,environments}.nix`, `modules/nixos/plan-bridge.nix`),
   - branches: feature modules at env level (`modules/env/*`) and host level (`modules/nixos/*`),
-  - provider assembly (`src/provider/*`) that imports the host-level modules instead of re-implementing them.
+  - provider assembly (`provider/*`) that imports the host-level modules instead of re-implementing them.
 - [ ] Each module file has a single, coherent concern (e.g. `phpfpm.nix`, `nginx.nix`, `backups.nix`), rather than “kitchen sink” files.
 - [ ] Filenames and directory names are descriptive enough that a new developer can guess what they do.
 - [ ] Optional: there is a brief top-level `README.md` describing the structure of the repo.

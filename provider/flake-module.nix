@@ -47,7 +47,7 @@ in
   config =
     let
       cfgTop = if config ? provider then config.provider
-               else throw ''provider flake module: set the `provider.*` options (e.g. by importing src/provider/flake-module.nix in flake-parts and defining provider.hostenvHostname, nodeFor, nodeSystems, paths, etc.)'';
+              else throw ''provider flake module: set the `provider.*` options (e.g. by importing provider/flake-module.nix in flake-parts and defining provider.hostenvHostname, nodeFor, nodeSystems, paths, etc.)'';
     in
     {
       

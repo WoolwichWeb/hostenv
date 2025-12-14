@@ -55,8 +55,10 @@ Here's an example hosting environment for the [Drupal](https://www.drupal.org) C
   - `env/` – env-level runtime modules (user services: nginx, php-fpm, drupal, restic).
   - `nixos/` – host-level, provider‑neutral modules (top-level runtime dirs, nginx front-door, users/slices, backups, monitoring, plan-bridge, nginx tuning).
   - `providers/` – reserved for provider-specific modules if you need them.
-- `src/provider/` – provider-facing tooling: plan/state generator, CLI, node flake wiring. It now consumes the dendritic modules instead of carrying host glue.
-- `template/.hostenv/` – project template used by `nix flake init --template`.
+- `flake-modules/` – flake-parts wiring shared by this repo and downstream flakes (per-system outputs, templates).
+- `provider/` – provider-facing tooling: plan/state generator, CLI, node flake wiring. It now consumes the dendritic modules instead of carrying host glue.
+- `template/project/.hostenv/` – project template used by `nix flake init --template gitlab:woolwichweb/hostenv`.
+- `template/provider/` – provider template for building a hostenv hosting flake.
 - `tests/` – flake checks and fixtures (provider plan regressions, Drupal).
 - `docs/` – design notes, dendritic structure, provider quickstart, review checklists.
 
@@ -70,10 +72,10 @@ Here's an example hosting environment for the [Drupal](https://www.drupal.org) C
   - Regenerate plan/state/flake: `nix run .#hostenv-provider-plan` (writes to `generated/` or `$HOSTENV_PROVIDER_OUT`).
   - Deploy using your tool (e.g. deploy-rs) against `generated/flake.nix`, targeting that node.
   - Update secrets: on the host `ssh-keygen -y -f /etc/ssh/ssh_host_ed25519_key | ssh-to-age`, add the key to `.sops.yaml`/`secrets/secrets.yaml`, then `sops updatekeys secrets/secrets.yaml` locally.
-- **Add a feature module**: create `modules/nixos/<name>.nix` (system-level, provider-neutral) or `modules/env/<name>.nix` (user-level); put provider-specific modules under `modules/providers/<name>.nix` if needed. Feature modules read `config.hostenv.environments` (bridged from `config.environments` by `modules/nixos/plan-bridge.nix`). Import new host-level modules in the provider system wiring (`src/provider/nixos-system.nix`) if they’re host-only; import env-level modules in `modules/core/full-env.nix`. Add a test in `tests/`.
+- **Add a feature module**: create `modules/nixos/<name>.nix` (system-level, provider-neutral) or `modules/env/<name>.nix` (user-level); put provider-specific modules under `modules/providers/<name>.nix` if needed. Feature modules read `config.hostenv.environments` (bridged from `config.environments` by `modules/nixos/plan-bridge.nix`). Import new host-level modules in the provider system wiring (`provider/nixos-system.nix`) if they’re host-only; import env-level modules in `modules/core/full-env.nix`. Add a test in `tests/`.
 - **Run the hostenv CLI**: from a project’s `.hostenv/` directory run `nix run .#hostenv` to use the project-aware CLI (environments come from your `hostenv.nix`). From this repo you can run `nix run .#hostenv` to get a bundled CLI for demos/tests.
 - **Dev shell**: `nix develop` (repo root) drops you into a shell with provider + CLI tooling; inside a project’s `.hostenv/` you can also use `nix develop` for project-scoped tools.
-- **Docs preview**: `nix run .#serve-docs` serves the generated docs locally (uses the flake app defined in `src/flake-modules/root.nix`).
+- **Docs preview**: `nix run .#serve-docs` serves the generated docs locally (uses the flake app defined in `flake-modules/root.nix`).
 
 ## Getting Started (projects)
 

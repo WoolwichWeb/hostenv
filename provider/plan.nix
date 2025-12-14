@@ -18,7 +18,7 @@
 }:
 
 # Provider-side infrastructure generator.
-# Largely ported from for_refactoring/generate-infra.nix, but relocated under src/provider.
+# Largely ported from for_refactoring/generate-infra.nix, but relocated under provider/.
 
 let
   cfgHostenvHostname = hostenvHostname;

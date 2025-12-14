@@ -20,7 +20,7 @@
         '';
       };
 
-      envs = import ./../../tests/environments.nix { inherit pkgs makeHostenv; };
+      envs = import ./../tests/environments.nix { inherit pkgs makeHostenv; };
     in
     {
       apps.default = {
@@ -32,16 +32,15 @@
         inherit docSearch;
         default = self'.packages.hostenv-provider;
       };
-      # Provide hostenv CLI via shared cliModule wiring; reuse test env modules
       hostenvCli = {
         modules = [
-          ./../../tests/drupal/hostenv.nix
+          ./../tests/drupal/hostenv.nix
           ({ ... }: {
             hostenv = {
               organisation = "test";
               project = "testproject";
               hostenvHostname = "hosting.test";
-              root = ./../../tests/drupal;
+              root = ./../tests/drupal;
             };
           })
         ];
@@ -49,14 +48,23 @@
         makeHostenv = makeHostenv;
       };
 
-      checks = import ./../../tests { inherit pkgs envs makeHostenv; };
+      checks = import ./../tests { inherit pkgs envs makeHostenv; };
 
       devShells.default = pkgs.mkShell {
-        buildInputs = [
+        buildInputs = let hq = pkgs.haskellPackages; in [
           self'.packages.hostenv-provider
           self'.packages.hostenv-provider-plan
-          pkgs.sops pkgs.age pkgs.jq pkgs.bind pkgs.deploy-rs pkgs.git
-          pkgs.haskellPackages.haskell-language-server
+          pkgs.sops
+          pkgs.age
+          pkgs.jq
+          pkgs.bind
+          pkgs.deploy-rs
+          pkgs.git
+          (pkgs.ghc.withPackages (x: [ x.turtle x.aeson x.text-conversions ]))
+          hq.haskell-language-server
+          hq.aeson
+          hq.turtle
+          pkgs.kittysay
         ];
         shellHook = ''
           export HOSTENV_PROVIDER_OUT=''${HOSTENV_PROVIDER_OUT:-generated}
@@ -67,8 +75,8 @@
   flake = {
     lib.hostenv.providerModule = ./../provider/flake-module.nix;
     templates.default = {
-      path = ./../../template/project;
-      description = "Hostenv project template (creates .hostenv/)";
+      path = ./../template/project;
+      description = "Hostenv project template";
       welcomeText = ''
         ## Thank you for using Hostenv
 
@@ -80,12 +88,12 @@
       '';
     };
     templates.provider = {
-      path = ./../../template/provider;
+      path = ./../template/provider;
       description = "Hostenv provider template";
       welcomeText = ''
         ## Hostenv provider flake
 
-        - Set provider.* options in flake.nix (hostname, deploy key, nodes).
+        - Set `provider.*` options in flake.nix (hostname, deploy key, nodes).
         - Add node configs under nodes/<name>/configuration.nix.
         - Generate plan/state: nix run .#hostenv-provider-plan
         - Deploy using generated/flake.nix (e.g. via deploy-rs).

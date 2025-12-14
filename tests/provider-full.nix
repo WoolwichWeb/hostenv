@@ -67,7 +67,7 @@ let
     };
   };
 
-  planEval = import ../src/provider/plan.nix {
+  planEval = import ../provider/plan.nix {
     inherit inputs pkgs lib;
     system = localSystem;
     letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };

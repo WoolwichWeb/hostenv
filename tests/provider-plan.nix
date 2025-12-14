@@ -93,7 +93,7 @@ let
         }
         else inputsOverride;
     in
-    import ../src/provider/plan.nix {
+    import ../provider/plan.nix {
       inputs = inputsEffective;
       system = "x86_64-linux";
       inherit lib pkgs hostenvHostname;
