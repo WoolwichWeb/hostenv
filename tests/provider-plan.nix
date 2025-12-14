@@ -1,9 +1,12 @@
 { pkgs, makeHostenv }:
 let
   lib = pkgs.lib;
+  support = import ./support { inherit pkgs lib; };
+  asserts = support.asserts;
+  providerView = support.providerView;
 
-  # Build sample environments from an actual hostenv evaluation to stay
-  # aligned with the module defaults.
+  # Build sample environments from a real hostenv eval, then project them into
+  # the provider shape via providerView (keeps schema consistent with production).
   sampleProjects =
     let
       envsEval = makeHostenv [
@@ -54,25 +57,26 @@ let
         owner = "";
         repo = "";
       };
+
+      providerEnvs = providerView envsEval.config.environments;
     in
     lib.attrValues (lib.mapAttrs
-      (_name: envCfg:
-        let
-          hostenv' = envCfg.hostenv or { } // {
-            gitRef = envCfg.hostenv.gitRef or baseRepo.ref;
-            hostenvHostname = "ignored.example";
-          };
-        in
-        {
-          hostenv = hostenv';
-          node = "node1";
-          authorizedKeys = [ ];
-          type = envCfg.type;
-          users = envCfg.users or { };
-          virtualHosts = envCfg.virtualHosts;
-          repo = baseRepo // { ref = hostenv'.gitRef; };
-        })
-      envsEval.config.environments);
+      (_: envCfg: {
+        hostenv = envCfg.hostenv // {
+          gitRef = envCfg.hostenv.gitRef or baseRepo.ref;
+          hostenvHostname = "ignored.example";
+          root = "/src/${envCfg.hostenv.project or "proj"}";
+        };
+        node = "node1";
+        authorizedKeys =
+          let allUsers = builtins.attrValues (envCfg.users or { }); in
+          builtins.concatLists (map (u: u.publicKeys or [ ]) allUsers);
+        type = envCfg.type;
+        users = envCfg.users or { };
+        virtualHosts = envCfg.virtualHosts;
+        repo = baseRepo // { ref = envCfg.hostenv.gitRef or baseRepo.ref; };
+      })
+      providerEnvs);
 
   mkPlan = { hostenvHostname ? "custom.host", state ? { }, lockData ? { }, projects ? null, inputsOverride ? { } }:
     let
@@ -119,40 +123,43 @@ let
   }).plan;
 in
 {
-  provider-plan-regressions = pkgs.runCommand "provider-plan-regressions" { buildInputs = [ pkgs.jq pkgs.gnugrep ]; } ''
-    set -euo pipefail
-    user1="${user1}"
-    user2="${user2}"
+  provider-plan-hostname =
+    let plan = lib.importJSON planNoState;
+    in asserts.assertTrue "provider-plan-hostname"
+      (plan.hostenvHostname == "custom.host")
+      "hostenvHostname should propagate to plan.json";
 
-    plan=$(mktemp)
-    cp ${planNoState} "$plan"
+  provider-plan-uids =
+    let
+      plan = lib.importJSON planNoState;
+      uids = map (u: plan.environments.${u}.uid) [ user1 user2 ];
+      unique = (lib.length uids) == (lib.length (lib.unique uids));
+      extrasOk = plan.environments.${user1}.extras.uid == plan.environments.${user1}.uid;
+    in asserts.assertTrue "provider-plan-uids"
+      (unique && extrasOk)
+      "UIDs must be unique and extras.uid must mirror uid";
 
-    # Hostname propagation
-    jq -e '.hostenvHostname=="custom.host"' "$plan" > /dev/null
+  provider-plan-node-merge =
+    let
+      plan = lib.importJSON planNoState;
+      users = plan.nodes.node1.users.users or { };
+      vhosts = plan.nodes.node1.services.nginx.virtualHosts or { };
+      ok = (users ? ${user1}) && (users ? ${user2})
+        && (vhosts ? "env1.example") && (vhosts ? "env2.example");
+    in asserts.assertTrue "provider-plan-node-merge" ok
+      "node1 should contain users and vhosts for both environments";
 
-    # UID uniqueness and extras present
-    uid1=$(jq -r ".environments.\"$user1\".uid" "$plan")
-    uid2=$(jq -r ".environments.\"$user2\".uid" "$plan")
-    [ "$uid1" != null ] && [ "$uid2" != null ] || { echo "missing uid"; exit 1; }
-    [ "$uid1" -ne "$uid2" ] || { echo "uid collision"; exit 1; }
-    jq -e ".environments.\"$user1\".extras.uid == $uid1" "$plan" > /dev/null
+  provider-plan-alias-preserved =
+    let plan = lib.importJSON planWithState;
+    in asserts.assertTrue "provider-plan-alias-preserved"
+      (plan.environments.${user1}.virtualHosts ? "alias.example")
+      "aliases from state should be preserved";
 
-    # Node merge: both envs should appear under the same node
-    jq -e ".nodes.node1.users.users | has(\"$user1\") and has(\"$user2\")" "$plan" > /dev/null
-    jq -e '.nodes.node1.services.nginx.virtualHosts | has("env1.example") and has("env2.example")' "$plan" > /dev/null
-
-    # Alias preservation even with existing state for this env
-    plan2=$(mktemp)
-    cp ${planWithState} "$plan2"
-    jq -e ".environments.\"$user1\".virtualHosts | has(\"alias.example\")" "$plan2" > /dev/null
-
-    # Generated flake should include hostenv input and both environment inputs
-    flake=$(mktemp)
-    cp ${flakeNoState} "$flake"
-    grep -q 'hostenv.url' "$flake"
-    grep -q "$user1 =" "$flake"
-    grep -q "$user2 =" "$flake"
-
-    echo ok > $out
-  '';
+  provider-plan-flake-inputs =
+    let flakeText = builtins.readFile flakeNoState;
+      ok = lib.strings.hasInfix "hostenv.url" flakeText
+        && lib.strings.hasInfix "${user1} =" flakeText
+        && lib.strings.hasInfix "${user2} =" flakeText;
+    in asserts.assertTrue "provider-plan-flake-inputs" ok
+      "generated flake should expose hostenv and per-environment inputs";
 }
