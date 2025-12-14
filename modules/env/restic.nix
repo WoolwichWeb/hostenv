@@ -398,8 +398,10 @@ in
           (name: backup: [
             {
               assertion =
-                ((backup.repository == null) != (backup.repositoryFile == null))
-                || (backup.environmentFile != null);
+                let
+                  repoSources = [ backup.repository backup.repositoryFile backup.environmentFile ];
+                  nonNull = builtins.filter (x: x != null) repoSources;
+                in (lib.length nonNull) == 1;
               message = "services.restic.backups.${name}: exactly one of repository, repositoryFile or environmentFile should be set";
             }
             {
