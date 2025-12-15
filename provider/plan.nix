@@ -193,27 +193,59 @@ let
   allEnvsUnvalidated = if testProjects != null then testProjects else realEnvs;
 
   # Fail fast if any environment's virtualHosts collide with names already present
-  # in persisted state (excluding its own previous entry).
-  allEnvs = builtins.map
-    (env:
-      let
-        unreservableVHosts =
+  # in persisted state (excluding its own previous entry) OR with other new envs.
+  allEnvs =
+    let
+      # Gather vhosts claimed by new envs to detect cross-new collisions.
+      newClaims = builtins.concatLists (map
+        (env: map (v: { name = v; owner = env.hostenv.userName; }) (builtins.attrNames (env.virtualHosts or { })))
+        allEnvsUnvalidated);
+      claimTable =
+        lib.foldl'
+          (acc: claim:
+            let key = claim.name;
+            in acc // {
+              "${key}" = {
+                name = key;
+                count = (acc."${key}".count or 0) + 1;
+                owners = (acc."${key}".owners or [ ]) ++ [ claim.owner ];
+              };
+            }
+          )
+          { }
+          newClaims;
+
+      duplicates =
+        lib.filter (x: x.count > 1) (builtins.attrValues claimTable);
+    in
+    if duplicates != [ ] then
+      builtins.throw ''
+        provider plan: duplicate virtualHosts among new environments: ${
+          lib.concatStringsSep "; "
+            (map (d: "${d.name} claimed by ${lib.concatStringsSep "," d.owners}") duplicates)
+        }
+      ''
+    else
+      builtins.map
+        (env:
           let
-            # state is keyed by hostenv.userName
-            otherEnvState = builtins.removeAttrs state [ env.hostenv.userName ];
-          in builtins.filter (vhost: vhost != env.hostenv.hostname)
-            (builtins.concatLists (builtins.catAttrs "virtualHosts" (builtins.attrValues otherEnvState)));
-        conflicts = lib.intersectLists
-          (builtins.attrNames (env.virtualHosts or { }))
-          unreservableVHosts;
-      in
-      if conflicts != [ ] then
-        builtins.throw ''
-          provider plan: environment '${env.hostenv.userName}' declares virtualHosts already reserved in state: ${lib.concatStringsSep ", " conflicts}
-        ''
-      else env
-    )
-    allEnvsUnvalidated;
+            unreservableVHosts =
+              let
+                # state is keyed by hostenv.userName
+                otherEnvState = builtins.removeAttrs state [ env.hostenv.userName ];
+              in builtins.filter (vhost: vhost != env.hostenv.hostname)
+                (builtins.concatLists (builtins.catAttrs "virtualHosts" (builtins.attrValues otherEnvState)));
+            conflicts = lib.intersectLists
+              (builtins.attrNames (env.virtualHosts or { }))
+              unreservableVHosts;
+          in
+          if conflicts != [ ] then
+            builtins.throw ''
+              provider plan: environment '${env.hostenv.userName}' declares virtualHosts already reserved in state: ${lib.concatStringsSep ", " conflicts}
+            ''
+          else env
+        )
+        allEnvsUnvalidated;
 
   # Assign unique UIDs to new environments; keep existing ones from state or explicit extras.uid.
   allEnvsWithUid = lib.imap0

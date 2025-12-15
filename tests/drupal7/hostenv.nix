@@ -16,10 +16,10 @@
     enable = true;
     type = "production";
     virtualHosts = {
-      "example.com" = {
-        globalRedirect = "www.example.com";
+      "drupal7.example.com" = {
+        globalRedirect = "www.drupal7.example.com";
       };
-      "www.example.com" = { };
+      "www.drupal7.example.com" = { };
     };
   };
 

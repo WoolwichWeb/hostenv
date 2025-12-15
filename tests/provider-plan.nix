@@ -211,4 +211,77 @@ in
     in asserts.assertTrue "provider-plan-vhost-conflict"
       (!result.success)
       "plan generation must fail when virtualHosts overlap with existing state";
+
+  provider-plan-vhost-conflict-new-envs =
+    let
+      conflictProjects = [
+        {
+          hostenv = {
+            userName = "u1";
+            hostname = "u1.hosting.test";
+            gitRef = "main";
+            hostenvHostname = "hosting.test";
+            project = "proj";
+            organisation = "org";
+            root = ".";
+          };
+          node = "node1";
+          authorizedKeys = [ ];
+          type = "development";
+          users = { };
+          virtualHosts = {
+            "dup.test" = {
+              enableLetsEncrypt = true;
+              globalRedirect = null;
+              locations = { };
+            };
+          };
+          repo = {
+            type = "git";
+            url = "https://example.invalid";
+            dir = ".";
+            ref = "main";
+            owner = "";
+            repo = "";
+          };
+        }
+        {
+          hostenv = {
+            userName = "u2";
+            hostname = "u2.hosting.test";
+            gitRef = "main";
+            hostenvHostname = "hosting.test";
+            project = "proj";
+            organisation = "org";
+            root = ".";
+          };
+          node = "node1";
+          authorizedKeys = [ ];
+          type = "development";
+          users = { };
+          virtualHosts = {
+            "dup.test" = {
+              enableLetsEncrypt = true;
+              globalRedirect = null;
+              locations = { };
+            };
+          };
+          repo = {
+            type = "git";
+            url = "https://example.invalid";
+            dir = ".";
+            ref = "main";
+            owner = "";
+            repo = "";
+          };
+        }
+      ];
+      envsExpr = (mkPlan {
+        projects = conflictProjects;
+        state = { };
+      }).environments;
+      result = builtins.tryEval (builtins.deepSeq envsExpr envsExpr);
+    in asserts.assertTrue "provider-plan-vhost-conflict-new-envs"
+      (!result.success)
+      "plan generation must fail when virtualHosts overlap between new environments";
 }
