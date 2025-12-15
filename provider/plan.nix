@@ -25,20 +25,29 @@
 let
   useEval = planSource == "eval";
   cfgHostenvHostname = hostenvHostname;
-  # Detect hostenv project inputs by checking for the presence of evaluated environments.
-  projectInputs = if testProjects != null || (!useEval) then [ ] else
-  builtins.filter
-    (name:
-      builtins.hasAttr "hostenv" inputs.${name} &&
-      (
-        builtins.hasAttr "environments" inputs.${name}.hostenv
-        || (
-          builtins.hasAttr system inputs.${name}.hostenv
-          && builtins.hasAttr "environments" inputs.${name}.hostenv.${system}
-        )
+  # Detect hostenv project inputs. Prefer explicit hostenv output metadata, but
+  # fall back to the presence of a hostenv.nix file so older project flakes
+  # (that do not expose hostenv metadata) are still picked up.
+  projectInputs =
+    if testProjects != null || (!useEval) then [ ] else
+    builtins.filter
+      (name:
+        let
+          input = inputs.${name};
+          hasHostenvOutput =
+            builtins.hasAttr "hostenv" input &&
+            (
+              builtins.hasAttr "environments" input.hostenv ||
+              (
+                builtins.hasAttr system input.hostenv &&
+                builtins.hasAttr "environments" input.hostenv.${system}
+              )
+            );
+          hasHostenvFile = (builtins.tryEval (builtins.pathExists (input + /hostenv.nix))).value or false;
+        in
+        hasHostenvOutput || hasHostenvFile
       )
-    )
-    (builtins.attrNames inputs);
+      (builtins.attrNames inputs);
 
   state =
     if testState != null then testState
@@ -112,13 +121,26 @@ let
           modules = [
           (inputs.hostenv.modules + /core/full-env.nix)
             (inputs.${name} + /hostenv.nix)
-            ({ config, ... }: {
-              hostenv.organisation = lib.mkForce orgAndProject.organisation;
-              hostenv.project = lib.mkForce orgAndProject.project;
-              hostenv.environmentName = lib.mkForce config.defaultEnvironment;
-              hostenv.root = lib.mkForce inputs.${name}.hostenv.${system}.environments.${config.defaultEnvironment}.hostenv.root;
-              hostenv.hostenvHostname = lib.mkForce cfgHostenvHostname;
-            })
+            ({ config, ... }:
+              let
+                projectHostenv = if builtins.hasAttr "hostenv" inputs.${name} then inputs.${name}.hostenv else { };
+                projectHostenvEnv =
+                  let candidate =
+                    if builtins.hasAttr system projectHostenv then projectHostenv.${system}
+                    else projectHostenv;
+                  in if builtins.hasAttr "environments" candidate then candidate.environments else null;
+                projectRoot =
+                  if projectHostenvEnv != null && builtins.hasAttr config.defaultEnvironment projectHostenvEnv then
+                    projectHostenvEnv.${config.defaultEnvironment}.hostenv.root or (inputs.${name} + /..)
+                  else
+                    inputs.${name} + /..;
+              in {
+                hostenv.organisation = lib.mkForce orgAndProject.organisation;
+                hostenv.project = lib.mkForce orgAndProject.project;
+                hostenv.environmentName = lib.mkForce config.defaultEnvironment;
+                hostenv.root = lib.mkForce projectRoot;
+                hostenv.hostenvHostname = lib.mkForce cfgHostenvHostname;
+              })
           ];
         };
 
