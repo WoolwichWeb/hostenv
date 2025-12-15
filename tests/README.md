@@ -1,6 +1,8 @@
-# Tests layout (dendritic style)
+# Tests layout
 
-The tests under `tests/` exercise *branches* of the module tree in isolation,
+Tests under `tests/drupal*/`, `tests/socket-contract.nix`, `tests/hostname.nix`, and `tests/provider-full.nix` are full API/integration tests and make use of high-level functions like `makeHostenv`. Tests under `tests/*-hostenv.nix` or `tests/*-contract.nix` focus on specific module contracts and use `tests/support` stubs instead of high-level functions.
+
+Other tests under `tests/` exercise *branches* of the module tree in isolation,
 mirroring the dendritic structure:
 
 - `plan-bridge.nix` – feeds provider-shaped environments into plan-bridge + host-level nginx/backups and asserts on the resulting configs.
@@ -15,6 +17,7 @@ Shared helpers live in `tests/support/`:
 - `assert.nix` – small assertion helpers; tests prefer Nix-side assertions (`assertTrue`) to reduce shell/JQ boilerplate.
 
 Guidelines for adding tests:
+
 - Reuse fixtures from `tests/environments.nix` where possible.
 - Use the helpers above instead of re-declaring option stubs or reshaping envs by hand.
 - Evaluate only the modules you need for the branch under test (keep imports minimal).
