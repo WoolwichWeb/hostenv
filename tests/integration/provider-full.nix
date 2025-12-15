@@ -66,6 +66,7 @@ let
       acme__drupal7 = { original = { type = "git"; url = "https://example.invalid/drupal7.git"; dir = "."; ref = "main"; }; };
     };
   };
+  lockPath = pkgs.writers.writeJSON "flake.lock" lockData;
 
   planEval = import ../../provider/plan.nix {
     inherit inputs pkgs lib;
@@ -77,11 +78,9 @@ let
     nodesPath = ./nodes-stub;
     secretsPath = ./secrets-stub;
     statePath = ./state-stub.json;
+    lockPath = lockPath;
     nodeSystems = { };
     cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
-    testLockData = lockData;
-    testState = { };
-    testProjects = null;
   };
 
   planData = lib.importJSON planEval.plan;

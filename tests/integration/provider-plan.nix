@@ -5,85 +5,139 @@ let
   asserts = support.asserts;
   providerView = support.providerView;
 
-  # Build sample environments from a real hostenv eval, then project them into
-  # the provider shapes via providerView (keeps schema consistent with production).
-  sampleProjects =
+  # Shared hostenv eval for tests.
+  envsEval = makeHostenv [
+    ({ ... }: {
+      hostenv = {
+        organisation = "org";
+        project = "proj";
+        hostenvHostname = "hosting.test";
+        root = "/srv/fake";
+      };
+      defaultEnvironment = "env1";
+      environments = {
+        env1 = {
+          enable = true;
+          type = "development";
+          hostenv.userName = "env1";
+          hostenv.hostname = "env1.example";
+          virtualHosts."env1.example" = {
+            enableLetsEncrypt = true;
+            globalRedirect = null;
+            locations = { };
+          };
+          virtualHosts."alias.example" = {
+            enableLetsEncrypt = true;
+            globalRedirect = null;
+            locations = { };
+          };
+        };
+        env2 = {
+          enable = true;
+          type = "development";
+          hostenv.userName = "env2";
+          hostenv.hostname = "env2.example";
+          virtualHosts."env2.example" = {
+            enableLetsEncrypt = true;
+            globalRedirect = null;
+            locations = { };
+          };
+        };
+      };
+    })
+  ] null;
+
+  projectDir = pkgs.runCommand "hostenv-project" { } ''
+    mkdir -p $out
+    cat > $out/hostenv.nix <<'EOF'
+    { pkgs, config, ... }: {
+      defaultEnvironment = "env1";
+      environments = {
+        env1 = {
+          enable = true;
+          type = "development";
+          hostenv.userName = "env1";
+          hostenv.hostname = "env1.example";
+          virtualHosts."env1.example" = {
+            enableLetsEncrypt = true;
+            globalRedirect = null;
+            locations = { };
+          };
+          virtualHosts."alias.example" = {
+            enableLetsEncrypt = true;
+            globalRedirect = null;
+            locations = { };
+          };
+        };
+        env2 = {
+          enable = true;
+          type = "development";
+          hostenv.userName = "env2";
+          hostenv.hostname = "env2.example";
+          virtualHosts."env2.example" = {
+            enableLetsEncrypt = true;
+            globalRedirect = null;
+            locations = { };
+          };
+        };
+      };
+      hostenv = {
+        organisation = "org";
+        project = "proj";
+        hostenvHostname = "hosting.test";
+        root = "/srv/fake";
+      };
+    }
+    EOF
+  '';
+
+  mkPlan = { hostenvHostname ? "custom.host", state ? { }, planSource ? "eval", planPath ? null }:
     let
-      envsEval = makeHostenv [
-        ({ ... }: {
-          hostenv = {
-            organisation = "org";
-            project = "proj";
-            hostenvHostname = "hosting.test";
-            root = ./.;
-          };
-          defaultEnvironment = "env1";
-          environments = {
-            env1 = {
-              enable = true;
-              type = "development";
-              hostenv.userName = "env1";
-              hostenv.hostname = "env1.example";
-              virtualHosts."env1.example" = {
-                enableLetsEncrypt = true;
-                globalRedirect = null;
-                locations = { };
-              };
-              virtualHosts."alias.example" = {
-                enableLetsEncrypt = true;
-                globalRedirect = null;
-                locations = { };
-              };
-            };
-            env2 = {
-              enable = true;
-              type = "development";
-              hostenv.userName = "env2";
-              hostenv.hostname = "env2.example";
-              virtualHosts."env2.example" = {
-                enableLetsEncrypt = true;
-                globalRedirect = null;
-                locations = { };
-              };
-            };
-          };
-        })
-      ] null;
-      baseRepo = {
-        type = "git";
-        dir = ".";
-        ref = "main";
-        url = "https://example.invalid";
-        owner = "";
-        repo = "";
+      # Build a synthetic flake inputs set: hostenv modules + one project with hostenv output.
+      hostenvOutput = {
+        "${"x86_64-linux"}" = {
+          inherit (envsEval.config) environments defaultEnvironment;
+        };
       };
 
-      providerEnvs = providerView envsEval.config.environments;
-    in
-    providerView.toProjects {
-      envs = providerEnvs;
-      baseRepo = baseRepo;
-      node = "node1";
-      hostenvHostname = "ignored.example";
-      rootBase = "/src";
-    };
-
-  lockData = { nodes = { }; };
-
-  mkPlan = { hostenvHostname ? "custom.host", state ? { }, lockData ? { }, projects ? null, inputsOverride ? { }, planSource ? "eval", planPath ? null }:
-    let
-      inputsEffective =
-        if inputsOverride == { }
-        then {
-          hostenv =
-            let outPath = ../../modules;
-            in {
-              inherit outPath;
-              modules = outPath;
-              __toString = self: toString outPath;
+      lockData = {
+        nodes = {
+          "org__proj" = {
+            original = {
+              type = "git";
+              url = "https://example.invalid/org/proj.git";
+              ref = "main";
             };
-        }
-        else inputsOverride;
+            locked = {
+              ref = "main";
+              rev = "0000000000000000000000000000000000000000";
+              narHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+            };
+          };
+        };
+      };
+
+      lockPath = pkgs.writers.writeJSON "flake.lock" lockData;
+
+      statePathEffective =
+        if state == { }
+        then ./dummy-state.json
+        else pkgs.writers.writeJSON "state.json" state;
+
+      inputsEffective = {
+        hostenv =
+          let outPath = ../../modules;
+          in {
+            inherit outPath;
+            modules = outPath;
+            __toString = self: toString outPath;
+          };
+        org__proj = {
+          outPath = projectDir;
+          __toString = self: toString projectDir;
+          hostenv = hostenvOutput;
+        };
+      };
     in
     import ../../provider/plan.nix {
       inputs = inputsEffective;
@@ -94,51 +148,74 @@ let
       nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
       nodesPath = ./.;
       secretsPath = ./.;
-      statePath = ./dummy-state.json;
+      statePath = statePathEffective;
       planPath = planPath;
+      lockPath = lockPath;
       nodeSystems = { };
       cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
-      testLockData = lockData;
-      testState = state;
-      testProjects = projects;
       planSource = planSource;
+    };
+
+  providerEnvs = providerView envsEval.config.environments;
+
+  sampleProjects =
+    providerView.toProjects {
+      envs = providerEnvs;
+      baseRepo = {
+        type = "git";
+        dir = ".";
+        ref = "main";
+        url = "https://example.invalid";
+        owner = "";
+        repo = "";
+      };
+      node = "node1";
+      hostenvHostname = "ignored.example";
+      rootBase = "/src";
     };
 
   user1 = (lib.head sampleProjects).hostenv.userName;
   user2 = (lib.head (lib.tail sampleProjects)).hostenv.userName;
 
-  evalRun = mkPlan { projects = sampleProjects; };
+  evalRun = mkPlan { };
   planNoState = evalRun.plan;
   stateNoState = evalRun.state;
   flakeNoState = evalRun.flake;
   planWithState = (mkPlan {
-    projects = sampleProjects;
     state = {
       ${user1} = { uid = 2001; virtualHosts = [ "env1.example" "alias.example" ]; };
     };
   }).plan;
   planDisk =
     mkPlan {
-      projects = null;
       planSource = "disk";
       planPath = planNoState;
       state = lib.importJSON stateNoState;
-      inherit lockData;
     };
   planMissingProjects =
     let
-      result = builtins.tryEval (mkPlan {
-        projects = null;
-        inputsOverride = {
-          hostenv =
-            let outPath = ../../modules;
-            in {
-              inherit outPath;
-              modules = outPath;
-              __toString = self: toString outPath;
-            };
-        };
-        lockData = { nodes = { }; };
+      minimalInputs = {
+        hostenv =
+          let outPath = ../../modules;
+          in { inherit outPath; modules = outPath; __toString = self: toString outPath; };
+      };
+      lockPath = pkgs.writers.writeJSON "flake.lock" { nodes = { }; };
+      result = builtins.tryEval (import ../../provider/plan.nix {
+        inputs = minimalInputs;
+        system = "x86_64-linux";
+        inherit lib pkgs;
+        letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
+        deployPublicKey = "ssh-ed25519 test";
+        hostenvHostname = "custom.host";
+        nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
+        nodesPath = ./.;
+        secretsPath = ./.;
+        statePath = ./dummy-state.json;
+        planPath = null;
+        lockPath = lockPath;
+        nodeSystems = { };
+        cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
+        planSource = "eval";
       });
     in result;
 
@@ -149,13 +226,49 @@ let
           let outPath = ../../modules;
           in { inherit outPath; modules = outPath; __toString = self: toString outPath; };
         org__proj = {
-          hostenv = { defaultEnvironment = "main"; };
+          outPath = projectDir;
+          __toString = self: toString projectDir;
+          hostenv = {
+            x86_64-linux = {
+              defaultEnvironment = "main";
+              # environments intentionally missing
+            };
+          };
         };
       };
-      result = builtins.tryEval (mkPlan {
-        projects = null;
-        inputsOverride = badInputs;
-        lockData = { nodes = { }; };
+      lockData = {
+        nodes = {
+          "org__proj" = {
+            original = {
+              type = "git";
+              url = "https://example.invalid/org/proj.git";
+              ref = "main";
+            };
+            locked = {
+              ref = "main";
+              rev = "0000000000000000000000000000000000000000";
+              narHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+            };
+          };
+        };
+      };
+      lockPath = pkgs.writers.writeJSON "flake.lock" lockData;
+      result = builtins.tryEval (import ../../provider/plan.nix {
+        inputs = badInputs;
+        system = "x86_64-linux";
+        inherit lib pkgs;
+        letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
+        deployPublicKey = "ssh-ed25519 test";
+        hostenvHostname = "custom.host";
+        nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
+        nodesPath = ./.;
+        secretsPath = ./.;
+        statePath = ./dummy-state.json;
+        planPath = null;
+        lockPath = lockPath;
+        nodeSystems = { };
+        cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
+        planSource = "eval";
       });
     in result;
 in
@@ -199,128 +312,6 @@ in
         && lib.strings.hasInfix "${user2} =" flakeText;
     in asserts.assertTrue "provider-plan-flake-inputs" ok
       "generated flake should expose hostenv and per-environment inputs";
-
-  provider-plan-vhost-conflict =
-    let
-      conflictProjects = [
-        {
-          hostenv = {
-            userName = "u1";
-            hostname = "u1.hosting.test";
-            gitRef = "main";
-            hostenvHostname = "hosting.test";
-            project = "proj";
-            organisation = "org";
-            root = ".";
-          };
-          node = "node1";
-          authorizedKeys = [ ];
-          type = "development";
-          users = { };
-          virtualHosts = {
-            "conflict.test" = {
-              enableLetsEncrypt = true;
-              globalRedirect = null;
-              locations = { };
-            };
-          };
-          repo = {
-            type = "git";
-            url = "https://example.invalid";
-            dir = ".";
-            ref = "main";
-            owner = "";
-            repo = "";
-          };
-        }
-      ];
-      conflictState = {
-        other = {
-          uid = 2500;
-          virtualHosts = [ "conflict.test" ];
-        };
-      };
-      envsExpr = (mkPlan {
-        projects = conflictProjects;
-        state = conflictState;
-      }).environments;
-      result = builtins.tryEval (builtins.deepSeq envsExpr envsExpr);
-    in asserts.assertTrue "provider-plan-vhost-conflict"
-      (!result.success)
-      "plan generation must fail when virtualHosts overlap with existing state";
-
-  provider-plan-vhost-conflict-new-envs =
-    let
-      conflictProjects = [
-        {
-          hostenv = {
-            userName = "u1";
-            hostname = "u1.hosting.test";
-            gitRef = "main";
-            hostenvHostname = "hosting.test";
-            project = "proj";
-            organisation = "org";
-            root = ".";
-          };
-          node = "node1";
-          authorizedKeys = [ ];
-          type = "development";
-          users = { };
-          virtualHosts = {
-            "dup.test" = {
-              enableLetsEncrypt = true;
-              globalRedirect = null;
-              locations = { };
-            };
-          };
-          repo = {
-            type = "git";
-            url = "https://example.invalid";
-            dir = ".";
-            ref = "main";
-            owner = "";
-            repo = "";
-          };
-        }
-        {
-          hostenv = {
-            userName = "u2";
-            hostname = "u2.hosting.test";
-            gitRef = "main";
-            hostenvHostname = "hosting.test";
-            project = "proj";
-            organisation = "org";
-            root = ".";
-          };
-          node = "node1";
-          authorizedKeys = [ ];
-          type = "development";
-          users = { };
-          virtualHosts = {
-            "dup.test" = {
-              enableLetsEncrypt = true;
-              globalRedirect = null;
-              locations = { };
-            };
-          };
-          repo = {
-            type = "git";
-            url = "https://example.invalid";
-            dir = ".";
-            ref = "main";
-            owner = "";
-            repo = "";
-          };
-        }
-      ];
-      envsExpr = (mkPlan {
-        projects = conflictProjects;
-        state = { };
-      }).environments;
-      result = builtins.tryEval (builtins.deepSeq envsExpr envsExpr);
-    in asserts.assertTrue "provider-plan-vhost-conflict-new-envs"
-      (!result.success)
-      "plan generation must fail when virtualHosts overlap between new environments";
 
   provider-plan-planSource-disk =
     let

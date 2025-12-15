@@ -14,9 +14,7 @@
 , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
 , hostenvProjectDir ? ".hostenv"
 , planSource ? "eval"
-, testProjects ? null
-, testState ? null
-, testLockData ? null
+, lockPath ? ../flake.lock
 }:
 
 # Provider-side infrastructure generator.
@@ -27,7 +25,7 @@ let
   cfgHostenvHostname = hostenvHostname;
   # Detect hostenv project inputs by checking for the presence of evaluated environments.
   projectInputs =
-    if testProjects != null || (!useEval) then [ ] else
+    if (!useEval) then [ ] else
     builtins.filter
       (name:
         builtins.hasAttr "hostenv" inputs.${name}
@@ -37,7 +35,7 @@ let
       (builtins.attrNames inputs);
 
   assertProjectInputs =
-    if useEval && testProjects == null && projectInputs == [ ] then
+    if useEval && projectInputs == [ ] then
       builtins.throw ''
         provider plan: no client projects found.
 
@@ -49,20 +47,18 @@ let
       true;
 
   state =
-    if testState != null then testState
-    else if builtins.pathExists statePath then
+    if builtins.pathExists statePath then
       let rawValues = lib.importJSON statePath;
       in lib.filterAttrs (name: _: name != "_description") rawValues
     else
       { };
 
   lockData =
-    if testLockData != null then testLockData
-    else if builtins.pathExists ../flake.lock
-    then builtins.fromJSON (builtins.readFile ../flake.lock)
+    if builtins.pathExists lockPath
+    then builtins.fromJSON (builtins.readFile lockPath)
     else
       builtins.throw ''
-        flake.lock is missing in ${builtins.toString ../.}.
+        flake.lock is missing at ${builtins.toString lockPath}.
         Please run: nix flake lock (or nix flake update) at repo root
       '';
 
@@ -231,7 +227,7 @@ let
     projectInputs) else [ ];
 
   allEnvsUnvalidated =
-    if useEval then (if testProjects != null then testProjects else realEnvs)
+    if useEval then realEnvs
     else builtins.attrValues (planFromDisk.environments or { });
 
   # Fail fast on any virtualHost collisions (state or new envs) in one pass.
@@ -506,12 +502,6 @@ let
           } // lib.recursiveUpdate state planState;
       in
       pkgs.writers.writeJSON "state.json" mergedState
-    else if testState != null then
-      pkgs.writers.writeJSON "state.json" ({
-        _description = ''
-          Persistent state to retain across deployments. Should be committed to version control.
-        '';
-      } // testState)
     else if builtins.pathExists statePath then statePath
     else
       pkgs.writers.writeJSON "state.json" ({
