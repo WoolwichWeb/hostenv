@@ -2,15 +2,13 @@
 let
   lib = pkgs.lib;
   support = import ../support { inherit pkgs lib; };
-  stubs = support.stubs;
   asserts = support.asserts;
 
   restic_exclusive_repo =
     let
-      eval = lib.evalModules {
+      eval = support.evalWithBase {
         specialArgs = { inherit pkgs; };
         modules = [
-          stubs.base
           ../../modules/env/restic.nix
           ({ ... }: {
             hostenv.cacheDir = "/tmp/hostenv-cache";
@@ -36,10 +34,9 @@ let
 
   restic_repo_envfile_ok =
     let
-      eval = lib.evalModules {
+      eval = support.evalWithBase {
         specialArgs = { inherit pkgs; };
         modules = [
-          stubs.base
           ../../modules/env/restic.nix
           ({ ... }: {
             hostenv.cacheDir = "/tmp/hostenv-cache";

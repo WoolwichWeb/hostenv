@@ -2,14 +2,12 @@
 let
   lib = pkgs.lib;
   support = import ../support { inherit pkgs lib; };
-  stubs = support.stubs;
   samples = support.samples;
   asserts = support.asserts;
 
-  slice_eval = lib.evalModules {
+  slice_eval = support.evalWithBase {
     specialArgs = { inherit pkgs; };
     modules = [
-      stubs.base
       ../../modules/core/environments.nix
       ../../modules/nixos/plan-bridge.nix
       ../../modules/nixos/users-slices.nix
@@ -35,10 +33,9 @@ let
 
   slice_respects_custom_user =
     let
-      eval = lib.evalModules {
+      eval = support.evalWithBase {
         specialArgs = { inherit pkgs; };
         modules = [
-          stubs.base
           ../../modules/core/environments.nix
           ../../modules/nixos/plan-bridge.nix
           ../../modules/nixos/users-slices.nix

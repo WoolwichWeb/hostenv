@@ -27,10 +27,9 @@ let
       };
     in providerView withExtras;
 
-  planBridgeEval = lib.evalModules {
+  planBridgeEval = support.evalWithBase {
     specialArgs = { inherit pkgs; };
     modules = [
-      support.stubs.base
       ../../modules/core/environments.nix
       ../../modules/nixos/plan-bridge.nix
       ../../modules/nixos/nginx-hostenv.nix
