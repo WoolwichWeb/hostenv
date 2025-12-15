@@ -23,6 +23,9 @@
 }
 ```
 
+**Important:** each client project flake must export `outputs.hostenv.<system>.environments`
+so the provider can discover environments. The shipped project template already does this.
+
 2) Populate nodes and secrets:
    - Copy `nodes/sample` to `nodes/<node>/` and edit `configuration.nix`/`hardware-configuration.nix`.
    - Copy `secrets/secrets.yaml.example` to `secrets/secrets.yaml` and encrypt with sops.

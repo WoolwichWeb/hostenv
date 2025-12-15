@@ -8,6 +8,7 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    flake-parts.url = "github:hercules-ci/flake-parts";
     phps = {
       url = "github:fossar/nix-phps";
       inputs = {
@@ -25,27 +26,40 @@
   };
 
   outputs = inputs@{ flake-parts, nixpkgs, hostenv, ... }:
+    let
+      systems = nixpkgs.lib.systems.flakeExposed;
+
+      organisation = "yourorganisation";
+      project = "yourproject";
+      hostenvHostname = "your.hostenv.hostname"; # e.g. hostenv.example.com
+      root = ../.;
+      backupsRepoHost = "your.backup.provider"; # Restic format, for example "s3:https://s3.amazonaws.com/"
+
+      baseModules = [
+        ./hostenv.nix
+        ({ ... }: {
+          buildReference = inputs.self.rev or null;
+          hostenv = { inherit organisation project hostenvHostname root backupsRepoHost; };
+        })
+      ];
+
+      hostenvOutputs = builtins.listToAttrs (map (system:
+        let envEval = hostenv.makeHostenv.${system} baseModules null;
+        in {
+          name = system;
+          value = {
+            inherit (envEval.config) environments defaultEnvironment;
+          };
+        }) systems);
+
+    in
     flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = inputs.nixpkgs.lib.systems.flakeExposed;
+      inherit systems;
 
       imports = [ hostenv.lib.cliModule ];
 
-      perSystem = { system, pkgs, config, ... }:
+      perSystem = { system, pkgs, ... }:
         let
-          organisation = "yourorganisation";
-          project = "yourproject";
-          hostenvHostname = "your.hostenv.hostname"; # e.g. hostenv.example.com
-          root = ../.;
-          backupsRepoHost = "your.backup.provider"; # Restic format, for example "s3:https://s3.amazonaws.com/"
-
-          baseModules = [
-            ./hostenv.nix
-            ({ ... }: {
-              buildReference = inputs.self.rev or null;
-              hostenv = { inherit organisation project hostenvHostname root backupsRepoHost; };
-            })
-          ];
-
           makeHostenv = hostenv.makeHostenv.${system};
           defaultHostenv = makeHostenv baseModules null;
           envs = defaultHostenv.config.environments;
@@ -72,5 +86,7 @@
 
           devShells = defaultHostenv.config.hostenv.devShells;
         };
+
+      flake.hostenv = hostenvOutputs;
     };
 }

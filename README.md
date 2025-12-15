@@ -112,6 +112,7 @@ And here's the same idea for a tiny PHP app (no Drupal) using the built‑in `ph
    `nix flake init -t gitlab:woolwichweb/hostenv`  
 3. Install/configure direnv, run `direnv allow` inside `.hostenv/`.  
 4. Configure environments in `.hostenv/hostenv.nix`.  
+5. Ensure your project flake exports `outputs.hostenv` (the template now does). The provider relies on `hostenv.<system>.environments` to discover environments; if it is missing, plan generation will fail fast with a clear error.
 
 ## Getting Started (provider)
 
