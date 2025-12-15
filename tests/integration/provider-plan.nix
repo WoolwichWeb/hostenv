@@ -6,7 +6,7 @@ let
   providerView = support.providerView;
 
   # Build sample environments from a real hostenv eval, then project them into
-  # the provider shape via providerView (keeps schema consistent with production).
+  # the provider shapes via providerView (keeps schema consistent with production).
   sampleProjects =
     let
       envsEval = makeHostenv [
@@ -60,23 +60,13 @@ let
 
       providerEnvs = providerView envsEval.config.environments;
     in
-    lib.attrValues (lib.mapAttrs
-      (_: envCfg: {
-        hostenv = envCfg.hostenv // {
-          gitRef = envCfg.hostenv.gitRef or baseRepo.ref;
-          hostenvHostname = "ignored.example";
-          root = "/src/${envCfg.hostenv.project or "proj"}";
-        };
-        node = "node1";
-        authorizedKeys =
-          let allUsers = builtins.attrValues (envCfg.users or { }); in
-          builtins.concatLists (map (u: u.publicKeys or [ ]) allUsers);
-        type = envCfg.type;
-        users = envCfg.users or { };
-        virtualHosts = envCfg.virtualHosts;
-        repo = baseRepo // { ref = envCfg.hostenv.gitRef or baseRepo.ref; };
-      })
-      providerEnvs);
+    providerView.toProjects {
+      envs = providerEnvs;
+      baseRepo = baseRepo;
+      node = "node1";
+      hostenvHostname = "ignored.example";
+      rootBase = "/src";
+    };
 
   lockData = { nodes = { }; };
 
