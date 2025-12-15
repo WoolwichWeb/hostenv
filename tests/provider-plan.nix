@@ -162,4 +162,53 @@ in
         && lib.strings.hasInfix "${user2} =" flakeText;
     in asserts.assertTrue "provider-plan-flake-inputs" ok
       "generated flake should expose hostenv and per-environment inputs";
+
+  provider-plan-vhost-conflict =
+    let
+      conflictProjects = [
+        {
+          hostenv = {
+            userName = "u1";
+            hostname = "u1.hosting.test";
+            gitRef = "main";
+            hostenvHostname = "hosting.test";
+            project = "proj";
+            organisation = "org";
+            root = ".";
+          };
+          node = "node1";
+          authorizedKeys = [ ];
+          type = "development";
+          users = { };
+          virtualHosts = {
+            "conflict.test" = {
+              enableLetsEncrypt = true;
+              globalRedirect = null;
+              locations = { };
+            };
+          };
+          repo = {
+            type = "git";
+            url = "https://example.invalid";
+            dir = ".";
+            ref = "main";
+            owner = "";
+            repo = "";
+          };
+        }
+      ];
+      conflictState = {
+        other = {
+          uid = 2500;
+          virtualHosts = [ "conflict.test" ];
+        };
+      };
+      envsExpr = (mkPlan {
+        projects = conflictProjects;
+        state = conflictState;
+      }).environments;
+      result = builtins.tryEval (builtins.deepSeq envsExpr envsExpr);
+    in asserts.assertTrue "provider-plan-vhost-conflict"
+      (!result.success)
+      "plan generation must fail when virtualHosts overlap with existing state";
 }

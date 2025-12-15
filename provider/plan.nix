@@ -134,7 +134,7 @@ let
 
               # Hostname reservation logic (copied from legacy generator).
               # Remove current env by username (state keyed by hostenv.userName), not envName.
-              allVHosts = builtins.catAttrs "virtualHosts" (builtins.attrValues (builtins.removeAttrs state [ hostenv.userName ]));
+              allVHosts = builtins.concatLists (builtins.catAttrs "virtualHosts" (builtins.attrValues (builtins.removeAttrs state [ hostenv.userName ])));
               unreservableVHosts = builtins.filter (vhost: vhost != hostenv.hostname) allVHosts;
               filteredEnvVHosts = lib.filterAttrs
                 (
@@ -143,30 +143,39 @@ let
                     unreservableVHosts
                 )
                 envCfg.virtualHosts;
+              conflicts = lib.subtractLists
+                (builtins.attrNames envCfg.virtualHosts)
+                (builtins.attrNames filteredEnvVHosts);
 
-              virtualHosts = builtins.mapAttrs
-                (
-                  n: vhost:
-                    (builtins.removeAttrs vhost [ "enableLetsEncrypt" ]) // {
-                      enableACME = vhost.enableLetsEncrypt;
-                      forceSSL = vhost.enableLetsEncrypt;
-                      locations =
-                        let
-                          locationDefault =
-                            if builtins.isNull vhost.globalRedirect then
-                              {
-                                "/" = {
-                                  recommendedProxySettings = true;
-                                  proxyPass = "http://${envCfg.hostenv.userName}_upstream";
-                                };
-                              }
-                            else
-                              { };
-                        in
-                        vhost.locations // locationDefault;
-                    }
-                )
-                filteredEnvVHosts;
+              virtualHosts =
+                if conflicts != [ ] then
+                  builtins.throw ''
+                    provider plan: environment '${envName}' declares virtualHosts that are already reserved in state: ${lib.concatStringsSep ", " conflicts}
+                  ''
+                else
+                  builtins.mapAttrs
+                    (
+                      n: vhost:
+                        (builtins.removeAttrs vhost [ "enableLetsEncrypt" ]) // {
+                          enableACME = vhost.enableLetsEncrypt;
+                          forceSSL = vhost.enableLetsEncrypt;
+                          locations =
+                            let
+                              locationDefault =
+                                if builtins.isNull vhost.globalRedirect then
+                                  {
+                                    "/" = {
+                                      recommendedProxySettings = true;
+                                      proxyPass = "http://${envCfg.hostenv.userName}_upstream";
+                                    };
+                                  }
+                                else
+                                  { };
+                            in
+                            vhost.locations // locationDefault;
+                        }
+                    )
+                    filteredEnvVHosts;
             in
             let
               hostenv' = hostenv // { hostenvHostname = cfgHostenvHostname; };
@@ -181,7 +190,30 @@ let
     )
     projectInputs);
 
-  allEnvs = if testProjects != null then testProjects else realEnvs;
+  allEnvsUnvalidated = if testProjects != null then testProjects else realEnvs;
+
+  # Fail fast if any environment's virtualHosts collide with names already present
+  # in persisted state (excluding its own previous entry).
+  allEnvs = builtins.map
+    (env:
+      let
+        unreservableVHosts =
+          let
+            # state is keyed by hostenv.userName
+            otherEnvState = builtins.removeAttrs state [ env.hostenv.userName ];
+          in builtins.filter (vhost: vhost != env.hostenv.hostname)
+            (builtins.concatLists (builtins.catAttrs "virtualHosts" (builtins.attrValues otherEnvState)));
+        conflicts = lib.intersectLists
+          (builtins.attrNames (env.virtualHosts or { }))
+          unreservableVHosts;
+      in
+      if conflicts != [ ] then
+        builtins.throw ''
+          provider plan: environment '${env.hostenv.userName}' declares virtualHosts already reserved in state: ${lib.concatStringsSep ", " conflicts}
+        ''
+      else env
+    )
+    allEnvsUnvalidated;
 
   # Assign unique UIDs to new environments; keep existing ones from state or explicit extras.uid.
   allEnvsWithUid = lib.imap0
