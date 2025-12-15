@@ -271,6 +271,122 @@ let
         planSource = "eval";
       });
     in result;
+
+  providerPlanVhostConflictState =
+    let
+      conflictState = {
+        other = { uid = 2500; virtualHosts = [ "env1.example" ]; };
+      };
+      envsExpr = (mkPlan { state = conflictState; }).environments;
+      result = builtins.tryEval (builtins.deepSeq envsExpr envsExpr);
+      filtered =
+        if result.success then
+          let hasConflict = builtins.any (env: env.virtualHosts ? "env1.example") result.value;
+          in ! hasConflict
+        else true;
+    in asserts.assertTrue "provider-plan-vhost-conflict-state"
+      (! result.success || filtered)
+      "plan generation must fail (or at least drop the vhost) when virtualHosts overlap with existing state";
+
+  providerPlanVhostConflictNewEnvs =
+    let
+      conflictProjectDir = pkgs.runCommand "hostenv-project-conflict" { } ''
+        mkdir -p $out
+        cat > $out/hostenv.nix <<'EOF'
+        { pkgs, config, ... }: {
+          defaultEnvironment = "env1";
+          environments = {
+            env1 = {
+              enable = true;
+              type = "development";
+              hostenv.userName = "env1";
+              hostenv.hostname = "env1.example";
+              virtualHosts."env1.example" = {
+                enableLetsEncrypt = true;
+                globalRedirect = null;
+                locations = { };
+              };
+            };
+            env2 = {
+              enable = true;
+              type = "development";
+              hostenv.userName = "env2";
+              hostenv.hostname = "env2.example";
+              virtualHosts."env1.example" = {
+                enableLetsEncrypt = true;
+                globalRedirect = null;
+                locations = { };
+              };
+            };
+          };
+          hostenv = {
+            organisation = "org";
+            project = "proj";
+            hostenvHostname = "hosting.test";
+            root = "/srv/fake";
+          };
+        }
+        EOF
+      '';
+
+      conflictEnvEval = makeHostenv [ "${conflictProjectDir}/hostenv.nix" ] null;
+
+      hostenvOutputConflict = {
+        "${"x86_64-linux"}" = {
+          inherit (conflictEnvEval.config) environments defaultEnvironment;
+        };
+      };
+
+      lockData = {
+        nodes = {
+          "org__proj" = {
+            original = {
+              type = "git";
+              url = "https://example.invalid/org/proj.git";
+              ref = "main";
+            };
+            locked = {
+              ref = "main";
+              rev = "0000000000000000000000000000000000000000";
+              narHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+            };
+          };
+        };
+      };
+      lockPath = pkgs.writers.writeJSON "flake.lock" lockData;
+
+      inputsConflict = {
+        hostenv =
+          let outPath = ../../modules;
+          in { inherit outPath; modules = outPath; __toString = self: toString outPath; };
+        org__proj = {
+          outPath = conflictProjectDir;
+          __toString = self: toString conflictProjectDir;
+          hostenv = hostenvOutputConflict;
+        };
+      };
+
+      envsExpr = (import ../../provider/plan.nix {
+        inputs = inputsConflict;
+        system = "x86_64-linux";
+        inherit lib pkgs;
+        letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
+        deployPublicKey = "ssh-ed25519 test";
+        hostenvHostname = "custom.host";
+        nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
+        nodesPath = ./.;
+        secretsPath = ./.;
+        statePath = ./dummy-state.json;
+        planPath = null;
+        lockPath = lockPath;
+        nodeSystems = { };
+        cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
+        planSource = "eval";
+      }).environments;
+      result = builtins.tryEval (builtins.deepSeq envsExpr envsExpr);
+    in asserts.assertTrue "provider-plan-vhost-conflict-new-envs"
+      (! result.success)
+      "plan generation must fail when virtualHosts overlap between new environments";
 in
 {
   provider-plan-hostname =
@@ -330,4 +446,7 @@ in
     asserts.assertTrue "provider-plan-missing-environments-asserts"
       (! planMissingEnvironments.success)
       "plan generation must fail early when a client flake hostenv output lacks environments";
+
+  provider-plan-vhost-conflict-state = providerPlanVhostConflictState;
+  provider-plan-vhost-conflict-new-envs = providerPlanVhostConflictNewEnvs;
 }
