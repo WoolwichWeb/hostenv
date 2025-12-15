@@ -9,9 +9,11 @@
 , nodesPath ? ../../nodes
 , secretsPath ? ./secrets/secrets.yaml
 , statePath ? ./generated/state.json
+, planPath ? null
 , nodeSystems ? { }
 , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
 , hostenvProjectDir ? ".hostenv"
+, planSource ? "eval"
 , testProjects ? null
 , testState ? null
 , testLockData ? null
@@ -21,9 +23,10 @@
 # Largely ported from for_refactoring/generate-infra.nix, but relocated under provider/.
 
 let
+  useEval = planSource == "eval";
   cfgHostenvHostname = hostenvHostname;
   # Detect hostenv project inputs by checking for the presence of evaluated environments.
-  projectInputs = if testProjects != null then [ ] else
+  projectInputs = if testProjects != null || (!useEval) then [ ] else
   builtins.filter
     (name:
       builtins.hasAttr "hostenv" inputs.${name} &&
@@ -54,6 +57,11 @@ let
         flake.lock is missing in ${builtins.toString ../.}.
         Please run: nix flake lock (or nix flake update) at repo root
       '';
+
+  planFromDisk =
+    if useEval then null
+    else if planPath != null then lib.importJSON planPath
+    else builtins.throw "planSource='disk' requires planPath to be set";
 
   nextUid =
     let
@@ -90,7 +98,7 @@ let
     { inherit project organisation; };
 
   # Build a list of hostenv projects, then build a list of environments for each project.
-  realEnvs = builtins.concatLists (map
+  realEnvs = if useEval then builtins.concatLists (map
     (name:
       let
         repo = lockData.nodes.${name}.original or (builtins.throw ''
@@ -188,82 +196,86 @@ let
         )
         minimalHostenv.config.environments
     )
-    projectInputs);
+    projectInputs) else [ ];
 
-  allEnvsUnvalidated = if testProjects != null then testProjects else realEnvs;
+  allEnvsUnvalidated =
+    if useEval then (if testProjects != null then testProjects else realEnvs)
+    else builtins.attrValues (planFromDisk.environments or { });
 
-  # Fail fast if any environment's virtualHosts collide with names already present
-  # in persisted state (excluding its own previous entry) OR with other new envs.
+  # Fail fast on any virtualHost collisions (state or new envs) in one pass.
   allEnvs =
     let
-      # Gather vhosts claimed by new envs to detect cross-new collisions.
+      stateClaims = builtins.concatLists (map
+        (name:
+          let vhosts = lib.unique (state.${name}.virtualHosts or [ ]);
+          in map (v: { name = v; owner = "state:${name}"; }) vhosts
+        )
+        (builtins.attrNames state));
+
       newClaims = builtins.concatLists (map
         (env: map (v: { name = v; owner = env.hostenv.userName; }) (builtins.attrNames (env.virtualHosts or { })))
         allEnvsUnvalidated);
+
       claimTable =
         lib.foldl'
           (acc: claim:
-            let key = claim.name;
+            let
+              key = claim.name;
+              ownerRaw = claim.owner;
+              ownerKey = lib.removePrefix "state:" ownerRaw;
+              ownersPrev = acc."${key}".owners or [ ];
+              ownersPrevKeys = acc."${key}".ownerKeys or [ ];
+              ownersNew = if lib.elem ownerRaw ownersPrev then ownersPrev else ownersPrev ++ [ ownerRaw ];
+              ownerKeysNew = if lib.elem ownerKey ownersPrevKeys then ownersPrevKeys else ownersPrevKeys ++ [ ownerKey ];
             in acc // {
               "${key}" = {
                 name = key;
-                count = (acc."${key}".count or 0) + 1;
-                owners = (acc."${key}".owners or [ ]) ++ [ claim.owner ];
+                owners = ownersNew;
+                ownerKeys = ownerKeysNew;
               };
             }
           )
           { }
-          newClaims;
+          (stateClaims ++ newClaims);
 
-      duplicates =
-        lib.filter (x: x.count > 1) (builtins.attrValues claimTable);
+      duplicates = lib.filter (x: (lib.length x.ownerKeys) > 1) (builtins.attrValues claimTable);
     in
     if duplicates != [ ] then
       builtins.throw ''
-        provider plan: duplicate virtualHosts among new environments: ${
+        provider plan: duplicate virtualHosts detected: ${
           lib.concatStringsSep "; "
             (map (d: "${d.name} claimed by ${lib.concatStringsSep "," d.owners}") duplicates)
         }
       ''
-    else
-      builtins.map
-        (env:
-          let
-            unreservableVHosts =
-              let
-                # state is keyed by hostenv.userName
-                otherEnvState = builtins.removeAttrs state [ env.hostenv.userName ];
-              in builtins.filter (vhost: vhost != env.hostenv.hostname)
-                (builtins.concatLists (builtins.catAttrs "virtualHosts" (builtins.attrValues otherEnvState)));
-            conflicts = lib.intersectLists
-              (builtins.attrNames (env.virtualHosts or { }))
-              unreservableVHosts;
-          in
-          if conflicts != [ ] then
-            builtins.throw ''
-              provider plan: environment '${env.hostenv.userName}' declares virtualHosts already reserved in state: ${lib.concatStringsSep ", " conflicts}
-            ''
-          else env
-        )
-        allEnvsUnvalidated;
+    else allEnvsUnvalidated;
 
-  # Assign unique UIDs to new environments; keep existing ones from state or explicit extras.uid.
-  allEnvsWithUid = lib.imap0
-    (idx: env:
-      let
-        user = env.hostenv.userName;
-        extras = env.extras or { };
-        uidFromState = if builtins.hasAttr user state then state.${user}.uid else null;
-        uidManual = extras.uid or null;
-        uid =
-          if uidFromState != null then uidFromState
-          else if uidManual != null then uidManual
-          else nextUid + idx;
-        extras' = extras // { uid = uid; };
-      in
-      env // { inherit uid; extras = extras'; }
-    )
-    allEnvs;
+  # Assign unique UIDs to new environments when evaluating; in disk mode keep the
+  # UIDs already present in the plan JSON (but still ensure extras.uid mirrors it).
+  allEnvsWithUid =
+    if useEval then
+      lib.imap0
+        (idx: env:
+          let
+            user = env.hostenv.userName;
+            extras = env.extras or { };
+            uidFromState = if builtins.hasAttr user state then state.${user}.uid else null;
+            uidManual = extras.uid or null;
+            uid =
+              if uidFromState != null then uidFromState
+              else if uidManual != null then uidManual
+              else nextUid + idx;
+            extras' = extras // { uid = uid; };
+          in
+          env // { inherit uid; extras = extras'; }
+        )
+        allEnvs
+    else
+      map
+        (env:
+          let uid = env.uid or (env.extras.uid or null);
+          in env // { inherit uid; extras = (env.extras or { }) // { uid = uid; }; }
+        )
+        allEnvs;
 
   generatedFlake =
     let
@@ -347,117 +359,134 @@ let
 
   # JSON representation of every environment returned by each hostenv flake.
   generatedConfig =
-    let
-      base = {
-        _description = ''
-          Contains a build and deployment plan for hostenv servers on NixOS.
-          There are two data substructures:
+    if useEval then
+      let
+        base = {
+          _description = ''
+            Contains a build and deployment plan for hostenv servers on NixOS.
+            There are two data substructures:
 
-          1. Under **environments** is a JSON representation of hostenv's own modules config, retaining the original structure of that representation.
-          2. Each element under **nodes** is NixOS server configuration, and will be merged into the configuration of that server during build.
+            1. Under **environments** is a JSON representation of hostenv's own modules config, retaining the original structure of that representation.
+            2. Each element under **nodes** is NixOS server configuration, and will be merged into the configuration of that server during build.
 
-          Note: all manual changes to this file will be discarded.
-        '';
-        hostenvHostname = cfgHostenvHostname;
-        cloudflare = cloudflare;
-        environments = { };
-        nodes = { };
-      };
+            Note: all manual changes to this file will be discarded.
+          '';
+          hostenvHostname = cfgHostenvHostname;
+          cloudflare = cloudflare;
+          environments = { };
+          nodes = { };
+        };
 
-      configAttrs = builtins.foldl'
-        (acc: elem:
-          let
-            nameParts = builtins.split "-" elem.hostenv.userName;
-            firstPart = builtins.elemAt nameParts 0;
-            sliceName = "user-${elem.hostenv.organisation}-${firstPart}";
-            uid_ = builtins.toString elem.uid;
-            nodeName = if builtins.isString elem.node && elem.node != "" then elem.node else builtins.throw "nodeFor/default must be set to a node name for environment ${elem.hostenv.userName}";
-          in
-          lib.recursiveUpdate acc {
-            environments = acc.environments // {
-              ${elem.hostenv.userName} = elem;
-            };
-            nodes = acc.nodes // {
-              ${nodeName} =
-                let
-                  existing = acc.nodes.${elem.node} or { };
-                in
-                lib.recursiveUpdate existing {
-                  security.acme = {
-                    acceptTerms = letsEncrypt.acceptTerms;
-                    defaults.email = letsEncrypt.adminEmail;
-                  };
+        configAttrs = builtins.foldl'
+          (acc: elem:
+            let
+              nameParts = builtins.split "-" elem.hostenv.userName;
+              firstPart = builtins.elemAt nameParts 0;
+              sliceName = "user-${elem.hostenv.organisation}-${firstPart}";
+              uid_ = builtins.toString elem.uid;
+              nodeName = if builtins.isString elem.node && elem.node != "" then elem.node else builtins.throw "nodeFor/default must be set to a node name for environment ${elem.hostenv.userName}";
+            in
+            lib.recursiveUpdate acc {
+              environments = acc.environments // {
+                ${elem.hostenv.userName} = elem;
+              };
+              nodes = acc.nodes // {
+                ${nodeName} =
+                  let
+                    existing = acc.nodes.${elem.node} or { };
+                  in
+                  lib.recursiveUpdate existing {
+                    security.acme = {
+                      acceptTerms = letsEncrypt.acceptTerms;
+                      defaults.email = letsEncrypt.adminEmail;
+                    };
 
-                  users.groups.${elem.hostenv.userName} = {
-                    gid = elem.uid;
-                  };
+                    users.groups.${elem.hostenv.userName} = {
+                      gid = elem.uid;
+                    };
 
-                  users.users.${elem.hostenv.userName} = {
-                    uid = elem.uid;
-                    group = elem.hostenv.userName;
-                    openssh.authorizedKeys.keys = elem.authorizedKeys ++ [ deployPublicKey ];
-                    isNormalUser = true;
-                    createHome = true;
-                    linger = true;
-                  };
+                    users.users.${elem.hostenv.userName} = {
+                      uid = elem.uid;
+                      group = elem.hostenv.userName;
+                      openssh.authorizedKeys.keys = elem.authorizedKeys ++ [ deployPublicKey ];
+                      isNormalUser = true;
+                      createHome = true;
+                      linger = true;
+                    };
 
-                  systemd.slices = {
-                    ${sliceName} = {
-                      description = "${firstPart} slice";
-                      sliceConfig = {
-                        CPUAccounting = "yes";
-                        CPUQuota = "200%";
-                        MemoryAccounting = "yes";
-                        MemoryMax = "12G";
+                    systemd.slices = {
+                      ${sliceName} = {
+                        description = "${firstPart} slice";
+                        sliceConfig = {
+                          CPUAccounting = "yes";
+                          CPUQuota = "200%";
+                          MemoryAccounting = "yes";
+                          MemoryMax = "12G";
+                        };
+                      };
+                      "user-${elem.hostenv.organisation}-" = { };
+                      "${sliceName}-" = { };
+                    };
+
+                    systemd.services."user@${uid_}" = {
+                      overrideStrategy = "asDropin";
+                      serviceConfig.Slice = "${sliceName}-${uid_}.slice";
+                    };
+
+                    services.nginx.virtualHosts = elem.virtualHosts // {
+                      default = {
+                        serverName = "_";
+                        default = true;
+                        rejectSSL = true;
+                        locations."/".return = "444";
                       };
                     };
-                    "user-${elem.hostenv.organisation}-" = { };
-                    "${sliceName}-" = { };
-                  };
 
-                  systemd.services."user@${uid_}" = {
-                    overrideStrategy = "asDropin";
-                    serviceConfig.Slice = "${sliceName}-${uid_}.slice";
                   };
-
-                  services.nginx.virtualHosts = elem.virtualHosts // {
-                    default = {
-                      serverName = "_";
-                      default = true;
-                      rejectSSL = true;
-                      locations."/".return = "444";
-                    };
-                  };
-
-                };
-            };
-          })
-        base
-        allEnvsWithUid;
-    in
-    pkgs.writers.writeJSON "plan.json" configAttrs;
+              };
+            })
+          base
+          allEnvsWithUid;
+      in
+      pkgs.writers.writeJSON "plan.json" configAttrs
+    else
+      (if planPath != null then planPath else builtins.throw "planSource='disk' requires planPath to be set");
 
   generatedState =
-    let
-      planState = builtins.listToAttrs (builtins.map
-        (envCfg: {
-          name = envCfg.hostenv.userName;
-          value = {
-            userName = envCfg.hostenv.userName;
-            uid = envCfg.uid;
-            node = envCfg.node;
-            virtualHosts = builtins.attrNames envCfg.virtualHosts;
-          };
-        })
-        allEnvsWithUid);
-      mergedState =
-        {
-          _description = ''
-            Persistent state to retain across deployments. Should be committed to version control.
-          '';
-        } // lib.recursiveUpdate state planState;
-    in
-    pkgs.writers.writeJSON "state.json" mergedState;
+    if useEval then
+      let
+        planState = builtins.listToAttrs (builtins.map
+          (envCfg: {
+            name = envCfg.hostenv.userName;
+            value = {
+              userName = envCfg.hostenv.userName;
+              uid = envCfg.uid;
+              node = envCfg.node;
+              virtualHosts = builtins.attrNames envCfg.virtualHosts;
+            };
+          })
+          allEnvsWithUid);
+        mergedState =
+          {
+            _description = ''
+              Persistent state to retain across deployments. Should be committed to version control.
+            '';
+          } // lib.recursiveUpdate state planState;
+      in
+      pkgs.writers.writeJSON "state.json" mergedState
+    else if testState != null then
+      pkgs.writers.writeJSON "state.json" ({
+        _description = ''
+          Persistent state to retain across deployments. Should be committed to version control.
+        '';
+      } // testState)
+    else if builtins.pathExists statePath then statePath
+    else
+      pkgs.writers.writeJSON "state.json" ({
+        _description = ''
+          Persistent state to retain across deployments. Should be committed to version control.
+        '';
+      } // state);
 
 in
 {

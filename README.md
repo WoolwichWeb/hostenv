@@ -46,6 +46,21 @@ Here's an example hosting environment for the [Drupal](https://www.drupal.org) C
 }
 ```
 
+And here's the same idea for a tiny PHP app (no Drupal) using the built‑in `php-app` module:
+
+```nix
+{ pkgs, config, ... }: {
+  services.php-app.enable = true;
+  services.php-app.codebase.name = "hello-php";
+
+  environments.main = {
+    enable = true;
+    type = "production";
+    virtualHosts."hello.example.com" = { };
+  };
+}
+```
+
 ---
 
 ## Repository Map
@@ -77,42 +92,25 @@ Here's an example hosting environment for the [Drupal](https://www.drupal.org) C
 - **Dev shell**: `nix develop` (repo root) drops you into a shell with provider + CLI tooling; inside a project’s `.hostenv/` you can also use `nix develop` for project-scoped tools.
 - **Docs preview**: `nix run .#serve-docs` serves the generated docs locally (uses the flake app defined in `flake-modules/root.nix`).
 
+## How environments surface on NixOS
+
+- Every enabled environment becomes a Unix user and slice: `environments.<name>.user` (defaults to `<name>`) controls the login/group name and slice (`<user>.slice`); `environments.<name>.extras.uid` overrides the UID.
+- Host‑level glue (`modules/nixos/*.nix`) creates runtime dirs under `/run/hostenv/<env>/`, tmpfiles rules, and system nginx vhosts that proxy to the per‑env user‑level nginx/fastcgi sockets.
+- User‑level services run in that user’s systemd session (packaged by `config.hostenv.activatePackage`) and expose sockets in `/run/hostenv/nginx/<env>/` for the host nginx front‑door.
+- Feature modules such as backups, monitoring, and php-fpm read the same `config.hostenv.environments` data and inject per‑env units or credentials where required.
+
 ## Getting Started (projects)
 
 1. Install Nix.  
-2. `nix flake init --template gitlab:woolwichweb/hostenv`.  
+2. In your project root, apply the **project** template (creates a `.hostenv/` directory):  
+   `nix flake init -t gitlab:woolwichweb/hostenv`  
 3. Install/configure direnv, run `direnv allow` inside `.hostenv/`.  
 4. Configure environments in `.hostenv/hostenv.nix`.  
-5. `nix flake check` (or `nix run .#hostenv-provider -- plan` in provider context).
-   - Run project CLI: `cd .hostenv && nix run .#hostenv`  
-   - Enter project dev shell: `cd .hostenv && nix develop`  
-6. Deploy via provider flow once ready.
 
 ## Getting Started (provider)
 
-- Add hostenv to your provider flake inputs and reuse its pins:
-
-  ```nix
-  inputs.hostenv.url = "git+https://gitlab.com/woolwichweb/hostenv";
-  inputs.nixpkgs.follows = "hostenv/nixpkgs";
-  inputs.flake-parts.follows = "hostenv/flake-parts";
-  outputs = inputs@{ flake-parts, hostenv, ... }:
-    flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = [ "x86_64-linux" "aarch64-linux" ];
-      imports = [ hostenv.lib.hostenv.providerModule ];
-      provider = {
-        hostenvHostname = "hosting.example.com";
-        deployPublicKey = "ssh-ed25519 AAAA...";
-        nodeSystems = { default = "x86_64-linux"; };
-        nodeFor = { default = "edge-01"; };
-        nodesPath = ./nodes;
-        secretsPath = ./secrets/secrets.yaml;
-        statePath = ./generated/state.json;
-        planPath = ./generated/plan.json;
-        planSource = "eval";
-      };
-    };
-  ```
+- Start from the **provider** template (in a fresh repo or dir):  
+  `nix flake init -t gitlab:woolwichweb/hostenv#provider`
 
 - Create NixOS node configs under `nodes/<node>/configuration.nix` (plus hardware config); set `system.stateVersion`.
 - Generate plan/state/flake: `nix run .#hostenv-provider-plan` (writes to `generated/` or `$HOSTENV_PROVIDER_OUT`).

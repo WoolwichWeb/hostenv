@@ -78,7 +78,9 @@ let
       })
       providerEnvs);
 
-  mkPlan = { hostenvHostname ? "custom.host", state ? { }, lockData ? { }, projects ? null, inputsOverride ? { } }:
+  lockData = { nodes = { }; };
+
+  mkPlan = { hostenvHostname ? "custom.host", state ? { }, lockData ? { }, projects ? null, inputsOverride ? { }, planSource ? "eval", planPath ? null }:
     let
       inputsEffective =
         if inputsOverride == { }
@@ -103,24 +105,36 @@ let
       nodesPath = ./.;
       secretsPath = ./.;
       statePath = ./dummy-state.json;
+      planPath = planPath;
       nodeSystems = { };
       cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
       testLockData = lockData;
       testState = state;
       testProjects = projects;
+      planSource = planSource;
     };
 
   user1 = (lib.head sampleProjects).hostenv.userName;
   user2 = (lib.head (lib.tail sampleProjects)).hostenv.userName;
 
-  planNoState = (mkPlan { projects = sampleProjects; }).plan;
-  flakeNoState = (mkPlan { projects = sampleProjects; }).flake;
+  evalRun = mkPlan { projects = sampleProjects; };
+  planNoState = evalRun.plan;
+  stateNoState = evalRun.state;
+  flakeNoState = evalRun.flake;
   planWithState = (mkPlan {
     projects = sampleProjects;
     state = {
       ${user1} = { uid = 2001; virtualHosts = [ "env1.example" "alias.example" ]; };
     };
   }).plan;
+  planDisk =
+    mkPlan {
+      projects = null;
+      planSource = "disk";
+      planPath = planNoState;
+      state = lib.importJSON stateNoState;
+      inherit lockData;
+    };
 in
 {
   provider-plan-hostname =
@@ -284,4 +298,12 @@ in
     in asserts.assertTrue "provider-plan-vhost-conflict-new-envs"
       (!result.success)
       "plan generation must fail when virtualHosts overlap between new environments";
+
+  provider-plan-planSource-disk =
+    let
+      evalPlanData = lib.importJSON planNoState;
+      diskPlanData = lib.importJSON planDisk.plan;
+    in asserts.assertTrue "provider-plan-planSource-disk"
+      (evalPlanData == diskPlanData)
+      "planSource=\"disk\" should reuse plan.json contents without re-evaluating hostenv";
 }

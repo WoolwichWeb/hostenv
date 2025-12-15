@@ -2,6 +2,10 @@
 let
   allEnvs = config.hostenv.environments or { };
   envs = lib.filterAttrs (_: env: env.enable or true) allEnvs;
+  # Each enabled environment becomes a Unix user/slice.  The username defaults
+  # to the environment key, but operators can override via `env.user` (name)
+  # and `env.extras.uid` (numeric UID).  Keeping this mapping here makes the
+  # user/slice contract explicit and provider‑neutral.
   userOf = name: env: env.user or name;
   uidOf = env: env.extras.uid or null;
 in
