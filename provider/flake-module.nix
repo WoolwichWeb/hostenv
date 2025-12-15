@@ -32,6 +32,11 @@ in
     statePath = mkOption { type = types.path; default = ./generated/state.json; };
     planPath = mkOption { type = types.path; default = ./generated/plan.json; };
     planSource = mkOption { type = types.enum [ "disk" "eval" ]; default = "eval"; };
+    allowEmptyProjects = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Permit plan generation when no client projects are present (useful for hostenv development only).";
+    };
     cloudflare = mkOption {
       type = types.submodule {
         options = {
@@ -78,6 +83,7 @@ in
             cloudflare = cfg.cloudflare;
             hostenvProjectDir = cfg.hostenvProjectDir;
             planSource = cfg.planSource;
+            allowEmptyProjects = cfg.allowEmptyProjects;
           };
 
           hostenvProviderPlan = pkgs.writeShellScriptBin "hostenv-provider-plan" ''

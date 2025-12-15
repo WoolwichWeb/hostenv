@@ -125,6 +125,39 @@ let
       state = lib.importJSON stateNoState;
       inherit lockData;
     };
+  planMissingProjects =
+    let
+      result = builtins.tryEval (mkPlan {
+        projects = null;
+        inputsOverride = {
+          hostenv =
+            let outPath = ../../modules;
+            in {
+              inherit outPath;
+              modules = outPath;
+              __toString = self: toString outPath;
+            };
+        };
+        lockData = { nodes = { }; };
+      });
+    in result;
+
+  planMissingEnvironments =
+    let
+      badInputs = {
+        hostenv =
+          let outPath = ../../modules;
+          in { inherit outPath; modules = outPath; __toString = self: toString outPath; };
+        org__proj = {
+          hostenv = { defaultEnvironment = "main"; };
+        };
+      };
+      result = builtins.tryEval (mkPlan {
+        projects = null;
+        inputsOverride = badInputs;
+        lockData = { nodes = { }; };
+      });
+    in result;
 in
 {
   provider-plan-hostname =
@@ -296,4 +329,14 @@ in
     in asserts.assertTrue "provider-plan-planSource-disk"
       (evalPlanData == diskPlanData)
       "planSource=\"disk\" should reuse plan.json contents without re-evaluating hostenv";
+
+  provider-plan-missing-projects-asserts =
+    asserts.assertTrue "provider-plan-missing-projects-asserts"
+      (! planMissingProjects.success)
+      "plan generation must fail early when no client projects expose outputs.hostenv";
+
+  provider-plan-missing-environments-asserts =
+    asserts.assertTrue "provider-plan-missing-environments-asserts"
+      (! planMissingEnvironments.success)
+      "plan generation must fail early when a client flake hostenv output lacks environments";
 }

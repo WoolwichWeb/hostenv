@@ -14,6 +14,7 @@
 , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
 , hostenvProjectDir ? ".hostenv"
 , planSource ? "eval"
+, allowEmptyProjects ? false
 , testProjects ? null
 , testState ? null
 , testLockData ? null
@@ -26,19 +27,32 @@ let
   useEval = planSource == "eval";
   cfgHostenvHostname = hostenvHostname;
   # Detect hostenv project inputs by checking for the presence of evaluated environments.
-  projectInputs = if testProjects != null || (!useEval) then [ ] else
-  builtins.filter
-    (name:
-      builtins.hasAttr "hostenv" inputs.${name} &&
-      (
-        builtins.hasAttr "environments" inputs.${name}.hostenv
-        || (
-          builtins.hasAttr system inputs.${name}.hostenv
-          && builtins.hasAttr "environments" inputs.${name}.hostenv.${system}
+  projectInputs =
+    if testProjects != null || (!useEval) then [ ] else
+    builtins.filter
+      (name:
+        builtins.hasAttr "hostenv" inputs.${name}
+        && (
+          builtins.hasAttr "environments" inputs.${name}.hostenv
+          || (
+            builtins.hasAttr system inputs.${name}.hostenv
+            && builtins.hasAttr "environments" inputs.${name}.hostenv.${system}
+          )
         )
       )
-    )
-    (builtins.attrNames inputs);
+      (builtins.attrNames inputs);
+
+  assertProjectInputs =
+    if useEval && testProjects == null && (! allowEmptyProjects) && projectInputs == [ ] then
+      builtins.throw ''
+        provider plan: no client projects found.
+
+        Each client flake must expose a `hostenv` output containing `environments`
+        (optionally under a per-system attr). Ensure inputs are named
+        organisation__project and that the project flake exports `outputs.hostenv`.
+      ''
+    else
+      true;
 
   state =
     if testState != null then testState
@@ -107,6 +121,26 @@ let
 
         orgAndProject = inputNameToProject name;
 
+        projectHostenv = inputs.${name}.hostenv;
+        projectHostenvSystem =
+          if builtins.hasAttr system projectHostenv then projectHostenv.${system} else projectHostenv;
+
+        projectEnvironments =
+          if builtins.hasAttr "environments" projectHostenvSystem then projectHostenvSystem.environments else
+          builtins.throw "provider plan: input '${name}' is missing hostenv.${system}.environments (export outputs.hostenv from the project flake).";
+
+        defaultEnvName =
+          if builtins.hasAttr "defaultEnvironment" projectHostenvSystem
+          then projectHostenvSystem.defaultEnvironment
+          else builtins.throw "provider plan: input '${name}' is missing hostenv.${system}.defaultEnvironment (export outputs.hostenv from the project flake).";
+        envCfg =
+          if builtins.hasAttr defaultEnvName projectEnvironments then projectEnvironments.${defaultEnvName}
+          else builtins.throw "provider plan: defaultEnvironment '${defaultEnvName}' missing in ${name}.hostenv.${system}.environments";
+
+        envRoot =
+          if envCfg ? hostenv && envCfg.hostenv ? root then envCfg.hostenv.root
+          else builtins.throw "provider plan: environment '${defaultEnvName}' in ${name} is missing hostenv.root";
+
         minimalHostenv = pkgs.lib.evalModules {
           specialArgs = inputs // { inherit inputs pkgs; };
           modules = [
@@ -116,7 +150,7 @@ let
               hostenv.organisation = lib.mkForce orgAndProject.organisation;
               hostenv.project = lib.mkForce orgAndProject.project;
               hostenv.environmentName = lib.mkForce config.defaultEnvironment;
-              hostenv.root = lib.mkForce inputs.${name}.hostenv.${system}.environments.${config.defaultEnvironment}.hostenv.root;
+              hostenv.root = lib.mkForce envRoot;
               hostenv.hostenvHostname = lib.mkForce cfgHostenvHostname;
             })
           ];
@@ -489,6 +523,7 @@ let
       } // state);
 
 in
+assert assertProjectInputs;
 {
   flake = generatedFlake;
   plan = generatedConfig;

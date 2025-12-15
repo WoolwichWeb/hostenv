@@ -5,6 +5,7 @@
     ./../provider/flake-module.nix
     inputs.hostenv-internal.lib.cliModule
   ];
+  provider.allowEmptyProjects = true;
 
   perSystem = { system, pkgs, self', ... }:
     let
