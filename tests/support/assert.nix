@@ -1,7 +1,5 @@
 { pkgs, lib }:
 let
-  mkJson = name: value: pkgs.writeText name (builtins.toJSON value);
-
   assertTrue = name: condition: message:
     if condition then
       pkgs.runCommand name { } ''echo ok > $out''
@@ -28,5 +26,5 @@ let
         echo ok > "$out"
       '';
 in {
-  inherit mkJson assertTrue assertRun;
+  inherit assertTrue assertRun;
 }
