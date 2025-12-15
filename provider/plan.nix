@@ -14,7 +14,6 @@
 , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
 , hostenvProjectDir ? ".hostenv"
 , planSource ? "eval"
-, allowEmptyProjects ? false
 , testProjects ? null
 , testState ? null
 , testLockData ? null
@@ -32,23 +31,18 @@ let
     builtins.filter
       (name:
         builtins.hasAttr "hostenv" inputs.${name}
-        && (
-          builtins.hasAttr "environments" inputs.${name}.hostenv
-          || (
-            builtins.hasAttr system inputs.${name}.hostenv
-            && builtins.hasAttr "environments" inputs.${name}.hostenv.${system}
-          )
-        )
+        && builtins.hasAttr system inputs.${name}.hostenv
+        && builtins.hasAttr "environments" inputs.${name}.hostenv.${system}
       )
       (builtins.attrNames inputs);
 
   assertProjectInputs =
-    if useEval && testProjects == null && (! allowEmptyProjects) && projectInputs == [ ] then
+    if useEval && testProjects == null && projectInputs == [ ] then
       builtins.throw ''
         provider plan: no client projects found.
 
-        Each client flake must expose a `hostenv` output containing `environments`
-        (optionally under a per-system attr). Ensure inputs are named
+        Each client flake must expose a `hostenv.<system>.environments` output.
+        Ensure inputs are named
         organisation__project and that the project flake exports `outputs.hostenv`.
       ''
     else
@@ -121,13 +115,17 @@ let
 
         orgAndProject = inputNameToProject name;
 
-        projectHostenv = inputs.${name}.hostenv;
+        projectHostenv =
+          if builtins.hasAttr "hostenv" inputs.${name} then inputs.${name}.hostenv
+          else builtins.throw "provider plan: input '${name}' missing hostenv output.";
+
         projectHostenvSystem =
-          if builtins.hasAttr system projectHostenv then projectHostenv.${system} else projectHostenv;
+          if builtins.hasAttr system projectHostenv then projectHostenv.${system}
+          else builtins.throw "provider plan: input '${name}' missing hostenv.${system} output.";
 
         projectEnvironments =
-          if builtins.hasAttr "environments" projectHostenvSystem then projectHostenvSystem.environments else
-          builtins.throw "provider plan: input '${name}' is missing hostenv.${system}.environments (export outputs.hostenv from the project flake).";
+          if builtins.hasAttr "environments" projectHostenvSystem then projectHostenvSystem.environments
+          else builtins.throw "provider plan: input '${name}' is missing hostenv.${system}.environments (export outputs.hostenv.<system>.environments from the project flake).";
 
         defaultEnvName =
           if builtins.hasAttr "defaultEnvironment" projectHostenvSystem

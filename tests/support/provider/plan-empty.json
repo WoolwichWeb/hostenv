@@ -1,0 +1,7 @@
+{
+  "_description": "dummy plan for hostenv flake packaging (no client projects).",
+  "hostenvHostname": "placeholder",
+  "cloudflare": { "enable": false, "zoneId": null, "apiTokenFile": null },
+  "environments": {},
+  "nodes": {}
+}

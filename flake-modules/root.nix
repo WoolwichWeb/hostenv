@@ -5,7 +5,11 @@
     ./../provider/flake-module.nix
     inputs.hostenv-internal.lib.cliModule
   ];
-  provider.allowEmptyProjects = true;
+  provider = {
+    planSource = "disk";
+    planPath = ./../tests/support/provider/plan-empty.json;
+    statePath = ./../tests/support/provider/state-empty.json;
+  };
 
   perSystem = { system, pkgs, self', ... }:
     let
