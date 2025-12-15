@@ -68,8 +68,6 @@
             default = defaultHostenv.config.activatePackage;
           };
 
-          hostenv = defaultHostenv.config;
-
           apps = defaultHostenv.config.hostenv.apps;
 
           devShells = defaultHostenv.config.hostenv.devShells;
