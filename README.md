@@ -92,6 +92,12 @@ And here's the same idea for a tiny PHP app (no Drupal) using the built‑in `ph
 - **Dev shell**: `nix develop` (repo root) drops you into a shell with provider + CLI tooling; inside a project’s `.hostenv/` you can also use `nix develop` for project-scoped tools.
 - **Docs preview**: `nix run .#serve-docs` serves the generated docs locally (uses the flake app defined in `flake-modules/root.nix`).
 
+### Default environment selection
+
+- If you do **not** set `defaultEnvironment`, hostenv will pick the first **enabled** environment whose `type = "production"`. Only one production env is allowed (asserted).
+- If no production environment is enabled, it falls back to `"main"`.
+- To avoid surprises, set `defaultEnvironment = "<env-name>";` explicitly in your project’s `.hostenv/hostenv.nix` when you want a different default (e.g. `dev`, `staging`).
+
 ## How environments surface on NixOS
 
 - Every enabled environment becomes a Unix user and slice: `environments.<name>.user` (defaults to `<name>`) controls the login/group name and slice (`<user>.slice`); `environments.<name>.extras.uid` overrides the UID.
