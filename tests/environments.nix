@@ -6,11 +6,11 @@ let
       hostenv = {
         organisation = "test";
         project = "test-project";
-        root = ./drupal;
+        root = ./integration/drupal;
         hostenvHostname = "hosting.test";
       };
     })
-    ./drupal/hostenv.nix
+    ./integration/drupal/hostenv.nix
   ];
 in {
   drupalDev = makeHostenv baseModules "dev";
@@ -43,6 +43,6 @@ in {
           hostenvHostname = "hosting.test";
         };
       })
-      ./drupal7/hostenv.nix
+      ./integration/drupal7/hostenv.nix
     ] "main";
 }

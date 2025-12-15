@@ -1,7 +1,7 @@
 { pkgs }:
 let
   lib = pkgs.lib;
-  support = import ./support { inherit pkgs lib; };
+  support = import ../support { inherit pkgs lib; };
   stubs = support.stubs;
   asserts = support.asserts;
 
@@ -11,7 +11,7 @@ let
         specialArgs = { inherit pkgs; };
         modules = [
           stubs.base
-          ../modules/env/restic.nix
+          ../../modules/env/restic.nix
           ({ ... }: {
             hostenv.cacheDir = "/tmp/hostenv-cache";
             hostenv.userName = "restic-test";
@@ -40,7 +40,7 @@ let
         specialArgs = { inherit pkgs; };
         modules = [
           stubs.base
-          ../modules/env/restic.nix
+          ../../modules/env/restic.nix
           ({ ... }: {
             hostenv.cacheDir = "/tmp/hostenv-cache";
             hostenv.userName = "restic-test";

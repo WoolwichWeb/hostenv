@@ -1,18 +1,18 @@
 # Tests layout
 
-Tests under `tests/drupal*/`, `tests/socket-contract.nix`, `tests/hostname.nix`, and `tests/provider-full.nix` are full API/integration tests and make use of high-level functions like `makeHostenv`. Tests under `tests/*-hostenv.nix` or `tests/*-contract.nix` focus on specific module contracts and use `tests/support` stubs instead of high-level functions.
+`tests/integration/` holds the full-stack suites that exercise the provider/plan
+pipeline or real environment builds (`drupal*/`, `provider-*.nix`, `plan-bridge.nix`,
+`socket-contract.nix`, `hostname.nix`). These typically use `makeHostenv` and
+import multi-module stacks.
 
-Other tests under `tests/` exercise *branches* of the module tree in isolation,
-mirroring the dendritic structure:
-
-- `plan-bridge.nix` – feeds provider-shaped environments into plan-bridge + host-level nginx/backups and asserts on the resulting configs.
-- `users-slices.nix` – evaluates only the users/slices host modules to ensure per-env slices and users are shaped correctly.
-- `restic.nix` – exercises the restic env module’s assertions and generated units.
+`tests/unit/` contains fast, focused checks for individual modules (`restic.nix`,
+`users-slices.nix`, `hostenv-assertions.nix`) and lean on the stubs in
+`tests/support`.
 
 Shared helpers live in `tests/support/`:
 
 - `stubs/` – minimal root option stubs so we can call `lib.evalModules` without pulling a full NixOS config.
-- `provider-view.nix` – builds the “provider view” of environments (the same shape plan-bridge expects) from fixture envs.
+- `provider-view.nix` – builds the provider view of environments (plan-bridge shape).
 - `sample-envs.nix` – tiny constructors for provider-style env attrsets used by multiple suites.
 - `assert.nix` – small assertion helpers; tests prefer Nix-side assertions (`assertTrue`) to reduce shell/JQ boilerplate.
 

@@ -1,7 +1,7 @@
 { pkgs, makeHostenv }:
 let
   lib = pkgs.lib;
-  support = import ./support { inherit pkgs lib; };
+  support = import ../support { inherit pkgs lib; };
   asserts = support.asserts;
   providerView = support.providerView;
 
@@ -86,7 +86,7 @@ let
         if inputsOverride == { }
         then {
           hostenv =
-            let outPath = ../modules;
+            let outPath = ../../modules;
             in {
               inherit outPath;
               modules = outPath;
@@ -95,7 +95,7 @@ let
         }
         else inputsOverride;
     in
-    import ../provider/plan.nix {
+    import ../../provider/plan.nix {
       inputs = inputsEffective;
       system = "x86_64-linux";
       inherit lib pkgs hostenvHostname;

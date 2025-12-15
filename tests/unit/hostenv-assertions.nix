@@ -1,7 +1,7 @@
 { pkgs, makeHostenv }:
 let
   lib = pkgs.lib;
-  asserts = (import ./support { inherit pkgs lib; }).asserts;
+  asserts = (import ../support { inherit pkgs lib; }).asserts;
 
   # Attempt to force the activation script for a config with two production envs.
   # This should fail the "only one production" invariant.

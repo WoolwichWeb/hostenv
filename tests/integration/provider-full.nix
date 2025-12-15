@@ -1,12 +1,12 @@
 { pkgs, makeHostenv }:
 let
   lib = pkgs.lib;
-  support = import ./support { inherit pkgs lib; };
+  support = import ../support { inherit pkgs lib; };
   asserts = support.asserts;
 
   hostenvInput =
     let
-      outPath = ../modules;
+      outPath = ../../modules;
     in
     {
       inherit outPath;
@@ -61,13 +61,13 @@ let
 
   lockData = {
     nodes = {
-      hostenv = { original = { type = "path"; path = toString ../modules; }; };
+      hostenv = { original = { type = "path"; path = toString ../../modules; }; };
       acme__drupal = { original = { type = "git"; url = "https://example.invalid/drupal.git"; dir = "."; ref = "main"; }; };
       acme__drupal7 = { original = { type = "git"; url = "https://example.invalid/drupal7.git"; dir = "."; ref = "main"; }; };
     };
   };
 
-  planEval = import ../provider/plan.nix {
+  planEval = import ../../provider/plan.nix {
     inherit inputs pkgs lib;
     system = localSystem;
     letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };

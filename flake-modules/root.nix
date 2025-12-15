@@ -34,13 +34,13 @@
       };
       hostenvCli = {
         modules = [
-          ./../tests/drupal/hostenv.nix
+          ./../tests/integration/drupal/hostenv.nix
           ({ ... }: {
             hostenv = {
               organisation = "test";
               project = "testproject";
               hostenvHostname = "hosting.test";
-              root = ./../tests/drupal;
+              root = ./../tests/integration/drupal;
             };
           })
         ];

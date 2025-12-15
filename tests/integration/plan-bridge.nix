@@ -1,11 +1,11 @@
 { pkgs, makeHostenv }:
 let
   lib = pkgs.lib;
-  support = import ./support { inherit pkgs lib; };
+  support = import ../support { inherit pkgs lib; };
   providerView = support.providerView;
   asserts = support.asserts;
 
-  envFixtures = import ./environments.nix { inherit pkgs makeHostenv; };
+  envFixtures = import ../environments.nix { inherit pkgs makeHostenv; };
   drupalEnvs = envFixtures.drupalProduction.config.environments;
 
   providerEnvs =
@@ -31,10 +31,10 @@ let
     specialArgs = { inherit pkgs; };
     modules = [
       support.stubs.base
-      ../modules/core/environments.nix
-      ../modules/nixos/plan-bridge.nix
-      ../modules/nixos/nginx-hostenv.nix
-      ../modules/nixos/backups-hostenv.nix
+      ../../modules/core/environments.nix
+      ../../modules/nixos/plan-bridge.nix
+      ../../modules/nixos/nginx-hostenv.nix
+      ../../modules/nixos/backups-hostenv.nix
       ({ ... }: {
         hostenv = {
           organisation = "test";

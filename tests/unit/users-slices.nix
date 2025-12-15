@@ -1,7 +1,7 @@
 { pkgs }:
 let
   lib = pkgs.lib;
-  support = import ./support { inherit pkgs lib; };
+  support = import ../support { inherit pkgs lib; };
   stubs = support.stubs;
   samples = support.samples;
   asserts = support.asserts;
@@ -10,9 +10,9 @@ let
     specialArgs = { inherit pkgs; };
     modules = [
       stubs.base
-      ../modules/core/environments.nix
-      ../modules/nixos/plan-bridge.nix
-      ../modules/nixos/users-slices.nix
+      ../../modules/core/environments.nix
+      ../../modules/nixos/plan-bridge.nix
+      ../../modules/nixos/users-slices.nix
       ({ ... }: {
         _module.check = false;
         environments = samples.mkSingle {
@@ -39,9 +39,9 @@ let
         specialArgs = { inherit pkgs; };
         modules = [
           stubs.base
-          ../modules/core/environments.nix
-          ../modules/nixos/plan-bridge.nix
-          ../modules/nixos/users-slices.nix
+          ../../modules/core/environments.nix
+          ../../modules/nixos/plan-bridge.nix
+          ../../modules/nixos/users-slices.nix
           ({ ... }: {
             _module.check = false;
             environments = samples.mkSingle {

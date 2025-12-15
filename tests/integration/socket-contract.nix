@@ -1,7 +1,7 @@
 { pkgs, envs }:
 let
   lib = pkgs.lib;
-  support = import ./support { inherit pkgs lib; };
+  support = import ../support { inherit pkgs lib; };
   asserts = support.asserts;
 
   checkUpstream = env:
