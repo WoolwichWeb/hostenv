@@ -6,7 +6,7 @@
     };
 
     hostenvModules = {
-      full-env = ../core/full-env.nix;
+      fullEnv = ../core/full-env.nix;
       environment = ../core/environment.nix;
       environments = ../core/environments.nix;
       hostenv = ../core/hostenv.nix;

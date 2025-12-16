@@ -13,7 +13,7 @@ let
       pkgs.lib.evalModules {
         specialArgs = { inherit inputs pkgs; };
         modules = [
-          config.flake.hostenvModules.full-env
+          config.flake.hostenvModules.fullEnv
           ({ config, ... }: {
             # Use provided environmentName, or fall back to the default for discovery/CLI.
             hostenv.environmentName =
