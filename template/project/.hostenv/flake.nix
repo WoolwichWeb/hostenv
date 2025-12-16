@@ -17,7 +17,7 @@
       };
     };
     hostenv = {
-      url = "gitlab:woolwichweb/hostenv?dir=modules";
+      url = "gitlab:woolwichweb/hostenv?dir=platform";
       inputs = {
         nixpkgs.follows = "nixpkgs";
         flake-utils.follows = "flake-utils";
@@ -44,20 +44,14 @@
         })
       ];
 
-      hostenvOutputs = builtins.listToAttrs (map (system:
-        let envEval = hostenv.makeHostenv.${system} baseModules null;
-        in {
-          name = system;
-          value = {
-            inherit (envEval.config) environments defaultEnvironment;
-          };
-        }) systems);
-
     in
     flake-parts.lib.mkFlake { inherit inputs; } {
       inherit systems;
 
-      imports = [ hostenv.lib.cliModule ];
+      imports = [
+        hostenv.flakeModules.cli
+        hostenv.flakeModules.hostenvOutputs
+      ];
 
       perSystem = { system, pkgs, ... }:
         let
@@ -71,6 +65,12 @@
             makeHostenv = hostenv.makeHostenv;
             modules = baseModules;
             environmentName = null; # use defaultEnvironment
+          };
+
+          hostenvProject = {
+            makeHostenv = hostenv.makeHostenv.${system};
+            modules = baseModules;
+            environmentName = null;
           };
 
           packages = pkgs.lib.mapAttrs
@@ -87,7 +87,5 @@
 
           devShells = defaultHostenv.config.hostenv.devShells;
         };
-
-      flake.hostenv = hostenvOutputs;
     };
 }

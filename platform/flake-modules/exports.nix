@@ -3,6 +3,8 @@
   config.flake = {
     flakeModules = {
       cli = ./cli.nix;
+      hostenvOutputs = ./hostenv-outputs.nix;
+      provider = ../../provider/flake-module.nix;
     };
 
     hostenvModules = {
