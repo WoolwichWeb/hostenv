@@ -20,14 +20,15 @@ in
       };
     };
 
-    config.hostenvProject.outputs =
+    config.hostenvProject.eval =
       let
         mk = config.hostenvProject.makeHostenv;
-        eval = mk config.hostenvProject.modules config.hostenvProject.environmentName;
       in
-      {
-        inherit (eval.config) environments defaultEnvironment;
-      };
+      mk config.hostenvProject.modules config.hostenvProject.environmentName;
+
+    config.hostenvProject.outputs = {
+      inherit (config.hostenvProject.eval.config) environments defaultEnvironment;
+    };
   });
 
   # Lift perSystem outputs into flake outputs
