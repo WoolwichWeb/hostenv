@@ -102,142 +102,145 @@ let
     { inherit project organisation; };
 
   # Build a list of hostenv projects, then build a list of environments for each project.
-  realEnvs = if useEval then builtins.concatLists (map
-    (name:
-      let
-        repo = lockData.nodes.${name}.original or (builtins.throw ''
-          Could not find ${name} in Flake inputs, do you need to run 'nix flake update ${name}'?
-        '');
-
-        orgAndProject = inputNameToProject name;
-
-        projectHostenv =
-          if builtins.hasAttr "hostenv" inputs.${name} then inputs.${name}.hostenv
-          else builtins.throw "provider plan: input '${name}' missing hostenv output.";
-
-        projectHostenvSystem =
-          if builtins.hasAttr system projectHostenv then projectHostenv.${system}
-          else builtins.throw "provider plan: input '${name}' missing hostenv.${system} output.";
-
-        projectEnvironments =
-          if builtins.hasAttr "environments" projectHostenvSystem then projectHostenvSystem.environments
-          else builtins.throw "provider plan: input '${name}' is missing hostenv.${system}.environments (export outputs.hostenv.<system>.environments from the project flake).";
-
-        defaultEnvName =
-          if builtins.hasAttr "defaultEnvironment" projectHostenvSystem
-          then projectHostenvSystem.defaultEnvironment
-          else builtins.throw "provider plan: input '${name}' is missing hostenv.${system}.defaultEnvironment (export outputs.hostenv from the project flake).";
-        envCfg =
-          if builtins.hasAttr defaultEnvName projectEnvironments then projectEnvironments.${defaultEnvName}
-          else builtins.throw "provider plan: defaultEnvironment '${defaultEnvName}' missing in ${name}.hostenv.${system}.environments";
-
-        envRoot =
-          if envCfg ? hostenv && envCfg.hostenv ? root then envCfg.hostenv.root
-          else builtins.throw "provider plan: environment '${defaultEnvName}' in ${name} is missing hostenv.root";
-
-        minimalHostenv = pkgs.lib.evalModules {
-          specialArgs = inputs // { inherit inputs pkgs; };
-          modules = [
-          (inputs.hostenv.modules + /core/full-env.nix)
-            (inputs.${name} + /hostenv.nix)
-            ({ config, ... }: {
-              hostenv.organisation = lib.mkForce orgAndProject.organisation;
-              hostenv.project = lib.mkForce orgAndProject.project;
-              hostenv.environmentName = lib.mkForce config.defaultEnvironment;
-              hostenv.root = lib.mkForce envRoot;
-              hostenv.hostenvHostname = lib.mkForce cfgHostenvHostname;
-            })
-          ];
-        };
-
-      in
-      lib.attrsets.mapAttrsToList
-        (
-          envName: envCfg:
+  realEnvs =
+    if useEval then
+      builtins.concatLists
+        (map
+          (name:
             let
-              hostenv = envCfg.hostenv;
+              repo = lockData.nodes.${name}.original or (builtins.throw ''
+                Could not find ${name} in Flake inputs, do you need to run 'nix flake update ${name}'?
+              '');
 
-              node =
-                if envCfg.type == "production"
-                then (nodeFor.production or nodeFor.default)
-                else (nodeFor.${envCfg.type} or nodeFor.default);
+              orgAndProject = inputNameToProject name;
 
-              authorizedKeys =
-                let
-                  allUsers = builtins.attrValues envCfg.users;
-                in
-                builtins.concatLists (map (u: u.publicKeys or [ ]) allUsers);
+              projectHostenv =
+                if builtins.hasAttr "hostenv" inputs.${name} then inputs.${name}.hostenv
+                else builtins.throw "provider plan: input '${name}' missing hostenv output.";
 
-              # Hostname reservation logic (copied from legacy generator).
-              # Remove current env by username (state keyed by hostenv.userName), not envName.
-              stateVHosts =
-                builtins.concatLists (
-                  map (v: v.virtualHosts or [ ])
-                    (builtins.attrValues (builtins.removeAttrs state [ hostenv.userName ]))
-                );
-              # All virtualHosts already reserved by other environments.
-              unreservableVHosts = stateVHosts;
-              conflictsWithState = lib.intersectLists (builtins.attrNames envCfg.virtualHosts) unreservableVHosts;
+              projectHostenvSystem =
+                if builtins.hasAttr system projectHostenv then projectHostenv.${system}
+                else builtins.throw "provider plan: input '${name}' missing hostenv.${system} output.";
+
+              projectEnvironments =
+                if builtins.hasAttr "environments" projectHostenvSystem then projectHostenvSystem.environments
+                else builtins.throw "provider plan: input '${name}' is missing hostenv.${system}.environments (export outputs.hostenv.<system>.environments from the project flake).";
+
+              defaultEnvName =
+                if builtins.hasAttr "defaultEnvironment" projectHostenvSystem
+                then projectHostenvSystem.defaultEnvironment
+                else builtins.throw "provider plan: input '${name}' is missing hostenv.${system}.defaultEnvironment (export outputs.hostenv from the project flake).";
+              envCfg =
+                if builtins.hasAttr defaultEnvName projectEnvironments then projectEnvironments.${defaultEnvName}
+                else builtins.throw "provider plan: defaultEnvironment '${defaultEnvName}' missing in ${name}.hostenv.${system}.environments";
+
+              envRoot =
+                if envCfg ? hostenv && envCfg.hostenv ? root then envCfg.hostenv.root
+                else builtins.throw "provider plan: environment '${defaultEnvName}' in ${name} is missing hostenv.root";
+
+              minimalHostenv = pkgs.lib.evalModules {
+                specialArgs = inputs // { inherit inputs pkgs; };
+                modules = [
+                  inputs.hostenv.hostenvModules.full-env
+                  (inputs.${name} + /hostenv.nix)
+                  ({ config, ... }: {
+                    hostenv.organisation = lib.mkForce orgAndProject.organisation;
+                    hostenv.project = lib.mkForce orgAndProject.project;
+                    hostenv.environmentName = lib.mkForce config.defaultEnvironment;
+                    hostenv.root = lib.mkForce envRoot;
+                    hostenv.hostenvHostname = lib.mkForce cfgHostenvHostname;
+                  })
+                ];
+              };
+
             in
-            if conflictsWithState != [ ] then
-              builtins.throw ''
-                provider plan: environment '${envName}' declares virtualHosts that are already reserved in state: ${lib.concatStringsSep ", " conflictsWithState}
-              ''
-            else
-            let
-              filteredEnvVHosts = lib.filterAttrs
-                (
-                  vhostName: vhost: ! builtins.any
-                    (reservedName: vhostName == reservedName)
-                    unreservableVHosts
-                )
-                envCfg.virtualHosts;
-              conflicts = lib.subtractLists
-                (builtins.attrNames envCfg.virtualHosts)
-                (builtins.attrNames filteredEnvVHosts);
+            lib.attrsets.mapAttrsToList
+              (
+                envName: envCfg:
+                  let
+                    hostenv = envCfg.hostenv;
 
-              virtualHosts =
-                if conflicts != [ ] then
-                  builtins.throw ''
-                    provider plan: environment '${envName}' declares virtualHosts that are already reserved in state: ${lib.concatStringsSep ", " conflicts}
-                  ''
-                else
-                  builtins.mapAttrs
-                    (
-                      n: vhost:
-                        (builtins.removeAttrs vhost [ "enableLetsEncrypt" ]) // {
-                          enableACME = vhost.enableLetsEncrypt;
-                          forceSSL = vhost.enableLetsEncrypt;
-                          locations =
-                            let
-                              locationDefault =
-                                if builtins.isNull vhost.globalRedirect then
-                                  {
-                                    "/" = {
-                                      recommendedProxySettings = true;
-                                      proxyPass = "http://${envCfg.hostenv.userName}_upstream";
-                                    };
-                                  }
-                                else
-                                  { };
-                            in
-                            vhost.locations // locationDefault;
-                        }
-                    )
-                    filteredEnvVHosts;
-            in
-            let
-              hostenv' = hostenv // { hostenvHostname = cfgHostenvHostname; };
-            in
-            envCfg // {
-              inherit node authorizedKeys virtualHosts;
-              hostenv = hostenv';
-              repo = repo // { ref = hostenv'.gitRef; };
-            }
-        )
-        minimalHostenv.config.environments
-    )
-    projectInputs) else [ ];
+                    node =
+                      if envCfg.type == "production"
+                      then (nodeFor.production or nodeFor.default)
+                      else (nodeFor.${envCfg.type} or nodeFor.default);
+
+                    authorizedKeys =
+                      let
+                        allUsers = builtins.attrValues envCfg.users;
+                      in
+                      builtins.concatLists (map (u: u.publicKeys or [ ]) allUsers);
+
+                    # Hostname reservation logic (copied from legacy generator).
+                    # Remove current env by username (state keyed by hostenv.userName), not envName.
+                    stateVHosts =
+                      builtins.concatLists (
+                        map (v: v.virtualHosts or [ ])
+                          (builtins.attrValues (builtins.removeAttrs state [ hostenv.userName ]))
+                      );
+                    # All virtualHosts already reserved by other environments.
+                    unreservableVHosts = stateVHosts;
+                    conflictsWithState = lib.intersectLists (builtins.attrNames envCfg.virtualHosts) unreservableVHosts;
+                  in
+                  if conflictsWithState != [ ] then
+                    builtins.throw ''
+                      provider plan: environment '${envName}' declares virtualHosts that are already reserved in state: ${lib.concatStringsSep ", " conflictsWithState}
+                    ''
+                  else
+                    let
+                      filteredEnvVHosts = lib.filterAttrs
+                        (
+                          vhostName: vhost: ! builtins.any
+                            (reservedName: vhostName == reservedName)
+                            unreservableVHosts
+                        )
+                        envCfg.virtualHosts;
+                      conflicts = lib.subtractLists
+                        (builtins.attrNames envCfg.virtualHosts)
+                        (builtins.attrNames filteredEnvVHosts);
+
+                      virtualHosts =
+                        if conflicts != [ ] then
+                          builtins.throw ''
+                            provider plan: environment '${envName}' declares virtualHosts that are already reserved in state: ${lib.concatStringsSep ", " conflicts}
+                          ''
+                        else
+                          builtins.mapAttrs
+                            (
+                              n: vhost:
+                                (builtins.removeAttrs vhost [ "enableLetsEncrypt" ]) // {
+                                  enableACME = vhost.enableLetsEncrypt;
+                                  forceSSL = vhost.enableLetsEncrypt;
+                                  locations =
+                                    let
+                                      locationDefault =
+                                        if builtins.isNull vhost.globalRedirect then
+                                          {
+                                            "/" = {
+                                              recommendedProxySettings = true;
+                                              proxyPass = "http://${envCfg.hostenv.userName}_upstream";
+                                            };
+                                          }
+                                        else
+                                          { };
+                                    in
+                                    vhost.locations // locationDefault;
+                                }
+                            )
+                            filteredEnvVHosts;
+                    in
+                    let
+                      hostenv' = hostenv // { hostenvHostname = cfgHostenvHostname; };
+                    in
+                    envCfg // {
+                      inherit node authorizedKeys virtualHosts;
+                      hostenv = hostenv';
+                      repo = repo // { ref = hostenv'.gitRef; };
+                    }
+              )
+              minimalHostenv.config.environments
+          )
+          projectInputs) else [ ];
 
   allEnvsUnvalidated =
     if useEval then realEnvs
@@ -268,7 +271,8 @@ let
               ownersPrevKeys = acc."${key}".ownerKeys or [ ];
               ownersNew = if lib.elem ownerRaw ownersPrev then ownersPrev else ownersPrev ++ [ ownerRaw ];
               ownerKeysNew = if lib.elem ownerKey ownersPrevKeys then ownersPrevKeys else ownersPrevKeys ++ [ ownerKey ];
-            in acc // {
+            in
+            acc // {
               "${key}" = {
                 name = key;
                 owners = ownersNew;

@@ -13,7 +13,7 @@ let
       pkgs.lib.evalModules {
         specialArgs = inputs // { inherit inputs pkgs; };
         modules = [
-          (inputs.self + /core/full-env.nix)
+          ../core/full-env.nix
           ({ config, ... }: {
             # Use provided environmentName, or fall back to the default for discovery/CLI.
             hostenv.environmentName =

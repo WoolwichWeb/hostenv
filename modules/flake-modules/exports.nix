@@ -2,12 +2,25 @@
 {
   config.flake = {
     modules = ../.;
-    # Primary exports for consumers: functions under flake.*
     cliModule = ../cli-flake-module.nix;
 
-    # Back-compat: still expose under flake.lib for callers expecting the old path.
-    lib = {
-      cliModule = ../cli-flake-module.nix;
+    hostenvModules = {
+      full-env = ../core/full-env.nix;
+      environment = ../core/environment.nix;
+      environments = ../core/environments.nix;
+      hostenv = ../core/hostenv.nix;
+      cli = ../core/cli.nix;
+    };
+
+    nixosModules = {
+      plan-bridge = ../nixos/plan-bridge.nix;
+      backups-hostenv = ../nixos/backups-hostenv.nix;
+      nginx-hostenv = ../nixos/nginx-hostenv.nix;
+      nginx-tuning-hostenv = ../nixos/nginx-tuning-hostenv.nix;
+      hostenv-service = ../nixos/hostenv-service.nix;
+      monitoring-hostenv = ../nixos/monitoring-hostenv.nix;
+      users-slices = ../nixos/users-slices.nix;
+      top-level = ../nixos/top-level.nix;
     };
   };
 }

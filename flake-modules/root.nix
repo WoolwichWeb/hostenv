@@ -3,7 +3,7 @@
   systems = inputs.nixpkgs.lib.systems.flakeExposed;
   imports = [
     ./../provider/flake-module.nix
-    inputs.hostenv-internal.lib.cliModule
+    inputs.hostenv-internal.cliModule
   ];
   provider = {
     planSource = "disk";
