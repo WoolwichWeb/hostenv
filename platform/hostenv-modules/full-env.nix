@@ -66,7 +66,7 @@ in
     };
 
     hostenv = mkOption {
-      type = types.submodule ../core/hostenv.nix;
+      type = types.submodule ./hostenv.nix;
       description = "Hostenv configuration for the current environment.";
     };
 
@@ -102,16 +102,16 @@ in
   };
 
   imports = [
-    ../core/environments.nix
-    ../core/cli.nix
-    ../env/systemd.nix
-    ../env/mysql.nix
-    ../env/nginx.nix
-    ../env/nginx-fastcgi-hostenv.nix
-    ../env/phpfpm.nix
-    ../env/drupal.nix
-    ../env/php-app.nix
-    ../env/restic.nix
+    ./environments.nix
+    ./cli.nix
+    ../services/systemd.nix
+    ../services/mysql.nix
+    ../services/nginx.nix
+    ../services/nginx-fastcgi-hostenv.nix
+    ../services/phpfpm.nix
+    ../services/drupal.nix
+    ../services/php-app.nix
+    ../services/restic.nix
   ];
 
   config =

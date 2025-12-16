@@ -9,7 +9,7 @@ let
       eval = support.evalWithBase {
         specialArgs = { inherit pkgs; };
         modules = [
-          ../../modules/env/restic.nix
+          ../../platform/services/restic.nix
           ({ ... }: {
             hostenv.cacheDir = "/tmp/hostenv-cache";
             hostenv.userName = "restic-test";
@@ -29,7 +29,8 @@ let
         ];
       };
       anyFail = lib.any (a: a.assertion == false) eval.config.assertions;
-    in asserts.assertTrue "restic-exclusive-repo-assert" anyFail
+    in
+    asserts.assertTrue "restic-exclusive-repo-assert" anyFail
       "Expected restic assertion to fail when repository and repositoryFile are both set";
 
   restic_repo_envfile_ok =
@@ -37,7 +38,7 @@ let
       eval = support.evalWithBase {
         specialArgs = { inherit pkgs; };
         modules = [
-          ../../modules/env/restic.nix
+          ../../platform/services/restic.nix
           ({ ... }: {
             hostenv.cacheDir = "/tmp/hostenv-cache";
             hostenv.userName = "restic-test";
@@ -61,10 +62,12 @@ let
       env = service.environment or { };
       repoOk = (env.RESTIC_REPOSITORY or "") == "s3:https://example.invalid";
       repoFileNull = (env.RESTIC_REPOSITORY_FILE or null) == null;
-    in asserts.assertTrue "restic-repo-envfile-ok"
+    in
+    asserts.assertTrue "restic-repo-envfile-ok"
       (assertionsOk && repoOk && repoFileNull)
       "restic repo+envfile should pass assertions and set repository/env correctly";
 
-in {
+in
+{
   inherit restic_exclusive_repo restic_repo_envfile_ok;
 }

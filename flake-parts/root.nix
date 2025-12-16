@@ -3,7 +3,7 @@
   systems = inputs.nixpkgs.lib.systems.flakeExposed;
   imports = [
     ../provider/flake-module.nix
-    ../modules/flake-modules/cli.nix
+    inputs.hostenv-platform.flakeModules.cli
   ];
   provider = {
     planSource = "disk";
@@ -13,7 +13,7 @@
 
   perSystem = { system, pkgs, self', ... }:
     let
-      makeHostenv = inputs.hostenv-internal.makeHostenv.${system};
+      makeHostenv = inputs.hostenv-platform.makeHostenv.${system};
       docSearch = pkgs.writeTextDir "index.html" "<html><body>docs disabled</body></html>";
 
       serveDocs = pkgs.writeShellApplication {
@@ -78,7 +78,7 @@
     };
 
   flake = {
-    lib.hostenv.providerModule = ./../provider/flake-module.nix;
+    flakeModules.provider = ./../provider/flake-module.nix;
     templates.default = {
       path = ./../template/project;
       description = "Hostenv project template";

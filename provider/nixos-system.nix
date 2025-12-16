@@ -24,7 +24,6 @@ let
   nodeConfig = config.nodes.${node};
   environmentWith = userName: config.environments.${userName};
   packages = pkgs.${system};
-  lib = nixpkgs.lib;
 
   userPackages = userInfo:
     {
@@ -96,13 +95,13 @@ nixpkgs.lib.nixosSystem {
   specialArgs = { inherit inputs system; };
   modules = [
     ./common.nix
-    ../modules/nixos/top-level.nix
-    ../modules/nixos/plan-bridge.nix
-    ../modules/nixos/users-slices.nix
-    ../modules/nixos/nginx-hostenv.nix
-    ../modules/nixos/nginx-tuning-hostenv.nix
-    ../modules/nixos/backups-hostenv.nix
-    ../modules/nixos/monitoring-hostenv.nix
+    ../platform/nixos-modules/top-level.nix
+    ../platform/nixos-modules/plan-bridge.nix
+    ../platform/nixos-modules/users-slices.nix
+    ../platform/nixos-modules/nginx-hostenv.nix
+    ../platform/nixos-modules/nginx-tuning-hostenv.nix
+    ../platform/nixos-modules/backups-hostenv.nix
+    ../platform/nixos-modules/monitoring-hostenv.nix
     (nodePath + /configuration.nix)
     nodeConfig
     (sopsSecrets nodeConfig)

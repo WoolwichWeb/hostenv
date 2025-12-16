@@ -25,15 +25,16 @@ let
         };
         dev = drupalEnvs.dev // { enable = false; };
       };
-    in providerView withExtras;
+    in
+    providerView withExtras;
 
   planBridgeEval = support.evalWithBase {
     specialArgs = { inherit pkgs; };
     modules = [
-      ../../modules/core/environments.nix
-      ../../modules/nixos/plan-bridge.nix
-      ../../modules/nixos/nginx-hostenv.nix
-      ../../modules/nixos/backups-hostenv.nix
+      ../../platform/hostenv-modules/environments.nix
+      ../../platform/nixos-modules/plan-bridge.nix
+      ../../platform/nixos-modules/nginx-hostenv.nix
+      ../../platform/nixos-modules/backups-hostenv.nix
       ({ ... }: {
         hostenv = {
           organisation = "test";
@@ -62,7 +63,8 @@ let
       && lib.elem "/var/lib/test-data" (restic.main.paths or [ ]))
     "restic backups should contain only main with test-data path";
 
-in {
+in
+{
   disabled_envs_filtered = upstreamsTest;
   backups_filtered = backupsTest;
 }

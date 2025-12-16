@@ -4,7 +4,7 @@ let
   inherit (lib) mkOption types;
   hostenvInput =
     if inputs ? hostenv then inputs.hostenv
-    else if inputs ? hostenv-internal then inputs.hostenv-internal
+    else if inputs ? hostenv-platform then inputs.hostenv-platform
     else throw "provider module requires a hostenv input";
 in
 {
@@ -46,18 +46,24 @@ in
 
   config =
     let
-      cfgTop = if config ? provider then config.provider
-              else throw ''provider flake module: set the `provider.*` options (e.g. by importing provider/flake-module.nix in flake-parts and defining provider.hostenvHostname, nodeFor, nodeSystems, paths, etc.)'';
+      cfgTop =
+        if config ? provider then config.provider
+        else throw ''provider flake module: set the `provider.*` options (e.g. by importing provider/flake-module.nix in flake-parts and defining provider.hostenvHostname, nodeFor, nodeSystems, paths, etc.)'';
     in
     {
-      
+
       perSystem = { system, pkgs, config, ... }:
         let
           cfg = cfgTop;
 
           providerHsDeps = p: [
-            p.aeson p.aeson-pretty p.text p.text-conversions p.bytestring
-            p.optparse-applicative p.turtle
+            p.aeson
+            p.aeson-pretty
+            p.text
+            p.text-conversions
+            p.bytestring
+            p.optparse-applicative
+            p.turtle
           ];
           providerGhc = pkgs.haskellPackages.ghcWithPackages providerHsDeps;
 

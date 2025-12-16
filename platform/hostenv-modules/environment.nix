@@ -150,7 +150,7 @@ in
     hostenv = lib.mkOption {
       type = types.submoduleWith {
         modules = [
-          ../core/hostenv.nix
+          ./hostenv.nix
           {
             # Provide only the per-env bits; keep environments empty to avoid
             # embedding the whole tree here.
