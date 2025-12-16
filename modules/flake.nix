@@ -25,7 +25,7 @@
 
       imports = [
         ./flake-modules/make-hostenv.nix
-        ./flake-modules/cli-module.nix
+        ./flake-modules/cli.nix
         ./flake-modules/exports.nix
       ];
     };
