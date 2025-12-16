@@ -19,6 +19,7 @@
       url = ./modules;
       inputs.flake-utils.follows = "flake-utils";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-parts.follows = "flake-parts";
       inputs.phps.follows = "phps";
     };
   };

@@ -70,6 +70,9 @@
     },
     "hostenv-internal": {
       "inputs": {
+        "flake-parts": [
+          "flake-parts"
+        ],
         "flake-utils": [
           "flake-utils"
         ],
