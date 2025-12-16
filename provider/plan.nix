@@ -170,8 +170,21 @@ let
 
               # Hostname reservation logic (copied from legacy generator).
               # Remove current env by username (state keyed by hostenv.userName), not envName.
-              allVHosts = builtins.concatLists (builtins.catAttrs "virtualHosts" (builtins.attrValues (builtins.removeAttrs state [ hostenv.userName ])));
-              unreservableVHosts = builtins.filter (vhost: vhost != hostenv.hostname) allVHosts;
+              stateVHosts =
+                builtins.concatLists (
+                  map (v: v.virtualHosts or [ ])
+                    (builtins.attrValues (builtins.removeAttrs state [ hostenv.userName ]))
+                );
+              # All virtualHosts already reserved by other environments.
+              unreservableVHosts = stateVHosts;
+              conflictsWithState = lib.intersectLists (builtins.attrNames envCfg.virtualHosts) unreservableVHosts;
+            in
+            if conflictsWithState != [ ] then
+              builtins.throw ''
+                provider plan: environment '${envName}' declares virtualHosts that are already reserved in state: ${lib.concatStringsSep ", " conflictsWithState}
+              ''
+            else
+            let
               filteredEnvVHosts = lib.filterAttrs
                 (
                   vhostName: vhost: ! builtins.any

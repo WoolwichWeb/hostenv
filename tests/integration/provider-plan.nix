@@ -279,14 +279,9 @@ let
       };
       envsExpr = (mkPlan { state = conflictState; }).environments;
       result = builtins.tryEval (builtins.deepSeq envsExpr envsExpr);
-      filtered =
-        if result.success then
-          let hasConflict = builtins.any (env: env.virtualHosts ? "env1.example") result.value;
-          in ! hasConflict
-        else true;
     in asserts.assertTrue "provider-plan-vhost-conflict-state"
-      (! result.success || filtered)
-      "plan generation must fail (or at least drop the vhost) when virtualHosts overlap with existing state";
+      (! result.success)
+      "plan generation must fail when virtualHosts overlap with existing state";
 
   providerPlanVhostConflictNewEnvs =
     let
