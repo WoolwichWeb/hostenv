@@ -1,9 +1,9 @@
 { ... }:
 {
   config.flake = {
-    modules = ./.;
+    modules = ../.;
     lib = {
-      cliModule = ./cli-flake-module.nix;
+      cliModule = ../cli-flake-module.nix;
     };
   };
 }
