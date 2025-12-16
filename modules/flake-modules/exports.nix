@@ -1,10 +1,8 @@
 { ... }:
 {
   config.flake = {
-    modules = ../.;
-
     flakeModules = {
-      cli = ../cli-flake-module.nix;
+      cli = ./cli.nix;
     };
 
     hostenvModules = {

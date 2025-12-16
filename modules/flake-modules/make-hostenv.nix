@@ -1,6 +1,6 @@
 { inputs, lib, config, ... }:
 let
-  systems = config.systems or (inputs.nixpkgs.lib.systems.flakeExposed);
+  systems = config.systems;
 
   mkMakeHostenv = system:
     let
@@ -11,9 +11,9 @@ let
     in
     modules: environmentName:
       pkgs.lib.evalModules {
-        specialArgs = inputs // { inherit inputs pkgs; };
+        specialArgs = { inherit inputs pkgs; };
         modules = [
-          ../core/full-env.nix
+          config.flake.hostenvModules.full-env
           ({ config, ... }: {
             # Use provided environmentName, or fall back to the default for discovery/CLI.
             hostenv.environmentName =
@@ -30,7 +30,7 @@ let
 in
 {
   options.flake.makeHostenv = lib.mkOption {
-    type = lib.types.attrsOf lib.types.unspecified;
+    type = lib.types.attrsOf (lib.types.functionTo (lib.types.functionTo lib.types.unspecified));
     readOnly = true;
     description = "Per-system function: modules -> environmentName -> evalModules result.";
   };

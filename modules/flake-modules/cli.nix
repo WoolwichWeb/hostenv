@@ -7,8 +7,8 @@ in
   options.perSystem = fp.mkPerSystemOption ({ config, system, ... }: {
     options.hostenvCli = {
       makeHostenv = lib.mkOption {
-        type = types.functionTo types.unspecified;
-        default = inputs.self.makeHostenv;
+        type = types.functionTo (types.functionTo types.unspecified);
+        default = inputs.self.makeHostenv.${system};
         description = "makeHostenv function (modules -> environmentName -> eval) from hostenv modules flake.";
       };
       modules = lib.mkOption {
@@ -23,17 +23,19 @@ in
       };
     };
 
-    config = let
-      mk = config.hostenvCli.makeHostenv;
-      envEval = mk config.hostenvCli.modules config.hostenvCli.environmentName;
-      cliPkg = envEval.config.hostenv.cliPackage;
-    in {
-      packages.hostenv-cli = cliPkg;
-      apps.hostenv = {
-        type = "app";
-        program = "${cliPkg}/bin/hostenv";
-        meta.description = "Hostenv CLI";
+    config =
+      let
+        mk = config.hostenvCli.makeHostenv;
+        envEval = mk config.hostenvCli.modules config.hostenvCli.environmentName;
+        cliPkg = envEval.config.hostenv.cliPackage;
+      in
+      {
+        packages.hostenv-cli = cliPkg;
+        apps.hostenv = {
+          type = "app";
+          program = "${cliPkg}/bin/hostenv";
+          meta.description = "Hostenv CLI";
+        };
       };
-    };
   });
 }
