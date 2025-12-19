@@ -733,7 +733,7 @@ in
           esac
 
           debug "tty_mode=$tty_mode ssh_flag=$SSH_TTY stdin_is_tty=$([ -t 0 ] && echo yes || echo no)"
-          exec ssh $SSH_TTY "$user"@"$host" -- drush "$drush_global_options $@"
+          exec ssh $SSH_TTY "$user"@"$host" -- drush "$drush_global_options" "$@"
         '';
         description = "Run Drush on the remote Drupal";
         makeScript = true;
