@@ -711,8 +711,11 @@ in
           case "$force" in
             1)
               drush_global_options="--no-interaction."
+              ;;
             *)
               drush_global_options=""
+              ;;
+          esac
 
           case "$tty_mode" in
             auto|"")
