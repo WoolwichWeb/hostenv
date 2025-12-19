@@ -1,12 +1,15 @@
 { ... }:
 {
   config.flake = {
+    # Re-usable flake-parts modules.
     flakeModules = {
       cli = ./cli.nix;
       hostenvOutputs = ./hostenv-outputs.nix;
+      projectOutputs = ./project-outputs.nix;
       provider = ../../provider/flake-module.nix;
     };
 
+    # Modules consumed by evalModules.
     hostenvModules = {
       fullEnv = ../hostenv-modules/full-env.nix;
       environment = ../hostenv-modules/environment.nix;
@@ -15,6 +18,7 @@
       projectTools = ../hostenv-modules/project-tools.nix;
     };
 
+    # Modules consumed by nixosSystem.
     nixosModules = {
       planBridge = ../nixos-modules/plan-bridge.nix;
       backupsHostenv = ../nixos-modules/backups-hostenv.nix;

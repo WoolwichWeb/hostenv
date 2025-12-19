@@ -8,7 +8,10 @@ in
     options.hostenvProject = {
       makeHostenv = lib.mkOption {
         type = types.functionTo (types.functionTo types.unspecified);
-        default = inputs.self.makeHostenv.${system};
+        default =
+          if inputs ? hostenv && inputs.hostenv ? makeHostenv
+          then inputs.hostenv.makeHostenv.${system}
+          else inputs.self.makeHostenv.${system};
       };
 
       modules = lib.mkOption {
