@@ -60,13 +60,6 @@
           envs = defaultHostenv.config.environments;
         in
         {
-          # Wire CLI via reusable module
-          hostenvCli = {
-            makeHostenv = hostenv.makeHostenv;
-            modules = baseModules;
-            environmentName = null; # use defaultEnvironment
-          };
-
           hostenvProject = {
             makeHostenv = hostenv.makeHostenv.${system};
             modules = baseModules;

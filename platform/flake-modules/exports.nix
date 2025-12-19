@@ -12,7 +12,7 @@
       environment = ../hostenv-modules/environment.nix;
       environments = ../hostenv-modules/environments.nix;
       hostenv = ../hostenv-modules/hostenv.nix;
-      cli = ../hostenv-modules/cli.nix;
+      projectTools = ../hostenv-modules/project-tools.nix;
     };
 
     nixosModules = {

@@ -103,7 +103,7 @@ in
 
   imports = [
     ./environments.nix
-    ./cli.nix
+    ./project-tools.nix
     ../services/systemd.nix
     ../services/mysql.nix
     ../services/nginx.nix

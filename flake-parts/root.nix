@@ -3,6 +3,7 @@
   systems = inputs.nixpkgs.lib.systems.flakeExposed;
   imports = [
     ../provider/flake-module.nix
+    inputs.hostenv-platform.flakeModules.hostenvOutputs
     inputs.hostenv-platform.flakeModules.cli
   ];
   provider = {
@@ -37,7 +38,8 @@
         inherit docSearch;
         default = self'.packages.hostenv-provider;
       };
-      hostenvCli = {
+      hostenvProject = {
+        makeHostenv = makeHostenv;
         modules = [
           ./../tests/integration/drupal/hostenv.nix
           ({ ... }: {
@@ -50,7 +52,6 @@
           })
         ];
         environmentName = "main";
-        makeHostenv = makeHostenv;
       };
 
       checks = import ./../tests { inherit pkgs envs makeHostenv; };
