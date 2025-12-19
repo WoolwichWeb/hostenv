@@ -1,4 +1,4 @@
-{ pkgs, envs, makeHostenv }:
+{ pkgs, envs, makeHostenv, inputs }:
 
-(import ./integration { inherit pkgs envs makeHostenv; })
+(import ./integration { inherit pkgs envs makeHostenv inputs; })
   // (import ./unit { inherit pkgs makeHostenv; })

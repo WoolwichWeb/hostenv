@@ -1,9 +1,10 @@
-{ pkgs, envs, makeHostenv }:
+{ pkgs, envs, makeHostenv, inputs }:
 
 # Integration / full-stack suites
 (import ./drupal/tests.nix { inherit pkgs envs; })
   // (import ./drupal7/tests.nix { inherit pkgs envs; })
   // { hostenv-cli-list = import ./cli-list.nix { inherit pkgs makeHostenv; }; }
+  // { hostenv-outputs-eval = import ./hostenv-outputs.nix { inherit pkgs makeHostenv inputs; }; }
   // (import ./provider-plan.nix { inherit pkgs makeHostenv; })
   // (import ./provider-full.nix { inherit pkgs makeHostenv; })
   // (import ./socket-contract.nix { inherit pkgs envs; })

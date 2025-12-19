@@ -50,5 +50,5 @@ in
   # Lift perSystem outputs into flake outputs
   config.flake.hostenv =
     lib.genAttrs config.systems (system:
-      config.perSystem.${system}.hostenvProject.outputs);
+      config.allSystems.${system}.hostenvProject.outputs);
 }

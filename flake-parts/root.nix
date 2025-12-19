@@ -54,7 +54,7 @@
         environmentName = "main";
       };
 
-      checks = import ./../tests { inherit pkgs envs makeHostenv; };
+      checks = import ./../tests { inherit pkgs envs makeHostenv inputs; };
 
       devShells.default = pkgs.mkShell {
         buildInputs = let hq = pkgs.haskellPackages; in [
