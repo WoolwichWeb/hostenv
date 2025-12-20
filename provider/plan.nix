@@ -109,6 +109,28 @@ let
     if useEval then null
     else lib.importJSON planPathChecked;
 
+  assertDiskUids =
+    if useEval then
+      true
+    else
+      let
+        envs = planFromDisk.environments or { };
+        missing = lib.filterAttrs (_: env:
+          !(env ? uid) || env.uid == null || builtins.typeOf env.uid != "int"
+        ) envs;
+        missingNames = builtins.attrNames missing;
+      in
+      if missingNames == [ ] then
+        true
+      else
+        builtins.throw ''
+          provider plan: plan.json is missing integer uid values for: ${lib.concatStringsSep ", " missingNames}
+
+          Each environment in plan.json must include a numeric "uid" to avoid
+          implicit UID assignment by NixOS. Regenerate with planSource="eval"
+          or add uid values to the existing plan file.
+        '';
+
   nextUid =
     let
       minUid = 1001;
@@ -247,9 +269,19 @@ let
                           builtins.mapAttrs
                             (
                               n: vhost:
-                                (builtins.removeAttrs vhost [ "enableLetsEncrypt" ]) // {
+                                let
+                                  allowIndexing = vhost.allowIndexing or (envCfg.type == "production");
+                                  extraConfig = ''
+                                    add_header Referrer-Policy "strict-origin-when-cross-origin";
+                                    ${lib.optionalString (!allowIndexing) ''
+                                    add_header X-Robots-Tag "noindex";
+                                    ''}
+                                  '';
+                                in
+                                (builtins.removeAttrs vhost [ "enableLetsEncrypt" "allowIndexing" ]) // {
                                   enableACME = vhost.enableLetsEncrypt;
                                   forceSSL = vhost.enableLetsEncrypt;
+                                  extraConfig = extraConfig;
                                   locations =
                                     let
                                       locationDefault =
@@ -334,30 +366,26 @@ let
     else allEnvsUnvalidated;
 
   # Assign unique UIDs to new environments when evaluating; in disk mode keep the
-  # UIDs already present in the plan JSON (but still ensure extras.uid mirrors it).
+  # UIDs already present in the plan JSON.
   allEnvsWithUid =
     if useEval then
       lib.imap0
         (idx: env:
           let
             user = env.hostenv.userName;
-            extras = env.extras or { };
             uidFromState = if builtins.hasAttr user state then state.${user}.uid else null;
-            uidManual = extras.uid or null;
             uid =
               if uidFromState != null then uidFromState
-              else if uidManual != null then uidManual
               else nextUid + idx;
-            extras' = extras // { uid = uid; };
           in
-          env // { inherit uid; extras = extras'; }
+          env // { inherit uid; }
         )
         allEnvs
     else
       map
         (env:
-          let uid = env.uid or (env.extras.uid or null);
-          in env // { inherit uid; extras = (env.extras or { }) // { uid = uid; }; }
+          let uid = env.uid or null;
+          in env // { inherit uid; }
         )
         allEnvs;
 
@@ -561,7 +589,7 @@ let
     else statePathChecked;
 
 in
-assert assertProjectInputs;
+assert (assertProjectInputs && assertDiskUids);
 {
   flake = generatedFlake;
   plan = generatedConfig;

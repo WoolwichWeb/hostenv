@@ -6,6 +6,7 @@ let
   forceNull = "__HOSTENV_INTERNAL_DO_NOT_CHANGE_SEMAPHORE__";
   topLevel = config.hostenv or { };
   types = lib.types;
+  publicEnvs = import ./public-environments.nix { inherit lib; };
 in
 {
   options.allEnvironments = lib.mkOption {
@@ -48,9 +49,17 @@ in
     default = "main";
   };
 
+  options.hostenv.publicEnvironments = lib.mkOption {
+    type = types.attrs;
+    default = { };
+    internal = true;
+    description = "Sanitized, user-facing view of environments for JSON output.";
+  };
+
   # Bridge to the hostenv.* trunk used by feature modules so there is one canonical view.
   config = {
     hostenv.environments = lib.mkDefault cfg;
     hostenv.defaultEnvironment = lib.mkDefault config.defaultEnvironment;
+    hostenv.publicEnvironments = lib.mkDefault (publicEnvs cfg);
   };
 }

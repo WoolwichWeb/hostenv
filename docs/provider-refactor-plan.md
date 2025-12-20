@@ -40,7 +40,7 @@ Audience: hostenv core/devops maintainers
 
 ## Architecture Notes
 - **Dendritic layout (flake-parts):**
-  - Trunk: canonical data model in `modules/core/{hostenv,environments}.nix` plus bridging (`modules/nixos/plan-bridge.nix`) and host foundations (`modules/nixos/top-level.nix`).
+  - Trunk: canonical data model in `modules/core/{hostenv,environments}.nix` plus host foundations (`modules/nixos/top-level.nix`).
   - Branches: feature modules:
     - env-level runtime (`modules/env/*`: nginx, php-fpm, drupal, restic, systemd helpers)
     - host-level, provider-neutral (`modules/nixos/*`: users/slices, nginx front-door, backups, monitoring, nginx tuning, tmpfiles)
@@ -51,7 +51,7 @@ Audience: hostenv core/devops maintainers
 
 ## File/Repo Moves
 - New: `provider/plan.nix`, `provider/nixos-system.nix`, `provider/common.nix`, `provider/cli/` (CLI sources), `provider/flake-parts-module.nix`.
-- New host-level modules under `modules/nixos/` for shared concerns (tmpfiles/top-level, nginx front-door, backups, monitoring, nginx tuning, plan-bridge) consumed by both projects and provider builds.
+- New host-level modules under `modules/nixos/` for shared concerns (tmpfiles/top-level, nginx front-door, backups, monitoring, nginx tuning) consumed by both projects and provider builds.
 - New generated outputs folder (in provider repo): `generated/plan.json`, `generated/state.json`, `generated/flake.lock` (if needed), symlink `generated/flake.nix` produced by flake-parts, not templated.
 - Legacy `for_refactoring/` kept temporarily for reference; scheduled for removal after parity achieved.
 

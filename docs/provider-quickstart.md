@@ -58,7 +58,7 @@ Outputs:
 - Deploy specs live at `lib.hostenv.deploySpec` (per flake output). Example:
   `nix eval .#lib.hostenv.deploySpec --json | jq` (planSource=eval recommended).
 
-Optional features to toggle in environments:
-- `env.extras.backups` for restic (repo/password/env files, timer, data/state dirs)
-- `env.extras.nginx` for HSTS/CSP/headers/aliases
+Optional per-environment settings:
+- `environments.<name>.hostenv.backupsRepoHost`, `backupsEnvFile`, `backupsSecretFile` for restic repo + secrets
+- `environments.<name>.virtualHosts.<host>.allowIndexing` to control search engine indexing
 - `hostenv.monitoring.enable` to turn on basic exporters/labels

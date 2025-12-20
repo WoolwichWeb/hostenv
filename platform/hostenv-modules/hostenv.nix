@@ -170,11 +170,6 @@ in
       example = "s3:https://s3.amazonaws.com";
       default = null;
     };
-    extras = lib.mkOption {
-      type = types.attrs;
-      default = { };
-      description = "Unstructured hostenv metadata passed through by providers (provider-facing).";
-    };
     projectNameHash = lib.mkOption {
       type = types.str;
       description = "Hash of organisation, project, and environment names.";
@@ -209,6 +204,10 @@ in
         {
           assertion = (lib.length productionNames) <= 1;
           message = "Only one environment may have type=production (found ${toString (lib.length productionNames)}).";
+        }
+        {
+          assertion = config.userName == shortName;
+          message = "hostenv.userName is derived from organisation/project/environment and must not be overridden.";
         }
       ];
 

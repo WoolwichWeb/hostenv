@@ -122,15 +122,6 @@ in
                 '';
               };
 
-              extraConfig = lib.mkOption {
-                default = "";
-                type = types.lines;
-                description = ''
-                  Appended to the virtualHost definition (nginx.conf) after the
-                  common hostenv config block.
-                '';
-              };
-
               hsts = lib.mkOption {
                 default = true;
                 type = types.bool;
@@ -174,15 +165,6 @@ in
       type = types.int;
       description = ''
         Priority of the environment, used when resolving host clashes.
-      '';
-    };
-
-    extras = lib.mkOption {
-      type = types.attrs;
-      default = { };
-      description = ''
-        Unstructured per-environment data passed through to host-level modules
-        (e.g. backups, nginx tuning, provider-specific metadata).
       '';
     };
   };

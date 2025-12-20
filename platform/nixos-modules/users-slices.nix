@@ -2,12 +2,14 @@
 let
   allEnvs = config.hostenv.environments or { };
   envs = lib.filterAttrs (_: env: env.enable or true) allEnvs;
-  # Each enabled environment becomes a Unix user/slice.  The username defaults
-  # to the environment key, but operators can override via `env.user` (name)
-  # and `env.extras.uid` (numeric UID).  Keeping this mapping here makes the
+  # Each enabled environment becomes a Unix user/slice. The username is derived
+  # from `env.hostenv.userName`, and provider metadata supplies `env.uid` (numeric UID).
+  # Keeping this mapping here makes the
   # user/slice contract explicit and provider‑neutral.
-  userOf = name: env: env.user or name;
-  uidOf = env: env.extras.uid or null;
+  userOf = name: env: env.hostenv.userName or name;
+  uidOf = env: env.uid or null;
+  envKeys = env:
+    lib.foldlAttrs (acc: _n: u: acc ++ (u.publicKeys or [ ])) [ ] (env.users or { });
 in
 {
   options = {
@@ -35,7 +37,7 @@ in
               uid = lib.mkDefault (uidOf env);
               group = user;
               createHome = true;
-              openssh.authorizedKeys.keys = env.extras.publicKeys or [ ];
+              openssh.authorizedKeys.keys = envKeys env;
               linger = true;
             };
           })

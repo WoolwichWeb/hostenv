@@ -5,16 +5,15 @@ let
   envs = lib.filterAttrs (_: env: env.enable != false) allEnvs;
   mkUpstream = envName: env:
     let
-      user = env.user or envName;
-      socket = (env.upstreamRuntimeDir or "/run/hostenv/nginx/${user}") + "/in.sock";
+      user = env.hostenv.userName or envName;
+      socket = (env.hostenv.upstreamRuntimeDir or "/run/hostenv/nginx/${user}") + "/in.sock";
     in {
       servers = { "unix:${socket}" = { }; };
     };
   vhostFromEnv = name: env:
     let
-      primary = env.hostname or name;
+      primary = env.hostenv.hostname or name;
       baseVH = env.virtualHosts or { };
-      extras = env.extras.nginx or { };
       enableACMEDefault = config.hostenv.nginx.enableACME;
       defaultLoc = {
         "/" = {
@@ -27,18 +26,13 @@ let
           enableACME = lib.mkDefault (baseVH.${primary}.enableACME or baseVH.${primary}.enableLetsEncrypt or enableACMEDefault);
           locations = (baseVH.${primary}.locations or { }) // defaultLoc;
           forceSSL = lib.mkDefault (baseVH.${primary}.forceSSL or baseVH.${primary}.enableACME or baseVH.${primary}.enableLetsEncrypt or enableACMEDefault);
-          extraConfig = extras.extraConfig or "";
           http2 = true;
-          hsts = extras.hsts or true;
-          serverAliases = extras.aliases or [ ];
-          # Simple header set (extendable via extras)
-          extraHeaders = extras.headers or {
+          hsts = baseVH.${primary}.hsts or true;
+          # Simple header set (fixed defaults).
+          extraHeaders = {
             "Strict-Transport-Security" = "max-age=63072000; includeSubDomains; preload";
             "X-Frame-Options" = "SAMEORIGIN";
             "X-Content-Type-Options" = "nosniff";
-          };
-          securityHeaders = lib.mkIf (extras ? csp) {
-            "Content-Security-Policy" = extras.csp;
           };
         };
       };
@@ -54,7 +48,7 @@ in
   config = lib.mkIf (envs != { }) {
     assertions = lib.flatten (lib.mapAttrsToList (n: env: [
       {
-        assertion = (env.upstreamRuntimeDir or "") != "";
+        assertion = (env.hostenv.upstreamRuntimeDir or "") != "";
         message = "hostenv nginx: upstreamRuntimeDir missing for env ${n}";
       }
     ]) envs);
@@ -63,10 +57,10 @@ in
       enable = true;
       recommendedProxySettings = true;
       virtualHosts = lib.foldl' lib.recursiveUpdate { }
-        (lib.mapAttrsToList (n: env: vhostFromEnv (env.user or n) env) envs);
+        (lib.mapAttrsToList (n: env: vhostFromEnv (env.hostenv.userName or n) env) envs);
       upstreams = lib.listToAttrs (lib.mapAttrsToList
         (n: env:
-          let user = env.user or n;
+          let user = env.hostenv.userName or n;
           in {
             name = "${user}_upstream";
             value = mkUpstream n env;

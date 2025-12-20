@@ -2,11 +2,11 @@
 let
   inherit (pkgs) pog;
 
-  envJsonEval = builtins.tryEval (builtins.toJSON config.environments);
+  envJsonEval = builtins.tryEval (builtins.toJSON config.hostenv.publicEnvironments);
   envJson =
     assert envJsonEval.success
       || builtins.throw ''
-      hostenv: config.environments must be JSON-serializable.
+      hostenv: config.hostenv.publicEnvironments must be JSON-serializable.
 
       Non-JSON data should be stored elsewhere (e.g. config.hostenv.*).
     '';

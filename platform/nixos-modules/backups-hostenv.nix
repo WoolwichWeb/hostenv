@@ -2,6 +2,8 @@
 let
   allEnvs = config.hostenv.environments or { };
   envs = lib.filterAttrs (_: env: env.enable) allEnvs;
+  repoHostFor = env: env.hostenv.backupsRepoHost or config.hostenv.backupsRepoHost;
+  envsWithBackups = lib.filterAttrs (_: env: repoHostFor env != null) envs;
 in
 {
   options.hostenv.backups.enable = lib.mkOption {
@@ -14,20 +16,20 @@ in
     services.restic.backups = lib.mapAttrs
       (name: env:
         let
-          repoHost = env.extras.backups.repoHost or config.hostenv.backupsRepoHost;
-          repository = env.extras.backups.repo or "${repoHost}/${name}";
+          repoHost = repoHostFor env;
+          repository = "${repoHost}/${name}";
         in
         {
           inherit repository;
-          passwordFile = env.extras.backups.passwordFile or "/run/secrets/${name}/backups_secret";
-          environmentFile = env.extras.backups.envFile or "/run/secrets/${name}/backups_env";
-          timerConfig = env.extras.backups.timer or { OnCalendar = "hourly"; };
+          passwordFile = env.hostenv.backupsSecretFile or "/run/secrets/${name}/backups_secret";
+          environmentFile = env.hostenv.backupsEnvFile or "/run/secrets/${name}/backups_env";
+          timerConfig = { OnCalendar = "hourly"; };
           paths = [
-            env.extras.backups.dataDir or "/home/${env.user or name}/.local/share"
-            env.extras.backups.stateDir or "/home/${env.user or name}/.local/state"
+            env.hostenv.dataDir or "/home/${env.hostenv.userName or name}/.local/share"
+            env.hostenv.stateDir or "/home/${env.hostenv.userName or name}/.local/state"
           ];
-          user = env.user or name;
-          group = env.user or name;
+          user = env.hostenv.userName or name;
+          group = env.hostenv.userName or name;
           pruneOpts = [
             "--keep-daily 7"
             "--keep-weekly 4"
@@ -36,21 +38,14 @@ in
           ];
         }
       )
-      (lib.filterAttrs (_: env: env.extras ? backups) envs);
+      envsWithBackups;
 
     # Secrets must be present; warn if missing.
-    assertions =
-      lib.mapAttrsToList
-        (name: env: {
-          assertion = env.extras ? backups;
-          message = "Backups enabled but env.extras.backups missing for ${name}";
-        })
-        envs
-      ++ [
-        {
-          assertion = config.hostenv.backupsRepoHost != null;
-          message = "hostenv.backups.enable is true but hostenv.backupsRepoHost is null; set a repository host.";
-        }
-      ];
+    assertions = [
+      {
+        assertion = envsWithBackups != { };
+        message = "hostenv.backups.enable is true but no environment has backupsRepoHost set.";
+      }
+    ];
   };
 }

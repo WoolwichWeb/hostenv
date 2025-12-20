@@ -33,11 +33,11 @@ let
             hostenv banner
           '';
         })
-      (lib.filterAttrs (_: v: v.enable) config.environments)
+      (lib.filterAttrs (_: v: v.enable) config.hostenv.publicEnvironments)
     // {
       default = pkgs.mkShell {
         shellHook = ''
-            ENV_JSON='${builtins.toJSON (lib.filterAttrs (_: v: v.enable) config.environments)}'
+            ENV_JSON='${builtins.toJSON (lib.filterAttrs (_: v: v.enable) config.hostenv.publicEnvironments)}'
 
             if gitRef=$(git symbolic-ref -q --short HEAD 2>/dev/null); then
               # Is current branch a hostenv environment?

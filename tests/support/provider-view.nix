@@ -1,12 +1,5 @@
 { lib }:
 let
-  # Attrset view for plan-bridge / host-level modules.
-  toEnvs = envs:
-    lib.mapAttrs (_: env: {
-      inherit (env) enable type virtualHosts users;
-      hostenv = env.hostenv // { extras = env.hostenv.extras or { }; };
-    }) envs;
-
   # List-of-projects view for provider/plan.nix inputs.
   toProjects =
     { envs
@@ -35,6 +28,5 @@ let
       envs);
 in
 {
-  inherit toEnvs toProjects;
-  __functor = self: envs: self.toEnvs envs;
+  inherit toProjects;
 }

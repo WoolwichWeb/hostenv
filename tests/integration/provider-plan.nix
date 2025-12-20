@@ -174,7 +174,7 @@ let
       planSource = planSource;
     };
 
-  providerEnvs = providerView envsEval.config.environments;
+  providerEnvs = envsEval.config.environments;
 
   sampleProjects =
     providerView.toProjects {
@@ -464,10 +464,10 @@ in
       plan = lib.importJSON planNoState;
       uids = map (u: plan.environments.${u}.uid) [ user1 user2 ];
       unique = (lib.length uids) == (lib.length (lib.unique uids));
-      extrasOk = plan.environments.${user1}.extras.uid == plan.environments.${user1}.uid;
+      present = lib.all (u: u != null) uids;
     in asserts.assertTrue "provider-plan-uids"
-      (unique && extrasOk)
-      "UIDs must be unique and extras.uid must mirror uid";
+      (unique && present)
+      "UIDs must be unique and present";
 
   provider-plan-node-merge =
     let

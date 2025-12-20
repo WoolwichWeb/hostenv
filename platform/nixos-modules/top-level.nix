@@ -1,11 +1,34 @@
 { config, pkgs, lib, ... }:
 let
   envs = config.hostenv.environments or { };
+  publicEnvs = import ../hostenv-modules/public-environments.nix { inherit lib; };
   enabledEnvs = lib.filterAttrs (_: env: env.enable or true) envs;
-  envUser = name: env: env.user or name;
+  enabledPublicEnvs = lib.filterAttrs (_: env: env.enable or true) config.hostenv.publicEnvironments;
+  envUser = name: env: env.hostenv.userName or name;
+  envKeys = env:
+    lib.foldlAttrs (acc: _n: u: acc ++ (u.publicKeys or [ ])) [ ] (env.users or { });
 in
 {
   options.hostenv = {
+    environments = lib.mkOption {
+      type = lib.types.attrsOf lib.types.unspecified;
+      default = { };
+      description = "Hostenv environments (provider plan or project output).";
+    };
+
+    defaultEnvironment = lib.mkOption {
+      type = lib.types.str;
+      default = "main";
+      description = "Default environment name for hostenv.";
+    };
+
+    publicEnvironments = lib.mkOption {
+      type = lib.types.attrs;
+      default = { };
+      internal = true;
+      description = "Sanitized, user-facing view of hostenv environments.";
+    };
+
     runtimeRoot = lib.mkOption {
       type = lib.types.str;
       default = "/run/hostenv";
@@ -20,7 +43,7 @@ in
   };
 
   config = lib.mkIf (enabledEnvs != { }) {
-    environment.etc."hostenv/environments.json".text = pkgs.lib.generators.toJSON { } enabledEnvs;
+    hostenv.publicEnvironments = lib.mkDefault (publicEnvs envs);
 
     # Ensure runtime directories exist for user-level services and upstream sockets.
     # Permissions align with the hostenv/nginx contract:
@@ -53,10 +76,10 @@ in
             name = user;
             value = {
               isNormalUser = true;
-              uid = env.extras.uid or null;
+              uid = env.uid or null;
               group = user;
               createHome = true;
-              openssh.authorizedKeys.keys = env.extras.publicKeys or [ ];
+              openssh.authorizedKeys.keys = envKeys env;
               linger = true;
             };
           }) enabledEnvs);

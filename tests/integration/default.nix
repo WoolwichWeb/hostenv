@@ -9,4 +9,4 @@
   // (import ./provider-full.nix { inherit pkgs makeHostenv; })
   // (import ./socket-contract.nix { inherit pkgs envs; })
   // { hostenv-hostname = import ./hostname.nix { inherit pkgs makeHostenv; }; }
-  // (import ./plan-bridge.nix { inherit pkgs makeHostenv; })
+  // { public-env-json = import ./public-env-json.nix { inherit pkgs makeHostenv; }; }

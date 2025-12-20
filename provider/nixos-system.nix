@@ -25,6 +25,13 @@ let
   environmentWith = userName: config.environments.${userName};
   packages = pkgs.${system};
 
+  hostenvEnvModule = {
+    hostenv = {
+      environments = config.environments or { };
+      defaultEnvironment = config.defaultEnvironment or "main";
+    };
+  };
+
   userPackages = userInfo:
     {
       users.users = packages.lib.concatMapAttrs
@@ -97,12 +104,12 @@ nixpkgs.lib.nixosSystem {
     ./common.nix
     { sops.defaultSopsFile = secretsPath; }
     ../platform/nixos-modules/top-level.nix
-    ../platform/nixos-modules/plan-bridge.nix
     ../platform/nixos-modules/users-slices.nix
     ../platform/nixos-modules/nginx-hostenv.nix
     ../platform/nixos-modules/nginx-tuning-hostenv.nix
     ../platform/nixos-modules/backups-hostenv.nix
     ../platform/nixos-modules/monitoring-hostenv.nix
+    hostenvEnvModule
     (nodePath + /configuration.nix)
     nodeConfig
     (sopsSecrets nodeConfig)

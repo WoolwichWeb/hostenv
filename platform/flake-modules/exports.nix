@@ -20,7 +20,6 @@
 
     # Modules consumed by nixosSystem.
     nixosModules = {
-      planBridge = ../nixos-modules/plan-bridge.nix;
       backupsHostenv = ../nixos-modules/backups-hostenv.nix;
       nginxHostenv = ../nixos-modules/nginx-hostenv.nix;
       nginxTuningHostenv = ../nixos-modules/nginx-tuning-hostenv.nix;

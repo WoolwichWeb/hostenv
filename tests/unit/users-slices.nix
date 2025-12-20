@@ -9,7 +9,6 @@ let
     specialArgs = { inherit pkgs; };
     modules = [
       ../../platform/hostenv-modules/environments.nix
-      ../../platform/nixos-modules/plan-bridge.nix
       ../../platform/nixos-modules/users-slices.nix
       ({ ... }: {
         _module.check = false;
@@ -38,7 +37,6 @@ let
         specialArgs = { inherit pkgs; };
         modules = [
           ../../platform/hostenv-modules/environments.nix
-          ../../platform/nixos-modules/plan-bridge.nix
           ../../platform/nixos-modules/users-slices.nix
           ({ ... }: {
             _module.check = false;

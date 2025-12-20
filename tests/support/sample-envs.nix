@@ -1,6 +1,6 @@
 { lib }:
 let
-  mkProviderEnv = { name, userName ? null, enable ? true, publicKeys ? [], extras ? {}, type ? "development" }:
+  mkProviderEnv = { name, userName ? null, enable ? true, publicKeys ? [], type ? "development" }:
     {
       inherit enable type;
       users = {
@@ -13,7 +13,6 @@ let
       hostenv = {
         hostname = name;
         userName = userName;
-        extras = extras;
       };
     };
   mkSingle = args@{ name, ... }: { ${name} = mkProviderEnv args; };

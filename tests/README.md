@@ -1,8 +1,8 @@
 # Tests layout
 
 `tests/integration/` holds the full-stack suites that exercise the provider/plan
-pipeline or real environment builds (`drupal*/`, `provider-*.nix`, `plan-bridge.nix`,
-`socket-contract.nix`, `hostname.nix`). These typically use `makeHostenv` and
+pipeline or real environment builds (`drupal*/`, `provider-*.nix`,
+`public-env-json.nix`, `socket-contract.nix`, `hostname.nix`). These typically use `makeHostenv` and
 import multi-module stacks.
 
 `tests/unit/` contains fast, focused checks for individual modules (`restic.nix`,
@@ -12,7 +12,7 @@ import multi-module stacks.
 Shared helpers live in `tests/support/`:
 
 - `stubs/` – minimal root option stubs so we can call `lib.evalModules` without pulling a full NixOS config.
-- `provider-view.nix` – builds the provider view of environments (plan-bridge shape).
+- `provider-view.nix` – builds provider-style environment views for tests.
 - `sample-envs.nix` – tiny constructors for provider-style env attrsets used by multiple suites.
 - `assert.nix` – small assertion helpers; tests prefer Nix-side assertions (`assertTrue`) to reduce shell/JQ boilerplate.
 
