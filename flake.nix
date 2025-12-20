@@ -26,6 +26,15 @@
 
   outputs = inputs@{ flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      imports = [ ./flake-parts/root.nix ];
+      systems = inputs.nixpkgs.lib.systems.flakeExposed;
+      imports = [
+        ./provider/flake-module.nix
+        inputs.hostenv-platform.flakeModules.hostenvOutputs
+        inputs.hostenv-platform.flakeModules.cli
+        ./flake-parts/docs.nix
+        ./flake-parts/tests.nix
+        ./flake-parts/devshells.nix
+        ./flake-parts/templates.nix
+      ];
     };
 }
