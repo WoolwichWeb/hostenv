@@ -18,8 +18,9 @@ let
 
   mkProjectInput = { path, organisation, project }:
     let
+      projectDir = path + "/.hostenv";
       modules = [
-        (path + "/.hostenv/hostenv.nix")
+        (projectDir + /hostenv.nix)
         ({ ... }: {
           hostenv = {
             inherit organisation project;
@@ -45,7 +46,7 @@ let
             defaultEnvironment = eval.config.defaultEnvironment;
           };
         };
-        outPath = path;
+        outPath = projectDir;
         __toString = self: toString self.outPath;
       };
     };

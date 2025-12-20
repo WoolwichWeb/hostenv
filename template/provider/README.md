@@ -22,6 +22,6 @@ This template boots a provider flake that consumes hostenv projects and generate
 
 ## Customisation tips
 
-- Set `provider.hostenvProjectDir` if client flakes live somewhere other than `.hostenv/`.
+- Ensure client project inputs point at the `.hostenv` flake (e.g. `dir=.hostenv`).
 - Override `nodesPath`, `secretsPath`, or `planSource = "disk"` if you keep generated artifacts elsewhere.
 - Add provider-specific modules under `modules/nixos` in your repo and import them via flake-parts alongside `providerModule`.

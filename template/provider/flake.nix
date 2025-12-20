@@ -23,7 +23,6 @@
         statePath = ./generated/state.json;
         planPath = ./generated/plan.json;
         planSource = "eval";
-        hostenvProjectDir = ".hostenv";
       };
     };
 }

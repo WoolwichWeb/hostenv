@@ -122,7 +122,7 @@ And here's the same idea for a tiny PHP app (no Drupal) using the built‑in `ph
 - Create NixOS node configs under `nodes/<node>/configuration.nix` (plus hardware config); set `system.stateVersion`.
 - Generate plan/state/flake: `nix run .#hostenv-provider-plan` (writes to `generated/` or `$HOSTENV_PROVIDER_OUT`).
 - Deploy using your preferred tool (e.g. deploy-rs) against the generated flake.
-- If client flakes live somewhere other than `.hostenv/`, set `provider.hostenvProjectDir` accordingly.
+- Client project inputs should point at the `.hostenv` flake (e.g. `dir=.hostenv`), so `hostenv.nix` is at the flake root.
 
 ## Contributing
 

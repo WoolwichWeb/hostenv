@@ -12,7 +12,6 @@
 , planPath ? null
 , nodeSystems ? { }
 , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
-, hostenvProjectDir ? ".hostenv"
 , planSource ? "eval"
 , lockPath ? ../flake.lock
 }:
@@ -30,7 +29,7 @@ let
       (name:
         let
           input = inputs.${name};
-          hostenvPath = input + "/${hostenvProjectDir}/hostenv.nix";
+          hostenvPath = input + /hostenv.nix;
         in
         lib.strings.hasInfix "__" name
         && builtins.hasAttr "hostenv" input
@@ -47,7 +46,7 @@ let
 
         Each client flake must expose a `hostenv.<system>.environments` output.
         Ensure inputs are named organisation__project, export `outputs.hostenv`,
-        and include `${hostenvProjectDir}/hostenv.nix` in the project root.
+        and include `hostenv.nix` at the flake root (typically by using dir=.hostenv).
       ''
     else
       true;
@@ -148,7 +147,7 @@ let
                 specialArgs = inputs // { inherit inputs pkgs; };
                 modules = [
                   ../platform/hostenv-modules/full-env.nix
-                  (inputs.${name} + "/${hostenvProjectDir}/hostenv.nix")
+                  (inputs.${name} + /hostenv.nix)
                   ({ config, ... }: {
                     hostenv.organisation = lib.mkForce orgAndProject.organisation;
                     hostenv.project = lib.mkForce orgAndProject.project;
@@ -342,7 +341,7 @@ let
           ''
             ${val.hostenv.userName} = {
               type = "${val.repo.type}";
-              dir = "${if val.repo ? dir then val.repo.dir else hostenvProjectDir}";
+              dir = "${val.repo.dir or "."}";
               ref = "${lockedRef}";
               ${lib.optionalString (lockedRev != null) ''rev = "${lockedRev}";''}
               ${lib.optionalString (lockedNarHash != null) ''narHash = "${lockedNarHash}";''}

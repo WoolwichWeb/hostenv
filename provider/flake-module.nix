@@ -21,11 +21,6 @@ in
       default = { };
       description = "Map of node name -> system string (e.g. x86_64-linux, aarch64-linux).";
     };
-    hostenvProjectDir = mkOption {
-      type = types.str;
-      default = ".hostenv";
-      description = "Default flake dir for client projects when dir is absent in flake.lock (e.g. .hostenv).";
-    };
     # Default to the repository root `nodes/` directory; provider repos can override.
     nodesPath = mkOption { type = types.path; default = ../../nodes; };
     secretsPath = mkOption { type = types.path; default = ./secrets/secrets.yaml; };
@@ -82,7 +77,6 @@ in
             statePath = cfg.statePath;
             planPath = cfg.planPath;
             cloudflare = cfg.cloudflare;
-            hostenvProjectDir = cfg.hostenvProjectDir;
             planSource = cfg.planSource;
           };
 

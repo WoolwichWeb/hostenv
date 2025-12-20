@@ -48,8 +48,8 @@ let
   ] null;
 
   projectDir = pkgs.runCommand "hostenv-project" { } ''
-    mkdir -p $out/.hostenv
-    cat > $out/.hostenv/hostenv.nix <<'EOF'
+    mkdir -p $out
+    cat > $out/hostenv.nix <<'EOF'
     { pkgs, config, ... }: {
       defaultEnvironment = "env1";
       environments = {
@@ -302,8 +302,8 @@ let
   providerPlanVhostConflictNewEnvs =
     let
       conflictProjectDir = pkgs.runCommand "hostenv-project-conflict" { } ''
-        mkdir -p $out/.hostenv
-        cat > $out/.hostenv/hostenv.nix <<'EOF'
+        mkdir -p $out
+        cat > $out/hostenv.nix <<'EOF'
         { pkgs, config, ... }: {
           defaultEnvironment = "env1";
           environments = {
@@ -340,7 +340,7 @@ let
 EOF
       '';
 
-      conflictEnvEval = makeHostenv [ "${conflictProjectDir}/.hostenv/hostenv.nix" ] null;
+      conflictEnvEval = makeHostenv [ "${conflictProjectDir}/hostenv.nix" ] null;
 
       hostenvOutputConflict = {
         "${"x86_64-linux"}" = {

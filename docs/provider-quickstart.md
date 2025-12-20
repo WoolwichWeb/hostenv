@@ -12,7 +12,6 @@
       perSystem = { config, ... }: {
         provider = {
           hostenvHostname = "hostenv.sh";
-          hostenvProjectDir = ".hostenv"; # default location of client flake
           nodeSystems = { backend01 = "aarch64-linux"; backend02 = "aarch64-linux"; backend03 = "x86_64-linux"; backend04 = "aarch64-linux"; };
           nodesPath = ./nodes;
           secretsPath = ./secrets/secrets.yaml;
@@ -25,6 +24,7 @@
 
 **Important:** each client project flake must export `outputs.hostenv.<system>.environments`
 so the provider can discover environments. The shipped project template already does this.
+Client inputs should point at the `.hostenv` flake (e.g. `dir=.hostenv`) so `hostenv.nix` is at the flake root.
 
 2) Populate nodes and secrets:
    - Copy `nodes/sample` to `nodes/<node>/` and edit `configuration.nix`/`hardware-configuration.nix`.
