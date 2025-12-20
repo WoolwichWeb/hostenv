@@ -112,6 +112,8 @@ let
     };
   };
 
+  dummyStatePath = pkgs.writers.writeJSON "dummy-state.json" { };
+
   mkPlan = { hostenvHostname ? "custom.host", state ? { }, planSource ? "eval", planPath ? null }:
     let
       # Build a synthetic flake inputs set: hostenv modules + one project with hostenv output.
@@ -136,7 +138,7 @@ let
 
       statePathEffective =
         if state == { }
-        then ./dummy-state.json
+        then dummyStatePath
         else pkgs.writers.writeJSON "state.json" state;
 
       inputsEffective = {
@@ -226,7 +228,7 @@ let
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
         nodesPath = ./.;
         secretsPath = ./.;
-        statePath = ./dummy-state.json;
+        statePath = dummyStatePath;
         planPath = null;
         lockPath = lockPath;
         nodeSystems = { };
@@ -279,7 +281,7 @@ let
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
         nodesPath = ./.;
         secretsPath = ./.;
-        statePath = ./dummy-state.json;
+        statePath = dummyStatePath;
         planPath = null;
         lockPath = lockPath;
         nodeSystems = { };
@@ -332,7 +334,7 @@ let
       nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
       nodesPath = ./.;
       secretsPath = ./.;
-      statePath = ./dummy-state.json;
+      statePath = dummyStatePath;
       planPath = null;
       nodeSystems = { };
       cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
@@ -438,7 +440,7 @@ EOF
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
         nodesPath = ./.;
         secretsPath = ./.;
-        statePath = ./dummy-state.json;
+        statePath = dummyStatePath;
         planPath = null;
         lockPath = lockPath;
         nodeSystems = { };

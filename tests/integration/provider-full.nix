@@ -54,6 +54,10 @@ let
   drupal = mkProjectInput { path = ./drupal; organisation = "acme"; project = "drupal"; };
   drupal7 = mkProjectInput { path = ./drupal7; organisation = "acme"; project = "drupal7"; };
 
+  nodesStub = pkgs.runCommand "nodes-stub" { } ''mkdir -p $out'';
+  secretsStub = pkgs.runCommand "secrets-stub" { } ''echo "{}" > $out'';
+  stateStub = pkgs.writers.writeJSON "state-stub.json" { };
+
   inputs = {
     hostenv = hostenvInput;
     acme__drupal = drupal.input;
@@ -76,9 +80,9 @@ let
     deployPublicKey = "ssh-ed25519 test";
     hostenvHostname = "hosting.test";
     nodeFor = { default = "node-a"; production = "node-a"; testing = "node-a"; development = "node-a"; };
-    nodesPath = ./nodes-stub;
-    secretsPath = ./secrets-stub;
-    statePath = ./state-stub.json;
+    nodesPath = nodesStub;
+    secretsPath = secretsStub;
+    statePath = stateStub;
     lockPath = lockPath;
     nodeSystems = { };
     cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };

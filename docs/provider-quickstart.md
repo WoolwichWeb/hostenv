@@ -26,9 +26,10 @@
 so the provider can discover environments. The shipped project template already does this.
 Client inputs should point at the `.hostenv` flake (e.g. `dir=.hostenv`) so `hostenv.nix` is at the flake root.
 
-2) Populate nodes and secrets:
+2) Populate nodes and secrets (the provider template includes these starter stubs):
    - Copy `nodes/sample` to `nodes/<node>/` and edit `configuration.nix`/`hardware-configuration.nix`.
    - Copy `secrets/secrets.yaml.example` to `secrets/secrets.yaml` and encrypt with sops.
+   - Create `generated/state.json` (can be `{}` initially).
 
 3) Generate plan/state (optional if using planSource=eval):
 ```

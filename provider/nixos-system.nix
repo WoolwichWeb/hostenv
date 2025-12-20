@@ -95,6 +95,7 @@ nixpkgs.lib.nixosSystem {
   specialArgs = { inherit inputs system; };
   modules = [
     ./common.nix
+    { sops.defaultSopsFile = secretsPath; }
     ../platform/nixos-modules/top-level.nix
     ../platform/nixos-modules/plan-bridge.nix
     ../platform/nixos-modules/users-slices.nix

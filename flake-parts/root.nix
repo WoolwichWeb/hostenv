@@ -10,6 +10,8 @@
     planSource = "disk";
     planPath = ./../tests/support/provider/plan-empty.json;
     statePath = ./../tests/support/provider/state-empty.json;
+    nodesPath = ./../template/provider/nodes;
+    secretsPath = ./../template/provider/secrets/secrets.yaml.example;
   };
 
   perSystem = { system, pkgs, self', ... }:

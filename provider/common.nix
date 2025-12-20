@@ -4,14 +4,14 @@ let
   secretFile =
     if builtins.pathExists ../secrets/secrets.yaml
     then ../secrets/secrets.yaml
-    else ../secrets/secrets.yaml.example;
+    else ../template/provider/secrets/secrets.yaml.example;
 in
 {
 
   services.qemuGuest.enable = true;
 
   imports = [ inputs.sops-nix.nixosModules.sops ];
-  sops.defaultSopsFile = secretFile;
+  sops.defaultSopsFile = lib.mkDefault secretFile;
   sops.defaultSopsFormat = "yaml";
   sops.age.sshKeyPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];
 

@@ -22,10 +22,34 @@ in
       description = "Map of node name -> system string (e.g. x86_64-linux, aarch64-linux).";
     };
     # Default to the repository root `nodes/` directory; provider repos can override.
-    nodesPath = mkOption { type = types.path; default = ../../nodes; };
-    secretsPath = mkOption { type = types.path; default = ./secrets/secrets.yaml; };
-    statePath = mkOption { type = types.path; default = ./generated/state.json; };
-    planPath = mkOption { type = types.path; default = ./generated/plan.json; };
+    nodesPath = mkOption {
+      type = types.path;
+      default =
+        if inputs ? self
+        then inputs.self + /nodes
+        else builtins.throw "provider.nodesPath: inputs.self is required to resolve defaults; set provider.nodesPath explicitly.";
+    };
+    secretsPath = mkOption {
+      type = types.path;
+      default =
+        if inputs ? self
+        then inputs.self + /secrets/secrets.yaml
+        else builtins.throw "provider.secretsPath: inputs.self is required to resolve defaults; set provider.secretsPath explicitly.";
+    };
+    statePath = mkOption {
+      type = types.path;
+      default =
+        if inputs ? self
+        then inputs.self + /generated/state.json
+        else builtins.throw "provider.statePath: inputs.self is required to resolve defaults; set provider.statePath explicitly.";
+    };
+    planPath = mkOption {
+      type = types.path;
+      default =
+        if inputs ? self
+        then inputs.self + /generated/plan.json
+        else builtins.throw "provider.planPath: inputs.self is required to resolve defaults; set provider.planPath explicitly.";
+    };
     planSource = mkOption { type = types.enum [ "disk" "eval" ]; default = "eval"; };
     cloudflare = mkOption {
       type = types.submodule {

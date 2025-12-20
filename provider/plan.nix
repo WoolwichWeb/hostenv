@@ -6,10 +6,10 @@
 , deployPublicKey
 , hostenvHostname
 , nodeFor ? { default = null; }
-, nodesPath ? ../../nodes
-, secretsPath ? ./secrets/secrets.yaml
-, statePath ? ./generated/state.json
-, planPath ? null
+, nodesPath ? (if inputs ? self then inputs.self + /nodes else null)
+, secretsPath ? (if inputs ? self then inputs.self + /secrets/secrets.yaml else null)
+, statePath ? (if inputs ? self then inputs.self + /generated/state.json else null)
+, planPath ? (if inputs ? self then inputs.self + /generated/plan.json else null)
 , nodeSystems ? { }
 , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
 , planSource ? "eval"
@@ -22,6 +22,47 @@
 let
   useEval = planSource == "eval";
   cfgHostenvHostname = hostenvHostname;
+  requirePath = { name, path, hint ? "" }:
+    if path == null then
+      builtins.throw ''
+        provider plan: ${name} is required.
+        ${hint}
+      ''
+    else if builtins.pathExists path then
+      path
+    else
+      builtins.throw ''
+        provider plan: ${name} not found at ${builtins.toString path}.
+        ${hint}
+      '';
+
+  nodesPathChecked = requirePath {
+    name = "nodesPath";
+    path = nodesPath;
+    hint = "Set provider.nodesPath (or pass nodesPath explicitly) to your nodes directory.";
+  };
+
+  secretsPathChecked = requirePath {
+    name = "secretsPath";
+    path = secretsPath;
+    hint = "Set provider.secretsPath (or pass secretsPath explicitly) to your secrets file path.";
+  };
+
+  statePathChecked = requirePath {
+    name = "statePath";
+    path = statePath;
+    hint = "Set provider.statePath (or pass statePath explicitly) and ensure the file exists (it can be an empty JSON object).";
+  };
+
+  planPathChecked =
+    if planSource == "disk" then
+      requirePath {
+        name = "planPath";
+        path = planPath;
+        hint = "Set provider.planPath (or pass planPath explicitly) and ensure the file exists when planSource=\"disk\".";
+      }
+    else
+      planPath;
   # Detect hostenv project inputs by checking for the presence of evaluated environments.
   projectInputs =
     if (!useEval) then [ ] else
@@ -52,11 +93,8 @@ let
       true;
 
   state =
-    if builtins.pathExists statePath then
-      let rawValues = lib.importJSON statePath;
-      in lib.filterAttrs (name: _: name != "_description") rawValues
-    else
-      { };
+    let rawValues = lib.importJSON statePathChecked;
+    in lib.filterAttrs (name: _: name != "_description") rawValues;
 
   lockData =
     if builtins.pathExists lockPath
@@ -69,8 +107,7 @@ let
 
   planFromDisk =
     if useEval then null
-    else if planPath != null then lib.importJSON planPath
-    else builtins.throw "planSource='disk' requires planPath to be set";
+    else lib.importJSON planPathChecked;
 
   nextUid =
     let
@@ -391,8 +428,8 @@ let
 
             nixosSystem = node: import ${builtins.toString ./nixos-system.nix} {
               inherit config node nixpkgs pkgs inputs localSystem;
-              nodesPath = ${builtins.toString nodesPath};
-              secretsPath = "${builtins.toString secretsPath}";
+              nodesPath = ${builtins.toString nodesPathChecked};
+              secretsPath = "${builtins.toString secretsPathChecked}";
               nodeSystems = ${lib.generators.toPretty {} nodeSystems};
             };
 
@@ -497,7 +534,7 @@ let
       in
       pkgs.writers.writeJSON "plan.json" configAttrs
     else
-      (if planPath != null then planPath else builtins.throw "planSource='disk' requires planPath to be set");
+      planPathChecked;
 
   generatedState =
     if useEval then
@@ -521,13 +558,7 @@ let
           } // lib.recursiveUpdate state planState;
       in
       pkgs.writers.writeJSON "state.json" mergedState
-    else if builtins.pathExists statePath then statePath
-    else
-      pkgs.writers.writeJSON "state.json" ({
-        _description = ''
-          Persistent state to retain across deployments. Should be committed to version control.
-        '';
-      } // state);
+    else statePathChecked;
 
 in
 assert assertProjectInputs;
