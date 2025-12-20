@@ -1,10 +1,7 @@
 { inputs, system, config, ... }:
 let
   pkgs = inputs.nixpkgs.legacyPackages.${system};
-  secretFile =
-    if builtins.pathExists ../secrets/secrets.yaml
-    then ../secrets/secrets.yaml
-    else ../template/provider/secrets/secrets.yaml.example;
+  secretFile = ../secrets/secrets.yaml;
 in
 {
 

@@ -11,7 +11,8 @@
     planPath = ./../tests/support/provider/plan-empty.json;
     statePath = ./../tests/support/provider/state-empty.json;
     nodesPath = ./../template/provider/nodes;
-    secretsPath = ./../template/provider/secrets/secrets.yaml.example;
+    # Stub for flake checks only; real providers must set their own secretsPath.
+    secretsPath = builtins.toFile "secrets.yaml" "{}\n";
   };
 
   perSystem = { system, pkgs, self', ... }:

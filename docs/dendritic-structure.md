@@ -36,7 +36,7 @@ perSystem = { config, ... }: {
 - `modules/environments.nix` defines the canonical environments schema; it is bridged into `hostenv.environments` for feature modules.
 - `nodesPath` is a directory of per-node configs (`configuration.nix` + hardware config).
 - Secrets are supplied via `secretsPath` (sops). Provide your own example or copy from provider secrets when bootstrapping.
-- The provider template includes starter stubs in `nodes/sample/` and `secrets/secrets.yaml.example`; copy and adapt for a new provider setup.
+- The provider template includes starter node stubs in `nodes/sample/`; copy and adapt for a new provider setup. Secrets are created with `sops` at `secrets/secrets.yaml`.
 - `nodeSystems` maps node name → system (e.g. `x86_64-linux`); required if nodes are heterogeneous.
 - Client project inputs should point at the `.hostenv` flake (e.g. `dir=.hostenv`).
 

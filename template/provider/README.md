@@ -6,13 +6,13 @@ This template boots a provider flake that consumes hostenv projects and generate
 
 1. Copy this template (or `nix flake init -t gitlab:woolwichweb/hostenv#provider` once exported).
 2. Set `provider.hostenvHostname`, `provider.deployPublicKey`, and your node mappings in `flake.nix`.
-3. The template ships starter stubs:
+3. The template ships starter node stubs:
    - `nodes/sample/` (copy to `nodes/<node>/` and edit).
-   - `secrets/secrets.yaml.example` (copy to `secrets/secrets.yaml` and encrypt with sops).
-4. Create `generated/state.json` (can be `{}` initially).
-5. Add NixOS node configs under `nodes/<node>/configuration.nix` (with `system.stateVersion`).
-6. Run `nix run .#hostenv-provider-plan` to write `generated/{flake.nix,plan.json,state.json}`.
-7. Deploy using your tool of choice (e.g. deploy-rs) pointing at `generated/flake.nix`.
+4. Create `secrets/secrets.yaml` with `sops` (provider uses this at deploy time).
+5. Create `generated/state.json` (can be `{}` initially).
+6. Add NixOS node configs under `nodes/<node>/configuration.nix` (with `system.stateVersion`).
+7. Run `nix run .#hostenv-provider-plan` to write `generated/{flake.nix,plan.json,state.json}`.
+8. Deploy using your tool of choice (e.g. deploy-rs) pointing at `generated/flake.nix`.
 
 ## Inputs
 
