@@ -47,6 +47,12 @@ let
     })
   ] null;
 
+  hostenvOutput = {
+    "${"x86_64-linux"}" = {
+      inherit (envsEval.config) environments defaultEnvironment;
+    };
+  };
+
   projectDir = pkgs.runCommand "hostenv-project" { } ''
     mkdir -p $out
     cat > $out/hostenv.nix <<'EOF'
@@ -109,12 +115,6 @@ let
   mkPlan = { hostenvHostname ? "custom.host", state ? { }, planSource ? "eval", planPath ? null }:
     let
       # Build a synthetic flake inputs set: hostenv modules + one project with hostenv output.
-      hostenvOutput = {
-        "${"x86_64-linux"}" = {
-          inherit (envsEval.config) environments defaultEnvironment;
-        };
-      };
-
       lockData = {
         nodes = {
           "org__proj" = {
@@ -288,6 +288,57 @@ let
       });
     in result;
 
+  lockDataSelf = {
+    nodes = {
+      "org__proj" = {
+        original = {
+          type = "git";
+          url = "https://example.invalid/org/proj.git";
+          ref = "main";
+        };
+        locked = {
+          ref = "main";
+          rev = "0000000000000000000000000000000000000000";
+          narHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        };
+      };
+    };
+  };
+
+  selfLockFile = pkgs.writers.writeJSON "flake.lock" lockDataSelf;
+  selfLockDir = pkgs.runCommand "provider-self-lock" { } ''
+    mkdir -p $out
+    cp ${selfLockFile} $out/flake.lock
+  '';
+
+  planDefaultLock =
+    builtins.tryEval (import ../../provider/plan.nix {
+      inputs = {
+        self = selfLockDir;
+        hostenv =
+          let outPath = ../../modules;
+          in { inherit outPath; modules = outPath; __toString = self: toString outPath; };
+        org__proj = {
+          outPath = projectDir;
+          __toString = self: toString projectDir;
+          hostenv = hostenvOutput;
+        };
+      };
+      system = "x86_64-linux";
+      inherit lib pkgs;
+      letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
+      deployPublicKey = "ssh-ed25519 test";
+      hostenvHostname = "custom.host";
+      nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
+      nodesPath = ./.;
+      secretsPath = ./.;
+      statePath = ./dummy-state.json;
+      planPath = null;
+      nodeSystems = { };
+      cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
+      planSource = "eval";
+    });
+
   providerPlanVhostConflictState =
     let
       conflictState = {
@@ -457,6 +508,11 @@ in
     asserts.assertTrue "provider-plan-missing-environments-asserts"
       (! planMissingEnvironments.success)
       "plan generation must fail early when a client flake hostenv output lacks environments";
+
+  provider-plan-default-lock =
+    asserts.assertTrue "provider-plan-default-lock"
+      planDefaultLock.success
+      "plan generation should use inputs.self/flake.lock when lockPath is omitted";
 
   provider-plan-vhost-conflict-state = providerPlanVhostConflictState;
   provider-plan-vhost-conflict-new-envs = providerPlanVhostConflictNewEnvs;

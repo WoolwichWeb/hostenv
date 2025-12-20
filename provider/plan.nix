@@ -13,7 +13,7 @@
 , nodeSystems ? { }
 , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
 , planSource ? "eval"
-, lockPath ? ../flake.lock
+, lockPath ? (if inputs ? self then inputs.self + /flake.lock else ../flake.lock)
 }:
 
 # Provider-side infrastructure generator.
@@ -165,10 +165,7 @@ let
                   let
                     hostenv = envCfg.hostenv;
 
-                    node =
-                      if envCfg.type == "production"
-                      then (nodeFor.production or nodeFor.default)
-                      else (nodeFor.${envCfg.type} or nodeFor.default);
+                    node = nodeFor.${envCfg.type} or nodeFor.default;
 
                     authorizedKeys =
                       let
