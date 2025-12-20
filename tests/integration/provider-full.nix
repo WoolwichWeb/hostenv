@@ -19,7 +19,7 @@ let
   mkProjectInput = { path, organisation, project }:
     let
       modules = [
-        (path + /hostenv.nix)
+        (path + "/.hostenv/hostenv.nix")
         ({ ... }: {
           hostenv = {
             inherit organisation project;

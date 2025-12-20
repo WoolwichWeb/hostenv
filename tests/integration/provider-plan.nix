@@ -48,8 +48,8 @@ let
   ] null;
 
   projectDir = pkgs.runCommand "hostenv-project" { } ''
-    mkdir -p $out
-    cat > $out/hostenv.nix <<'EOF'
+    mkdir -p $out/.hostenv
+    cat > $out/.hostenv/hostenv.nix <<'EOF'
     { pkgs, config, ... }: {
       defaultEnvironment = "env1";
       environments = {
@@ -90,6 +90,21 @@ let
     }
     EOF
   '';
+
+  ignoredInputDir = pkgs.runCommand "hostenv-ignored-input" { } ''
+    mkdir -p $out
+  '';
+
+  ignoredInput = {
+    outPath = ignoredInputDir;
+    __toString = self: toString self.outPath;
+    hostenv = {
+      "${"x86_64-linux"}" = {
+        environments = { };
+        defaultEnvironment = "main";
+      };
+    };
+  };
 
   mkPlan = { hostenvHostname ? "custom.host", state ? { }, planSource ? "eval", planPath ? null }:
     let
@@ -132,6 +147,7 @@ let
             modules = outPath;
             __toString = self: toString outPath;
           };
+        acme__ignored = ignoredInput;
         org__proj = {
           outPath = projectDir;
           __toString = self: toString projectDir;
@@ -286,8 +302,8 @@ let
   providerPlanVhostConflictNewEnvs =
     let
       conflictProjectDir = pkgs.runCommand "hostenv-project-conflict" { } ''
-        mkdir -p $out
-        cat > $out/hostenv.nix <<'EOF'
+        mkdir -p $out/.hostenv
+        cat > $out/.hostenv/hostenv.nix <<'EOF'
         { pkgs, config, ... }: {
           defaultEnvironment = "env1";
           environments = {
@@ -321,10 +337,10 @@ let
             root = "/srv/fake";
           };
         }
-        EOF
+EOF
       '';
 
-      conflictEnvEval = makeHostenv [ "${conflictProjectDir}/hostenv.nix" ] null;
+      conflictEnvEval = makeHostenv [ "${conflictProjectDir}/.hostenv/hostenv.nix" ] null;
 
       hostenvOutputConflict = {
         "${"x86_64-linux"}" = {

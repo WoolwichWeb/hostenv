@@ -28,9 +28,15 @@ let
     if (!useEval) then [ ] else
     builtins.filter
       (name:
-        builtins.hasAttr "hostenv" inputs.${name}
-        && builtins.hasAttr system inputs.${name}.hostenv
-        && builtins.hasAttr "environments" inputs.${name}.hostenv.${system}
+        let
+          input = inputs.${name};
+          hostenvPath = input + "/${hostenvProjectDir}/hostenv.nix";
+        in
+        lib.strings.hasInfix "__" name
+        && builtins.hasAttr "hostenv" input
+        && builtins.hasAttr system input.hostenv
+        && builtins.hasAttr "environments" input.hostenv.${system}
+        && builtins.pathExists hostenvPath
       )
       (builtins.attrNames inputs);
 
@@ -40,8 +46,8 @@ let
         provider plan: no client projects found.
 
         Each client flake must expose a `hostenv.<system>.environments` output.
-        Ensure inputs are named
-        organisation__project and that the project flake exports `outputs.hostenv`.
+        Ensure inputs are named organisation__project, export `outputs.hostenv`,
+        and include `${hostenvProjectDir}/hostenv.nix` in the project root.
       ''
     else
       true;
@@ -142,7 +148,7 @@ let
                 specialArgs = inputs // { inherit inputs pkgs; };
                 modules = [
                   ../platform/hostenv-modules/full-env.nix
-                  (inputs.${name} + /hostenv.nix)
+                  (inputs.${name} + "/${hostenvProjectDir}/hostenv.nix")
                   ({ config, ... }: {
                     hostenv.organisation = lib.mkForce orgAndProject.organisation;
                     hostenv.project = lib.mkForce orgAndProject.project;
