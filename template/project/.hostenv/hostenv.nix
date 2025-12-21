@@ -38,6 +38,14 @@
   #       locations."/" = {
   #         return = "301 /town-events";
   #       };
+  #
+  #       # Security headers example:
+  #       # security = {
+  #       #   csp = "default-src 'self'";
+  #       #   cspMode = "report-only";
+  #       #   cspReportTo = "csp-endpoint";
+  #       #   reportTo = "{\"group\":\"csp-endpoint\",\"max_age\":10886400,\"endpoints\":[{\"url\":\"https://example.invalid/csp\"}]}";
+  #       # };
   #     };
   #   };
   # };

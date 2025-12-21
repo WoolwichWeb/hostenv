@@ -5,6 +5,7 @@
 , letsEncrypt
 , deployPublicKey
 , hostenvHostname
+, warnInvalidDeployKey ? true
 , nodeFor ? { default = null; }
 , nodesPath ? (if inputs ? self then inputs.self + /nodes else null)
 , secretsPath ? (if inputs ? self then inputs.self + /secrets/secrets.yaml else null)
@@ -22,6 +23,98 @@
 let
   useEval = planSource == "eval";
   cfgHostenvHostname = hostenvHostname;
+  sanitizeHeaderValue = label: value:
+    if value == null then null else
+    if lib.strings.hasInfix "\"" value then
+      builtins.throw "provider plan: ${label} may not contain double quotes"
+    else
+      value;
+  mkHeaderLine = name: value:
+    if value == null then ""
+    else
+      let
+        hasDouble = lib.strings.hasInfix "\"" value;
+        hasSingle = lib.strings.hasInfix "'" value;
+        quote =
+          if hasDouble && !hasSingle then "'"
+          else if hasDouble && hasSingle then
+            builtins.throw "provider plan: ${name} header value may not contain both single and double quotes"
+          else
+            "\"";
+      in
+      ''add_header ${name} ${quote}${value}${quote} always;'';
+  mkSecurityHeaders = { vhost, envType }:
+    let
+      security = vhost.security or { };
+      referrerPolicy = security.referrerPolicy or "strict-origin-when-cross-origin";
+      xFrameOptions = security.xFrameOptions or "SAMEORIGIN";
+      xContentTypeOptions = security.xContentTypeOptions or true;
+      reportTo = security.reportTo or null;
+      hstsEnabled =
+        (security.hsts or (vhost.hsts or true))
+        && (vhost.enableLetsEncrypt or false);
+      cspBase = sanitizeHeaderValue "security.csp" (security.csp or null);
+      cspReportTo = security.cspReportTo or null;
+      cspValue =
+        if cspBase == null then null else
+        let trimmed = lib.strings.removeSuffix ";" cspBase;
+        in
+        if cspReportTo == null then
+          trimmed
+        else
+          "${trimmed}; report-to ${cspReportTo}";
+      cspHeaderName =
+        if (security.cspMode or "enforce") == "report-only" then
+          "Content-Security-Policy-Report-Only"
+        else
+          "Content-Security-Policy";
+      allowIndexing = vhost.allowIndexing or (envType == "production");
+    in
+    lib.concatStringsSep "\n" (lib.filter (line: line != "") [
+      (mkHeaderLine "Report-To" reportTo)
+      (mkHeaderLine "Referrer-Policy" referrerPolicy)
+      (if xFrameOptions == null then "" else mkHeaderLine "X-Frame-Options" xFrameOptions)
+      (if xContentTypeOptions then mkHeaderLine "X-Content-Type-Options" "nosniff" else "")
+      (if hstsEnabled then mkHeaderLine "Strict-Transport-Security" "max-age=63072000; includeSubDomains; preload" else "")
+      (if cspValue == null then "" else mkHeaderLine cspHeaderName cspValue)
+      (if allowIndexing then "" else mkHeaderLine "X-Robots-Tag" "noindex")
+    ]);
+  deployPublicKeyList =
+    let
+      key = deployPublicKey;
+      parts =
+        if key == null
+        then [ ]
+        else lib.filter (s: s != "") (lib.strings.splitString " " key);
+      keyType = if builtins.length parts > 0 then builtins.elemAt parts 0 else "";
+      keyData = if builtins.length parts > 1 then builtins.elemAt parts 1 else "";
+      allowedKeyTypes = [
+        "ssh-ed25519"
+        "ssh-rsa"
+        "ecdsa-sha2-nistp256"
+        "ecdsa-sha2-nistp384"
+        "ecdsa-sha2-nistp521"
+        "sk-ssh-ed25519@openssh.com"
+        "sk-ecdsa-sha2-nistp256@openssh.com"
+      ];
+      isValid =
+        key != null
+        && key != ""
+        && builtins.length parts >= 2
+        && lib.elem keyType allowedKeyTypes
+        && builtins.match "^[A-Za-z0-9+/=]+$" keyData != null;
+    in
+      if key == null || key == "" then
+        if warnInvalidDeployKey then
+          lib.warn "provider.deployPublicKey is unset or empty; skipping deploy key for provider user." [ ]
+        else
+          [ ]
+      else if isValid then
+        [ key ]
+      else if warnInvalidDeployKey then
+        lib.warn "provider.deployPublicKey is not a valid SSH public key; skipping it." [ ]
+      else
+        [ ];
   requirePath = { name, path, hint ? "" }:
     if path == null then
       builtins.throw ''
@@ -270,15 +363,9 @@ let
                             (
                               n: vhost:
                                 let
-                                  allowIndexing = vhost.allowIndexing or (envCfg.type == "production");
-                                  extraConfig = ''
-                                    add_header Referrer-Policy "strict-origin-when-cross-origin";
-                                    ${lib.optionalString (!allowIndexing) ''
-                                    add_header X-Robots-Tag "noindex";
-                                    ''}
-                                  '';
+                                  extraConfig = mkSecurityHeaders { vhost = vhost; envType = envCfg.type; };
                                 in
-                                (builtins.removeAttrs vhost [ "enableLetsEncrypt" "allowIndexing" ]) // {
+                                (builtins.removeAttrs vhost [ "enableLetsEncrypt" "allowIndexing" "security" "hsts" ]) // {
                                   enableACME = vhost.enableLetsEncrypt;
                                   forceSSL = vhost.enableLetsEncrypt;
                                   extraConfig = extraConfig;
@@ -520,7 +607,7 @@ let
                     users.users.${elem.hostenv.userName} = {
                       uid = elem.uid;
                       group = elem.hostenv.userName;
-                      openssh.authorizedKeys.keys = elem.authorizedKeys ++ [ deployPublicKey ];
+                      openssh.authorizedKeys.keys = elem.authorizedKeys ++ deployPublicKeyList;
                       isNormalUser = true;
                       createHome = true;
                       linger = true;

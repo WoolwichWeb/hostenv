@@ -129,6 +129,99 @@ in
                   Include an HSTS header for this host.
                 '';
               };
+
+              security = lib.mkOption {
+                type = types.submodule ({ ... }: {
+                  options = {
+                    csp = lib.mkOption {
+                      type = types.nullOr types.singleLineStr;
+                      default = null;
+                      description = ''
+                        Content-Security-Policy value for this host. Set to null to disable.
+                      '';
+                      apply = value:
+                        if value != null && lib.strings.hasInfix "\"" value then
+                          builtins.throw "virtualHosts.<host>.security.csp may not contain double quotes"
+                        else
+                          value;
+                    };
+
+                    cspMode = lib.mkOption {
+                      type = types.enum [ "enforce" "report-only" ];
+                      default = "enforce";
+                      description = ''
+                        Whether to emit CSP as enforce or report-only.
+                      '';
+                    };
+
+                    cspReportTo = lib.mkOption {
+                      type = types.nullOr (types.strMatching "^[A-Za-z0-9._-]+$");
+                      default = null;
+                      description = ''
+                        Optional CSP report-to group name to append to the policy.
+                      '';
+                    };
+
+                    reportTo = lib.mkOption {
+                      type = types.nullOr types.singleLineStr;
+                      default = null;
+                      description = ''
+                        Optional Report-To header value (JSON) to emit when set.
+                      '';
+                      apply = value:
+                        if value != null && lib.strings.hasInfix "'" value then
+                          builtins.throw "virtualHosts.<host>.security.reportTo may not contain single quotes"
+                        else
+                          value;
+                    };
+
+                    referrerPolicy = lib.mkOption {
+                      type = types.nullOr (types.enum [
+                        "no-referrer"
+                        "no-referrer-when-downgrade"
+                        "same-origin"
+                        "origin"
+                        "strict-origin"
+                        "origin-when-cross-origin"
+                        "strict-origin-when-cross-origin"
+                        "unsafe-url"
+                      ]);
+                      default = "strict-origin-when-cross-origin";
+                      description = ''
+                        Referrer-Policy header value.
+                      '';
+                    };
+
+                    xFrameOptions = lib.mkOption {
+                      type = types.nullOr (types.enum [ "SAMEORIGIN" "DENY" ]);
+                      default = "SAMEORIGIN";
+                      description = ''
+                        X-Frame-Options header value. Set to null to disable.
+                      '';
+                    };
+
+                    xContentTypeOptions = lib.mkOption {
+                      type = types.bool;
+                      default = true;
+                      description = ''
+                        Whether to emit X-Content-Type-Options: nosniff.
+                      '';
+                    };
+
+                    hsts = lib.mkOption {
+                      type = types.bool;
+                      default = true;
+                      description = ''
+                        Whether to emit HSTS (only on HTTPS/forceSSL hosts).
+                      '';
+                    };
+                  };
+                });
+                default = { };
+                description = ''
+                  Security header configuration for this host.
+                '';
+              };
             };
           }));
         default = { };

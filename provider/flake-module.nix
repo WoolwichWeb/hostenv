@@ -11,7 +11,8 @@ in
   options.provider = {
     hostenvHostname = mkOption { type = types.str; default = "example.invalid"; description = "Hostenv control-plane hostname (must be set by provider)."; };
     letsEncrypt = mkOption { type = types.attrs; default = { adminEmail = "admin@example.invalid"; acceptTerms = true; }; };
-    deployPublicKey = mkOption { type = types.str; default = ""; description = "SSH public key for deploy user; must be set by provider."; };
+    deployPublicKey = mkOption { type = types.nullOr types.str; default = null; description = "SSH public key for deploy user; must be set by provider."; };
+    warnInvalidDeployKey = mkOption { type = types.bool; default = true; description = "Warn when deployPublicKey is invalid or empty."; };
     nodeFor = mkOption {
       type = types.attrs;
       default = { default = null; };
@@ -70,11 +71,9 @@ in
         else throw ''provider flake module: set the `provider.*` options (e.g. by importing provider/flake-module.nix in flake-parts and defining provider.hostenvHostname, nodeFor, nodeSystems, paths, etc.)'';
     in
     {
-
       perSystem = { system, pkgs, config, ... }:
         let
           cfg = cfgTop;
-
           providerHsDeps = p: [
             p.aeson
             p.aeson-pretty
@@ -87,22 +86,23 @@ in
           providerGhc = pkgs.haskellPackages.ghcWithPackages providerHsDeps;
 
           providerGenerator = import ./plan.nix {
-            inputs = inputs // { hostenv = hostenvInput; };
-            inherit system;
-            lib = pkgs.lib;
-            pkgs = pkgs;
-            letsEncrypt = cfg.letsEncrypt;
+              inputs = inputs // { hostenv = hostenvInput; };
+              inherit system;
+              lib = pkgs.lib;
+              pkgs = pkgs;
+              letsEncrypt = cfg.letsEncrypt;
             deployPublicKey = cfg.deployPublicKey;
-            hostenvHostname = cfg.hostenvHostname;
-            nodeFor = cfg.nodeFor;
-            nodeSystems = cfg.nodeSystems;
-            nodesPath = cfg.nodesPath;
-            secretsPath = cfg.secretsPath;
-            statePath = cfg.statePath;
-            planPath = cfg.planPath;
-            cloudflare = cfg.cloudflare;
-            planSource = cfg.planSource;
-          };
+            warnInvalidDeployKey = cfg.warnInvalidDeployKey;
+              hostenvHostname = cfg.hostenvHostname;
+              nodeFor = cfg.nodeFor;
+              nodeSystems = cfg.nodeSystems;
+              nodesPath = cfg.nodesPath;
+              secretsPath = cfg.secretsPath;
+              statePath = cfg.statePath;
+              planPath = cfg.planPath;
+              cloudflare = cfg.cloudflare;
+              planSource = cfg.planSource;
+            };
 
           hostenvProviderPlan = pkgs.writeShellScriptBin "hostenv-provider-plan" ''
             set -euo pipefail

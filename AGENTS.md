@@ -66,3 +66,10 @@ This file is boilerplate that gets templated into each project, and it does two 
 2. **Provide a package per environment that can be deployed and activated.**
 
 Under the dendritic and flake-parts based layout this repo follows,
+
+## Constraints and security
+
+1. Environment and project configuration should be separated from system configuration where possible.
+2. Data crossing the boundary from project/environment config to system config should be validated and/or kept to a restrictive type (think: nothing that can break system configuration).
+3. Environments are not allowed to bind to numeric ports, only sockets inside the hostenv runtime directory. The workaround for this is if the service is inside a systemd-nspawn container. There a service may bind to a port, that port bound to a Unix socket in the hostenv runtime directory, which is itself bind mounted to the host OS so other services can see the socket and communicate with the service through it.
+4. Inter machine communication between services is performed by tunneling sockets through SSH connections.

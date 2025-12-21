@@ -25,6 +25,12 @@ let
             enableLetsEncrypt = true;
             globalRedirect = null;
             locations = { };
+            security = {
+              csp = "default-src 'self'";
+              cspMode = "report-only";
+              cspReportTo = "csp-endpoint";
+              reportTo = "{\"group\":\"csp-endpoint\",\"max_age\":10886400,\"endpoints\":[{\"url\":\"https://example.invalid/csp\"}]}";
+            };
           };
           virtualHosts."alias.example" = {
             enableLetsEncrypt = true;
@@ -68,6 +74,12 @@ let
             enableLetsEncrypt = true;
             globalRedirect = null;
             locations = { };
+            security = {
+              csp = "default-src 'self'";
+              cspMode = "report-only";
+              cspReportTo = "csp-endpoint";
+              reportTo = "{\"group\":\"csp-endpoint\",\"max_age\":10886400,\"endpoints\":[{\"url\":\"https://example.invalid/csp\"}]}";
+            };
           };
           virtualHosts."alias.example" = {
             enableLetsEncrypt = true;
@@ -114,7 +126,7 @@ let
 
   dummyStatePath = pkgs.writers.writeJSON "dummy-state.json" { };
 
-  mkPlan = { hostenvHostname ? "custom.host", state ? { }, planSource ? "eval", planPath ? null }:
+  mkPlan = { hostenvHostname ? "custom.host", state ? { }, planSource ? "eval", planPath ? null, deployPublicKey ? "ssh-ed25519 test", warnInvalidDeployKey ? true }:
     let
       # Build a synthetic flake inputs set: hostenv modules + one project with hostenv output.
       lockData = {
@@ -162,7 +174,8 @@ let
       system = "x86_64-linux";
       inherit lib pkgs hostenvHostname;
       letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-      deployPublicKey = "ssh-ed25519 test";
+      deployPublicKey = deployPublicKey;
+      warnInvalidDeployKey = warnInvalidDeployKey;
       nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
       nodesPath = ./.;
       secretsPath = ./.;
@@ -210,6 +223,8 @@ let
       planPath = planNoState;
       state = lib.importJSON stateNoState;
     };
+  invalidDeployKey = "not-a-key";
+  planInvalidDeployKey = builtins.tryEval (mkPlan { deployPublicKey = invalidDeployKey; warnInvalidDeployKey = false; });
   planMissingProjects =
     let
       minimalInputs = {
@@ -510,6 +525,45 @@ in
     asserts.assertTrue "provider-plan-missing-environments-asserts"
       (! planMissingEnvironments.success)
       "plan generation must fail early when a client flake hostenv output lacks environments";
+
+  provider-plan-invalid-deploy-key =
+    let
+      invalidKeyPresent =
+        if planInvalidDeployKey.success then
+          let
+            plan = lib.importJSON planInvalidDeployKey.value.plan;
+            users = plan.nodes.node1.users.users or { };
+            keyLists = map (u: u.openssh.authorizedKeys.keys or [ ]) (builtins.attrValues users);
+          in
+            lib.any (keys: lib.elem invalidDeployKey keys) keyLists
+        else
+          true;
+    in
+    asserts.assertTrue "provider-plan-invalid-deploy-key"
+      (planInvalidDeployKey.success && !invalidKeyPresent)
+      "plan generation should warn and omit invalid deployPublicKey";
+
+  provider-plan-security-headers =
+    let
+      plan = lib.importJSON planNoState;
+      vhost = plan.nodes.node1.services.nginx.virtualHosts."env1.example" or { };
+      extraConfig = vhost.extraConfig or "";
+      aliasVhost = plan.nodes.node1.services.nginx.virtualHosts."alias.example" or { };
+      aliasExtra = aliasVhost.extraConfig or "";
+      hasCsp =
+        lib.strings.hasInfix "Content-Security-Policy-Report-Only" extraConfig
+        && lib.strings.hasInfix "default-src 'self'; report-to csp-endpoint" extraConfig;
+      hasReportTo =
+        lib.strings.hasInfix "Report-To" extraConfig
+        && lib.strings.hasInfix "\"group\":\"csp-endpoint\"" extraConfig;
+      noCspOnAlias = !(lib.strings.hasInfix "Content-Security-Policy" aliasExtra);
+      hasReferrer = lib.strings.hasInfix "Referrer-Policy" extraConfig;
+      hasRobots = lib.strings.hasInfix "X-Robots-Tag" extraConfig;
+      hasHsts = lib.strings.hasInfix "Strict-Transport-Security" extraConfig;
+    in
+    asserts.assertTrue "provider-plan-security-headers"
+      (hasCsp && hasReportTo && hasReferrer && hasRobots && hasHsts && noCspOnAlias)
+      "plan should emit security headers for configured virtual hosts and omit CSP when unset";
 
   provider-plan-default-lock =
     asserts.assertTrue "provider-plan-default-lock"

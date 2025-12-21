@@ -61,4 +61,5 @@ Outputs:
 Optional per-environment settings:
 - `environments.<name>.hostenv.backupsRepoHost`, `backupsEnvFile`, `backupsSecretFile` for restic repo + secrets
 - `environments.<name>.virtualHosts.<host>.allowIndexing` to control search engine indexing
+- `environments.<name>.virtualHosts.<host>.security` for CSP and common headers (`csp`, `cspMode`, `cspReportTo`, `reportTo`, `referrerPolicy`, etc.)
 - `hostenv.monitoring.enable` to turn on basic exporters/labels
