@@ -40,4 +40,5 @@ Edit `flake.template.nix` to make structural changes while keeping the marker:
 
 - Ensure client project inputs point at the `.hostenv` flake (e.g. `dir=.hostenv`).
 - Override `nodesPath`, `secretsPath`, or `planSource = "disk"` if you keep generated artifacts elsewhere.
+- Add extra Haskell deps for the dev shell via `provider.haskellDevPackages` (appended to `hostenv.haskell.devPackages`).
 - Add provider-specific modules under `modules/nixos` in your repo and import them via flake-parts alongside `providerModule`.

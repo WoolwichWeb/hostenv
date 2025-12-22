@@ -2,66 +2,78 @@
 { inputs, lib, config, ... }:
 let
   inherit (lib) mkOption types;
+  fp = inputs.flake-parts.lib;
   hostenvInput =
     if inputs ? hostenv then inputs.hostenv
     else if inputs ? hostenv-platform then inputs.hostenv-platform
     else throw "provider module requires a hostenv input";
 in
 {
-  options.provider = {
-    hostenvHostname = mkOption { type = types.str; default = "example.invalid"; description = "Hostenv control-plane hostname (must be set by provider)."; };
-    letsEncrypt = mkOption { type = types.attrs; default = { adminEmail = "admin@example.invalid"; acceptTerms = true; }; };
-    deployPublicKey = mkOption { type = types.nullOr types.str; default = null; description = "SSH public key for deploy user; must be set by provider."; };
-    warnInvalidDeployKey = mkOption { type = types.bool; default = true; description = "Warn when deployPublicKey is invalid or empty."; };
-    nodeFor = mkOption {
-      type = types.attrs;
-      default = { default = null; };
-    };
-    nodeSystems = mkOption {
-      type = types.attrs;
-      default = { };
-      description = "Map of node name -> system string (e.g. x86_64-linux, aarch64-linux).";
-    };
-    # Default to the repository root `nodes/` directory; provider repos can override.
-    nodesPath = mkOption {
-      type = types.path;
-      default =
-        if inputs ? self
-        then inputs.self + /nodes
-        else builtins.throw "provider.nodesPath: inputs.self is required to resolve defaults; set provider.nodesPath explicitly.";
-    };
-    secretsPath = mkOption {
-      type = types.path;
-      default =
-        if inputs ? self
-        then inputs.self + /secrets/secrets.yaml
-        else builtins.throw "provider.secretsPath: inputs.self is required to resolve defaults; set provider.secretsPath explicitly.";
-    };
-    statePath = mkOption {
-      type = types.path;
-      default =
-        if inputs ? self
-        then inputs.self + /generated/state.json
-        else builtins.throw "provider.statePath: inputs.self is required to resolve defaults; set provider.statePath explicitly.";
-    };
-    planPath = mkOption {
-      type = types.path;
-      default =
-        if inputs ? self
-        then inputs.self + /generated/plan.json
-        else builtins.throw "provider.planPath: inputs.self is required to resolve defaults; set provider.planPath explicitly.";
-    };
-    planSource = mkOption { type = types.enum [ "disk" "eval" ]; default = "eval"; };
-    cloudflare = mkOption {
-      type = types.submodule {
-        options = {
-          enable = mkOption { type = types.bool; default = false; };
-          zoneId = mkOption { type = types.nullOr types.str; default = null; };
-          apiTokenFile = mkOption { type = types.nullOr types.path; default = null; };
-        };
+  options = {
+    provider = {
+      hostenvHostname = mkOption { type = types.str; default = "example.invalid"; description = "Hostenv control-plane hostname (must be set by provider)."; };
+      letsEncrypt = mkOption { type = types.attrs; default = { adminEmail = "admin@example.invalid"; acceptTerms = true; }; };
+      deployPublicKey = mkOption { type = types.nullOr types.str; default = null; description = "SSH public key for deploy user; must be set by provider."; };
+      warnInvalidDeployKey = mkOption { type = types.bool; default = true; description = "Warn when deployPublicKey is invalid or empty."; };
+      nodeFor = mkOption {
+        type = types.attrs;
+        default = { default = null; };
       };
-      default = { enable = false; zoneId = null; apiTokenFile = null; };
+      nodeSystems = mkOption {
+        type = types.attrs;
+        default = { };
+        description = "Map of node name -> system string (e.g. x86_64-linux, aarch64-linux).";
+      };
+      # Default to the repository root `nodes/` directory; provider repos can override.
+      nodesPath = mkOption {
+        type = types.path;
+        default =
+          if inputs ? self
+          then inputs.self + /nodes
+          else builtins.throw "provider.nodesPath: inputs.self is required to resolve defaults; set provider.nodesPath explicitly.";
+      };
+      secretsPath = mkOption {
+        type = types.path;
+        default =
+          if inputs ? self
+          then inputs.self + /secrets/secrets.yaml
+          else builtins.throw "provider.secretsPath: inputs.self is required to resolve defaults; set provider.secretsPath explicitly.";
+      };
+      statePath = mkOption {
+        type = types.path;
+        default =
+          if inputs ? self
+          then inputs.self + /generated/state.json
+          else builtins.throw "provider.statePath: inputs.self is required to resolve defaults; set provider.statePath explicitly.";
+      };
+      planPath = mkOption {
+        type = types.path;
+        default =
+          if inputs ? self
+          then inputs.self + /generated/plan.json
+          else builtins.throw "provider.planPath: inputs.self is required to resolve defaults; set provider.planPath explicitly.";
+      };
+      planSource = mkOption { type = types.enum [ "disk" "eval" ]; default = "eval"; };
+      cloudflare = mkOption {
+        type = types.submodule {
+          options = {
+            enable = mkOption { type = types.bool; default = false; };
+            zoneId = mkOption { type = types.nullOr types.str; default = null; };
+            apiTokenFile = mkOption { type = types.nullOr types.path; default = null; };
+          };
+        };
+        default = { enable = false; zoneId = null; apiTokenFile = null; };
+      };
     };
+
+    perSystem = fp.mkPerSystemOption ({ lib, ... }: {
+      options.provider.haskellDevPackages = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = "Extra Haskell package names to include in the dev shell for provider tooling.";
+      };
+    });
+
   };
 
   config =
@@ -71,7 +83,7 @@ in
         else throw ''provider flake module: set the `provider.*` options (e.g. by importing provider/flake-module.nix in flake-parts and defining provider.hostenvHostname, nodeFor, nodeSystems, paths, etc.)'';
     in
     {
-      perSystem = { system, pkgs, config, ... }:
+      perSystem = { system, pkgs, ... }:
         let
           cfg = cfgTop;
           providerHsPackageNames = [
@@ -140,7 +152,7 @@ in
 
           checks = { };
 
-          hostenv.haskell.devPackages = providerHsPackageNames;
+          provider.haskellDevPackages = providerHsPackageNames;
         };
     };
 }

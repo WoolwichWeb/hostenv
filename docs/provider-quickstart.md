@@ -62,6 +62,7 @@ Outputs:
 - `packages.deploy-nodes` / `packages.deploy-envs` per system when a plan exists.
 - Deploy specs live at `lib.hostenv.deploySpec` (per flake output). Example:
   `nix eval .#lib.hostenv.deploySpec --json | jq` (planSource=eval recommended).
+- Add Haskell dev shell deps via `provider.haskellDevPackages` (appended to `hostenv.haskell.devPackages`).
 
 Optional per-environment settings:
 

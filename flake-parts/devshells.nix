@@ -21,7 +21,9 @@ in
       };
 
       config = {
-        hostenv.haskell.devPackages = [ "haskell-language-server" ];
+        hostenv.haskell.devPackages =
+          [ "haskell-language-server" ]
+          ++ (lib.attrByPath [ "provider" "haskellDevPackages" ] [ ] config);
         devShells.default = pkgs.mkShell {
           inputsFrom = config.hostenv.devShell.inputsFrom;
 
