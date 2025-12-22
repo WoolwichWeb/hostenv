@@ -74,35 +74,36 @@ in
       perSystem = { system, pkgs, config, ... }:
         let
           cfg = cfgTop;
-          providerHsDeps = p: [
-            p.aeson
-            p.aeson-pretty
-            p.text
-            p.text-conversions
-            p.bytestring
-            p.optparse-applicative
-            p.turtle
+          providerHsPackageNames = [
+            "aeson"
+            "aeson-pretty"
+            "text"
+            "text-conversions"
+            "bytestring"
+            "optparse-applicative"
+            "turtle"
           ];
+          providerHsDeps = p: map (name: p.${name}) providerHsPackageNames;
           providerGhc = pkgs.haskellPackages.ghcWithPackages providerHsDeps;
 
           providerGenerator = import ./plan.nix {
-              inputs = inputs // { hostenv = hostenvInput; };
-              inherit system;
-              lib = pkgs.lib;
-              pkgs = pkgs;
-              letsEncrypt = cfg.letsEncrypt;
+            inputs = inputs // { hostenv = hostenvInput; };
+            inherit system;
+            lib = pkgs.lib;
+            pkgs = pkgs;
+            letsEncrypt = cfg.letsEncrypt;
             deployPublicKey = cfg.deployPublicKey;
             warnInvalidDeployKey = cfg.warnInvalidDeployKey;
-              hostenvHostname = cfg.hostenvHostname;
-              nodeFor = cfg.nodeFor;
-              nodeSystems = cfg.nodeSystems;
-              nodesPath = cfg.nodesPath;
-              secretsPath = cfg.secretsPath;
-              statePath = cfg.statePath;
-              planPath = cfg.planPath;
-              cloudflare = cfg.cloudflare;
-              planSource = cfg.planSource;
-            };
+            hostenvHostname = cfg.hostenvHostname;
+            nodeFor = cfg.nodeFor;
+            nodeSystems = cfg.nodeSystems;
+            nodesPath = cfg.nodesPath;
+            secretsPath = cfg.secretsPath;
+            statePath = cfg.statePath;
+            planPath = cfg.planPath;
+            cloudflare = cfg.cloudflare;
+            planSource = cfg.planSource;
+          };
 
           hostenvProviderPlan = pkgs.writeShellScriptBin "hostenv-provider-plan" ''
             set -euo pipefail
@@ -138,6 +139,8 @@ in
           };
 
           checks = { };
+
+          hostenv.haskell.devPackages = providerHsPackageNames;
         };
     };
 }

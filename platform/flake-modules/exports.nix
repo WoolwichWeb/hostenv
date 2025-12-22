@@ -4,9 +4,10 @@
     # Re-usable flake-parts modules.
     flakeModules = {
       cli = ./cli.nix;
-      hostenvOutputs = ./hostenv-outputs.nix;
+      environmentRegistry = ./environment-registry.nix;
       projectOutputs = ./project-outputs.nix;
       provider = ../../provider/flake-module.nix;
+      hostenvProviderService = ./hostenv-provider-service.nix;
     };
 
     # Modules consumed by evalModules.

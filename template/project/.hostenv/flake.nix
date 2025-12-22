@@ -40,7 +40,7 @@
     flake-parts.lib.mkFlake { inherit inputs; } {
       inherit systems;
       imports = [
-        hostenv.flakeModules.hostenvOutputs
+        hostenv.flakeModules.environmentRegistry
         hostenv.flakeModules.cli
         hostenv.flakeModules.projectOutputs
       ];

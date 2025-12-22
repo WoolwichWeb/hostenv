@@ -1,6 +1,6 @@
 { ... }:
 {
-  perSystem = { pkgs, self', ... }:
+  perSystem = { pkgs, self', config, ... }:
     let
       docSearch = pkgs.writeTextDir "index.html" "<html><body>docs disabled</body></html>";
       serveDocs = pkgs.writeShellApplication {
@@ -20,7 +20,7 @@
       };
       packages = {
         inherit docSearch;
-        default = self'.packages.hostenv-provider;
+        default = config.packages.hostenv-provider;
       };
     };
 }

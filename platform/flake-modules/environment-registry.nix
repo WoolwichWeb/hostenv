@@ -1,3 +1,5 @@
+# This file contains metadata for tooling to know about environments.
+# Environment data are threaded through the project flake → provider flake, via `flakeModules`.
 { inputs, lib, config, ... }:
 let
   types = lib.types;

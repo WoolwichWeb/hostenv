@@ -106,12 +106,14 @@ in
     ./project-tools.nix
     ../services/systemd.nix
     ../services/mysql.nix
+    ../services/postgresql.nix
     ../services/nginx.nix
     ../services/nginx-fastcgi-hostenv.nix
     ../services/phpfpm.nix
     ../services/drupal.nix
     ../services/php-app.nix
     ../services/restic.nix
+    ../services/hostenv-provider-service.nix
   ];
 
   config =

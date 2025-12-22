@@ -7,7 +7,7 @@ let
   system = pkgs.stdenv.hostPlatform.system;
   flake = inputs.flake-parts.lib.mkFlake { inherit inputs; } {
     systems = [ system ];
-    imports = [ ../../platform/flake-modules/hostenv-outputs.nix ];
+    imports = [ ../../platform/flake-modules/environment-registry.nix ];
 
     perSystem = { ... }: {
       hostenvProject = {

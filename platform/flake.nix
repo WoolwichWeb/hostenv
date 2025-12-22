@@ -11,7 +11,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     phps = {
-      url = "github:fossar/nix-phps?ref=update_flake_lock_action";
+      url = "github:fossar/nix-phps";
       inputs = {
         nixpkgs.follows = "nixpkgs";
         utils.follows = "flake-utils";

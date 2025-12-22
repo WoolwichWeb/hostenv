@@ -4,3 +4,4 @@
 (import ./restic.nix { inherit pkgs; })
   // (import ./users-slices.nix { inherit pkgs; })
   // (import ./hostenv-assertions.nix { inherit pkgs makeHostenv; })
+  // (import ./hostenv-provider-service.nix { inherit pkgs; })
