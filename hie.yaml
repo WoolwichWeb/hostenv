@@ -1,0 +1,8 @@
+cradle:
+  cabal:
+    - path: "platform/services/hostenv-provider-service"
+      component: "exe:hostenv-provider-service"
+    - path: "platform/services/hostenv-provider-service/Test.hs"
+      component: "test:hostenv-provider-service-tests"
+    - path: "provider"
+      component: "exe:hostenv-provider"

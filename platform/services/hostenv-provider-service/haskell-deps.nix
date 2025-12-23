@@ -12,6 +12,7 @@
   "servant"
   "servant-server"
   "text"
+  "tagged"
   "time"
   "turtle"
   "unix"
