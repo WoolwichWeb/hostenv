@@ -104,17 +104,17 @@ let
         && lib.elem keyType allowedKeyTypes
         && builtins.match "^[A-Za-z0-9+/=]+$" keyData != null;
     in
-      if key == null || key == "" then
-        if warnInvalidDeployKey then
-          lib.warn "provider.deployPublicKey is unset or empty; skipping deploy key for provider user." [ ]
-        else
-          [ ]
-      else if isValid then
-        [ key ]
-      else if warnInvalidDeployKey then
-        lib.warn "provider.deployPublicKey is not a valid SSH public key; skipping it." [ ]
+    if key == null || key == "" then
+      if warnInvalidDeployKey then
+        lib.warn "provider.deployPublicKey is unset or empty; skipping deploy key for provider user." [ ]
       else
-        [ ];
+        [ ]
+    else if isValid then
+      [ key ]
+    else if warnInvalidDeployKey then
+      lib.warn "provider.deployPublicKey is not a valid SSH public key; skipping it." [ ]
+    else
+      [ ];
   requirePath = { name, path, hint ? "" }:
     if path == null then
       builtins.throw ''
@@ -149,11 +149,12 @@ let
 
   planPathChecked =
     if planSource == "disk" then
-      requirePath {
-        name = "planPath";
-        path = planPath;
-        hint = "Set provider.planPath (or pass planPath explicitly) and ensure the file exists when planSource=\"disk\".";
-      }
+      requirePath
+        {
+          name = "planPath";
+          path = planPath;
+          hint = "Set provider.planPath (or pass planPath explicitly) and ensure the file exists when planSource=\"disk\".";
+        }
     else
       planPath;
   # Detect hostenv project inputs by checking for the presence of evaluated environments.
@@ -208,9 +209,11 @@ let
     else
       let
         envs = planFromDisk.environments or { };
-        missing = lib.filterAttrs (_: env:
-          !(env ? uid) || env.uid == null || builtins.typeOf env.uid != "int"
-        ) envs;
+        missing = lib.filterAttrs
+          (_: env:
+            !(env ? uid) || env.uid == null || builtins.typeOf env.uid != "int"
+          )
+          envs;
         missingNames = builtins.attrNames missing;
       in
       if missingNames == [ ] then
@@ -488,7 +491,7 @@ let
             lockedRef = if lockNode != null && lockNode ? locked then lockNode.locked.ref or val.repo.ref else val.repo.ref;
           in
           ''
-            ${val.hostenv.userName} = {
+            "${val.hostenv.userName}" = {
               type = "${val.repo.type}";
               dir = "${val.repo.dir or "."}";
               ref = "${lockedRef}";
