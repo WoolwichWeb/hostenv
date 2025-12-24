@@ -206,6 +206,9 @@
       "inputs": {
         "flake-parts": "flake-parts",
         "flake-utils": "flake-utils",
+        "hostenv": [
+          "hostenv-platform"
+        ],
         "hostenv-platform": "hostenv-platform",
         "nixpkgs": "nixpkgs",
         "search": "search"

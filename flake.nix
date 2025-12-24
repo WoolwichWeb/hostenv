@@ -5,6 +5,7 @@
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     flake-parts.url = "github:hercules-ci/flake-parts";
+    hostenv.follows = "hostenv-platform";
     # phps = {
     #   url = "github:fossar/nix-phps";
     #   inputs.nixpkgs.follows = "nixpkgs";
@@ -29,6 +30,8 @@
       systems = inputs.nixpkgs.lib.systems.flakeExposed;
       imports = [
         ./provider/flake-module.nix
+        ./provider/exports.nix
+        inputs.hostenv-platform.flakeModules.exports
         inputs.hostenv-platform.flakeModules.environmentRegistry
         inputs.hostenv-platform.flakeModules.cli
         inputs.hostenv-platform.flakeModules.hostenvProviderService

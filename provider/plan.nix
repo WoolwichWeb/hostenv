@@ -185,7 +185,7 @@ let
         Please run: nix flake lock (or nix flake update) at repo root
       '';
 
-  nixosSystemPathExpr = "inputs.hostenv.lib.provider.nixosSystem";
+  nixosSystemPathExpr = "inputs.parent.lib.provider.nixosSystem";
 
   planFromDisk =
     if useEval then null
@@ -525,8 +525,7 @@ let
             url = "github:Mic92/sops-nix";
             inputs.nixpkgs.follows = "nixpkgs";
           };
-          hostenv.follows = "parent/hostenv";
-
+          
           ${inputsBlock}
         };
 

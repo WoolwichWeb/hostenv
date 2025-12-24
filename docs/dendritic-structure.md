@@ -4,7 +4,7 @@ This repo now exposes both project-facing and provider-facing pieces as flake-pa
 
 ## Provider options (trunk)
 
-Set under `perSystem.config.provider` when importing `hostenv.providerModule` (the public `hostenv` flake stays provider-neutral; each project sets `hostenvHostname` in its `.hostenv/flake.nix`, typically via a `hostenvHostname` variable passed into the modules list):
+Set under `perSystem.config.provider` when importing `hostenv.flakeModules.provider` (the public `hostenv` flake stays provider-neutral; each project sets `hostenvHostname` in its `.hostenv/flake.nix`, typically via a `hostenvHostname` variable passed into the modules list):
 
 ```nix
 perSystem = { config, ... }: {
@@ -21,10 +21,7 @@ perSystem = { config, ... }: {
       development = "backend02";
       default = "backend02";
     };
-    statePath = ./generated/state.json;   # required persisted state for UIDs/host reservations
-    planPath = ./generated/plan.json;     # optional persisted plan for auditability
     planSource = "disk";                  # or "eval" to consume generated plan directly
-    goldenPlanPath = null;                # optional path for regression diff
   };
 };
 ```

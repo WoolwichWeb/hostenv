@@ -1,12 +1,32 @@
-{ ... }:
+{ lib, ... }:
+let
+  types = lib.types;
+in
 {
+  options.flake = {
+    flakeModules = lib.mkOption {
+      type = types.attrsOf types.path;
+      default = { };
+      description = "Exported flake-parts modules (merged across modules).";
+    };
+
+    hostenvModules = lib.mkOption {
+      type = types.attrsOf types.path;
+      default = { };
+      description = "Hostenv evalModules modules (merged across modules).";
+    };
+
+    # Note: flake-parts already defines `flake.nixosModules`, so we do not
+    # declare it here to avoid option redefinition errors.
+  };
+
   config.flake = {
     # Re-usable flake-parts modules.
     flakeModules = {
+      exports = ./exports.nix;
       cli = ./cli.nix;
       environmentRegistry = ./environment-registry.nix;
       projectOutputs = ./project-outputs.nix;
-      provider = ../../provider/flake-module.nix;
       hostenvProviderService = ./hostenv-provider-service.nix;
     };
 
@@ -28,10 +48,6 @@
       monitoringHostenv = ../nixos-modules/monitoring-hostenv.nix;
       usersSlices = ../nixos-modules/users-slices.nix;
       topLevel = ../nixos-modules/top-level.nix;
-    };
-
-    lib.provider = {
-      nixosSystem = ../provider/nixos-system.nix;
     };
   };
 }

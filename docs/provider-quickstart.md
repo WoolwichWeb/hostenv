@@ -8,7 +8,7 @@
   inputs.flake-parts.url = "github:hercules-ci/flake-parts";
  outputs = inputs@{ self, flake-parts, hostenv, ... }:
    flake-parts.lib.mkFlake { inherit inputs; } {
-      imports = [ hostenv.lib.hostenv.providerModule ];
+      imports = [ hostenv.flakeModules.provider ];
       systems = [ "x86_64-linux" "aarch64-linux" ];
       perSystem = { config, ... }: {
         provider = {

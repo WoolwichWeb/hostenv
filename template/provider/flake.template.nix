@@ -14,15 +14,13 @@
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" ];
 
-      imports = [ hostenv.lib.hostenv.providerModule ];
+      imports = [ hostenv.flakeModules.provider ];
 
       provider = {
         hostenvHostname = "hosting.example.com";
         deployPublicKey = "ssh-ed25519 AAAA..."; # replace me
         nodeSystems = { default = "x86_64-linux"; };
         nodeFor = { default = "node-a"; production = "node-a"; testing = "node-a"; development = "node-a"; };
-        statePath = ./generated/state.json;
-        planPath = ./generated/plan.json;
         planSource = "eval";
       };
     };

@@ -110,7 +110,7 @@ let
   flakeInputsPresent =
     lib.all (u: lib.strings.hasInfix "${u} =" flakeText) expectedUsers
     && lib.strings.hasInfix "parent.url" flakeText
-    && lib.strings.hasInfix "hostenv.follows = \"parent/hostenv\"" flakeText;
+      && lib.strings.hasInfix "nixosSystem = node: import inputs.parent.lib.provider.nixosSystem" flakeText;
 in
 {
   provider_full_env_discovery =

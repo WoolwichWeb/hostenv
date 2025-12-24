@@ -1,7 +1,6 @@
 { ... }:
 {
   flake = {
-    flakeModules.provider = ./../provider/flake-module.nix;
     templates.default = {
       path = ./../template/project;
       description = "Hostenv project template";
