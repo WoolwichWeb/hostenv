@@ -1,4 +1,4 @@
-{ inputs, system, config, ... }:
+{ inputs, system, config, lib, ... }:
 let
   pkgs = inputs.nixpkgs.legacyPackages.${system};
   secretFile = ../secrets/secrets.yaml;
