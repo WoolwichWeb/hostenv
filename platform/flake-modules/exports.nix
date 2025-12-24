@@ -29,5 +29,9 @@
       usersSlices = ../nixos-modules/users-slices.nix;
       topLevel = ../nixos-modules/top-level.nix;
     };
+
+    lib.provider = {
+      nixosSystem = ../provider/nixos-system.nix;
+    };
   };
 }

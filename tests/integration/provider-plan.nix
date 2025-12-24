@@ -125,8 +125,18 @@ let
   };
 
   dummyStatePath = pkgs.writers.writeJSON "dummy-state.json" { };
+  planEmptyPath = ../support/provider/plan-empty.json;
 
-  mkPlan = { hostenvHostname ? "custom.host", state ? { }, planSource ? "eval", planPath ? null, deployPublicKey ? "ssh-ed25519 test", warnInvalidDeployKey ? true }:
+  mkSelfDir = { state, plan ? planEmptyPath }:
+    pkgs.runCommand "provider-self" { inherit state plan; } ''
+      mkdir -p $out/generated
+      cp ${state} $out/generated/state.json
+      cp ${plan} $out/generated/plan.json
+    '';
+
+  baseSelfDir = mkSelfDir { state = dummyStatePath; };
+
+  mkPlan = { hostenvHostname ? "custom.host", state ? { }, planSource ? "eval", deployPublicKey ? "ssh-ed25519 test", warnInvalidDeployKey ? true, selfDirOverride ? null }:
     let
       # Build a synthetic flake inputs set: hostenv modules + one project with hostenv output.
       lockData = {
@@ -153,7 +163,13 @@ let
         then dummyStatePath
         else pkgs.writers.writeJSON "state.json" state;
 
+      selfDir =
+        if selfDirOverride != null
+        then selfDirOverride
+        else mkSelfDir { state = statePathEffective; };
+
       inputsEffective = {
+        self = selfDir;
         hostenv =
           let outPath = ../../modules;
           in {
@@ -177,10 +193,6 @@ let
       deployPublicKey = deployPublicKey;
       warnInvalidDeployKey = warnInvalidDeployKey;
       nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
-      nodesPath = ./.;
-      secretsPath = ./.;
-      statePath = statePathEffective;
-      planPath = planPath;
       lockPath = lockPath;
       nodeSystems = { };
       cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
@@ -261,8 +273,7 @@ let
   planDisk =
     mkPlan {
       planSource = "disk";
-      planPath = planNoState;
-      state = lib.importJSON stateNoState;
+      selfDirOverride = mkSelfDir { state = stateNoState; plan = planNoState; };
     };
   invalidDeployKey = "not-a-key";
   planInvalidDeployKey = builtins.tryEval (mkPlan { deployPublicKey = invalidDeployKey; warnInvalidDeployKey = false; });
@@ -271,6 +282,7 @@ let
   quotedValidProject = mkProjectInput { organisation = "acme"; project = "demo-project"; envName = "main"; };
 
   quotedInputs = {
+    self = baseSelfDir;
     hostenv =
       let outPath = ../../modules;
       in {
@@ -310,10 +322,6 @@ let
     deployPublicKey = "ssh-ed25519 test";
     hostenvHostname = "hosting.test";
     nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
-    nodesPath = ./.;
-    secretsPath = ./.;
-    statePath = dummyStatePath;
-    planPath = null;
     lockPath = quotedLockPath;
     nodeSystems = { };
     cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
@@ -325,6 +333,7 @@ let
   planMissingProjects =
     let
       minimalInputs = {
+        self = baseSelfDir;
         hostenv =
           let outPath = ../../modules;
           in { inherit outPath; modules = outPath; __toString = self: toString outPath; };
@@ -338,10 +347,6 @@ let
         deployPublicKey = "ssh-ed25519 test";
         hostenvHostname = "custom.host";
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
-        nodesPath = ./.;
-        secretsPath = ./.;
-        statePath = dummyStatePath;
-        planPath = null;
         lockPath = lockPath;
         nodeSystems = { };
         cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
@@ -352,6 +357,7 @@ let
   planMissingEnvironments =
     let
       badInputs = {
+        self = baseSelfDir;
         hostenv =
           let outPath = ../../modules;
           in { inherit outPath; modules = outPath; __toString = self: toString outPath; };
@@ -391,10 +397,6 @@ let
         deployPublicKey = "ssh-ed25519 test";
         hostenvHostname = "custom.host";
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
-        nodesPath = ./.;
-        secretsPath = ./.;
-        statePath = dummyStatePath;
-        planPath = null;
         lockPath = lockPath;
         nodeSystems = { };
         cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
@@ -421,8 +423,10 @@ let
 
   selfLockFile = pkgs.writers.writeJSON "flake.lock" lockDataSelf;
   selfLockDir = pkgs.runCommand "provider-self-lock" { } ''
-    mkdir -p $out
+    mkdir -p $out/generated
     cp ${selfLockFile} $out/flake.lock
+    cp ${dummyStatePath} $out/generated/state.json
+    cp ${planEmptyPath} $out/generated/plan.json
   '';
 
   planDefaultLock =
@@ -444,10 +448,6 @@ let
       deployPublicKey = "ssh-ed25519 test";
       hostenvHostname = "custom.host";
       nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
-      nodesPath = ./.;
-      secretsPath = ./.;
-      statePath = dummyStatePath;
-      planPath = null;
       nodeSystems = { };
       cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
       planSource = "eval";
@@ -532,6 +532,7 @@ EOF
       lockPath = pkgs.writers.writeJSON "flake.lock" lockData;
 
       inputsConflict = {
+        self = baseSelfDir;
         hostenv =
           let outPath = ../../modules;
           in { inherit outPath; modules = outPath; __toString = self: toString outPath; };
@@ -550,10 +551,6 @@ EOF
         deployPublicKey = "ssh-ed25519 test";
         hostenvHostname = "custom.host";
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
-        nodesPath = ./.;
-        secretsPath = ./.;
-        statePath = dummyStatePath;
-        planPath = null;
         lockPath = lockPath;
         nodeSystems = { };
         cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
@@ -599,7 +596,8 @@ in
 
   provider-plan-flake-inputs =
     let flakeText = builtins.readFile flakeNoState;
-      ok = lib.strings.hasInfix "hostenv.url" flakeText
+      ok = lib.strings.hasInfix "parent.url" flakeText
+        && lib.strings.hasInfix "hostenv.follows = \"parent/hostenv\"" flakeText
         && lib.strings.hasInfix "${user1} =" flakeText
         && lib.strings.hasInfix "${user2} =" flakeText;
     in asserts.assertTrue "provider-plan-flake-inputs" ok

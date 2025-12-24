@@ -33,12 +33,12 @@ Edit `flake.template.nix` to make structural changes while keeping the marker:
 
 ## Outputs
 
-- `apps.hostenv-provider-plan`: generate plan/state/flake into `generated/` (or `$HOSTENV_PROVIDER_OUT`).
+- `apps.hostenv-provider-plan`: generate plan/state/flake into `generated/`.
 - `packages.hostenv-provider`: CLI wrapper.
 
 ## Customisation tips
 
 - Ensure client project inputs point at the `.hostenv` flake (e.g. `dir=.hostenv`).
-- Override `nodesPath`, `secretsPath`, or `planSource = "disk"` if you keep generated artifacts elsewhere.
+- Use `planSource = "disk"` if you want to reuse an existing plan.json without re-evaluating inputs.
 - Add extra Haskell deps for the dev shell via `provider.haskellDevPackages` (appended to `hostenv.haskell.devPackages`).
 - Add provider-specific modules under `modules/nixos` in your repo and import them via flake-parts alongside `providerModule`.

@@ -45,7 +45,6 @@ in
             ++ config.hostenv.devShell.packages;
 
           shellHook = ''
-            export HOSTENV_PROVIDER_OUT=''${HOSTENV_PROVIDER_OUT:-generated}
             if command -v ghc >/dev/null; then
               libdir="$(ghc --print-libdir)"
               pkgdb="''${libdir}/package.conf.d"

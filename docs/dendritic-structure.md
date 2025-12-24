@@ -21,10 +21,6 @@ perSystem = { config, ... }: {
       development = "backend02";
       default = "backend02";
     };
-    nodesPath = ./nodes;             # per-node configuration modules
-    secretsPath = ./secrets/secrets.yaml; # sops-encrypted secrets
-    statePath = ./generated/state.json;   # required persisted state for UIDs/host reservations
-    planPath = ./generated/plan.json;     # optional persisted plan for auditability
     planSource = "disk";                  # or "eval" to consume generated plan directly
     goldenPlanPath = null;                # optional path for regression diff
   };
@@ -34,8 +30,8 @@ perSystem = { config, ... }: {
 ## Branches
 
 - `modules/environments.nix` defines the canonical environments schema; it is bridged into `hostenv.environments` for feature modules.
-- `nodesPath` is a directory of per-node configs (`configuration.nix` + hardware config).
-- Secrets are supplied via `secretsPath` (sops). Provide your own example or copy from provider secrets when bootstrapping.
+- Nodes live under `nodes/` (`configuration.nix` + hardware config).
+- Secrets live under `secrets/secrets.yaml` (sops). Provide your own example or copy from provider secrets when bootstrapping.
 - The provider template includes starter node stubs in `nodes/sample/`; copy and adapt for a new provider setup. Secrets are created with `sops` at `secrets/secrets.yaml`.
 - `nodeSystems` maps node name → system (e.g. `x86_64-linux`); required if nodes are heterogeneous.
 - Client project inputs should point at the `.hostenv` flake (e.g. `dir=.hostenv`).
@@ -68,7 +64,7 @@ perSystem = { config, ... }: {
    nix run .#hostenv-provider plan
    ```
 
-   Outputs go to `${HOSTENV_PROVIDER_OUT:-generated}`.
+   Outputs go to `generated/`.
    Why emit a new flake? Flake inputs are static, but client repos expose many environments (often one per branch/tag). Plan generation materialises a flake whose inputs enumerate *every environment* (repo × env), so deploy-rs can build exactly the closures in the plan without re-evaluating dynamic inputs. The bundle `plan.json` + `state.json` + `flake.nix` is the auditable deploy snapshot.
 2) Safety gate + optional Cloudflare CNAME upsert:
 

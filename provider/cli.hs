@@ -31,18 +31,7 @@ import Prelude hiding (FilePath)
 -- -------- CLI --------
 data Command = CmdPlan | CmdDnsGate {cNode :: Maybe Text, cWrite :: Bool, cToken :: Maybe Text, cZone :: Maybe Text} | CmdDeploy {cNode :: Maybe Text}
 
-data CLI = CLI {cliDest :: Text, cliCmd :: Command}
-
-destOpt :: OA.Parser Text
-destOpt =
-    T.pack
-        <$> OA.strOption
-            ( OA.long "dest"
-                <> OA.metavar "DIR"
-                <> OA.value "generated"
-                <> OA.showDefault
-                <> OA.help "Output directory for generated plan/state/flake"
-            )
+data CLI = CLI {cliCmd :: Command}
 
 nodeOpt :: OA.Parser (Maybe Text)
 nodeOpt =
@@ -70,8 +59,7 @@ zoneOpt = OA.optional . fmap T.pack $ OA.strOption (OA.long "cf-zone" <> OA.meta
 cliParser :: OA.Parser CLI
 cliParser =
     CLI
-        <$> destOpt
-        <*> OA.hsubparser
+        <$> OA.hsubparser
             ( OA.command "plan" (OA.info (pure CmdPlan) (OA.progDesc "Generate plan/state/flake"))
                 <> OA.command "dns-gate" (OA.info (CmdDnsGate <$> nodeOpt <*> writeOpt <*> tokenOpt <*> zoneOpt) (OA.progDesc "Disable ACME/forceSSL for vhosts not pointing at node; optional Cloudflare upsert"))
                 <> OA.command "deploy" (OA.info (CmdDeploy <$> nodeOpt) (OA.progDesc "Deploy via deploy-rs"))
@@ -230,8 +218,9 @@ cfUpsertCname token zoneId name target = do
             Sh.stdout $ Sh.inproc "curl" ["-sS", "-X", "POST", "-H", "Authorization: Bearer " <> token, "-H", "Content-Type: application/json", "--data", body, url] Sh.empty
 
 -- -------- DNS gate --------
-runDnsGate :: Text -> Bool -> Maybe Text -> Maybe Text -> Maybe Text -> IO ()
-runDnsGate dest writeOut mNode mTok mZone = do
+runDnsGate :: Bool -> Maybe Text -> Maybe Text -> Maybe Text -> IO ()
+runDnsGate writeOut mNode mTok mZone = do
+    let dest = "generated"
     let planPath = dest <> "/plan.json"
     planExists <- Sh.testfile (fromString (T.unpack planPath))
     when (not planExists) $ do
@@ -298,9 +287,8 @@ runDnsGate dest writeOut mNode mTok mZone = do
         pure planAcc'
 
 -- -------- Plan (copy from provider package) --------
-runPlan :: Text -> IO ()
-runPlan dest = do
-    Sh.export "HOSTENV_PROVIDER_OUT" dest
+runPlan :: IO ()
+runPlan = do
     _ <- Sh.procs "hostenv-provider-plan" [] Sh.empty
     pure ()
 
@@ -313,8 +301,8 @@ runDeploy mNode = do
 -- -------- Main --------
 main :: IO ()
 main = do
-    CLI dest cmd <- OA.execParser cliOpts
+    CLI cmd <- OA.execParser cliOpts
     case cmd of
-        CmdPlan -> runPlan dest
-        CmdDnsGate mNode writeOut mTok mZone -> runDnsGate dest writeOut mNode mTok mZone
+        CmdPlan -> runPlan
+        CmdDnsGate mNode writeOut mTok mZone -> runDnsGate writeOut mNode mTok mZone
         CmdDeploy mNode -> runDeploy mNode

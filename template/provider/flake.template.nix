@@ -21,10 +21,6 @@
         deployPublicKey = "ssh-ed25519 AAAA..."; # replace me
         nodeSystems = { default = "x86_64-linux"; };
         nodeFor = { default = "node-a"; production = "node-a"; testing = "node-a"; development = "node-a"; };
-        nodesPath = ./nodes;
-        secretsPath = ./secrets/secrets.yaml;
-        statePath = ./generated/state.json;
-        planPath = ./generated/plan.json;
         planSource = "eval";
       };
     };

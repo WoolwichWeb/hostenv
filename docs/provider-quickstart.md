@@ -14,8 +14,6 @@
         provider = {
           hostenvHostname = "hostenv.sh";
           nodeSystems = { backend01 = "aarch64-linux"; backend02 = "aarch64-linux"; backend03 = "x86_64-linux"; backend04 = "aarch64-linux"; };
-          nodesPath = ./nodes;
-          secretsPath = ./secrets/secrets.yaml;
           planSource = "eval"; # or "disk"
         };
       };

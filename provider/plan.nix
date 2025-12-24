@@ -7,10 +7,6 @@
 , hostenvHostname
 , warnInvalidDeployKey ? true
 , nodeFor ? { default = null; }
-, nodesPath ? (if inputs ? self then inputs.self + /nodes else null)
-, secretsPath ? (if inputs ? self then inputs.self + /secrets/secrets.yaml else null)
-, statePath ? (if inputs ? self then inputs.self + /generated/state.json else null)
-, planPath ? (if inputs ? self then inputs.self + /generated/plan.json else null)
 , nodeSystems ? { }
 , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
 , planSource ? "eval"
@@ -129,34 +125,32 @@ let
         ${hint}
       '';
 
-  nodesPathChecked = requirePath {
-    name = "nodesPath";
-    path = nodesPath;
-    hint = "Set provider.nodesPath (or pass nodesPath explicitly) to your nodes directory.";
-  };
+  generatedStatePath =
+    if inputs ? self
+    then inputs.self + /generated/state.json
+    else null;
 
-  secretsPathChecked = requirePath {
-    name = "secretsPath";
-    path = secretsPath;
-    hint = "Set provider.secretsPath (or pass secretsPath explicitly) to your secrets file path.";
-  };
+  generatedPlanPath =
+    if inputs ? self
+    then inputs.self + /generated/plan.json
+    else null;
 
   statePathChecked = requirePath {
-    name = "statePath";
-    path = statePath;
-    hint = "Set provider.statePath (or pass statePath explicitly) and ensure the file exists (it can be an empty JSON object).";
+    name = "generated/state.json";
+    path = generatedStatePath;
+    hint = "Create generated/state.json (it can be an empty JSON object).";
   };
 
   planPathChecked =
     if planSource == "disk" then
       requirePath
         {
-          name = "planPath";
-          path = planPath;
-          hint = "Set provider.planPath (or pass planPath explicitly) and ensure the file exists when planSource=\"disk\".";
+          name = "generated/plan.json";
+          path = generatedPlanPath;
+          hint = "Create generated/plan.json when planSource=\"disk\".";
         }
     else
-      planPath;
+      generatedPlanPath;
   # Detect hostenv project inputs by checking for the presence of evaluated environments.
   projectInputs =
     if (!useEval) then [ ] else
@@ -198,6 +192,8 @@ let
         flake.lock is missing at ${builtins.toString lockPath}.
         Please run: nix flake lock (or nix flake update) at repo root
       '';
+
+  nixosSystemPathExpr = "inputs.hostenv.lib.provider.nixosSystem";
 
   planFromDisk =
     if useEval then null
@@ -527,6 +523,7 @@ let
     pkgs.writeText "flake.nix" ''
       {
         inputs = {
+          parent.url = "path:..";
           systems.url = "github:nix-systems/default";
           deploy-rs = {
             url = "github:serokell/deploy-rs";
@@ -536,7 +533,7 @@ let
             url = "github:Mic92/sops-nix";
             inputs.nixpkgs.follows = "nixpkgs";
           };
-          hostenv.url = "${builtins.toString inputs.hostenv}";
+          hostenv.follows = "parent/hostenv";
 
           ${inputsBlock}
         };
@@ -550,10 +547,10 @@ let
             pkgs = forEachSystem (system: import nixpkgs { inherit system; });
             localSystem = "x86_64-linux";
 
-            nixosSystem = node: import ${builtins.toString ./nixos-system.nix} {
+            nixosSystem = node: import ${nixosSystemPathExpr} {
               inherit config node nixpkgs pkgs inputs localSystem;
-              nodesPath = ${builtins.toString nodesPathChecked};
-              secretsPath = "${builtins.toString secretsPathChecked}";
+              nodesPath = ../nodes;
+              secretsPath = ../secrets/secrets.yaml;
               nodeSystems = ${lib.generators.toPretty {} nodeSystems};
             };
 

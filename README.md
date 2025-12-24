@@ -84,7 +84,7 @@ And here's the same idea for a tiny PHP app (no Drupal) using the built‑in `ph
 - **Add a host (provider)**:
   - Create `nodes/<name>/hardware-configuration.nix` (copy from the machine) and a minimal `nodes/<name>/configuration.nix`.
   - Map it in `provider.nodeSystems` and, if needed, in `provider.nodeFor` to steer env types to that node.
-  - Regenerate plan/state/flake: `nix run .#hostenv-provider-plan` (writes to `generated/` or `$HOSTENV_PROVIDER_OUT`).
+  - Regenerate plan/state/flake: `nix run .#hostenv-provider-plan` (writes to `generated/`).
   - Deploy using your tool (e.g. deploy-rs) against `generated/flake.nix`, targeting that node.
   - Update secrets: on the host `ssh-keygen -y -f /etc/ssh/ssh_host_ed25519_key | ssh-to-age`, add the key to `.sops.yaml`/`secrets/secrets.yaml`, then `sops updatekeys secrets/secrets.yaml` locally.
 - **Add a feature module**: create `modules/nixos/<name>.nix` (system-level, provider-neutral) or `modules/env/<name>.nix` (user-level); put provider-specific modules under `modules/providers/<name>.nix` if needed. Feature modules read `config.hostenv.environments` (wired by the provider system). Import new host-level modules in the provider system wiring (`provider/nixos-system.nix`) if they’re host-only; import env-level modules in `modules/core/full-env.nix`. Add a test in `tests/`.
@@ -120,7 +120,7 @@ And here's the same idea for a tiny PHP app (no Drupal) using the built‑in `ph
   `nix flake init -t gitlab:woolwichweb/hostenv#provider`
 
 - Create NixOS node configs under `nodes/<node>/configuration.nix` (plus hardware config); set `system.stateVersion`.
-- Generate plan/state/flake: `nix run .#hostenv-provider-plan` (writes to `generated/` or `$HOSTENV_PROVIDER_OUT`).
+- Generate plan/state/flake: `nix run .#hostenv-provider-plan` (writes to `generated/`).
 - Deploy using your preferred tool (e.g. deploy-rs) against the generated flake.
 - Client project inputs should point at the `.hostenv` flake (e.g. `dir=.hostenv`), so `hostenv.nix` is at the flake root.
 

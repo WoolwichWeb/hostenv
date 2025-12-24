@@ -24,35 +24,6 @@ in
         default = { };
         description = "Map of node name -> system string (e.g. x86_64-linux, aarch64-linux).";
       };
-      # Default to the repository root `nodes/` directory; provider repos can override.
-      nodesPath = mkOption {
-        type = types.path;
-        default =
-          if inputs ? self
-          then inputs.self + /nodes
-          else builtins.throw "provider.nodesPath: inputs.self is required to resolve defaults; set provider.nodesPath explicitly.";
-      };
-      secretsPath = mkOption {
-        type = types.path;
-        default =
-          if inputs ? self
-          then inputs.self + /secrets/secrets.yaml
-          else builtins.throw "provider.secretsPath: inputs.self is required to resolve defaults; set provider.secretsPath explicitly.";
-      };
-      statePath = mkOption {
-        type = types.path;
-        default =
-          if inputs ? self
-          then inputs.self + /generated/state.json
-          else builtins.throw "provider.statePath: inputs.self is required to resolve defaults; set provider.statePath explicitly.";
-      };
-      planPath = mkOption {
-        type = types.path;
-        default =
-          if inputs ? self
-          then inputs.self + /generated/plan.json
-          else builtins.throw "provider.planPath: inputs.self is required to resolve defaults; set provider.planPath explicitly.";
-      };
       planSource = mkOption { type = types.enum [ "disk" "eval" ]; default = "eval"; };
       cloudflare = mkOption {
         type = types.submodule {
@@ -80,7 +51,7 @@ in
     let
       cfgTop =
         if config ? provider then config.provider
-        else throw ''provider flake module: set the `provider.*` options (e.g. by importing provider/flake-module.nix in flake-parts and defining provider.hostenvHostname, nodeFor, nodeSystems, paths, etc.)'';
+        else throw ''provider flake module: set the `provider.*` options (e.g. by importing provider/flake-module.nix in flake-parts and defining provider.hostenvHostname, nodeFor, nodeSystems, etc.)'';
     in
     {
       perSystem = { system, pkgs, ... }:
@@ -109,17 +80,13 @@ in
             hostenvHostname = cfg.hostenvHostname;
             nodeFor = cfg.nodeFor;
             nodeSystems = cfg.nodeSystems;
-            nodesPath = cfg.nodesPath;
-            secretsPath = cfg.secretsPath;
-            statePath = cfg.statePath;
-            planPath = cfg.planPath;
             cloudflare = cfg.cloudflare;
             planSource = cfg.planSource;
           };
 
           hostenvProviderPlan = pkgs.writeShellScriptBin "hostenv-provider-plan" ''
             set -euo pipefail
-            dest=''${HOSTENV_PROVIDER_OUT:-generated}
+            dest=generated
             mkdir -p "$dest"
             cp ${providerGenerator.flake} "$dest/flake.nix"
             cat ${providerGenerator.state} > "$dest/state.json"
