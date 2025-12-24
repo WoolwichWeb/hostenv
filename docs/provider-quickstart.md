@@ -4,7 +4,10 @@
 
 ```nix
 {
-  inputs.hostenv.url = "gitlab:woolwichweb/hostenv";
+  inputs.hostenv = {
+    url = "gitlab:woolwichweb/hostenv";
+    inputs.hostenv-platform.follows = "hostenv-platform";
+  };
   inputs.hostenv-platform = {
     url = "gitlab:woolwichweb/hostenv?dir=platform";
     inputs.nixpkgs.follows = "hostenv/nixpkgs";

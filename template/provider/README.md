@@ -28,7 +28,7 @@ Edit `flake.template.nix` to make structural changes while keeping the marker:
 
 ## Inputs
 
-- `hostenv` (pinned): provides the provider module and hostenv modules.
+- `hostenv` (pinned): provides the provider module and hostenv modules (follows `hostenv-platform` for its platform input).
 - `hostenv-platform` (pinned): platform flake used by generated environments.
 - `nixpkgs`, `flake-parts`: follow `hostenv` pins to stay in sync.
 
