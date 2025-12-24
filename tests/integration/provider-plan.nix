@@ -187,6 +187,47 @@ let
       planSource = planSource;
     };
 
+  mkProjectInput = { organisation, project, envName ? "main" }:
+    let
+      projectDir = pkgs.runCommand "hostenv-project-${project}" { } ''
+        mkdir -p $out
+        cat > $out/hostenv.nix <<'EOF'
+        { pkgs, config, ... }: {
+          defaultEnvironment = "${envName}";
+          environments.${envName} = {
+            enable = true;
+            type = "development";
+            virtualHosts."${project}-${envName}.example" = {
+              enableLetsEncrypt = true;
+              globalRedirect = null;
+              locations = { };
+            };
+          };
+          hostenv = {
+            organisation = "${organisation}";
+            project = "${project}";
+            hostenvHostname = "hosting.test";
+            root = "/srv/${project}";
+          };
+        }
+        EOF
+      '';
+      eval = makeHostenv [ (projectDir + /hostenv.nix) ] null;
+      input = {
+        outPath = projectDir;
+        __toString = self: toString projectDir;
+        hostenv = {
+          "${"x86_64-linux"}" = {
+            environments = eval.config.environments;
+            defaultEnvironment = eval.config.defaultEnvironment;
+          };
+        };
+      };
+    in
+    {
+      inherit projectDir eval input;
+    };
+
   providerEnvs = envsEval.config.environments;
 
   sampleProjects =
@@ -225,6 +266,62 @@ let
     };
   invalidDeployKey = "not-a-key";
   planInvalidDeployKey = builtins.tryEval (mkPlan { deployPublicKey = invalidDeployKey; warnInvalidDeployKey = false; });
+
+  quotedInvalidProject = mkProjectInput { organisation = "acme"; project = "4demo"; envName = "main"; };
+  quotedValidProject = mkProjectInput { organisation = "acme"; project = "demo-project"; envName = "main"; };
+
+  quotedInputs = {
+    hostenv =
+      let outPath = ../../modules;
+      in {
+        inherit outPath;
+        modules = outPath;
+        __toString = self: toString outPath;
+      };
+    acme__4demo = quotedInvalidProject.input;
+    acme__demo-project = quotedValidProject.input;
+  };
+
+  quotedLockData = {
+    nodes = {
+      "acme__4demo" = {
+        original = {
+          type = "git";
+          url = "https://example.invalid/4demo.git";
+          ref = "main";
+        };
+      };
+      "acme__demo-project" = {
+        original = {
+          type = "git";
+          url = "https://example.invalid/demo-project.git";
+          ref = "main";
+        };
+      };
+    };
+  };
+
+  quotedLockPath = pkgs.writers.writeJSON "flake.lock" quotedLockData;
+  quotedPlan = import ../../provider/plan.nix {
+    inputs = quotedInputs;
+    system = "x86_64-linux";
+    inherit lib pkgs;
+    letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
+    deployPublicKey = "ssh-ed25519 test";
+    hostenvHostname = "hosting.test";
+    nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
+    nodesPath = ./.;
+    secretsPath = ./.;
+    statePath = dummyStatePath;
+    planPath = null;
+    lockPath = quotedLockPath;
+    nodeSystems = { };
+    cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
+    planSource = "eval";
+  };
+  quotedFlakeText = builtins.readFile quotedPlan.flake;
+  quotedInvalidUser = quotedInvalidProject.eval.config.environments.main.hostenv.userName;
+  quotedValidUser = quotedValidProject.eval.config.environments.main.hostenv.userName;
   planMissingProjects =
     let
       minimalInputs = {
@@ -507,6 +604,14 @@ in
         && lib.strings.hasInfix "${user2} =" flakeText;
     in asserts.assertTrue "provider-plan-flake-inputs" ok
       "generated flake should expose hostenv and per-environment inputs";
+
+  provider-plan-flake-inputs-quoted =
+    let
+      ok = lib.strings.hasInfix "\"${quotedInvalidUser}\" =" quotedFlakeText
+        && lib.strings.hasInfix "${quotedValidUser} =" quotedFlakeText
+        && !(lib.strings.hasInfix "\"${quotedValidUser}\" =" quotedFlakeText);
+    in asserts.assertTrue "provider-plan-flake-inputs-quoted" ok
+      "generated flake should quote invalid input identifiers and leave valid ones unquoted";
 
   provider-plan-planSource-disk =
     let

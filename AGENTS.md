@@ -36,7 +36,7 @@ In each client repo you have a module file, e.g.:
   environments.main = {
     enable = true;
     type = "production";
-    hosts."georgina.ca".globalRedirect = "www.georgina.ca";
+    hosts."example.ca".globalRedirect = "www.example.ca";
   };
   environments."user-testing" = { enable = true; type = "testing"; };
   # etc.
