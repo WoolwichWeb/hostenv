@@ -110,7 +110,7 @@ nixpkgs.lib.nixosSystem {
     ../platform/nixos-modules/backups-hostenv.nix
     ../platform/nixos-modules/monitoring-hostenv.nix
     hostenvEnvModule
-    (nodePath + /configuration.nix)
+    (nodePath + "/configuration.nix")
     nodeConfig
     (sopsSecrets nodeConfig)
     (userPackages nodeConfig)
