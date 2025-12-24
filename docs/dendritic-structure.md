@@ -21,6 +21,8 @@ perSystem = { config, ... }: {
       development = "backend02";
       default = "backend02";
     };
+    statePath = ./generated/state.json;   # required persisted state for UIDs/host reservations
+    planPath = ./generated/plan.json;     # optional persisted plan for auditability
     planSource = "disk";                  # or "eval" to consume generated plan directly
     goldenPlanPath = null;                # optional path for regression diff
   };

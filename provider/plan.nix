@@ -7,6 +7,8 @@
 , hostenvHostname
 , warnInvalidDeployKey ? true
 , nodeFor ? { default = null; }
+, statePath ? (if inputs ? self then inputs.self + /generated/state.json else null)
+, planPath ? (if inputs ? self then inputs.self + /generated/plan.json else null)
 , nodeSystems ? { }
 , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
 , planSource ? "eval"
@@ -125,32 +127,22 @@ let
         ${hint}
       '';
 
-  generatedStatePath =
-    if inputs ? self
-    then inputs.self + /generated/state.json
-    else null;
-
-  generatedPlanPath =
-    if inputs ? self
-    then inputs.self + /generated/plan.json
-    else null;
-
   statePathChecked = requirePath {
-    name = "generated/state.json";
-    path = generatedStatePath;
-    hint = "Create generated/state.json (it can be an empty JSON object).";
+    name = "statePath";
+    path = statePath;
+    hint = "Set provider.statePath (or pass statePath explicitly) and ensure the file exists (it can be an empty JSON object).";
   };
 
   planPathChecked =
     if planSource == "disk" then
       requirePath
         {
-          name = "generated/plan.json";
-          path = generatedPlanPath;
-          hint = "Create generated/plan.json when planSource=\"disk\".";
+          name = "planPath";
+          path = planPath;
+          hint = "Set provider.planPath (or pass planPath explicitly) and ensure the file exists when planSource=\"disk\".";
         }
     else
-      generatedPlanPath;
+      planPath;
   # Detect hostenv project inputs by checking for the presence of evaluated environments.
   projectInputs =
     if (!useEval) then [ ] else

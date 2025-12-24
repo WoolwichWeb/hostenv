@@ -24,6 +24,20 @@ in
         default = { };
         description = "Map of node name -> system string (e.g. x86_64-linux, aarch64-linux).";
       };
+      statePath = mkOption {
+        type = types.path;
+        default =
+          if inputs ? self
+          then inputs.self + /generated/state.json
+          else builtins.throw "provider.statePath: inputs.self is required to resolve defaults; set provider.statePath explicitly.";
+      };
+      planPath = mkOption {
+        type = types.path;
+        default =
+          if inputs ? self
+          then inputs.self + /generated/plan.json
+          else builtins.throw "provider.planPath: inputs.self is required to resolve defaults; set provider.planPath explicitly.";
+      };
       planSource = mkOption { type = types.enum [ "disk" "eval" ]; default = "eval"; };
       cloudflare = mkOption {
         type = types.submodule {
@@ -51,7 +65,7 @@ in
     let
       cfgTop =
         if config ? provider then config.provider
-        else throw ''provider flake module: set the `provider.*` options (e.g. by importing provider/flake-module.nix in flake-parts and defining provider.hostenvHostname, nodeFor, nodeSystems, etc.)'';
+        else throw ''provider flake module: set the `provider.*` options (e.g. by importing provider/flake-module.nix in flake-parts and defining provider.hostenvHostname, nodeFor, nodeSystems, paths, etc.)'';
     in
     {
       perSystem = { system, pkgs, ... }:
@@ -80,6 +94,8 @@ in
             hostenvHostname = cfg.hostenvHostname;
             nodeFor = cfg.nodeFor;
             nodeSystems = cfg.nodeSystems;
+            statePath = cfg.statePath;
+            planPath = cfg.planPath;
             cloudflare = cfg.cloudflare;
             planSource = cfg.planSource;
           };

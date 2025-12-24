@@ -57,16 +57,8 @@ let
   nodesStub = pkgs.runCommand "nodes-stub" { } ''mkdir -p $out'';
   secretsStub = pkgs.runCommand "secrets-stub" { } ''echo "{}" > $out'';
   stateStub = pkgs.writers.writeJSON "state-stub.json" { };
-  planEmptyPath = ../support/provider/plan-empty.json;
-
-  selfDir = pkgs.runCommand "provider-self" { inherit stateStub planEmptyPath; } ''
-    mkdir -p $out/generated
-    cp ${stateStub} $out/generated/state.json
-    cp ${planEmptyPath} $out/generated/plan.json
-  '';
 
   inputs = {
-    self = selfDir;
     hostenv = hostenvInput;
     acme__drupal = drupal.input;
     acme__drupal7 = drupal7.input;
@@ -88,6 +80,7 @@ let
     deployPublicKey = "ssh-ed25519 test";
     hostenvHostname = "hosting.test";
     nodeFor = { default = "node-a"; production = "node-a"; testing = "node-a"; development = "node-a"; };
+    statePath = stateStub;
     lockPath = lockPath;
     nodeSystems = { };
     cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
