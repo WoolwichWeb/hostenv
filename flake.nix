@@ -25,7 +25,6 @@
       systems = inputs.nixpkgs.lib.systems.flakeExposed;
       imports = [
         ./provider/flake-module.nix
-        ./provider/exports.nix
         inputs.hostenv-platform.flakeModules.exports
         inputs.hostenv-platform.flakeModules.environmentRegistry
         inputs.hostenv-platform.flakeModules.cli

@@ -68,6 +68,9 @@ in
         else throw ''provider flake module: set the `provider.*` options (e.g. by importing provider/flake-module.nix in flake-parts and defining provider.hostenvHostname, nodeFor, nodeSystems, paths, etc.)'';
     in
     {
+      flake.lib.provider.nixosSystem = ./nixos-system.nix;
+      flake.flakeModules.provider = ./flake-module.nix;
+
       perSystem = { system, pkgs, ... }:
         let
           cfg = cfgTop;
