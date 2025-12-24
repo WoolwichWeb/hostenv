@@ -6,6 +6,7 @@
   "http-client"
   "http-client-tls"
   "http-types"
+  "lucid"
   "memory"
   "network"
   "postgresql-simple"

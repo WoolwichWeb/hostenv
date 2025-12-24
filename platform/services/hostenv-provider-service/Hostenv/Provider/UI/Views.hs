@@ -15,84 +15,70 @@ import Data.List (sortOn)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Lucid
 
 import Hostenv.Provider.Config (AppConfig(..), uiPath)
 import Hostenv.Provider.DB (ProjectRow(..), SessionInfo(..), User(..))
 import Hostenv.Provider.Gitlab (GitlabProject(..))
-import Hostenv.Provider.Util (escapeHtml)
 
 
-loginPage :: AppConfig -> Maybe Text -> Text
+loginPage :: AppConfig -> Maybe Text -> Html ()
 loginPage cfg mMsg =
-  page cfg "Hostenv Provider" $
-    T.concat
-      [ maybe "" (\msg -> alertBox msg) mMsg
-      , "<h1>Hostenv Provider</h1>"
-      , "<p>Sign in with GitLab to manage projects.</p>"
-      , loginButtons
-      ]
+  page cfg "Hostenv Provider" $ do
+    maybe mempty alertBox mMsg
+    h1_ "Hostenv Provider"
+    p_ "Sign in with GitLab to manage projects."
+    loginButtons
   where
     AppConfig { appGitlabHosts = hosts } = cfg
+    loginButtons :: Html ()
     loginButtons =
       if length hosts <= 1
-        then T.concat
-          [ "<a class=\"btn\" href=\""
-          , uiPath cfg "/oauth/gitlab/start"
-          , "\">Sign in with GitLab</a>"
-          ]
-        else
-          let renderHost host =
-                T.concat
-                  [ "<a class=\"btn\" href=\""
-                  , uiPath cfg ("/oauth/gitlab/start?host=" <> host)
-                  , "\">Sign in with "
-                  , escapeHtml host
-                  , "</a>"
-                  ]
-           in T.concat (map renderHost hosts)
+        then a_ [class_ "btn", href_ (uiPath cfg "/oauth/gitlab/start")] "Sign in with GitLab"
+        else mconcat (map renderHost hosts)
+    renderHost :: Text -> Html ()
+    renderHost host =
+      a_ [class_ "btn", href_ (uiPath cfg ("/oauth/gitlab/start?host=" <> host))] $ do
+        toHtml ("Sign in with " :: Text)
+        toHtml host
 
-accessDeniedPage :: AppConfig -> Text
+accessDeniedPage :: AppConfig -> Html ()
 accessDeniedPage cfg =
-  page cfg "Access denied" $
-    T.concat
-      [ "<h1>Access denied</h1>"
-      , "<p>This account does not have the admin role.</p>"
-      , "<a class=\"btn subtle\" href=\""
-      , uiPath cfg "/logout"
-      , "\">Sign out</a>"
-      ]
+  page cfg "Access denied" $ do
+    h1_ "Access denied"
+    p_ "This account does not have the admin role."
+    a_ [class_ "btn subtle", href_ (uiPath cfg "/logout")] "Sign out"
 
-indexPage :: AppConfig -> SessionInfo -> [ProjectRow] -> Text
+indexPage :: AppConfig -> SessionInfo -> [ProjectRow] -> Html ()
 indexPage cfg sess projects =
-  page cfg "Projects" $
-    T.concat
-      [ "<div class=\"header\"><h1>Projects</h1><div class=\"actions\">"
-      , "<span class=\"user\">"
-      , escapeHtml username
-      , "</span>"
-      , "<a class=\"btn subtle\" href=\""
-      , uiPath cfg "/logout"
-      , "\">Sign out</a></div></div>"
-      , projectListHtml projects
-      , "<div class=\"footer\"><a class=\"btn\" href=\""
-      , uiPath cfg "/add-project"
-      , "\">Add project from GitLab</a></div>"
-      ]
+  page cfg "Projects" $ do
+    div_ [class_ "header"] $ do
+      h1_ "Projects"
+      div_ [class_ "actions"] $ do
+        span_ [class_ "user"] (toHtml username)
+        a_ [class_ "btn subtle", href_ (uiPath cfg "/logout")] "Sign out"
+    projectListHtml projects
+    div_ [class_ "footer"] $
+      a_ [class_ "btn", href_ (uiPath cfg "/add-project")] "Add project from GitLab"
   where
     SessionInfo { sessionUser = User { userUsername = username } } = sess
 
-projectListHtml :: [ProjectRow] -> Text
+projectListHtml :: [ProjectRow] -> Html ()
 projectListHtml projects =
   if null projects
-    then "<p>No projects added yet.</p>"
+    then p_ "No projects added yet."
     else
-      let rows = T.concat (map renderProject (sortOn (\ProjectRow { projectFlakeInput = input } -> input) projects))
-       in T.concat
-            [ "<table><thead><tr><th>Input</th><th>Repo</th><th>Host</th><th>Webhook hash</th></tr></thead><tbody>"
-            , rows
-            , "</tbody></table>"
-            ]
+      let rows = mconcat (map renderProject (sortOn (\ProjectRow { projectFlakeInput = input } -> input) projects))
+       in table_ $ do
+            thead_ $
+              tr_ $ do
+                th_ "Input"
+                th_ "Repo"
+                th_ "Host"
+                th_ "Webhook hash"
+            tbody_ rows
   where
+    renderProject :: ProjectRow -> Html ()
     renderProject p =
       let ProjectRow
             { projectFlakeInput = flakeInput
@@ -100,89 +86,69 @@ projectListHtml projects =
             , projectGitHost = gitHost
             , projectHash = mHash
             } = p
-       in
-      T.concat
-        [ "<tr><td><code>"
-        , escapeHtml flakeInput
-        , "</code></td><td>"
-        , escapeHtml repoPath
-        , "</td><td>"
-        , escapeHtml gitHost
-        , "</td><td><code>"
-        , escapeHtml (fromMaybe "" mHash)
-        , "</code></td></tr>"
-        ]
+       in tr_ $ do
+            td_ $ code_ (toHtml flakeInput)
+            td_ (toHtml repoPath)
+            td_ (toHtml gitHost)
+            td_ $ code_ (toHtml (fromMaybe "" mHash))
 
-addProjectPage :: AppConfig -> SessionInfo -> [GitlabProject] -> Text
+addProjectPage :: AppConfig -> SessionInfo -> [GitlabProject] -> Html ()
 addProjectPage cfg sess repos =
-  page cfg "Add project" $
-    T.concat
-      [ "<div class=\"header\"><h1>Add project</h1><div class=\"actions\">"
-      , "<a class=\"btn subtle\" href=\""
-      , uiPath cfg "/"
-      , "\">Back</a></div></div>"
-      , "<form method=\"post\" class=\"card\">"
-      , "<input type=\"hidden\" name=\"csrf\" value=\""
-      , escapeHtml csrfToken
-      , "\"/>"
-      , "<label>Repository</label>"
-      , "<select name=\"repo_id\">"
-      , T.concat (map renderRepoOption repos)
-      , "</select>"
-      , "<label>Organisation</label>"
-      , "<input type=\"text\" name=\"org\" placeholder=\"org\"/>"
-      , "<label>Project</label>"
-      , "<input type=\"text\" name=\"project\" placeholder=\"project\"/>"
-      , "<button class=\"btn\" type=\"submit\">Add project</button>"
-      , "</form>"
-      ]
+  page cfg "Add project" $ do
+    div_ [class_ "header"] $ do
+      h1_ "Add project"
+      div_ [class_ "actions"] $
+        a_ [class_ "btn subtle", href_ (uiPath cfg "/")] "Back"
+    form_ [method_ "post", class_ "card"] $ do
+      input_ [type_ "hidden", name_ "csrf", value_ csrfToken]
+      label_ "Repository"
+      select_ [name_ "repo_id"] (mconcat (map renderRepoOption repos))
+      label_ "Organisation"
+      input_ [type_ "text", name_ "org", placeholder_ "org"]
+      label_ "Project"
+      input_ [type_ "text", name_ "project", placeholder_ "project"]
+      button_ [class_ "btn", type_ "submit"] "Add project"
   where
     SessionInfo { sessionCsrf = csrfToken } = sess
+    renderRepoOption :: GitlabProject -> Html ()
     renderRepoOption repo =
       let GitlabProject { glProjectId = repoId, glProjectPath = repoPath } = repo
-       in
-      T.concat
-        [ "<option value=\""
-        , T.pack (show repoId)
-        , "\">"
-        , escapeHtml repoPath
-        , "</option>"
-        ]
+       in option_ [value_ (T.pack (show repoId))] (toHtml repoPath)
 
-successPage :: AppConfig -> Text -> Text
+successPage :: AppConfig -> Text -> Html ()
 successPage cfg msg =
-  page cfg "Success" $
-    T.concat
-      [ "<h1>Project added</h1>"
-      , "<p>"
-      , escapeHtml msg
-      , "</p>"
-      , "<a class=\"btn\" href=\""
-      , uiPath cfg "/"
-      , "\">Back to projects</a>"
-      ]
+  page cfg "Success" $ do
+    h1_ "Project added"
+    p_ (toHtml msg)
+    a_ [class_ "btn", href_ (uiPath cfg "/")] "Back to projects"
 
-errorPage :: AppConfig -> Text -> Text
+errorPage :: AppConfig -> Text -> Html ()
 errorPage cfg msg =
-  page cfg "Error" $
-    T.concat
-      [ alertBox msg
-      , "<a class=\"btn subtle\" href=\""
-      , uiPath cfg "/"
-      , "\">Back</a>"
-      ]
+  page cfg "Error" $ do
+    alertBox msg
+    a_ [class_ "btn subtle", href_ (uiPath cfg "/")] "Back"
 
-alertBox :: Text -> Text
+alertBox :: Text -> Html ()
 alertBox msg =
-  T.concat ["<div class=\"alert\">", escapeHtml msg, "</div>"]
+  div_ [class_ "alert"] (toHtml msg)
 
-page :: AppConfig -> Text -> Text -> Text
-page cfg title body =
+page :: AppConfig -> Text -> Html () -> Html ()
+page _cfg title body =
+  doctypehtml_ $
+    html_ $ do
+      head_ $ do
+        meta_ [charset_ "utf-8"]
+        meta_ [name_ "viewport", content_ "width=device-width,initial-scale=1"]
+        title_ (toHtml title)
+        style_ pageStyles
+      body_ $
+        main_ $
+          div_ [class_ "shell"] body
+
+pageStyles :: Text
+pageStyles =
   T.concat
-    [ "<!doctype html><html><head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/>"
-    , "<title>", escapeHtml title, "</title>"
-    , "<style>"
-    , "@font-face{font-family:ui;src:local('IBM Plex Sans'),local('Space Grotesk'),local('Avenir Next'),local('Segoe UI');}"
+    [ "@font-face{font-family:ui;src:local('IBM Plex Sans'),local('Space Grotesk'),local('Avenir Next'),local('Segoe UI');}"
     , "*{box-sizing:border-box;}"
     , "body{margin:0;font-family:ui,system-ui,sans-serif;background:radial-gradient(circle at 10% 10%,#f2e8d5 0,#f8f3ea 30%,#f5f7fb 70%);color:#1e1d1a;}"
     , "main{max-width:920px;margin:40px auto;padding:0 24px;}"
@@ -203,7 +169,4 @@ page cfg title body =
     , ".footer{margin-top:24px;}"
     , ".alert{background:#fce8e8;color:#9b1c1c;padding:10px 12px;border-radius:10px;margin-bottom:16px;}"
     , "code{background:#f4f4f0;padding:2px 6px;border-radius:6px;}"
-    , "</style></head><body><main><div class=\"shell\">"
-    , body
-    , "</div></main></body></html>"
     ]

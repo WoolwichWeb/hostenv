@@ -41,7 +41,7 @@ handleLogin cfg _ respond =
 
 handleLogout :: AppConfig -> (Wai.Response -> IO a) -> IO a
 handleLogout cfg respond =
-  respondHtmlWithHeaders respond status302 [(hLocation, TE.encodeUtf8 (uiPath cfg "/login")), ("Set-Cookie", logoutCookie)] ""
+  respondHtmlWithHeaders respond status302 [(hLocation, TE.encodeUtf8 (uiPath cfg "/login")), ("Set-Cookie", logoutCookie)] mempty
 
 handleIndex :: AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
 handleIndex cfg req respond = do
@@ -122,7 +122,7 @@ handleOauthStart cfg req respond = do
             , "/oauth/authorize?"
             , TE.decodeUtf8 (renderSimpleQuery False params)
             ]
-      respondHtmlWithHeaders respond status302 [(hLocation, TE.encodeUtf8 url)] ""
+      respondHtmlWithHeaders respond status302 [(hLocation, TE.encodeUtf8 url)] mempty
 
 handleOauthCallback :: AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
 handleOauthCallback cfg req respond = do
@@ -148,5 +148,5 @@ handleOauthCallback cfg req respond = do
                 Right glUser -> do
                   session <- upsertUserSession cfg glHost glUser token
                   let cookieHeader = ("Set-Cookie", renderSessionCookie session)
-                  respondHtmlWithHeaders respond status302 [(hLocation, TE.encodeUtf8 (uiPath cfg "/")), cookieHeader] ""
+                  respondHtmlWithHeaders respond status302 [(hLocation, TE.encodeUtf8 (uiPath cfg "/")), cookieHeader] mempty
     _ -> respondHtml respond status400 (errorPage cfg "Missing OAuth callback parameters")
