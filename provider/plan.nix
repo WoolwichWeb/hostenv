@@ -489,9 +489,15 @@ let
             lockedRev = if lockNode != null && lockNode ? locked then lockNode.locked.rev else null;
             lockedNarHash = if lockNode != null && lockNode ? locked then lockNode.locked.narHash else null;
             lockedRef = if lockNode != null && lockNode ? locked then lockNode.locked.ref or val.repo.ref else val.repo.ref;
+            inputName =
+              let
+                name = val.hostenv.userName;
+                isIdent = builtins.match "^[A-Za-z_][A-Za-z0-9_'-]*$" name != null;
+              in
+              if isIdent then name else "\"${name}\"";
           in
           ''
-            "${val.hostenv.userName}" = {
+            ${inputName} = {
               type = "${val.repo.type}";
               dir = "${val.repo.dir or "."}";
               ref = "${lockedRef}";
