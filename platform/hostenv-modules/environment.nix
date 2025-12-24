@@ -1,5 +1,5 @@
 # Per-environment schema used by the hostenv trunk.
-{ lib, config, name, options, allUsers ? { }, topLevel ? { }, defaultPriority ? 1000, forceNull ? "__HOSTENV_INTERNAL_DO_NOT_CHANGE_SEMAPHORE__", ... }:
+{ lib, config, name, options, allUsers ? { }, topLevel ? { }, forceNull ? "__HOSTENV_INTERNAL_DO_NOT_CHANGE_SEMAPHORE__", ... }:
 let
   types = lib.types;
   tl = topLevel;
@@ -110,15 +110,6 @@ in
                 description = ''
                   HTTP status code to return when redirecting requests to a
                   different host.
-                '';
-              };
-
-              priority = lib.mkOption {
-                default = defaultPriority;
-                type = types.int;
-                description = ''
-                  Priority of the Virtual Host. Lower values have higher
-                  priority.
                 '';
               };
 
@@ -253,13 +244,6 @@ in
       description = "Per-environment hostenv metadata.";
     };
 
-    priority = lib.mkOption {
-      default = defaultPriority;
-      type = types.int;
-      description = ''
-        Priority of the environment, used when resolving host clashes.
-      '';
-    };
   };
 
   config.virtualHosts.${config.hostenv.hostname} = lib.mkDefault { };

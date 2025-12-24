@@ -2,7 +2,6 @@
 { config, lib, ... }:
 let
   cfg = config.environments;
-  defaultPriority = 1000;
   forceNull = "__HOSTENV_INTERNAL_DO_NOT_CHANGE_SEMAPHORE__";
   topLevel = config.hostenv or { };
   types = lib.types;
@@ -34,7 +33,6 @@ in
       specialArgs = {
         allUsers = config.allEnvironments.users;
         topLevel = topLevel;
-        defaultPriority = defaultPriority;
         forceNull = forceNull;
       };
     });
