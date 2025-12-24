@@ -3,6 +3,11 @@
 
   inputs = {
     hostenv.url = "gitlab:woolwichweb/hostenv";
+    hostenv-platform = {
+      url = "gitlab:woolwichweb/hostenv?dir=platform";
+      inputs.nixpkgs.follows = "hostenv/nixpkgs";
+      inputs.flake-parts.follows = "hostenv/flake-parts";
+    };
     nixpkgs.follows = "hostenv/nixpkgs";
     flake-parts.follows = "hostenv/flake-parts";
   };

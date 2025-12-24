@@ -3,22 +3,17 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    hostenv.follows = "hostenv-platform";
     # phps = {
     #   url = "github:fossar/nix-phps";
     #   inputs.nixpkgs.follows = "nixpkgs";
-    #   inputs.utils.follows = "flake-utils";
     # };
     search = {
       url = "github:NuschtOS/search";
-      inputs.flake-utils.follows = "flake-utils";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     hostenv-platform = {
       url = ./platform;
-      inputs.flake-utils.follows = "flake-utils";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-parts.follows = "flake-parts";
       # inputs.phps.follows = "phps";

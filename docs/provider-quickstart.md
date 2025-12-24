@@ -5,6 +5,11 @@
 ```nix
 {
   inputs.hostenv.url = "gitlab:woolwichweb/hostenv";
+  inputs.hostenv-platform = {
+    url = "gitlab:woolwichweb/hostenv?dir=platform";
+    inputs.nixpkgs.follows = "hostenv/nixpkgs";
+    inputs.flake-parts.follows = "hostenv/flake-parts";
+  };
   inputs.flake-parts.url = "github:hercules-ci/flake-parts";
  outputs = inputs@{ self, flake-parts, hostenv, ... }:
    flake-parts.lib.mkFlake { inherit inputs; } {
