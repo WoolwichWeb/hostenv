@@ -2,17 +2,26 @@
   description = "Hostenv provider template";
 
   inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    flake-parts.url = "github:hercules-ci/flake-parts";
     hostenv = {
       url = "gitlab:woolwichweb/hostenv";
       inputs.hostenv-platform.follows = "hostenv-platform";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
     hostenv-platform = {
       url = "gitlab:woolwichweb/hostenv?dir=platform";
-      inputs.nixpkgs.follows = "hostenv/nixpkgs";
-      inputs.flake-parts.follows = "hostenv/flake-parts";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-parts.follows = "flake-parts";
     };
-    nixpkgs.follows = "hostenv/nixpkgs";
-    flake-parts.follows = "hostenv/flake-parts";
+    deploy-rs = {
+      url = "github:serokell/deploy-rs";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    sops-nix = {
+      url = "github:Mic92/sops-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = inputs@{ flake-parts, hostenv, ... }:

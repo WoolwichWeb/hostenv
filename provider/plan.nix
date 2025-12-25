@@ -517,14 +517,9 @@ let
         inputs = {
           parent.url = "path:..";
           systems.url = "github:nix-systems/default";
-          deploy-rs = {
-            url = "github:serokell/deploy-rs";
-            inputs.nixpkgs.follows = "nixpkgs";
-          };
-          sops-nix = {
-            url = "github:Mic92/sops-nix";
-            inputs.nixpkgs.follows = "nixpkgs";
-          };
+          deploy-rs.follows = "parent/deploy-rs";
+          sops-nix.follows = "parent/sops-nix";
+          hostenv.follows = "parent/hostenv-platform";
           hostenv.follows = "parent/hostenv-platform";
 
           ${inputsBlock}

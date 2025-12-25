@@ -107,13 +107,25 @@ in
             set -euo pipefail
             dest=generated
             mkdir -p "$dest"
+            
+            # The following are:
+            # - a sub-Flake with per-environment inputs (inputs in this Flake are per-project);
             cp ${providerGenerator.flake} "$dest/flake.nix"
+            
+            # - state retained between runs, like unique UNIX user uids.
             cat ${providerGenerator.state} > "$dest/state.json"
+            
+            # - a plan for the next deployment, containing Nix config and
+            #   and environment metadata. This file is more ephemeral than
+            #   the other two, and does not need to be committed to git (but
+            #   still needs to be git add-ed for Nix flakes to see it).)
             cat ${providerGenerator.plan} > "$dest/plan.json"
+
             chmod ug+w "$dest"/{state.json,plan.json,flake.nix}
-            (cd "$dest" && nix --extra-experimental-features "nix-command flakes" flake lock)
+            (cd "$dest" && nix --extra-experimental-features "nix-command flakes" flake update)
             git add "$dest" || true
-            echo "✅ provider plan/state/flake written to $dest"
+
+            echo "✅ Infrastructure configuration written to $dest"
           '';
 
           cliSrc = builtins.path { path = ./cli.hs; name = "hostenv-provider-cli"; };
