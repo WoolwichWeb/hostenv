@@ -520,7 +520,6 @@ let
           deploy-rs.follows = "parent/deploy-rs";
           sops-nix.follows = "parent/sops-nix";
           hostenv.follows = "parent/hostenv-platform";
-          hostenv.follows = "parent/hostenv-platform";
 
           ${inputsBlock}
         };
