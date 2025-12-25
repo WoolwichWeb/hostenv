@@ -589,7 +589,7 @@ in
     let flakeText = builtins.readFile flakeNoState;
       ok = lib.strings.hasInfix "parent.url" flakeText
         && lib.strings.hasInfix "hostenv.follows = \"parent/hostenv-platform\"" flakeText
-        && lib.strings.hasInfix "nixosSystem = node: import inputs.parent.lib.provider.nixosSystem" flakeText
+        && lib.strings.hasInfix "inputs.parent.lib.provider.deployOutputs" flakeText
         && lib.strings.hasInfix "${user1} =" flakeText
         && lib.strings.hasInfix "${user2} =" flakeText;
     in asserts.assertTrue "provider-plan-flake-inputs" ok

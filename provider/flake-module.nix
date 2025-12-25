@@ -69,6 +69,7 @@ in
     in
     {
       flake.lib.provider.nixosSystem = ./nixos-system.nix;
+      flake.lib.provider.deployOutputs = ./deploy-outputs.nix;
       flake.flakeModules.provider = ./flake-module.nix;
 
       perSystem = { system, pkgs, ... }:

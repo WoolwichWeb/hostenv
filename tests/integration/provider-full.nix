@@ -111,7 +111,7 @@ let
     lib.all (u: lib.strings.hasInfix "${u} =" flakeText) expectedUsers
     && lib.strings.hasInfix "parent.url" flakeText
       && lib.strings.hasInfix "hostenv.follows = \"parent/hostenv-platform\"" flakeText
-      && lib.strings.hasInfix "nixosSystem = node: import inputs.parent.lib.provider.nixosSystem" flakeText;
+      && lib.strings.hasInfix "inputs.parent.lib.provider.deployOutputs" flakeText;
 in
 {
   provider_full_env_discovery =

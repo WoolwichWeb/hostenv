@@ -529,21 +529,13 @@ let
             config = builtins.removeAttrs
               (builtins.fromJSON (builtins.readFile ./plan.json))
               [ "_description" ];
-            forEachSystem = nixpkgs.lib.genAttrs (import systems);
-            pkgs = forEachSystem (system: import nixpkgs { inherit system; });
             localSystem = "x86_64-linux";
-
-            nixosSystem = node: import ${nixosSystemPathExpr} {
-              inherit config node nixpkgs pkgs inputs localSystem;
-              nodesPath = ../nodes;
-              secretsPath = ../secrets/secrets.yaml;
-              nodeSystems = ${lib.generators.toPretty {} nodeSystems};
-            };
-
           in
-          {
-            inherit inputs config;
-            nixosConfigurations = builtins.mapAttrs (n: _: nixosSystem n) config.nodes;
+          import inputs.parent.lib.provider.deployOutputs {
+            inherit config nixpkgs deploy-rs systems inputs localSystem;
+            nodesPath = ../nodes;
+            secretsPath = ../secrets/secrets.yaml;
+            nodeSystems = ${lib.generators.toPretty {} nodeSystems};
           };
       }
     '';
