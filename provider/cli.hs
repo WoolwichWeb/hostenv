@@ -29,7 +29,7 @@ import Turtle qualified as Sh
 import Prelude hiding (FilePath)
 
 -- -------- CLI --------
-data Command = CmdPlan | CmdDnsGate {cNode :: Maybe Text, cWrite :: Bool, cToken :: Maybe Text, cZone :: Maybe Text} | CmdDeploy {cNode :: Maybe Text}
+data Command = CmdPlan | CmdDnsGate {cNode :: Maybe Text, cToken :: Maybe Text, cZone :: Maybe Text, cWithDnsUpdate :: Bool} | CmdDeploy {cNode :: Maybe Text}
 
 data CLI = CLI {cliCmd :: Command}
 
@@ -43,25 +43,25 @@ nodeOpt =
                 <> OA.help "Restrict to a specific node"
             )
 
-writeOpt :: OA.Parser Bool
-writeOpt =
-    OA.switch
-        ( OA.long "write"
-            <> OA.help "Write updated plan.json to DEST (otherwise prints to stdout)"
-        )
-
 tokenOpt :: OA.Parser (Maybe Text)
 tokenOpt = OA.optional . fmap T.pack $ OA.strOption (OA.long "cf-token" <> OA.metavar "TOKEN" <> OA.help "Cloudflare API token (overrides CF_API_TOKEN env)")
 
 zoneOpt :: OA.Parser (Maybe Text)
 zoneOpt = OA.optional . fmap T.pack $ OA.strOption (OA.long "cf-zone" <> OA.metavar "ZONE" <> OA.help "Cloudflare zone id (overrides CF_ZONE_ID env)")
 
+withDnsUpdateOpt :: OA.Parser Bool
+withDnsUpdateOpt =
+    OA.switch
+        ( OA.long "with-dns-update"
+            <> OA.help "Allow Cloudflare upserts (otherwise only checks and disables ACME/forceSSL)"
+        )
+
 cliParser :: OA.Parser CLI
 cliParser =
     CLI
         <$> OA.hsubparser
-            ( OA.command "plan" (OA.info (pure CmdPlan) (OA.progDesc "Generate plan/state/flake"))
-                <> OA.command "dns-gate" (OA.info (CmdDnsGate <$> nodeOpt <*> writeOpt <*> tokenOpt <*> zoneOpt) (OA.progDesc "Disable ACME/forceSSL for vhosts not pointing at node; optional Cloudflare upsert"))
+            ( OA.command "plan" (OA.info (pure CmdPlan) (OA.progDesc "Generate plan.json, state.json, and flake.nix"))
+                <> OA.command "dns-gate" (OA.info (CmdDnsGate <$> nodeOpt <*> tokenOpt <*> zoneOpt <*> withDnsUpdateOpt) (OA.progDesc "Disable ACME/forceSSL for vhosts not pointing at node; add --with-dns-update to upsert Cloudflare records"))
                 <> OA.command "deploy" (OA.info (CmdDeploy <$> nodeOpt) (OA.progDesc "Deploy via deploy-rs"))
             )
 
@@ -166,6 +166,18 @@ instance A.FromJSON CFWrite where
     parseJSON = A.withObject "CFWrite" $ \v ->
         CFWrite <$> v .: "success"
 
+data CFZoneInfo = CFZoneInfo {zName :: Text}
+instance A.FromJSON CFZoneInfo where
+    parseJSON = A.withObject "CFZoneInfo" $ \v ->
+        CFZoneInfo <$> v .: "name"
+
+data CFZoneResp = CFZoneResp {zSuccess :: Bool, zResult :: CFZoneInfo}
+instance A.FromJSON CFZoneResp where
+    parseJSON = A.withObject "CFZoneResp" $ \v ->
+        CFZoneResp
+            <$> v .: "success"
+            <*> v .: "result"
+
 cfListByName :: Text -> Text -> Text -> IO [CFRecord]
 cfListByName token zoneId name = do
     let url = "https://api.cloudflare.com/client/v4/zones/" <> zoneId <> "/dns_records?per_page=1000&name=" <> name
@@ -217,9 +229,35 @@ cfUpsertCname token zoneId name target = do
             let body = "{\"type\":\"CNAME\",\"name\":\"" <> name <> "\",\"content\":\"" <> target <> "\",\"proxied\":false}"
             Sh.stdout $ Sh.inproc "curl" ["-sS", "-X", "POST", "-H", "Authorization: Bearer " <> token, "-H", "Content-Type: application/json", "--data", body, url] Sh.empty
 
+cfZoneName :: Text -> Text -> IO (Maybe Text)
+cfZoneName token zoneId = do
+    let url = "https://api.cloudflare.com/client/v4/zones/" <> zoneId
+    out <-
+        Sh.strict $
+            Sh.inproc
+                "curl"
+                [ "-sS"
+                , "-H"
+                , "Authorization: Bearer " <> token
+                , "-H"
+                , "Content-Type: application/json"
+                , url
+                ]
+                Sh.empty
+    let bs = BL.fromStrict (TE.encodeUtf8 out)
+    case A.eitherDecode' bs of
+        Left _ -> pure Nothing
+        Right resp -> if zSuccess resp then pure (Just (zName (zResult resp))) else pure Nothing
+
+isSubdomainOf :: Text -> Text -> Bool
+isSubdomainOf host zone =
+    let host' = T.toLower (stripDot host)
+        zone' = T.toLower (stripDot zone)
+     in host' == zone' || T.isSuffixOf ("." <> zone') host'
+
 -- -------- DNS gate --------
-runDnsGate :: Bool -> Maybe Text -> Maybe Text -> Maybe Text -> IO ()
-runDnsGate writeOut mNode mTok mZone = do
+runDnsGate :: Maybe Text -> Maybe Text -> Maybe Text -> Bool -> IO ()
+runDnsGate mNode mTok mZone withDnsUpdate = do
     let dest = "generated"
     let planPath = dest <> "/plan.json"
     planExists <- Sh.testfile (fromString (T.unpack planPath))
@@ -244,27 +282,27 @@ runDnsGate writeOut mNode mTok mZone = do
                 Nothing -> case cfPlan >>= lookupText (K.fromString "zoneId") of
                     Just z -> pure (Just (T.unpack z))
                     Nothing -> Env.lookupEnv "CF_ZONE_ID"
+            cfZoneName' <- case (cfTok, cfZone) of
+                (Just t, Just z) -> cfZoneName (T.pack t) (T.pack z)
+                _ -> pure Nothing
             let hasCF = isJustPair cfTok cfZone
-            plan' <- foldlM (processEnv hostenvHostname nodes hasCF cfTok cfZone) plan (KM.toList envs)
-            if writeOut
-                then do
-                    let tmp = dest <> "/plan.json"
-                    BL.writeFile (T.unpack tmp) (A.encode plan')
-                    BLC.putStrLn "✅ dns-gate updated plan.json"
-                else BLC.putStrLn (A.encode plan')
+            plan' <- foldlM (processEnv hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate) plan (KM.toList envs)
+            let tmp = dest <> "/plan.json"
+            BL.writeFile (T.unpack tmp) (A.encode plan')
+            BLC.putStrLn "✅ dns-gate updated plan.json"
   where
     isJustPair (Just _) (Just _) = True
     isJustPair _ _ = False
     readFileTrim p = T.unpack . T.strip . T.pack <$> readFile p
     foldlM f z [] = pure z
     foldlM f z (x : xs) = f z x >>= \z' -> foldlM f z' xs
-    processEnv hostenvHostname nodes hasCF cfTok cfZone acc (kEnv, vEnv) =
+    processEnv hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate acc (kEnv, vEnv) =
         case vEnv of
             A.Object envObj -> do
                 let vhosts = fromMaybe KM.empty (lookupObj (K.fromString "virtualHosts") envObj)
-                foldlM (processVhost hostenvHostname nodes hasCF cfTok cfZone (K.toText kEnv)) acc (KM.toList vhosts)
+                foldlM (processVhost hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate (K.toText kEnv)) acc (KM.toList vhosts)
             _ -> pure acc
-    processVhost hostenvHostname nodes hasCF cfTok cfZone envName planAcc (vhKey, _vhObj) = do
+    processVhost hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate envName planAcc (vhKey, _vhObj) = do
         let vhName = K.toText vhKey
         let envNode = case lookupObj (K.fromString "environments") planAcc >>= KM.lookup (K.fromText envName) of
                 Just (A.Object o) -> lookupText (K.fromString "node") o
@@ -276,9 +314,15 @@ runDnsGate writeOut mNode mTok mZone = do
             if ok
                 then pure planAcc
                 else do
-                    when hasCF $
+                    when (hasCF && withDnsUpdate) $
                         case (cfTok, cfZone) of
-                            (Just t, Just z) -> cfUpsertCname (T.pack t) (T.pack z) vhName expectedHost >> pure ()
+                            (Just t, Just z) ->
+                                case cfZoneName' of
+                                    Just zoneName ->
+                                        if isSubdomainOf vhName zoneName
+                                            then cfUpsertCname (T.pack t) (T.pack z) vhName expectedHost >> pure ()
+                                            else Sh.print ("Skipping Cloudflare upsert for " <> vhName <> " (outside zone " <> zoneName <> ")")
+                                    Nothing -> Sh.print "DNS setup ('dnsGate') failed: could not resolve Cloudflare zone name"
                             (Nothing, _) -> Sh.print "DNS setup ('dnsGate') failed: Cloudflare token was not provided"
                             (_, Nothing) -> Sh.print "DNS setup ('dnsGate') failed: Cloudflare zone was not provided"
                     let plan1 = disableAcmePaths envName vhName planAcc
@@ -304,5 +348,5 @@ main = do
     CLI cmd <- OA.execParser cliOpts
     case cmd of
         CmdPlan -> runPlan
-        CmdDnsGate mNode writeOut mTok mZone -> runDnsGate writeOut mNode mTok mZone
+        CmdDnsGate mNode mTok mZone withDnsUpdate -> runDnsGate mNode mTok mZone withDnsUpdate
         CmdDeploy mNode -> runDeploy mNode

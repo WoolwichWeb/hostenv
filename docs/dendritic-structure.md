@@ -68,7 +68,7 @@ perSystem = { config, ... }: {
 2) Safety gate + optional Cloudflare CNAME upsert:
 
    ```
-   CF_API_TOKEN=... CF_ZONE_ID=... nix run .#hostenv-provider dns-gate [-n node]
+   CF_API_TOKEN=... CF_ZONE_ID=... nix run .#hostenv-provider dns-gate [--with-dns-update] [-n node]
    ```
 
 3) Deploy (system then env profiles):

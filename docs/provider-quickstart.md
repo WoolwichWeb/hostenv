@@ -54,7 +54,7 @@ state.json,flake.nix}` is the deployable, auditable snapshot.
 4) DNS/ACME safety + Cloudflare (optional):
 
 ```
-CF_API_TOKEN=... CF_ZONE_ID=... nix run .#hostenv-provider dns-gate [-n node]
+CF_API_TOKEN=... CF_ZONE_ID=... nix run .#hostenv-provider dns-gate [--with-dns-update] [-n node]
 ```
 
 5) Deploy:
