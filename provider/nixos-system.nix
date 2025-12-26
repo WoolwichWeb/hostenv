@@ -25,18 +25,6 @@ let
   environmentWith = userName: config.environments.${userName};
   packages = pkgs.${system};
   envUsers = builtins.attrNames (config.environments or { });
-  deployPublicKey =
-    if inputs ? parent
-    && inputs.parent ? lib
-    && inputs.parent.lib ? provider
-    then inputs.parent.lib.provider.deployPublicKey or null
-    else null;
-  warnInvalidDeployKey =
-    if inputs ? parent
-    && inputs.parent ? lib
-    && inputs.parent.lib ? provider
-    then inputs.parent.lib.provider.warnInvalidDeployKey or true
-    else true;
 
   hostenvEnvModule = {
     hostenv = {
@@ -127,7 +115,7 @@ in
 if envUserMismatch == [ ] then
   nixpkgs.lib.nixosSystem {
     inherit system;
-    specialArgs = { inherit inputs system deployPublicKey warnInvalidDeployKey; };
+    specialArgs = { inherit inputs system; };
     modules = [
       ./common.nix
       { sops.defaultSopsFile = secretsPath; }

@@ -36,6 +36,10 @@ let
         users.users = {
           "${envName}" = { };
         };
+        provider = {
+          deployPublicKey = "ssh-ed25519 test";
+          warnInvalidDeployKey = true;
+        };
       };
     };
     environments = {

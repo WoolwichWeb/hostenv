@@ -579,9 +579,11 @@ in
     let
       plan = lib.importJSON planNoState;
       users = plan.nodes.node1.users.users or { };
+      providerCfg = plan.nodes.node1.provider or { };
       vhosts = plan.nodes.node1.services.nginx.virtualHosts or { };
       ok = (users ? ${user1}) && (users ? ${user2})
-        && (vhosts ? "env1.example") && (vhosts ? "env2.example");
+        && (vhosts ? "env1.example") && (vhosts ? "env2.example")
+        && (providerCfg.deployPublicKey or null) == "ssh-ed25519 test";
     in asserts.assertTrue "provider-plan-node-merge" ok
       "node1 should contain users and vhosts for both environments";
 

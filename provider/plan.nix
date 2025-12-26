@@ -589,6 +589,11 @@ let
                       defaults.email = letsEncrypt.adminEmail;
                     };
 
+                    provider = {
+                      deployPublicKey = deployPublicKey;
+                      warnInvalidDeployKey = warnInvalidDeployKey;
+                    };
+
                     users.groups.${elem.hostenv.userName} = {
                       gid = elem.uid;
                     };

@@ -1,7 +1,9 @@
-{ inputs, system, config, lib, deployPublicKey ? null, warnInvalidDeployKey ? true, ... }:
+{ inputs, system, config, lib, ... }:
 let
   pkgs = inputs.nixpkgs.legacyPackages.${system};
   secretFile = ../secrets/secrets.yaml;
+  deployPublicKey = config.provider.deployPublicKey or null;
+  warnInvalidDeployKey = config.provider.warnInvalidDeployKey or true;
   deployPublicKeyList =
     let
       key = deployPublicKey;
@@ -40,73 +42,86 @@ let
       [ ];
 in
 {
-
-  services.qemuGuest.enable = true;
+  options.provider = {
+    deployPublicKey = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "SSH public key for the deploy user (provider-level).";
+    };
+    warnInvalidDeployKey = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Whether to warn on invalid deployPublicKey.";
+    };
+  };
 
   imports = [ inputs.sops-nix.nixosModules.sops ];
-  sops.defaultSopsFile = lib.mkDefault secretFile;
-  sops.defaultSopsFormat = "yaml";
-  sops.age.sshKeyPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];
 
-  nix = {
-    settings.auto-optimise-store = false;
+  config = {
+    services.qemuGuest.enable = true;
+    sops.defaultSopsFile = lib.mkDefault secretFile;
+    sops.defaultSopsFormat = "yaml";
+    sops.age.sshKeyPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];
 
-    gc = {
-      automatic = true;
-      randomizedDelaySec = "14m";
-      options = "--delete-older-than 10d";
+    nix = {
+      settings.auto-optimise-store = false;
+
+      gc = {
+        automatic = true;
+        randomizedDelaySec = "14m";
+        options = "--delete-older-than 10d";
+      };
+
+      extraOptions = ''
+        experimental-features = nix-command flakes
+        !include ${config.sops.secrets.access_tokens.path}
+      '';
+
+      settings.trusted-users = [ "deploy" ];
     };
 
-    extraOptions = ''
-      experimental-features = nix-command flakes
-      !include ${config.sops.secrets.access_tokens.path}
-    '';
+    environment.systemPackages = with pkgs; [
+      vim
+      wget
+      git
+    ];
 
-    settings.trusted-users = [ "deploy" ];
-  };
+    services.openssh = {
+      enable = true;
+      settings.PasswordAuthentication = false;
+      settings.KbdInteractiveAuthentication = false;
+    };
 
-  environment.systemPackages = with pkgs; [
-    vim
-    wget
-    git
-  ];
-
-  services.openssh = {
-    enable = true;
-    settings.PasswordAuthentication = false;
-    settings.KbdInteractiveAuthentication = false;
-  };
-
-  security.sudo.extraRules = [{
-    groups = [ "wheel" ];
-    commands = [{
-      command = "ALL";
-      options = [ "NOPASSWD" ];
+    security.sudo.extraRules = [{
+      groups = [ "wheel" ];
+      commands = [{
+        command = "ALL";
+        options = [ "NOPASSWD" ];
+      }];
     }];
-  }];
 
-  users.groups.keys.name = "keys";
+    users.groups.keys.name = "keys";
 
-  sops.secrets.access_tokens = {
-    mode = "0440";
-    group = config.users.groups.keys.name;
+    sops.secrets.access_tokens = {
+      mode = "0440";
+      group = config.users.groups.keys.name;
+    };
+
+    users.mutableUsers = false;
+    users.users.deploy = {
+      isNormalUser = true;
+      extraGroups = [ "wheel" "keys" ];
+      openssh.authorizedKeys.keys = lib.mkDefault deployPublicKeyList;
+    };
+
+    networking.firewall.enable = true;
+    networking.firewall.allowedTCPPorts = [ 80 443 22 ];
+
+    environment.sessionVariables = {
+      XDG_CACHE_HOME = "$HOME/.cache";
+      XDG_CONFIG_HOME = "$HOME/.config";
+      XDG_DATA_HOME = "$HOME/.local/share";
+      XDG_STATE_HOME = "$HOME/.local/state";
+    };
   };
-
-  users.mutableUsers = false;
-  users.users.deploy = {
-    isNormalUser = true;
-    extraGroups = [ "wheel" "keys" ];
-    openssh.authorizedKeys.keys = lib.mkDefault deployPublicKeyList;
-  };
-
-  networking.firewall.enable = true;
-  networking.firewall.allowedTCPPorts = [ 80 443 22 ];
-
-  environment.sessionVariables = {
-    XDG_CACHE_HOME = "$HOME/.cache";
-    XDG_CONFIG_HOME = "$HOME/.config";
-    XDG_DATA_HOME = "$HOME/.local/share";
-    XDG_STATE_HOME = "$HOME/.local/state";
-  };
-
 }
