@@ -55,7 +55,6 @@ in
       nginxTuningHostenv = ../nixos-modules/nginx-tuning-hostenv.nix;
       hostenvService = ../nixos-modules/hostenv-service.nix;
       monitoringHostenv = ../nixos-modules/monitoring-hostenv.nix;
-      usersSlices = ../nixos-modules/users-slices.nix;
       topLevel = ../nixos-modules/top-level.nix;
     };
   };

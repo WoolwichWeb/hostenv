@@ -119,8 +119,7 @@ if envUserMismatch == [ ] then
       ./common.nix
       { sops.defaultSopsFile = secretsPath; }
       ../platform/nixos-modules/top-level.nix
-      ../platform/nixos-modules/users-slices.nix
-      ../platform/nixos-modules/nginx-hostenv.nix
+    ../platform/nixos-modules/nginx-hostenv.nix
       ../platform/nixos-modules/nginx-tuning-hostenv.nix
       ../platform/nixos-modules/backups-hostenv.nix
       ../platform/nixos-modules/monitoring-hostenv.nix
