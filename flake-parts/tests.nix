@@ -14,7 +14,7 @@
     in
     {
       hostenvProject = {
-        makeHostenv = makeHostenv;
+        inherit makeHostenv;
         modules = [
           ./../tests/integration/drupal/hostenv.nix
           ({ ... }: {

@@ -39,7 +39,7 @@ Edit `flake.template.nix` to make structural changes while keeping the marker:
 
 ## Customisation tips
 
-- Ensure client project inputs point at the `.hostenv` flake (e.g. `dir=.hostenv`).
+- Ensure client project inputs point at the `.hostenv` flake (e.g. `dir=.hostenv`) and export `outputs.lib.hostenv`.
 - Use `planSource = "disk"` if you want to reuse an existing plan.json without re-evaluating inputs.
 - Add extra Haskell deps for the dev shell via `provider.haskellDevPackages` (appended to `hostenv.haskell.devPackages`).
 - Add provider-specific modules under `modules/nixos` in your repo and import them via flake-parts alongside `hostenv.flakeModules.provider`.

@@ -153,9 +153,10 @@ let
           hostenvPath = input + /hostenv.nix;
         in
         lib.strings.hasInfix "__" name
-        && builtins.hasAttr "hostenv" input
-        && builtins.hasAttr system input.hostenv
-        && builtins.hasAttr "environments" input.hostenv.${system}
+        && builtins.hasAttr "lib" input
+        && builtins.hasAttr "hostenv" input.lib
+        && builtins.hasAttr system input.lib.hostenv
+        && builtins.hasAttr "environments" input.lib.hostenv.${system}
         && builtins.pathExists hostenvPath
       )
       (builtins.attrNames inputs);
@@ -165,8 +166,8 @@ let
       builtins.throw ''
         provider plan: no client projects found.
 
-        Each client flake must expose a `hostenv.<system>.environments` output.
-        Ensure inputs are named organisation__project, export `outputs.hostenv`,
+        Each client flake must expose a `lib.hostenv.<system>.environments` output.
+        Ensure inputs are named organisation__project, export `outputs.lib.hostenv`,
         and include `hostenv.nix` at the flake root (typically by using dir=.hostenv).
       ''
     else
@@ -262,25 +263,29 @@ let
 
               orgAndProject = inputNameToProject name;
 
+              projectLib =
+                if builtins.hasAttr "lib" inputs.${name} then inputs.${name}.lib
+                else builtins.throw "provider plan: input '${name}' missing lib output.";
+
               projectHostenv =
-                if builtins.hasAttr "hostenv" inputs.${name} then inputs.${name}.hostenv
-                else builtins.throw "provider plan: input '${name}' missing hostenv output.";
+                if builtins.hasAttr "hostenv" projectLib then projectLib.hostenv
+                else builtins.throw "provider plan: input '${name}' missing lib.hostenv output.";
 
               projectHostenvSystem =
                 if builtins.hasAttr system projectHostenv then projectHostenv.${system}
-                else builtins.throw "provider plan: input '${name}' missing hostenv.${system} output.";
+                else builtins.throw "provider plan: input '${name}' missing lib.hostenv.${system} output.";
 
               projectEnvironments =
                 if builtins.hasAttr "environments" projectHostenvSystem then projectHostenvSystem.environments
-                else builtins.throw "provider plan: input '${name}' is missing hostenv.${system}.environments (export outputs.hostenv.<system>.environments from the project flake).";
+                else builtins.throw "provider plan: input '${name}' is missing lib.hostenv.${system}.environments (export outputs.lib.hostenv.<system>.environments from the project flake).";
 
               defaultEnvName =
                 if builtins.hasAttr "defaultEnvironment" projectHostenvSystem
                 then projectHostenvSystem.defaultEnvironment
-                else builtins.throw "provider plan: input '${name}' is missing hostenv.${system}.defaultEnvironment (export outputs.hostenv from the project flake).";
+                else builtins.throw "provider plan: input '${name}' is missing lib.hostenv.${system}.defaultEnvironment (export outputs.lib.hostenv from the project flake).";
               envCfg =
                 if builtins.hasAttr defaultEnvName projectEnvironments then projectEnvironments.${defaultEnvName}
-                else builtins.throw "provider plan: defaultEnvironment '${defaultEnvName}' missing in ${name}.hostenv.${system}.environments";
+                else builtins.throw "provider plan: defaultEnvironment '${defaultEnvName}' missing in ${name}.lib.hostenv.${system}.environments";
 
               envRoot =
                 if envCfg ? hostenv && envCfg.hostenv ? root then envCfg.hostenv.root

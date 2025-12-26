@@ -38,12 +38,14 @@ let
     {
       eval = eval;
       input = {
-        hostenv = {
-          environments = sanitisedEnvs;
-          defaultEnvironment = eval.config.defaultEnvironment;
-          ${localSystem} = {
+        lib = {
+          hostenv = {
             environments = sanitisedEnvs;
             defaultEnvironment = eval.config.defaultEnvironment;
+            ${localSystem} = {
+              environments = sanitisedEnvs;
+              defaultEnvironment = eval.config.defaultEnvironment;
+            };
           };
         };
         outPath = projectDir;

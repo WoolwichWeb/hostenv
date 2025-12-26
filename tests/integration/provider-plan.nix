@@ -116,10 +116,12 @@ let
   ignoredInput = {
     outPath = ignoredInputDir;
     __toString = self: toString self.outPath;
-    hostenv = {
-      "${"x86_64-linux"}" = {
-        environments = { };
-        defaultEnvironment = "main";
+    lib = {
+      hostenv = {
+        "${"x86_64-linux"}" = {
+          environments = { };
+          defaultEnvironment = "main";
+        };
       };
     };
   };
@@ -128,7 +130,7 @@ let
 
   mkPlan = { hostenvHostname ? "custom.host", state ? { }, planSource ? "eval", planPath ? null, deployPublicKey ? "ssh-ed25519 test", warnInvalidDeployKey ? true }:
     let
-      # Build a synthetic flake inputs set: hostenv modules + one project with hostenv output.
+      # Build a synthetic flake inputs set: hostenv modules + one project with lib.hostenv output.
       lockData = {
         nodes = {
           "org__proj" = {
@@ -165,7 +167,7 @@ let
         org__proj = {
           outPath = projectDir;
           __toString = self: toString projectDir;
-          hostenv = hostenvOutput;
+          lib = { hostenv = hostenvOutput; };
         };
       };
     in
@@ -214,10 +216,12 @@ let
       input = {
         outPath = projectDir;
         __toString = self: toString projectDir;
-        hostenv = {
-          "${"x86_64-linux"}" = {
-            environments = eval.config.environments;
-            defaultEnvironment = eval.config.defaultEnvironment;
+        lib = {
+          hostenv = {
+            "${"x86_64-linux"}" = {
+              environments = eval.config.environments;
+              defaultEnvironment = eval.config.defaultEnvironment;
+            };
           };
         };
       };
@@ -352,10 +356,12 @@ let
         org__proj = {
           outPath = projectDir;
           __toString = self: toString projectDir;
-          hostenv = {
-            x86_64-linux = {
-              defaultEnvironment = "main";
-              # environments intentionally missing
+          lib = {
+            hostenv = {
+              x86_64-linux = {
+                defaultEnvironment = "main";
+                # environments intentionally missing
+              };
             };
           };
         };
@@ -427,7 +433,7 @@ let
         org__proj = {
           outPath = projectDir;
           __toString = self: toString projectDir;
-          hostenv = hostenvOutput;
+          lib = { hostenv = hostenvOutput; };
         };
       };
       system = "x86_64-linux";
@@ -528,7 +534,7 @@ EOF
         org__proj = {
           outPath = conflictProjectDir;
           __toString = self: toString conflictProjectDir;
-          hostenv = hostenvOutputConflict;
+          lib = { hostenv = hostenvOutputConflict; };
         };
       };
 
@@ -623,12 +629,12 @@ in
   provider-plan-missing-projects-asserts =
     asserts.assertTrue "provider-plan-missing-projects-asserts"
       (! planMissingProjects.success)
-      "plan generation must fail early when no client projects expose outputs.hostenv";
+      "plan generation must fail early when no client projects expose outputs.lib.hostenv";
 
   provider-plan-missing-environments-asserts =
     asserts.assertTrue "provider-plan-missing-environments-asserts"
       (! planMissingEnvironments.success)
-      "plan generation must fail early when a client flake hostenv output lacks environments";
+      "plan generation must fail early when a client flake lib.hostenv output lacks environments";
 
   provider-plan-invalid-deploy-key =
     let

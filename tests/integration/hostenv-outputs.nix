@@ -31,9 +31,9 @@ let
     };
   };
 
-  outputs = flake.hostenv.${system};
+  outputs = flake.lib.hostenv.${system};
   ok = outputs ? environments && outputs ? defaultEnvironment;
 in
 asserts.assertTrue "hostenv-outputs-eval"
   ok
-  "hostenv outputs should include environments/defaultEnvironment for each system"
+  "lib.hostenv outputs should include environments/defaultEnvironment for each system"

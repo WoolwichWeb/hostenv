@@ -4,16 +4,25 @@ let
 in
 {
   options.flake = {
+    lib = lib.mkOption {
+      type = types.submodule {
+        freeformType = types.attrsOf types.unspecified;
+        options = {
+          hostenvModules = lib.mkOption {
+            type = types.attrsOf types.path;
+            default = { };
+            description = "Hostenv evalModules modules (merged across modules, exported under lib.hostenvModules).";
+          };
+        };
+      };
+      default = { };
+      description = "Library outputs merged under flake.lib.";
+    };
+
     flakeModules = lib.mkOption {
       type = types.attrsOf types.path;
       default = { };
       description = "Exported flake-parts modules (merged across modules).";
-    };
-
-    hostenvModules = lib.mkOption {
-      type = types.attrsOf types.path;
-      default = { };
-      description = "Hostenv evalModules modules (merged across modules).";
     };
 
     # Note: flake-parts already defines `flake.nixosModules`, so we do not
@@ -31,7 +40,7 @@ in
     };
 
     # Modules consumed by evalModules.
-    hostenvModules = {
+    lib.hostenvModules = {
       fullEnv = ../hostenv-modules/full-env.nix;
       environment = ../hostenv-modules/environment.nix;
       environments = ../hostenv-modules/environments.nix;

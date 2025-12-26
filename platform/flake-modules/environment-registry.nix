@@ -50,7 +50,7 @@ in
   });
 
   # Lift perSystem outputs into flake outputs
-  config.flake.hostenv =
+  config.flake.lib.hostenv =
     lib.genAttrs config.systems (system:
       config.allSystems.${system}.hostenvProject.outputs);
 }

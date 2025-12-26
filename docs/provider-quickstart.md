@@ -29,7 +29,7 @@
 }
 ```
 
-**Important:** each client project flake must export `outputs.hostenv.<system>.environments`
+**Important:** each client project flake must export `outputs.lib.hostenv.<system>.environments`
 so the provider can discover environments. The shipped project template already does this.
 Client inputs should point at the `.hostenv` flake (e.g. `dir=.hostenv`) so `hostenv.nix` is at the flake root.
 
