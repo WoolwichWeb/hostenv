@@ -597,6 +597,12 @@ let
                       linger = true;
                     };
 
+                    users.users.deploy = {
+                      isNormalUser = true;
+                      extraGroups = [ "wheel" "keys" ];
+                      openssh.authorizedKeys.keys = deployPublicKeyList;
+                    };
+
                     systemd.slices = {
                       ${sliceName} = {
                         description = "${firstPart} slice";
