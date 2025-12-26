@@ -70,6 +70,8 @@ in
     {
       flake.lib.provider.nixosSystem = ./nixos-system.nix;
       flake.lib.provider.deployOutputs = ./deploy-outputs.nix;
+      flake.lib.provider.deployPublicKey = cfgTop.deployPublicKey;
+      flake.lib.provider.warnInvalidDeployKey = cfgTop.warnInvalidDeployKey;
       flake.flakeModules.provider = ./flake-module.nix;
 
       perSystem = { system, pkgs, ... }:

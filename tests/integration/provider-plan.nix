@@ -585,14 +585,12 @@ in
     in asserts.assertTrue "provider-plan-node-merge" ok
       "node1 should contain users and vhosts for both environments";
 
-  provider-plan-deploy-user-key =
+  provider-plan-no-deploy-user =
     let
       plan = lib.importJSON planNoState;
-      deployUser = plan.nodes.node1.users.users.deploy or { };
-      keys = deployUser.openssh.authorizedKeys.keys or [ ];
-      ok = lib.elem "ssh-ed25519 test" keys;
-    in asserts.assertTrue "provider-plan-deploy-user-key" ok
-      "deploy user should receive deployPublicKey in plan.json";
+      ok = !(plan.nodes.node1.users.users ? deploy);
+    in asserts.assertTrue "provider-plan-no-deploy-user" ok
+      "plan.json should not define the deploy user";
 
   provider-plan-alias-preserved =
     let plan = lib.importJSON planWithState;

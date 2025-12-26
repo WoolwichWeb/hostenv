@@ -28,7 +28,6 @@ let
     packages.${system}.main = pkgs.hello;
   };
 
-  inputsForSystem = inputs // { "${envName}" = envInput; };
   nodeSystems = { "${nodeName}" = system; };
 
   config = {
@@ -36,7 +35,6 @@ let
       "${nodeName}" = {
         users.users = {
           "${envName}" = { };
-          deploy = { };
         };
       };
     };
@@ -80,6 +78,10 @@ let
   };
 
   pkgsBySystem = lib.genAttrs [ system ] (_: pkgs);
+  inputsForSystem = inputs // {
+    "${envName}" = envInput;
+    parent = providerFlake;
+  };
 
   nixosSystemPath = providerFlake.lib.provider.nixosSystem;
   systemEval = import nixosSystemPath {
@@ -103,6 +105,8 @@ let
 
   nginxOk = systemEval.config.services.nginx.enable == true;
   vhostOk = builtins.hasAttr hostName systemEval.config.services.nginx.virtualHosts;
+  deployKeysOk =
+    lib.elem "ssh-ed25519 test" (systemEval.config.users.users.deploy.openssh.authorizedKeys.keys or [ ]);
   secretsOk =
     builtins.hasAttr "${envName}/backups_secret" systemEval.config.sops.secrets
     && builtins.hasAttr "${envName}/backups_env" systemEval.config.sops.secrets
@@ -110,5 +114,5 @@ let
     && !(builtins.hasAttr "deploy/backups_env" systemEval.config.sops.secrets);
 in
 asserts.assertTrue "provider-nixos-system-eval"
-  (nginxOk && vhostOk && secretsOk && ! systemMismatch.success)
+  (nginxOk && vhostOk && deployKeysOk && secretsOk && ! systemMismatch.success)
   "provider nixosSystem should enforce env key/userName alignment"
