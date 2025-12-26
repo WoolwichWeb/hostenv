@@ -24,6 +24,7 @@ let
   nodeConfig = config.nodes.${node};
   environmentWith = userName: config.environments.${userName};
   packages = pkgs.${system};
+  envUsers = builtins.attrNames (config.environments or { });
 
   hostenvEnvModule = {
     hostenv = {
@@ -34,7 +35,6 @@ let
 
   userPackages = userInfo:
     let
-      envUsers = builtins.attrNames (config.environments or { });
       envOnly = packages.lib.filterAttrs (name: _: builtins.elem name envUsers) userInfo.users.users;
     in
     {
@@ -70,6 +70,7 @@ let
       orgProjectFromName = name:
         (environmentWith name).hostenv.organisation
         + "_" + (environmentWith name).hostenv.project;
+      envOnly = packages.lib.filterAttrs (name: _: builtins.elem name envUsers) userInfo.users.users;
     in
     {
       sops.secrets = packages.lib.concatMapAttrs
@@ -107,7 +108,7 @@ let
               };
             }
         )
-        userInfo.users.users;
+        envOnly;
     };
 
 in

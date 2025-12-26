@@ -103,7 +103,12 @@ let
 
   nginxOk = systemEval.config.services.nginx.enable == true;
   vhostOk = builtins.hasAttr hostName systemEval.config.services.nginx.virtualHosts;
+  secretsOk =
+    builtins.hasAttr "${envName}/backups_secret" systemEval.config.sops.secrets
+    && builtins.hasAttr "${envName}/backups_env" systemEval.config.sops.secrets
+    && !(builtins.hasAttr "deploy/backups_secret" systemEval.config.sops.secrets)
+    && !(builtins.hasAttr "deploy/backups_env" systemEval.config.sops.secrets);
 in
 asserts.assertTrue "provider-nixos-system-eval"
-  (nginxOk && vhostOk && ! systemMismatch.success)
+  (nginxOk && vhostOk && secretsOk && ! systemMismatch.success)
   "provider nixosSystem should enforce env key/userName alignment"
