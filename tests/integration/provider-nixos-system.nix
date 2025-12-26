@@ -34,7 +34,10 @@ let
   config = {
     nodes = {
       "${nodeName}" = {
-        users.users = { "${envName}" = { }; };
+        users.users = {
+          "${envName}" = { };
+          deploy = { };
+        };
       };
     };
     environments = {
@@ -55,6 +58,14 @@ let
       };
     };
     defaultEnvironment = "main";
+  };
+
+  configMismatch = config // {
+    environments = config.environments // {
+      "${envName}" = (config.environments.${envName} // {
+        hostenv = (config.environments.${envName}.hostenv // { userName = "wrong-user"; });
+      });
+    };
   };
 
   providerFlake = inputs.flake-parts.lib.mkFlake { inherit inputs; } {
@@ -80,9 +91,19 @@ let
     localSystem = system;
   };
 
+  systemMismatch = builtins.tryEval (import nixosSystemPath {
+    config = configMismatch;
+    inherit nodeSystems nodeName nodesPath secretsPath;
+    node = nodeName;
+    inputs = inputsForSystem;
+    nixpkgs = inputs.nixpkgs;
+    pkgs = pkgsBySystem;
+    localSystem = system;
+  });
+
   nginxOk = systemEval.config.services.nginx.enable == true;
   vhostOk = builtins.hasAttr hostName systemEval.config.services.nginx.virtualHosts;
 in
 asserts.assertTrue "provider-nixos-system-eval"
-  (nginxOk && vhostOk)
-  "provider nixosSystem should evaluate with minimal plan config"
+  (nginxOk && vhostOk && ! systemMismatch.success)
+  "provider nixosSystem should enforce env key/userName alignment"

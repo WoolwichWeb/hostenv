@@ -33,16 +33,30 @@ let
   };
 
   userPackages = userInfo:
+    let
+      envUsers = builtins.attrNames (config.environments or { });
+      envOnly = packages.lib.filterAttrs (name: _: builtins.elem name envUsers) userInfo.users.users;
+    in
     {
       users.users = packages.lib.concatMapAttrs
-        (name: user:
+        (name: _user:
           let
             userPackage = inputs.${name}.packages.${system}.${(environmentWith name).hostenv.environmentName};
           in
           { ${name}.packages = [ userPackage ]; }
         )
-        userInfo.users.users;
+        envOnly;
     };
+
+  envUserMismatch =
+    let
+      envs = config.environments or { };
+      mismatched =
+        packages.lib.filterAttrs
+          (name: env: (env.hostenv.userName or name) != name)
+          envs;
+    in
+    builtins.attrNames mismatched;
 
   sopsSecrets = userInfo:
     let
@@ -97,22 +111,25 @@ let
     };
 
 in
-nixpkgs.lib.nixosSystem {
-  inherit system;
-  specialArgs = { inherit inputs system; };
-  modules = [
-    ./common.nix
-    { sops.defaultSopsFile = secretsPath; }
-    ../platform/nixos-modules/top-level.nix
-    ../platform/nixos-modules/users-slices.nix
-    ../platform/nixos-modules/nginx-hostenv.nix
-    ../platform/nixos-modules/nginx-tuning-hostenv.nix
-    ../platform/nixos-modules/backups-hostenv.nix
-    ../platform/nixos-modules/monitoring-hostenv.nix
-    hostenvEnvModule
-    (nodePath + "/configuration.nix")
-    nodeConfig
-    (sopsSecrets nodeConfig)
-    (userPackages nodeConfig)
-  ];
-}
+if envUserMismatch == [ ] then
+  nixpkgs.lib.nixosSystem {
+    inherit system;
+    specialArgs = { inherit inputs system; };
+    modules = [
+      ./common.nix
+      { sops.defaultSopsFile = secretsPath; }
+      ../platform/nixos-modules/top-level.nix
+      ../platform/nixos-modules/users-slices.nix
+      ../platform/nixos-modules/nginx-hostenv.nix
+      ../platform/nixos-modules/nginx-tuning-hostenv.nix
+      ../platform/nixos-modules/backups-hostenv.nix
+      ../platform/nixos-modules/monitoring-hostenv.nix
+      hostenvEnvModule
+      (nodePath + "/configuration.nix")
+      nodeConfig
+      (sopsSecrets nodeConfig)
+      (userPackages nodeConfig)
+    ];
+  }
+else
+  throw "hostenv provider: environment keys must match hostenv.userName (mismatched: ${builtins.toString envUserMismatch})"
