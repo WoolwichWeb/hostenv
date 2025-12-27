@@ -43,6 +43,11 @@ let
     ${cfg.settings.extraSettings}
   '';
 
+  composerInstallRestoreHook = pkgs.makeSetupHook {
+    name = "hostenv-composer-install-restore-installer-paths";
+    propagatedNativeBuildInputs = [ pkgs.jq ];
+  } ../hooks/composer-install-restore-installer-paths.sh;
+
   composerPackage = pkgs.stdenvNoCC.mkDerivation {
     # Only change this derivation's name if there is a good reason.
     # It's named this to make it possible to find which git branch needs its
@@ -54,20 +59,23 @@ let
     dontPatchShebangs = true;
     buildInputs = [ drupalPhpPool.effectivePhpCliPackage.packages.composer ];
 
-    src = drupalPhpPool.effectivePhpCliPackage.buildComposerProject2 (finalAttrs: {
-      pname = cfg.codebase.name;
-      version = cfg.codebase.version;
-      src = lib.cleanSourceWith {
-        src = config.hostenv.root;
-        filter = path: type: baseNameOf path == "composer.json"
-          || baseNameOf path == "composer.lock";
-      };
-      composerLock = config.hostenv.root + /composer.lock;
-      vendorHash = cfg.composer.dependencyHash;
-      composerNoPlugins = !cfg.composer.enablePlugins;
-      composerNoScripts = !cfg.composer.enableScripts;
-      composerNoDev = !cfg.composer.enableDev;
-    });
+    src =
+      (drupalPhpPool.effectivePhpCliPackage.buildComposerProject2 (finalAttrs: {
+        pname = cfg.codebase.name;
+        version = cfg.codebase.version;
+        src = lib.cleanSourceWith {
+          src = config.hostenv.root;
+          filter = path: type: baseNameOf path == "composer.json"
+            || baseNameOf path == "composer.lock";
+        };
+        composerLock = config.hostenv.root + /composer.lock;
+        vendorHash = cfg.composer.dependencyHash;
+        composerNoPlugins = !cfg.composer.enablePlugins;
+        composerNoScripts = !cfg.composer.enableScripts;
+        composerNoDev = !cfg.composer.enableDev;
+      })).overrideAttrs (old: {
+        nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ composerInstallRestoreHook ];
+      });
 
     buildPhase = ''
       pushd share/php/${cfg.codebase.name}
