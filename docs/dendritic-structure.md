@@ -14,7 +14,7 @@ perSystem = { config, ... }: {
       adminEmail = "ops@example.com";
       acceptTerms = true;
     };
-    deployPublicKey = "ssh-ed25519 AAAA... deployment";
+    deployPublicKeys = [ "ssh-ed25519 AAAA... deployment" ];
     nodeFor = {
       production = "backend04";
       testing = "backend02";

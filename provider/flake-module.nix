@@ -13,8 +13,7 @@ in
     provider = {
       hostenvHostname = mkOption { type = types.str; default = "example.invalid"; description = "Hostenv control-plane hostname (must be set by provider)."; };
       letsEncrypt = mkOption { type = types.attrs; default = { adminEmail = "admin@example.invalid"; acceptTerms = true; }; };
-      deployPublicKey = mkOption { type = types.nullOr types.str; default = null; description = "SSH public key for deploy user; must be set by provider."; };
-      warnInvalidDeployKey = mkOption { type = types.bool; default = true; description = "Warn when deployPublicKey is invalid or empty."; };
+      deployPublicKeys = mkOption { type = types.listOf types.str; default = [ ]; description = "SSH public keys for deploy user; must be set by provider."; };
       nodeFor = mkOption {
         type = types.attrs;
         default = { default = null; };
@@ -70,8 +69,7 @@ in
     {
       flake.lib.provider.nixosSystem = ./nixos-system.nix;
       flake.lib.provider.deployOutputs = ./deploy-outputs.nix;
-      flake.lib.provider.deployPublicKey = cfgTop.deployPublicKey;
-      flake.lib.provider.warnInvalidDeployKey = cfgTop.warnInvalidDeployKey;
+      flake.lib.provider.deployPublicKeys = cfgTop.deployPublicKeys;
       flake.flakeModules.provider = ./flake-module.nix;
 
       perSystem = { system, pkgs, ... }:
@@ -95,8 +93,7 @@ in
             lib = pkgs.lib;
             pkgs = pkgs;
             letsEncrypt = cfg.letsEncrypt;
-            deployPublicKey = cfg.deployPublicKey;
-            warnInvalidDeployKey = cfg.warnInvalidDeployKey;
+            deployPublicKeys = cfg.deployPublicKeys;
             hostenvHostname = cfg.hostenvHostname;
             nodeFor = cfg.nodeFor;
             nodeSystems = cfg.nodeSystems;

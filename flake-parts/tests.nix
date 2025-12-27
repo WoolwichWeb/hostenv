@@ -1,7 +1,7 @@
 { inputs, ... }:
 {
   provider = {
-    deployPublicKey = "ssh-ed25519 test";
+    deployPublicKeys = [ "ssh-ed25519 test" ];
     planSource = "disk";
     planPath = ./../tests/support/provider/plan-empty.json;
     statePath = ./../tests/support/provider/state-empty.json;

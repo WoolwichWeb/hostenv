@@ -79,7 +79,7 @@ let
     inherit inputs pkgs lib;
     system = localSystem;
     letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-    deployPublicKey = "ssh-ed25519 test";
+    deployPublicKeys = [ "ssh-ed25519 test" ];
     hostenvHostname = "hosting.test";
     nodeFor = { default = "node-a"; production = "node-a"; testing = "node-a"; development = "node-a"; };
     statePath = stateStub;

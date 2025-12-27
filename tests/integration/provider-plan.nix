@@ -128,7 +128,7 @@ let
 
   dummyStatePath = pkgs.writers.writeJSON "dummy-state.json" { };
 
-  mkPlan = { hostenvHostname ? "custom.host", state ? { }, planSource ? "eval", planPath ? null, deployPublicKey ? "ssh-ed25519 test", warnInvalidDeployKey ? true }:
+  mkPlan = { hostenvHostname ? "custom.host", state ? { }, planSource ? "eval", planPath ? null, deployPublicKeys ? [ "ssh-ed25519 test" ] }:
     let
       # Build a synthetic flake inputs set: hostenv modules + one project with lib.hostenv output.
       lockData = {
@@ -176,8 +176,7 @@ let
       system = "x86_64-linux";
       inherit lib pkgs hostenvHostname;
       letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-      deployPublicKey = deployPublicKey;
-      warnInvalidDeployKey = warnInvalidDeployKey;
+      deployPublicKeys = deployPublicKeys;
       nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
       statePath = statePathEffective;
       planPath = planPath;
@@ -266,8 +265,6 @@ let
       planPath = planNoState;
       state = lib.importJSON stateNoState;
     };
-  invalidDeployKey = "not-a-key";
-  planInvalidDeployKey = builtins.tryEval (mkPlan { deployPublicKey = invalidDeployKey; warnInvalidDeployKey = false; });
 
   quotedInvalidProject = mkProjectInput { organisation = "acme"; project = "4demo"; envName = "main"; };
   quotedValidProject = mkProjectInput { organisation = "acme"; project = "demo-project"; envName = "main"; };
@@ -309,7 +306,7 @@ let
     system = "x86_64-linux";
     inherit lib pkgs;
     letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-    deployPublicKey = "ssh-ed25519 test";
+    deployPublicKeys = [ "ssh-ed25519 test" ];
     hostenvHostname = "hosting.test";
     nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
     statePath = dummyStatePath;
@@ -335,7 +332,7 @@ let
         system = "x86_64-linux";
         inherit lib pkgs;
         letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-        deployPublicKey = "ssh-ed25519 test";
+        deployPublicKeys = [ "ssh-ed25519 test" ];
         hostenvHostname = "custom.host";
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
         statePath = dummyStatePath;
@@ -388,7 +385,7 @@ let
         system = "x86_64-linux";
         inherit lib pkgs;
         letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-        deployPublicKey = "ssh-ed25519 test";
+        deployPublicKeys = [ "ssh-ed25519 test" ];
         hostenvHostname = "custom.host";
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
         statePath = dummyStatePath;
@@ -439,7 +436,7 @@ let
       system = "x86_64-linux";
       inherit lib pkgs;
       letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-      deployPublicKey = "ssh-ed25519 test";
+      deployPublicKeys = [ "ssh-ed25519 test" ];
       hostenvHostname = "custom.host";
       nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
       statePath = dummyStatePath;
@@ -543,7 +540,7 @@ EOF
         system = "x86_64-linux";
         inherit lib pkgs;
         letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-        deployPublicKey = "ssh-ed25519 test";
+        deployPublicKeys = [ "ssh-ed25519 test" ];
         hostenvHostname = "custom.host";
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
         statePath = dummyStatePath;
@@ -583,9 +580,19 @@ in
       vhosts = plan.nodes.node1.services.nginx.virtualHosts or { };
       ok = (users ? ${user1}) && (users ? ${user2})
         && (vhosts ? "env1.example") && (vhosts ? "env2.example")
-        && (providerCfg.deployPublicKey or null) == "ssh-ed25519 test";
+        && (providerCfg.deployPublicKeys or [ ]) == [ "ssh-ed25519 test" ];
     in asserts.assertTrue "provider-plan-node-merge" ok
       "node1 should contain users and vhosts for both environments";
+
+  provider-plan-no-deploy-keys-in-envs =
+    let
+      plan = lib.importJSON planNoState;
+      users = plan.nodes.node1.users.users or { };
+      user1Keys = users.${user1}.openssh.authorizedKeys.keys or [ ];
+      user2Keys = users.${user2}.openssh.authorizedKeys.keys or [ ];
+      ok = !(lib.elem "ssh-ed25519 test" user1Keys) && !(lib.elem "ssh-ed25519 test" user2Keys);
+    in asserts.assertTrue "provider-plan-no-deploy-keys-in-envs" ok
+      "deploy keys should not be appended to environment users";
 
   provider-plan-no-deploy-user =
     let
@@ -635,23 +642,6 @@ in
     asserts.assertTrue "provider-plan-missing-environments-asserts"
       (! planMissingEnvironments.success)
       "plan generation must fail early when a client flake lib.hostenv output lacks environments";
-
-  provider-plan-invalid-deploy-key =
-    let
-      invalidKeyPresent =
-        if planInvalidDeployKey.success then
-          let
-            plan = lib.importJSON planInvalidDeployKey.value.plan;
-            users = plan.nodes.node1.users.users or { };
-            keyLists = map (u: u.openssh.authorizedKeys.keys or [ ]) (builtins.attrValues users);
-          in
-            lib.any (keys: lib.elem invalidDeployKey keys) keyLists
-        else
-          true;
-    in
-    asserts.assertTrue "provider-plan-invalid-deploy-key"
-      (planInvalidDeployKey.success && !invalidKeyPresent)
-      "plan generation should warn and omit invalid deployPublicKey";
 
   provider-plan-security-headers =
     let

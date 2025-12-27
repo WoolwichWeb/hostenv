@@ -1,11 +1,11 @@
+# Provider-side infrastructure generator.
 { inputs
 , system
 , lib
 , pkgs
 , letsEncrypt
-, deployPublicKey
+, deployPublicKeys ? [ ]
 , hostenvHostname
-, warnInvalidDeployKey ? true
 , nodeFor ? { default = null; }
 , statePath ? (if inputs ? self then inputs.self + /generated/state.json else null)
 , planPath ? (if inputs ? self then inputs.self + /generated/plan.json else null)
@@ -14,9 +14,6 @@
 , planSource ? "eval"
 , lockPath ? (if inputs ? self then inputs.self + /flake.lock else ../flake.lock)
 }:
-
-# Provider-side infrastructure generator.
-# Largely ported from for_refactoring/generate-infra.nix, but relocated under provider/.
 
 let
   useEval = planSource == "eval";
@@ -41,6 +38,7 @@ let
             "\"";
       in
       ''add_header ${name} ${quote}${value}${quote} always;'';
+
   mkSecurityHeaders = { vhost, envType }:
     let
       security = vhost.security or { };
@@ -77,42 +75,7 @@ let
       (if cspValue == null then "" else mkHeaderLine cspHeaderName cspValue)
       (if allowIndexing then "" else mkHeaderLine "X-Robots-Tag" "noindex")
     ]);
-  deployPublicKeyList =
-    let
-      key = deployPublicKey;
-      parts =
-        if key == null
-        then [ ]
-        else lib.filter (s: s != "") (lib.strings.splitString " " key);
-      keyType = if builtins.length parts > 0 then builtins.elemAt parts 0 else "";
-      keyData = if builtins.length parts > 1 then builtins.elemAt parts 1 else "";
-      allowedKeyTypes = [
-        "ssh-ed25519"
-        "ssh-rsa"
-        "ecdsa-sha2-nistp256"
-        "ecdsa-sha2-nistp384"
-        "ecdsa-sha2-nistp521"
-        "sk-ssh-ed25519@openssh.com"
-        "sk-ecdsa-sha2-nistp256@openssh.com"
-      ];
-      isValid =
-        key != null
-        && key != ""
-        && builtins.length parts >= 2
-        && lib.elem keyType allowedKeyTypes
-        && builtins.match "^[A-Za-z0-9+/=]+$" keyData != null;
-    in
-    if key == null || key == "" then
-      if warnInvalidDeployKey then
-        lib.warn "provider.deployPublicKey is unset or empty; skipping deploy key for provider user." [ ]
-      else
-        [ ]
-    else if isValid then
-      [ key ]
-    else if warnInvalidDeployKey then
-      lib.warn "provider.deployPublicKey is not a valid SSH public key; skipping it." [ ]
-    else
-      [ ];
+
   requirePath = { name, path, hint ? "" }:
     if path == null then
       builtins.throw ''
@@ -185,8 +148,6 @@ let
         flake.lock is missing at ${builtins.toString lockPath}.
         Please run: nix flake lock (or nix flake update) at repo root
       '';
-
-  nixosSystemPathExpr = "inputs.parent.lib.provider.nixosSystem";
 
   planFromDisk =
     if useEval then null
@@ -590,8 +551,7 @@ let
                     };
 
                     provider = {
-                      deployPublicKey = deployPublicKey;
-                      warnInvalidDeployKey = warnInvalidDeployKey;
+                      inherit deployPublicKeys;
                     };
 
                     users.groups.${elem.hostenv.userName} = {
@@ -601,7 +561,7 @@ let
                     users.users.${elem.hostenv.userName} = {
                       uid = elem.uid;
                       group = elem.hostenv.userName;
-                      openssh.authorizedKeys.keys = elem.authorizedKeys ++ deployPublicKeyList;
+                      openssh.authorizedKeys.keys = elem.authorizedKeys;
                       isNormalUser = true;
                       createHome = true;
                       linger = true;

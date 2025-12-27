@@ -5,7 +5,7 @@ This template boots a provider flake that consumes hostenv projects and generate
 ## Quick start
 
 1. Copy this template (or `nix flake init -t gitlab:woolwichweb/hostenv#provider` once exported).
-2. Set `provider.hostenvHostname`, `provider.deployPublicKey`, and your node mappings in `flake.nix`.
+2. Set `provider.hostenvHostname`, `provider.deployPublicKeys`, and your node mappings in `flake.nix`.
 3. The template ships starter node stubs:
    - `nodes/sample/` (copy to `nodes/<node>/` and edit).
 4. Create `secrets/secrets.yaml` with `sops` (provider uses this at deploy time).

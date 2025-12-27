@@ -2,56 +2,14 @@
 let
   pkgs = inputs.nixpkgs.legacyPackages.${system};
   secretFile = ../secrets/secrets.yaml;
-  deployPublicKey = config.provider.deployPublicKey or null;
-  warnInvalidDeployKey = config.provider.warnInvalidDeployKey or true;
-  deployPublicKeyList =
-    let
-      key = deployPublicKey;
-      parts =
-        if key == null
-        then [ ]
-        else lib.filter (s: s != "") (lib.strings.splitString " " key);
-      keyType = if builtins.length parts > 0 then builtins.elemAt parts 0 else "";
-      keyData = if builtins.length parts > 1 then builtins.elemAt parts 1 else "";
-      allowedKeyTypes = [
-        "ssh-ed25519"
-        "ssh-rsa"
-        "ecdsa-sha2-nistp256"
-        "ecdsa-sha2-nistp384"
-        "ecdsa-sha2-nistp521"
-        "sk-ssh-ed25519@openssh.com"
-        "sk-ecdsa-sha2-nistp256@openssh.com"
-      ];
-      isValid =
-        key != null
-        && key != ""
-        && builtins.length parts >= 2
-        && lib.elem keyType allowedKeyTypes
-        && builtins.match "^[A-Za-z0-9+/=]+$" keyData != null;
-    in
-    if key == null || key == "" then
-      if warnInvalidDeployKey then
-        lib.warn "provider.deployPublicKey is unset or empty; skipping deploy key for provider user." [ ]
-      else
-        [ ]
-    else if isValid then
-      [ key ]
-    else if warnInvalidDeployKey then
-      lib.warn "provider.deployPublicKey is not a valid SSH public key; skipping it." [ ]
-    else
-      [ ];
+  deployPublicKeys = config.provider.deployPublicKeys or [ ];
 in
 {
   options.provider = {
-    deployPublicKey = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      description = "SSH public key for the deploy user (provider-level).";
-    };
-    warnInvalidDeployKey = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = "Whether to warn on invalid deployPublicKey.";
+    deployPublicKeys = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "SSH public keys for the deploy user (provider-level).";
     };
   };
 
@@ -111,7 +69,7 @@ in
     users.users.deploy = {
       isNormalUser = true;
       extraGroups = [ "wheel" "keys" ];
-      openssh.authorizedKeys.keys = lib.mkDefault deployPublicKeyList;
+      openssh.authorizedKeys.keys = lib.mkDefault deployPublicKeys;
     };
 
     networking.firewall.enable = true;

@@ -37,8 +37,7 @@ let
           "${envName}" = { };
         };
         provider = {
-          deployPublicKey = "ssh-ed25519 test";
-          warnInvalidDeployKey = true;
+          deployPublicKeys = [ "ssh-ed25519 test" ];
         };
       };
     };
@@ -75,7 +74,7 @@ let
     imports = [ ../../provider/flake-module.nix ];
     provider = {
       hostenvHostname = "hosting.test";
-      deployPublicKey = "ssh-ed25519 test";
+      deployPublicKeys = [ "ssh-ed25519 test" ];
       nodeFor = { default = nodeName; };
       nodeSystems = nodeSystems;
     };
