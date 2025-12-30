@@ -465,6 +465,7 @@ let
               repo = "${val.repo.repo}";
               ''}
               inputs.hostenv.follows = "hostenv";
+              inputs.nixpkgs.follows = "nixpkgs";
             };
           ''
           + (if cloudflare.enable && cloudflare.apiTokenFile != null && cloudflare.zoneId != null then ''
@@ -486,6 +487,7 @@ let
           deploy-rs.follows = "parent/deploy-rs";
           sops-nix.follows = "parent/sops-nix";
           hostenv.follows = "parent/hostenv-platform";
+          nixpkgs.follows = "parent/nixpkgs";
 
           ${inputsBlock}
         };
