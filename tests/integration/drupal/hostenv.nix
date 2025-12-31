@@ -7,7 +7,7 @@
   # 1. Set to pkgs.lib.fakeHash
   # 2. Run `nix build .#checks.x86-linux.test-name`
   # 3. Copy the correct hash from the error message
-  services.drupal.composer.dependencyHash = "sha256-tKFoXoeI6av4qWCOlOqquto/gXbNyJI54JLQ4/MaVzc=";
+  services.drupal.composer.dependencyHash = "sha256-ZBYaQuHu8yuDRQ9UfQjJrR7n3bCZUPPQ6MkUiCH5Dw4=";
 
   services.drupal.cron.timerConfig.OnCalendar = "*:0/5";
 

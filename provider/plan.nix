@@ -466,6 +466,7 @@ let
               ''}
               inputs.hostenv.follows = "hostenv";
               inputs.nixpkgs.follows = "nixpkgs";
+              inputs.flake-parts.follows = "flake-parts";
             };
           ''
           + (if cloudflare.enable && cloudflare.apiTokenFile != null && cloudflare.zoneId != null then ''
@@ -488,6 +489,7 @@ let
           sops-nix.follows = "parent/sops-nix";
           hostenv.follows = "parent/hostenv-platform";
           nixpkgs.follows = "parent/nixpkgs";
+          flake-parts.follows = "parent/flake-parts";
 
           ${inputsBlock}
         };

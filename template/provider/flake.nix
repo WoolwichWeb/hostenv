@@ -8,6 +8,7 @@
       url = "gitlab:woolwichweb/hostenv";
       inputs.hostenv-platform.follows = "hostenv-platform";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-parts.follows = "flake-parts";
     };
     hostenv-platform = {
       url = "gitlab:woolwichweb/hostenv?dir=platform";
