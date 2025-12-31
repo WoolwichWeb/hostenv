@@ -11,6 +11,7 @@
     let
       makeHostenv = inputs.hostenv-platform.makeHostenv.${system};
       envs = import ./../tests/environments.nix { inherit pkgs makeHostenv; };
+      drupalRoot = import ./../tests/integration/drupal/source.nix { inherit pkgs; };
     in
     {
       hostenvProject = {
@@ -22,7 +23,7 @@
               organisation = "test";
               project = "testproject";
               hostenvHostname = "hosting.test";
-              root = ./../tests/integration/drupal;
+              root = drupalRoot;
             };
           })
         ];

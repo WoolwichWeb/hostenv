@@ -1,12 +1,14 @@
 { pkgs, makeHostenv }:
 
 let
+  drupalRoot = import ./integration/drupal/source.nix { inherit pkgs; };
+
   baseModules = [
     ({ ... }: {
       hostenv = {
         organisation = "test";
         project = "test-project";
-        root = ./integration/drupal;
+        root = drupalRoot;
         hostenvHostname = "hosting.test";
       };
     })

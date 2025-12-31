@@ -4,10 +4,10 @@
   services.drupal.backups.enable = true;
 
   # To update this hash when dependencies change:
-  # 1. Set to lib.fakeHash
+  # 1. Set to pkgs.lib.fakeHash
   # 2. Run `nix build .#checks.x86-linux.test-name`
   # 3. Copy the correct hash from the error message
-  services.drupal.composer.dependencyHash = "sha256-i1EnECV5GCbXYBn5RY7LLdXJ3R23ExivkrHE2m0/vWM=";
+  services.drupal.composer.dependencyHash = "sha256-tKFoXoeI6av4qWCOlOqquto/gXbNyJI54JLQ4/MaVzc=";
 
   services.drupal.cron.timerConfig.OnCalendar = "*:0/5";
 
