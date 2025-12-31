@@ -23,6 +23,22 @@
       url = "github:Mic92/sops-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    # Enter each project as a separate input using this template:
+    # organisation__project = {
+    #   url = "git:some-git-host/repo?dir=.hostenv&ref=main";
+    #   # ^ If hostenv's flake.nix is in a different directory, or the root,
+    #   #   change 'dir' accordingly.
+    #   #   To change which branch contains the specification of a project's
+    #   #   environments update 'ref'.
+
+    #   inputs.nixpkgs.follows = "nixpkgs";
+    #   inputs.hostenv.follows = "hostenv-platform";
+    #   inputs.flake-parts.follows = "flake-parts";
+    # };
+    # Note: hostenv uses the double-underscore (__) to determine which inputs
+    # are hostenv projects and which are just standard inputs, like 'nixpkgs'.
+
   };
 
   outputs = inputs@{ flake-parts, hostenv, ... }:
