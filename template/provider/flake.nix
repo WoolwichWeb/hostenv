@@ -14,6 +14,7 @@
       url = "gitlab:woolwichweb/hostenv?dir=platform";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-parts.follows = "flake-parts";
+      inputs.phps.follows = "phps";
     };
     deploy-rs = {
       url = "github:serokell/deploy-rs";
@@ -22,6 +23,9 @@
     sops-nix = {
       url = "github:Mic92/sops-nix";
       inputs.nixpkgs.follows = "nixpkgs";
+    };
+    phps = {
+      url = "gitlab:woolwichweb/nix-phps-lts";
     };
 
     # Enter each project as a separate input using this template:
