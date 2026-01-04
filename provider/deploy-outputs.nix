@@ -6,6 +6,7 @@
 , localSystem
 , nodesPath
 , secretsPath
+, nodeModules ? [ ]
 , nodeSystems ? { }
 }:
 let
@@ -13,7 +14,7 @@ let
   pkgs = forEachSystem (system: import nixpkgs { inherit system; });
 
   nixosSystem = node: import ./nixos-system.nix {
-    inherit config node nixpkgs pkgs inputs localSystem nodesPath secretsPath nodeSystems;
+    inherit config node nixpkgs pkgs inputs localSystem nodesPath secretsPath nodeSystems nodeModules;
   };
 
   nodes = builtins.mapAttrs

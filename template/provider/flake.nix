@@ -56,7 +56,17 @@
         deployPublicKeys = [ "ssh-ed25519 AAAA..." ]; # replace me
         nodeSystems = { default = "x86_64-linux"; };
         nodeFor = { default = "node-a"; production = "node-a"; testing = "node-a"; development = "node-a"; };
+        # nodeModules = [ "nodes/common.nix" ]; # paths are relative to the provider root
         planSource = "eval";
+        # generatedFlake = {
+        #   inputs = {
+        #     # extraInput = { url = "github:example/extra"; };
+        #   };
+        #   envInputs = {
+        #     # follows = { nixpkgs = "parent/nixpkgs"; };
+        #     # extra = env: { inputs = { sops-nix = { follows = "parent/sops-nix"; }; }; };
+        #   };
+        # };
       };
     };
 }

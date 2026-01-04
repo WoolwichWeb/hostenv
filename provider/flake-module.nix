@@ -23,6 +23,11 @@ in
         default = { };
         description = "Map of node name -> system string (e.g. x86_64-linux, aarch64-linux).";
       };
+      nodeModules = mkOption {
+        type = types.listOf (types.oneOf [ types.path types.str ]);
+        default = [ ];
+        description = "Extra NixOS modules applied to every node. Strings are paths relative to the provider root.";
+      };
       statePath = mkOption {
         type = types.path;
         default =
@@ -38,6 +43,36 @@ in
           else builtins.throw "provider.planPath: inputs.self is required to resolve defaults; set provider.planPath explicitly.";
       };
       planSource = mkOption { type = types.enum [ "disk" "eval" ]; default = "eval"; };
+      generatedFlake = mkOption {
+        type = types.submodule {
+          options = {
+            inputs = mkOption {
+              type = types.attrsOf types.unspecified;
+              default = { };
+              description = "Extra inputs injected into generated/flake.nix (appended to allow overrides).";
+            };
+            envInputs = mkOption {
+              type = types.submodule {
+                options = {
+                  follows = mkOption {
+                    type = types.nullOr (types.attrsOf types.str);
+                    default = null;
+                    description = "Override the inputs.<name>.follows mapping for every environment input (null = default mapping).";
+                  };
+                  extra = mkOption {
+                    type = types.functionTo (types.attrsOf types.unspecified);
+                    default = _: { };
+                    description = "Function env -> attrs merged into each environment input spec.";
+                  };
+                };
+              };
+              default = { };
+            };
+          };
+        };
+        default = { };
+        description = "Customization for generated/flake.nix inputs and per-environment inputs.";
+      };
       cloudflare = mkOption {
         type = types.submodule {
           options = {
@@ -97,10 +132,12 @@ in
             hostenvHostname = cfg.hostenvHostname;
             nodeFor = cfg.nodeFor;
             nodeSystems = cfg.nodeSystems;
+            nodeModules = cfg.nodeModules;
             statePath = cfg.statePath;
             planPath = cfg.planPath;
             cloudflare = cfg.cloudflare;
             planSource = cfg.planSource;
+            generatedFlake = cfg.generatedFlake;
           };
 
           hostenvProviderPlan = pkgs.writeShellScriptBin "hostenv-provider-plan" ''

@@ -128,7 +128,15 @@ let
 
   dummyStatePath = pkgs.writers.writeJSON "dummy-state.json" { };
 
-  mkPlan = { hostenvHostname ? "custom.host", state ? { }, planSource ? "eval", planPath ? null, deployPublicKeys ? [ "ssh-ed25519 test" ] }:
+  mkPlan = {
+    hostenvHostname ? "custom.host",
+    state ? { },
+    planSource ? "eval",
+    planPath ? null,
+    deployPublicKeys ? [ "ssh-ed25519 test" ],
+    nodeModules ? [ ],
+    generatedFlake ? { }
+  }:
     let
       # Build a synthetic flake inputs set: hostenv modules + one project with lib.hostenv output.
       lockData = {
@@ -184,6 +192,7 @@ let
       nodeSystems = { };
       cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
       planSource = planSource;
+      inherit nodeModules generatedFlake;
     };
 
   mkProjectInput = { organisation, project, envName ? "main" }:
@@ -265,6 +274,22 @@ let
       planPath = planNoState;
       state = lib.importJSON stateNoState;
     };
+  planCustom =
+    mkPlan {
+      nodeModules = [ "nodes/common.nix" ];
+      generatedFlake = {
+        inputs = {
+          extraInput = { url = "github:example/extra"; };
+        };
+        envInputs = {
+          follows = { nixpkgs = "parent/custom-nixpkgs"; };
+          extra = _env: {
+            inputs = { sops-nix = { follows = "parent/custom-sops-nix"; }; };
+          };
+        };
+      };
+    };
+  customFlakeText = builtins.readFile planCustom.flake;
 
   quotedInvalidProject = mkProjectInput { organisation = "acme"; project = "4demo"; envName = "main"; };
   quotedValidProject = mkProjectInput { organisation = "acme"; project = "demo-project"; envName = "main"; };
@@ -616,6 +641,16 @@ in
         && lib.strings.hasInfix "${user2} =" flakeText;
     in asserts.assertTrue "provider-plan-flake-inputs" ok
       "generated flake should expose hostenv and per-environment inputs";
+
+  provider-plan-flake-customization =
+    let
+      ok = lib.strings.hasInfix "extraInput = {" customFlakeText
+        && lib.strings.hasInfix "custom-nixpkgs" customFlakeText
+        && lib.strings.hasInfix "custom-sops-nix" customFlakeText
+        && lib.strings.hasInfix "(inputs.parent + \"/nodes/common.nix\")" customFlakeText
+        && !(lib.strings.hasInfix "follows = \"hostenv\"" customFlakeText);
+    in asserts.assertTrue "provider-plan-flake-customization" ok
+      "generated flake should apply extra inputs, env input overrides, and nodeModules";
 
   provider-plan-flake-inputs-quoted =
     let

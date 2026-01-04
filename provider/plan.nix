@@ -7,11 +7,13 @@
 , deployPublicKeys ? [ ]
 , hostenvHostname
 , nodeFor ? { default = null; }
+, nodeModules ? [ ]
 , statePath ? (if inputs ? self then inputs.self + /generated/state.json else null)
 , planPath ? (if inputs ? self then inputs.self + /generated/plan.json else null)
 , nodeSystems ? { }
 , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
 , planSource ? "eval"
+, generatedFlake ? { }
 , lockPath ? (if inputs ? self then inputs.self + /flake.lock else ../flake.lock)
 }:
 
@@ -106,6 +108,43 @@ let
         }
     else
       planPath;
+
+  defaultEnvInputFollows = {
+    hostenv = "hostenv";
+    nixpkgs = "nixpkgs";
+    flake-parts = "flake-parts";
+    phps = "phps";
+  };
+
+  generatedFlakeInputs = generatedFlake.inputs or { };
+  envInputsCfg = generatedFlake.envInputs or { };
+  envInputFollows =
+    if envInputsCfg ? follows && envInputsCfg.follows != null
+    then envInputsCfg.follows
+    else defaultEnvInputFollows;
+  envInputExtra = if envInputsCfg ? extra then envInputsCfg.extra else (_: { });
+
+  nodeModulesRel =
+    let
+      basePath =
+        if inputs ? self then builtins.toString inputs.self else null;
+      normalize = module:
+        if builtins.isString module then
+          module
+        else if builtins.isPath module then
+          if basePath == null then
+            builtins.throw "provider plan: nodeModules path values require inputs.self; use string paths relative to the provider root."
+          else
+            let modulePath = builtins.toString module;
+            in
+            if lib.strings.hasPrefix (basePath + "/") modulePath then
+              lib.strings.removePrefix (basePath + "/") modulePath
+            else
+              builtins.throw "provider plan: nodeModules path '${modulePath}' must be under provider root (${basePath})"
+        else
+          builtins.throw "provider plan: nodeModules entries must be strings or paths.";
+    in
+    map normalize nodeModules;
   # Detect hostenv project inputs by checking for the presence of evaluated environments.
   projectInputs =
     if (!useEval) then [ ] else
@@ -433,68 +472,76 @@ let
         )
         allEnvs;
 
-  generatedFlake =
+  generatedFlakeFile =
     let
-      inputsBlock = builtins.concatStringsSep "\n" (map
-        (
-          val:
-          let
-            lockNode = lockData.nodes.${val.hostenv.userName} or null;
-            lockedRev = if lockNode != null && lockNode ? locked then lockNode.locked.rev else null;
-            lockedNarHash = if lockNode != null && lockNode ? locked then lockNode.locked.narHash else null;
-            lockedRef = if lockNode != null && lockNode ? locked then lockNode.locked.ref or val.repo.ref else val.repo.ref;
-            inputName =
-              let
-                name = val.hostenv.userName;
-                isIdent = builtins.match "^[A-Za-z_][A-Za-z0-9_'-]*$" name != null;
-              in
-              if isIdent then name else "\"${name}\"";
-          in
-          ''
-            ${inputName} = {
-              type = "${val.repo.type}";
-              dir = "${val.repo.dir or "."}";
-              ref = "${lockedRef}";
-              ${lib.optionalString (lockedRev != null) ''rev = "${lockedRev}";''}
-              ${lib.optionalString (lockedNarHash != null) ''narHash = "${lockedNarHash}";''}
-              ${lib.optionalString (val.repo ? url) ''
-              url = "${val.repo.url}";
-              ''}
-              ${lib.optionalString (! val.repo ? url) ''
-              owner = "${val.repo.owner}";
-              repo = "${val.repo.repo}";
-              ''}
-              inputs.hostenv.follows = "hostenv";
-              inputs.nixpkgs.follows = "nixpkgs";
-              inputs.flake-parts.follows = "flake-parts";
-              inputs.phps.follows = "phps";
-            };
-          ''
-          + (if cloudflare.enable && cloudflare.apiTokenFile != null && cloudflare.zoneId != null then ''
-            ${val.hostenv.userName}-cf = {
-              type = "path";
-              path = "${cloudflare.apiTokenFile}";
-            };
-          ''
-          else "")
-        )
-        allEnvs);
+      envInputSpec = val:
+        let
+          lockNode = lockData.nodes.${val.hostenv.userName} or null;
+          lockedRev = if lockNode != null && lockNode ? locked then lockNode.locked.rev else null;
+          lockedNarHash = if lockNode != null && lockNode ? locked then lockNode.locked.narHash else null;
+          lockedRef = if lockNode != null && lockNode ? locked then lockNode.locked.ref or val.repo.ref else val.repo.ref;
+          repoAttrs =
+            {
+              type = val.repo.type;
+              dir = val.repo.dir or ".";
+              ref = lockedRef;
+            }
+            // (lib.optionalAttrs (lockedRev != null) { rev = lockedRev; })
+            // (lib.optionalAttrs (lockedNarHash != null) { narHash = lockedNarHash; })
+            // (if val.repo ? url
+              then { url = val.repo.url; }
+              else { owner = val.repo.owner; repo = val.repo.repo; });
+          followsAttrs = lib.mapAttrs (_: v: { follows = v; }) envInputFollows;
+          base = repoAttrs // { inputs = followsAttrs; };
+          extra = envInputExtra val;
+        in
+        lib.recursiveUpdate base extra;
+
+      envInputs =
+        let
+          inputsList = map
+            (val: { name = val.hostenv.userName; value = envInputSpec val; })
+            allEnvs;
+          cfInputs =
+            if cloudflare.enable && cloudflare.apiTokenFile != null && cloudflare.zoneId != null then
+              map
+                (val: {
+                  name = "${val.hostenv.userName}-cf";
+                  value = {
+                    type = "path";
+                    path = "${cloudflare.apiTokenFile}";
+                  };
+                })
+                allEnvs
+            else
+              [ ];
+        in
+        builtins.listToAttrs (inputsList ++ cfInputs);
+
+      envInputsText = lib.generators.toPretty { } envInputs;
+      extraInputsText = lib.generators.toPretty { } generatedFlakeInputs;
+      nodeModulesText =
+        lib.concatMapStringsSep "\n"
+          (rel: ''            (inputs.parent + "/${rel}")'')
+          nodeModulesRel;
 
     in
     pkgs.writeText "flake.nix" ''
       {
-        inputs = {
-          parent.url = "path:..";
-          systems.url = "github:nix-systems/default";
-          deploy-rs.follows = "parent/deploy-rs";
-          sops-nix.follows = "parent/sops-nix";
-          hostenv.follows = "parent/hostenv-platform";
-          nixpkgs.follows = "parent/nixpkgs";
-          flake-parts.follows = "parent/flake-parts";
-          phps.follows = "parent/phps";
-
-          ${inputsBlock}
-        };
+        inputs = (
+          {
+            parent.url = "path:..";
+            systems.url = "github:nix-systems/default";
+            deploy-rs.follows = "parent/deploy-rs";
+            sops-nix.follows = "parent/sops-nix";
+            hostenv.follows = "parent/hostenv-platform";
+            nixpkgs.follows = "parent/nixpkgs";
+            flake-parts.follows = "parent/flake-parts";
+            phps.follows = "parent/phps";
+          }
+          // ${extraInputsText}
+          // ${envInputsText}
+        );
 
         outputs = { self, nixpkgs, deploy-rs, systems, ... } @ inputs:
           let
@@ -508,6 +555,9 @@ let
             nodesPath = ../nodes;
             secretsPath = ../secrets/secrets.yaml;
             nodeSystems = ${lib.generators.toPretty {} nodeSystems};
+            nodeModules = [
+${nodeModulesText}
+            ];
           };
       }
     '';
@@ -638,7 +688,7 @@ let
 in
 assert (assertProjectInputs && assertDiskUids);
 {
-  flake = generatedFlake;
+  flake = generatedFlakeFile;
   plan = generatedConfig;
   state = generatedState;
   environments = allEnvs;

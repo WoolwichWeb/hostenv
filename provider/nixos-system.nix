@@ -6,6 +6,7 @@
 , localSystem
 , nodesPath
 , secretsPath
+, nodeModules ? [ ]
 , nodeSystems ? { }
 , ...
 }:
@@ -114,20 +115,24 @@ if envUserMismatch == [ ] then
   {
     inherit system;
     specialArgs = { inherit inputs system; };
-    modules = [
-      ./common.nix
-      { sops.defaultSopsFile = secretsPath; }
-      ../platform/nixos-modules/top-level.nix
-      ../platform/nixos-modules/nginx-hostenv.nix
-      ../platform/nixos-modules/nginx-tuning-hostenv.nix
-      ../platform/nixos-modules/backups-hostenv.nix
-      ../platform/nixos-modules/monitoring-hostenv.nix
-      hostenvEnvModule
-      (nodePath + "/configuration.nix")
-      nodeConfig
-      (sopsSecrets nodeConfig)
-      (userPackages nodeConfig)
-    ];
+    modules =
+      [
+        ./common.nix
+        { sops.defaultSopsFile = secretsPath; }
+        ../platform/nixos-modules/top-level.nix
+        ../platform/nixos-modules/nginx-hostenv.nix
+        ../platform/nixos-modules/nginx-tuning-hostenv.nix
+        ../platform/nixos-modules/backups-hostenv.nix
+        ../platform/nixos-modules/monitoring-hostenv.nix
+        hostenvEnvModule
+      ]
+      ++ nodeModules
+      ++ [
+        (nodePath + "/configuration.nix")
+        nodeConfig
+        (sopsSecrets nodeConfig)
+        (userPackages nodeConfig)
+      ];
   }
 else
   throw "hostenv provider: environment keys must match hostenv.userName (mismatched: ${builtins.toString envUserMismatch})"

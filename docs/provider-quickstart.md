@@ -29,6 +29,13 @@
 }
 ```
 
+Optional provider knobs:
+
+- `provider.nodeModules = [ "nodes/common.nix" ];` (paths are relative to the provider root).
+- `provider.generatedFlake.inputs = { ... };` to inject extra inputs into `generated/flake.nix`.
+- `provider.generatedFlake.envInputs.follows = { ... };` to override per-environment `inputs.*.follows`.
+- `provider.generatedFlake.envInputs.extra = env: { ... };` to merge extra attrs into each environment input.
+
 **Important:** each client project flake must export `outputs.lib.hostenv.<system>.environments`
 so the provider can discover environments. The shipped project template already does this.
 Client inputs should point at the `.hostenv` flake (e.g. `dir=.hostenv`) so `hostenv.nix` is at the flake root.
