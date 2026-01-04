@@ -109,7 +109,8 @@ in
             mkdir -p "$dest"
             
             # The following are:
-            # - a sub-Flake with per-environment inputs (inputs in this Flake are per-project);
+            # - a sub-Flake with per-environment inputs (inputs in 
+            #   provider Flakes are per-project);
             cp ${providerGenerator.flake} "$dest/flake.nix"
             
             # - state retained between runs, like unique UNIX user uids.

@@ -4,8 +4,8 @@
 , node
 , inputs
 , localSystem
-, nodesPath ? ../../nodes
-, secretsPath ? ../secrets/secrets.yaml
+, nodesPath
+, secretsPath
 , nodeSystems ? { }
 , ...
 }:
@@ -62,10 +62,7 @@ let
     let
       hostPkgs = pkgs.${localSystem};
       readYaml = hostPkgs.callPackage ./read-yaml.nix { };
-      secretsPathResolved =
-        if builtins.pathExists secretsPath then secretsPath
-        else throw "secretsPath '${builtins.toString secretsPath}' does not exist";
-      sopsKeys = readYaml secretsPathResolved;
+      sopsKeys = readYaml secretsPath;
       orgFromName = name: (environmentWith name).hostenv.organisation;
       orgProjectFromName = name:
         (environmentWith name).hostenv.organisation
@@ -113,14 +110,15 @@ let
 
 in
 if envUserMismatch == [ ] then
-  nixpkgs.lib.nixosSystem {
+  nixpkgs.lib.nixosSystem
+  {
     inherit system;
     specialArgs = { inherit inputs system; };
     modules = [
       ./common.nix
       { sops.defaultSopsFile = secretsPath; }
       ../platform/nixos-modules/top-level.nix
-    ../platform/nixos-modules/nginx-hostenv.nix
+      ../platform/nixos-modules/nginx-hostenv.nix
       ../platform/nixos-modules/nginx-tuning-hostenv.nix
       ../platform/nixos-modules/backups-hostenv.nix
       ../platform/nixos-modules/monitoring-hostenv.nix

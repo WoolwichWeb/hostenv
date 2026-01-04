@@ -4,8 +4,8 @@
 , deploy-rs
 , systems
 , localSystem
-, nodesPath ? ../nodes
-, secretsPath ? ../secrets/secrets.yaml
+, nodesPath
+, secretsPath
 , nodeSystems ? { }
 }:
 let
