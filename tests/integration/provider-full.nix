@@ -110,9 +110,13 @@ let
     )
     expectedUsers;
   flakeInputsPresent =
-    lib.all (u: lib.strings.hasInfix "${u} =" flakeText) expectedUsers
-    && lib.strings.hasInfix "parent.url" flakeText
-      && lib.strings.hasInfix "hostenv.follows = \"parent/hostenv-platform\"" flakeText
+    lib.all
+      (u: lib.strings.hasInfix "${u} =" flakeText || lib.strings.hasInfix "\"${u}\" =" flakeText)
+      expectedUsers
+    && lib.strings.hasInfix "parent = {" flakeText
+    && lib.strings.hasInfix "url = \"path:..\"" flakeText
+      && lib.strings.hasInfix "hostenv = {" flakeText
+      && lib.strings.hasInfix "follows = \"parent/hostenv-platform\"" flakeText
       && lib.strings.hasInfix "inputs.parent.lib.provider.deployOutputs" flakeText;
 in
 {

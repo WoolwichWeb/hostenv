@@ -518,8 +518,18 @@ let
         in
         builtins.listToAttrs (inputsList ++ cfInputs);
 
-      envInputsText = lib.generators.toPretty { } envInputs;
-      extraInputsText = lib.generators.toPretty { } generatedFlakeInputs;
+      baseInputs = {
+        parent.url = "path:..";
+        systems.url = "github:nix-systems/default";
+        deploy-rs.follows = "parent/deploy-rs";
+        sops-nix.follows = "parent/sops-nix";
+        hostenv.follows = "parent/hostenv-platform";
+        nixpkgs.follows = "parent/nixpkgs";
+        flake-parts.follows = "parent/flake-parts";
+        phps.follows = "parent/phps";
+      };
+      inputsMerged = baseInputs // generatedFlakeInputs // envInputs;
+      inputsText = lib.generators.toPretty { } inputsMerged;
       nodeModulesText =
         lib.concatMapStringsSep "\n"
           (rel: ''            (inputs.parent + "/${rel}")'')
@@ -528,20 +538,7 @@ let
     in
     pkgs.writeText "flake.nix" ''
       {
-        inputs = (
-          {
-            parent.url = "path:..";
-            systems.url = "github:nix-systems/default";
-            deploy-rs.follows = "parent/deploy-rs";
-            sops-nix.follows = "parent/sops-nix";
-            hostenv.follows = "parent/hostenv-platform";
-            nixpkgs.follows = "parent/nixpkgs";
-            flake-parts.follows = "parent/flake-parts";
-            phps.follows = "parent/phps";
-          }
-          // ${extraInputsText}
-          // ${envInputsText}
-        );
+        inputs = ${inputsText};
 
         outputs = { self, nixpkgs, deploy-rs, systems, ... } @ inputs:
           let

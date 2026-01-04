@@ -634,11 +634,13 @@ in
 
   provider-plan-flake-inputs =
     let flakeText = builtins.readFile flakeNoState;
-      ok = lib.strings.hasInfix "parent.url" flakeText
-        && lib.strings.hasInfix "hostenv.follows = \"parent/hostenv-platform\"" flakeText
+      ok = lib.strings.hasInfix "parent = {" flakeText
+        && lib.strings.hasInfix "url = \"path:..\"" flakeText
+        && lib.strings.hasInfix "hostenv = {" flakeText
+        && lib.strings.hasInfix "follows = \"parent/hostenv-platform\"" flakeText
         && lib.strings.hasInfix "inputs.parent.lib.provider.deployOutputs" flakeText
-        && lib.strings.hasInfix "${user1} =" flakeText
-        && lib.strings.hasInfix "${user2} =" flakeText;
+        && (lib.strings.hasInfix "${user1} =" flakeText || lib.strings.hasInfix "\"${user1}\" =" flakeText)
+        && (lib.strings.hasInfix "${user2} =" flakeText || lib.strings.hasInfix "\"${user2}\" =" flakeText);
     in asserts.assertTrue "provider-plan-flake-inputs" ok
       "generated flake should expose hostenv and per-environment inputs";
 
