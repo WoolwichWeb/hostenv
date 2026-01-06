@@ -38,9 +38,14 @@ in
 {
   inherit inputs config environmentsWith;
 
-  packages = {
-    inherit nodes environments;
-  };
+  packages = forEachSystem (system: {
+    environments = environments.${system};
+    nodes = nixpkgs.lib.mapAttrs
+      (_: node: node.config.system.build.toplevel)
+      (nixpkgs.lib.filterAttrs
+        (_: node: node.config.nixpkgs.hostPlatform.system == system)
+        nodes);
+  });
 
   deploy.nodes = builtins.mapAttrs
     (node: _: {
