@@ -38,14 +38,23 @@ in
 {
   inherit inputs config environmentsWith;
 
-  packages = forEachSystem (system: {
-    environments = environments.${system};
-    nodes = nixpkgs.lib.mapAttrs
-      (_: node: node.config.system.build.toplevel)
-      (nixpkgs.lib.filterAttrs
-        (_: node: node.config.nixpkgs.hostPlatform.system == system)
-        nodes);
-  });
+  packages = forEachSystem (system:
+    let
+      envPkgs = nixpkgs.lib.mapAttrs'
+        (name: drv: { name = "env-${name}"; value = drv; })
+        environments.${system};
+
+      nodePkgs = nixpkgs.lib.mapAttrs'
+        (node: sys: {
+          name = "node-${node}";
+          value = sys.config.system.build.toplevel;
+        })
+        (nixpkgs.lib.filterAttrs
+          (_: sys: sys.config.nixpkgs.hostPlatform.system == system)
+          nodes);
+    in
+    envPkgs // nodePkgs
+  );
 
   deploy.nodes = builtins.mapAttrs
     (node: _: {
