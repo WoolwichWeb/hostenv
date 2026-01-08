@@ -68,8 +68,8 @@ This plan aligns the repo with the Dendritic pattern described at https://dendri
    - Ensure `flake.modules.*` classes are the primary mechanism.
 
 13) **Update templates**
-   - `template/project/.hostenv/flake.nix` imports `(inputs.import-tree (hostenv + "/modules"))` and `hostenv.flakeModules.project`.
-   - `template/provider/flake.nix` imports `(inputs.import-tree (hostenv + "/modules"))` and `hostenv.flakeModules.provider`.
+   - `template/project/.hostenv/flake.nix` imports `hostenv.flakeModules.project` (entrypoint auto-imports hostenv modules).
+   - `template/provider/flake.nix` imports `hostenv.flakeModules.provider` (entrypoint auto-imports hostenv modules).
 
 14) **Delete sub-flakes**
    - Delete `platform/flake.nix`, `platform/flake-modules/*`, `provider/flake.nix`, `provider/flake-modules/*` once replacements are in place.
@@ -116,7 +116,7 @@ This plan aligns the repo with the Dendritic pattern described at https://dendri
 - `platform/flake-modules/make-hostenv.nix` → `modules/hostenv.nix`
 - `platform/flake-modules/cli.nix` → `modules/features/cli.nix`
 - `platform/flake-modules/hostenv-provider-service.nix` → `modules/features/provider-service-build.nix`
-- `platform/flake-modules/exports.nix` → `modules/exports.nix` + `flake-modules/{project,provider}.nix` entrypoints
+- `platform/flake-modules/exports.nix` → `modules/exports.nix` (entrypoints exported via `flake.flakeModules`)
 
 ### Provider
 - `provider/flake-module.nix` → `modules/entrypoints/provider/options.nix`
@@ -129,8 +129,8 @@ This plan aligns the repo with the Dendritic pattern described at https://dendri
 - `provider/read-yaml.nix` → `modules/lib/read-yaml.nix`
 
 ### Templates
-- `template/project/.hostenv/flake.nix` → import-tree hostenv modules + `hostenv.flakeModules.project`
-- `template/provider/flake.nix` → import-tree hostenv modules + `hostenv.flakeModules.provider`
+- `template/project/.hostenv/flake.nix` → `hostenv.flakeModules.project`
+- `template/provider/flake.nix` → `hostenv.flakeModules.provider`
 
 ## Known anti-dendritic spots to refactor
 - Test harness helpers still accept `specialArgs` for convenience (optional cleanup).

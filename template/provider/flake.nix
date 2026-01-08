@@ -4,7 +4,6 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    import-tree.url = "github:vic/import-tree";
     hostenv = {
       url = "gitlab:woolwichweb/hostenv";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -45,7 +44,6 @@
       systems = [ "x86_64-linux" "aarch64-linux" ];
 
       imports = [
-        (inputs.import-tree (hostenv + "/modules"))
         hostenv.flakeModules.provider
       ];
 

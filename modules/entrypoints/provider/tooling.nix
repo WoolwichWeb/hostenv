@@ -92,7 +92,7 @@ in
           else
             pkgs.writeShellScriptBin "hostenv-provider-plan" ''
               echo "hostenv-provider-plan: provider configuration is missing." >&2
-              echo "Import hostenv modules via import-tree and hostenv.flakeModules.provider, then set provider.* options." >&2
+              echo "Import hostenv modules via hostenv.flakeModules.provider, then set provider.* options." >&2
               exit 1
             '';
       in

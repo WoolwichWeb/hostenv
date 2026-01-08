@@ -73,8 +73,9 @@ let
     systems = [ system ];
     imports = [
       (inputs.import-tree ../../modules)
-      ../../flake-modules/provider.nix
     ];
+    provider.enable = true;
+    project.enable = false;
     provider = {
       hostenvHostname = "hosting.test";
       deployPublicKeys = [ "ssh-ed25519 test" ];

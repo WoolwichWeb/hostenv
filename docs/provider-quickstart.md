@@ -10,13 +10,11 @@
     inputs.flake-parts.follows = "flake-parts";
     inputs.phps.follows = "phps";
   };
-  inputs.import-tree.url = "github:vic/import-tree";
   inputs.flake-parts.url = "github:hercules-ci/flake-parts";
   inputs.phps.url = "gitlab:woolwichweb/nix-phps-lts";
   outputs = inputs@{ self, flake-parts, hostenv, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
     imports = [
-      (inputs.import-tree (hostenv + "/modules"))
       hostenv.flakeModules.provider
     ];
       systems = [ "x86_64-linux" "aarch64-linux" ];

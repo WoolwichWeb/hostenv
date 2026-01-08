@@ -1,6 +1,16 @@
-{ lib, ... }:
+{ lib, inputs, ... }:
 let
   types = lib.types;
+  # Used by downstream projects and providers.
+  # Imports hostenv modules with either project or provider enabled.
+  mkFlakeModule = cfg: { ... }:
+    {
+      imports = [
+        (inputs.import-tree ./.)
+      ];
+      _file = builtins.toString ./exports.nix;
+
+    } // cfg;
 in
 {
   options.flake = {
@@ -14,16 +24,16 @@ in
     };
 
     flakeModules = lib.mkOption {
-      type = types.attrsOf types.path;
+      type = types.attrsOf types.deferredModule;
       default = { };
       description = "Exported flake-parts modules (merged across modules).";
     };
   };
 
-  config.flake.flakeModules = {
+  config.flake.flakeModules = lib.mkIf (inputs ? import-tree) {
     exports = ./exports.nix;
-    project = ../flake-modules/project.nix;
-    provider = ../flake-modules/provider.nix;
+    project = mkFlakeModule { project.enable = true; provider.enable = false; };
+    provider = mkFlakeModule { project.enable = false; provider.enable = true; };
   };
 
   config.flake.modules = lib.mkDefault { };

@@ -8,7 +8,6 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    import-tree.url = "github:vic/import-tree";
     phps = {
       url = "github:fossar/nix-phps";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -36,7 +35,6 @@
     flake-parts.lib.mkFlake { inherit inputs; } {
       inherit systems;
       imports = [
-        (inputs.import-tree (hostenv + "/modules"))
         hostenv.flakeModules.project
       ];
 

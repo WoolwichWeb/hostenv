@@ -73,7 +73,6 @@ And here's the same idea for a tiny PHP app (no Drupal) using the built‑in `ph
   - `nixos/` – host-level modules (front-door nginx, users/slices, backups, monitoring).
   - `entrypoints/` – project/provider outputs (gated by enable flags).
   - `_impl/` – non-module helpers and source trees (ignored by import-tree).
-- `flake-modules/` – entrypoint modules for downstream flakes (`project`/`provider`).
 - `provider/` – provider-facing tooling: plan/state generator, CLI, node flake wiring. It now consumes the dendritic modules instead of carrying host glue.
 - `template/project/.hostenv/` – project template used by `nix flake init --template gitlab:woolwichweb/hostenv`.
 - `template/provider/` – provider template for building a hostenv hosting flake.
