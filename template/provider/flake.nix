@@ -4,14 +4,9 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
+    import-tree.url = "github:vic/import-tree";
     hostenv = {
       url = "gitlab:woolwichweb/hostenv";
-      inputs.hostenv-platform.follows = "hostenv-platform";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-parts.follows = "flake-parts";
-    };
-    hostenv-platform = {
-      url = "gitlab:woolwichweb/hostenv?dir=platform";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-parts.follows = "flake-parts";
       inputs.phps.follows = "phps";
@@ -37,7 +32,7 @@
     #   #   environments update 'ref'.
 
     #   inputs.nixpkgs.follows = "nixpkgs";
-    #   inputs.hostenv.follows = "hostenv-platform";
+    #   inputs.hostenv.follows = "hostenv";
     #   inputs.flake-parts.follows = "flake-parts";
     # };
     # Note: hostenv uses the double-underscore (__) to determine which inputs
@@ -49,7 +44,10 @@
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" ];
 
-      imports = [ hostenv.flakeModules.provider ];
+      imports = [
+        (inputs.import-tree (hostenv + "/modules"))
+        hostenv.flakeModules.provider
+      ];
 
       provider = {
         hostenvHostname = "hosting.example.com";

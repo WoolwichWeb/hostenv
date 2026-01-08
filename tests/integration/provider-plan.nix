@@ -1,9 +1,19 @@
-{ pkgs, makeHostenv }:
+{ pkgs, makeHostenv, inputs }:
 let
   lib = pkgs.lib;
   support = import ../support { inherit pkgs lib; };
   asserts = support.asserts;
   providerView = support.providerView;
+  providerPlan = inputs.self.lib.provider.plan;
+
+  mkHostenvStub = system:
+    let outPath = ../../modules;
+    in {
+      inherit outPath;
+      modules = outPath;
+      makeHostenv.${system} = makeHostenv;
+      __toString = self: toString outPath;
+    };
 
   # Shared hostenv eval for tests.
   envsEval = makeHostenv [
@@ -164,13 +174,7 @@ let
         else pkgs.writers.writeJSON "state.json" state;
 
       inputsEffective = {
-        hostenv =
-          let outPath = ../../modules;
-          in {
-            inherit outPath;
-            modules = outPath;
-            __toString = self: toString outPath;
-          };
+        hostenv = mkHostenvStub "x86_64-linux";
         acme__ignored = ignoredInput;
         org__proj = {
           outPath = projectDir;
@@ -179,7 +183,7 @@ let
         };
       };
     in
-    import ../../provider/plan.nix {
+    providerPlan {
       inputs = inputsEffective;
       system = "x86_64-linux";
       inherit lib pkgs hostenvHostname;
@@ -295,13 +299,7 @@ let
   quotedValidProject = mkProjectInput { organisation = "acme"; project = "demo-project"; envName = "main"; };
 
   quotedInputs = {
-    hostenv =
-      let outPath = ../../modules;
-      in {
-        inherit outPath;
-        modules = outPath;
-        __toString = self: toString outPath;
-      };
+    hostenv = mkHostenvStub "x86_64-linux";
     acme__4demo = quotedInvalidProject.input;
     acme__demo-project = quotedValidProject.input;
   };
@@ -326,7 +324,7 @@ let
   };
 
   quotedLockPath = pkgs.writers.writeJSON "flake.lock" quotedLockData;
-  quotedPlan = import ../../provider/plan.nix {
+  quotedPlan = providerPlan {
     inputs = quotedInputs;
     system = "x86_64-linux";
     inherit lib pkgs;
@@ -347,12 +345,10 @@ let
   planMissingProjects =
     let
       minimalInputs = {
-        hostenv =
-          let outPath = ../../modules;
-          in { inherit outPath; modules = outPath; __toString = self: toString outPath; };
+        hostenv = mkHostenvStub "x86_64-linux";
       };
       lockPath = pkgs.writers.writeJSON "flake.lock" { nodes = { }; };
-      result = builtins.tryEval (import ../../provider/plan.nix {
+      result = builtins.tryEval (providerPlan {
         inputs = minimalInputs;
         system = "x86_64-linux";
         inherit lib pkgs;
@@ -372,9 +368,7 @@ let
   planMissingEnvironments =
     let
       badInputs = {
-        hostenv =
-          let outPath = ../../modules;
-          in { inherit outPath; modules = outPath; __toString = self: toString outPath; };
+        hostenv = mkHostenvStub "x86_64-linux";
         org__proj = {
           outPath = projectDir;
           __toString = self: toString projectDir;
@@ -405,7 +399,7 @@ let
         };
       };
       lockPath = pkgs.writers.writeJSON "flake.lock" lockData;
-      result = builtins.tryEval (import ../../provider/plan.nix {
+      result = builtins.tryEval (providerPlan {
         inputs = badInputs;
         system = "x86_64-linux";
         inherit lib pkgs;
@@ -446,12 +440,10 @@ let
   '';
 
   planDefaultLock =
-    builtins.tryEval (import ../../provider/plan.nix {
+    builtins.tryEval (providerPlan {
       inputs = {
         self = selfLockDir;
-        hostenv =
-          let outPath = ../../modules;
-          in { inherit outPath; modules = outPath; __toString = self: toString outPath; };
+        hostenv = mkHostenvStub "x86_64-linux";
         org__proj = {
           outPath = projectDir;
           __toString = self: toString projectDir;
@@ -550,9 +542,7 @@ EOF
       lockPath = pkgs.writers.writeJSON "flake.lock" lockData;
 
       inputsConflict = {
-        hostenv =
-          let outPath = ../../modules;
-          in { inherit outPath; modules = outPath; __toString = self: toString outPath; };
+        hostenv = mkHostenvStub "x86_64-linux";
         org__proj = {
           outPath = conflictProjectDir;
           __toString = self: toString conflictProjectDir;
@@ -560,7 +550,7 @@ EOF
         };
       };
 
-      envsExpr = (import ../../provider/plan.nix {
+      envsExpr = (providerPlan {
         inputs = inputsConflict;
         system = "x86_64-linux";
         inherit lib pkgs;
@@ -637,7 +627,7 @@ in
       ok = lib.strings.hasInfix "parent = {" flakeText
         && lib.strings.hasInfix "url = \"path:..\"" flakeText
         && lib.strings.hasInfix "hostenv = {" flakeText
-        && lib.strings.hasInfix "follows = \"parent/hostenv-platform\"" flakeText
+        && lib.strings.hasInfix "follows = \"parent/hostenv\"" flakeText
         && lib.strings.hasInfix "inputs.parent.lib.provider.deployOutputs" flakeText
         && (lib.strings.hasInfix "${user1} =" flakeText || lib.strings.hasInfix "\"${user1}\" =" flakeText)
         && (lib.strings.hasInfix "${user2} =" flakeText || lib.strings.hasInfix "\"${user2}\" =" flakeText);

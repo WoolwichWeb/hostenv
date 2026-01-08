@@ -3,13 +3,13 @@ let
   lib = pkgs.lib;
   support = import ../support { inherit pkgs lib; };
   asserts = support.asserts;
+  resticModule = (import ../../modules/features/restic.nix { }).flake.modules.hostenv.restic;
 
   restic_exclusive_repo =
     let
       eval = support.evalWithBase {
-        specialArgs = { inherit pkgs; };
         modules = [
-          ../../platform/services/restic.nix
+          resticModule
           ({ ... }: {
             hostenv.cacheDir = "/tmp/hostenv-cache";
             hostenv.userName = "restic-test";
@@ -36,9 +36,8 @@ let
   restic_repo_envfile_ok =
     let
       eval = support.evalWithBase {
-        specialArgs = { inherit pkgs; };
         modules = [
-          ../../platform/services/restic.nix
+          resticModule
           ({ ... }: {
             hostenv.cacheDir = "/tmp/hostenv-cache";
             hostenv.userName = "restic-test";

@@ -1,6 +1,6 @@
 { pkgs }:
 let
-  src = ../../platform/services/hostenv-provider-service;
+  src = ../../modules/services/hostenv-provider-service;
   ghc = pkgs.haskellPackages.ghcWithPackages (p: [
     p.aeson
     p.bytestring

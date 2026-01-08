@@ -28,8 +28,8 @@ Edit `flake.template.nix` to make structural changes while keeping the marker:
 
 ## Inputs
 
-- `hostenv` (pinned): provides the provider module and hostenv modules (follows `hostenv-platform` for its platform input).
-- `hostenv-platform` (pinned): platform flake used by generated environments.
+- `hostenv` (pinned): provides the provider module and platform library.
+- `import-tree`: required by the hostenv entrypoint module.
 - `nixpkgs`, `flake-parts`: follow `hostenv` pins to stay in sync.
 
 ## Outputs
@@ -42,4 +42,4 @@ Edit `flake.template.nix` to make structural changes while keeping the marker:
 - Ensure client project inputs point at the `.hostenv` flake (e.g. `dir=.hostenv`) and export `outputs.lib.hostenv`.
 - Use `planSource = "disk"` if you want to reuse an existing plan.json without re-evaluating inputs.
 - Add extra Haskell deps for the dev shell via `provider.haskellDevPackages` (appended to `hostenv.haskell.devPackages`).
-- Add provider-specific modules under `modules/nixos` in your repo and import them via flake-parts alongside `hostenv.flakeModules.provider`.
+- Add provider-specific modules under `modules/` in your repo (e.g. add `modules/nixos/<aspect>.nix`) and import them via `inputs.import-tree ./modules` alongside the hostenv module tree.

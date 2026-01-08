@@ -4,15 +4,11 @@
   inputs = {
     hostenv = {
       url = "gitlab:woolwichweb/hostenv";
-      inputs.hostenv-platform.follows = "hostenv-platform";
-    };
-    hostenv-platform = {
-      url = "gitlab:woolwichweb/hostenv?dir=platform";
-      inputs.nixpkgs.follows = "hostenv/nixpkgs";
-      inputs.flake-parts.follows = "hostenv/flake-parts";
     };
     nixpkgs.follows = "hostenv/nixpkgs";
     flake-parts.follows = "hostenv/flake-parts";
+    import-tree.follows = "hostenv/import-tree";
+    phps.follows = "hostenv/phps";
 
     # Hostenv provider service injects client project inputs here.
     {{HOSTENV_PROJECT_INPUTS}}
@@ -22,7 +18,10 @@
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" ];
 
-      imports = [ hostenv.flakeModules.provider ];
+      imports = [
+        (inputs.import-tree (hostenv + "/modules"))
+        hostenv.flakeModules.provider
+      ];
 
       provider = {
         hostenvHostname = "hosting.example.com";

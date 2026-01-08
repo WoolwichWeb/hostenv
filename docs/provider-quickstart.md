@@ -6,24 +6,24 @@
 {
   inputs.hostenv = {
     url = "gitlab:woolwichweb/hostenv";
-    inputs.hostenv-platform.follows = "hostenv-platform";
+    inputs.nixpkgs.follows = "nixpkgs";
+    inputs.flake-parts.follows = "flake-parts";
+    inputs.phps.follows = "phps";
   };
-  inputs.hostenv-platform = {
-    url = "gitlab:woolwichweb/hostenv?dir=platform";
-    inputs.nixpkgs.follows = "hostenv/nixpkgs";
-    inputs.flake-parts.follows = "hostenv/flake-parts";
-  };
+  inputs.import-tree.url = "github:vic/import-tree";
   inputs.flake-parts.url = "github:hercules-ci/flake-parts";
- outputs = inputs@{ self, flake-parts, hostenv, ... }:
-   flake-parts.lib.mkFlake { inherit inputs; } {
-      imports = [ hostenv.flakeModules.provider ];
+  inputs.phps.url = "gitlab:woolwichweb/nix-phps-lts";
+  outputs = inputs@{ self, flake-parts, hostenv, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+    imports = [
+      (inputs.import-tree (hostenv + "/modules"))
+      hostenv.flakeModules.provider
+    ];
       systems = [ "x86_64-linux" "aarch64-linux" ];
-      perSystem = { config, ... }: {
-        provider = {
-          hostenvHostname = "hostenv.sh";
-          nodeSystems = { backend01 = "aarch64-linux"; backend02 = "aarch64-linux"; backend03 = "x86_64-linux"; backend04 = "aarch64-linux"; };
-          planSource = "eval"; # or "disk"
-        };
+      provider = {
+        hostenvHostname = "hostenv.sh";
+        nodeSystems = { backend01 = "aarch64-linux"; backend02 = "aarch64-linux"; backend03 = "x86_64-linux"; backend04 = "aarch64-linux"; };
+        planSource = "eval"; # or "disk"
       };
     };
 }

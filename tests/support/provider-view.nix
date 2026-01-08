@@ -1,6 +1,6 @@
 { lib }:
 let
-  # List-of-projects view for provider/plan.nix inputs.
+  # List-of-projects view for provider plan inputs.
   toProjects =
     { envs
     , baseRepo

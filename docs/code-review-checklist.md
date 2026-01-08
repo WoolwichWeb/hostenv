@@ -6,8 +6,8 @@
   - `flake.nix` is minimal.
 - Main logic lives in `modules/`.
 - [ ] There is a clear separation between:
-  - trunk: core model (`modules/core/{hostenv,environments}.nix`) and provider wiring that feeds `config.hostenv.environments`,
-  - branches: feature modules at env level (`modules/env/*`) and host level (`modules/nixos/*`),
+  - trunk: core model (`modules/hostenv.nix` + helper libs) and provider wiring that feeds `config.hostenv.environments`,
+  - branches: feature modules at env level (`modules/features/`) and host level (`modules/nixos/`),
   - provider assembly (`provider/*`) that imports the host-level modules instead of re-implementing them.
 - [ ] Each module file has a single, coherent concern (e.g. `phpfpm.nix`, `nginx.nix`, `backups.nix`), rather than “kitchen sink” files.
 - [ ] Filenames and directory names are descriptive enough that a new developer can guess what they do.

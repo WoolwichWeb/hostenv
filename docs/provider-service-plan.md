@@ -4,7 +4,7 @@ Make a plan for a hostenv provider service. Explaining this is going to be a bit
 2. Provides a REST API using whichever library you're easily able to code against.
 3. At first will only support a single route and request type, which will be pinged from a gitlab/github webhook when the user pushes changes to their repo.
 4. Has webhook URIs that are obscured using a hash, so it's hard for bad actors to guess what the hook for a project might be and spam it. `environments.<default>.hostenv.projectNameHash` may be used for this if necessary.
-5. Is a Hostenv service living under platform/services/ like the others.
+5. Is a Hostenv service module under `modules/features/` (with Haskell sources under `modules/services/hostenv-provider-service` and exposed via `flake.lib.provider.service`).
 6. Providers may optionally add it to their setup in the same way anyone adds hostenv to their project.
 7. Is managed by systemd like many other hostenv services.
 8. Looks for provider files, like `flake.nix` and `generated/state.json`, in a given directory under $XDG_DATA_HOME on startup. If those files do not exist, it copies the contents of `environments.<name>.hostenv.root` to the given directory. I believe systemd units can be configured to ensure certain directories exist for service use, if not the service may also create the directory.

@@ -71,7 +71,10 @@ let
 
   providerFlake = inputs.flake-parts.lib.mkFlake { inherit inputs; } {
     systems = [ system ];
-    imports = [ ../../provider/flake-module.nix ];
+    imports = [
+      (inputs.import-tree ../../modules)
+      ../../flake-modules/provider.nix
+    ];
     provider = {
       hostenvHostname = "hosting.test";
       deployPublicKeys = [ "ssh-ed25519 test" ];
@@ -86,9 +89,9 @@ let
     parent = providerFlake;
   };
 
-  nixosSystemPath = providerFlake.lib.provider.nixosSystem;
-  systemEval = import nixosSystemPath {
-    inherit config nodeSystems nodeName nodesPath secretsPath;
+  nixosSystem = providerFlake.lib.provider.nixosSystem;
+  systemEval = nixosSystem {
+    inherit config nodeSystems nodesPath secretsPath;
     node = nodeName;
     inputs = inputsForSystem;
     nixpkgs = inputs.nixpkgs;
@@ -96,9 +99,9 @@ let
     localSystem = system;
   };
 
-  systemMismatch = builtins.tryEval (import nixosSystemPath {
+  systemMismatch = builtins.tryEval (nixosSystem {
     config = configMismatch;
-    inherit nodeSystems nodeName nodesPath secretsPath;
+    inherit nodeSystems nodesPath secretsPath;
     node = nodeName;
     inputs = inputsForSystem;
     nixpkgs = inputs.nixpkgs;

@@ -2,12 +2,9 @@
   description = "Hostenv: the PaaS you control";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:liammcdermott/nixpkgs/hotfix/fix-composer-flags";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    # phps = {
-    #   url = "github:fossar/nix-phps";
-    #   inputs.nixpkgs.follows = "nixpkgs";
-    # };
+    import-tree.url = "github:vic/import-tree";
     search = {
       url = "github:NuschtOS/search";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -16,27 +13,20 @@
       url = "github:Mic92/sops-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    hostenv-platform = {
-      url = ./platform;
+    pog = {
+      url = "github:jpetrucciani/pog";
       inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-parts.follows = "flake-parts";
-      # inputs.phps.follows = "phps";
+    };
+    phps = {
+      url = "github:fossar/nix-phps";
+    };
+    deploy-rs = {
+      url = "github:serokell/deploy-rs";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
   outputs = inputs@{ flake-parts, ... }:
-    flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = inputs.nixpkgs.lib.systems.flakeExposed;
-      imports = [
-        ./provider/flake-module.nix
-        inputs.hostenv-platform.flakeModules.exports
-        inputs.hostenv-platform.flakeModules.environmentRegistry
-        inputs.hostenv-platform.flakeModules.cli
-        inputs.hostenv-platform.flakeModules.hostenvProviderService
-        ./flake-parts/docs.nix
-        ./flake-parts/tests.nix
-        ./flake-parts/devshells.nix
-        ./flake-parts/templates.nix
-      ];
-    };
+    flake-parts.lib.mkFlake { inherit inputs; }
+      (inputs.import-tree ./modules);
 }

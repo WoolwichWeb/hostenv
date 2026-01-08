@@ -1,92 +1,223 @@
-# Dendritic structure for hostenv
+# Dendritic Nix
 
-This repo now exposes both project-facing and provider-facing pieces as flake-parts “trunk/branch/leaf” modules, with `hostenv.environments` as the single trunk.
+Taken from <https://dendrix.oeiuwq.com/Dendritic.html>.
 
-## Provider options (trunk)
+[Dendritic](https://github.com/mightyiam/dendritic) is a [pattern](https://discourse.nixos.org/t/pattern-every-file-is-a-flake-parts-module/61271) for writing nix configurations based on [flake-parts](https://flake.parts)'s [`modules` option](https://flake.parts/options/flake-parts-modules.html).
 
-Set under `perSystem.config.provider` when importing `hostenv.flakeModules.provider` (the public `hostenv` flake stays provider-neutral; each project sets `hostenvHostname` in its `.hostenv/flake.nix`, typically via a `hostenvHostname` variable passed into the modules list):
+We say that Dendritic nix configurations are _aspect-oriented_, meaning that each nix file
+provides config-values for the same _aspect_ across different nix configuration classes.
+
+Normally, this is done via flake-parts' `flake.modules.<class>.<aspect>` options.
+
+Where `<class>` is a type of configuration, like [`nixos`](https://nixos.org/manual/nixos/stable/options), [`darwin`](https://nix-darwin.github.io/nix-darwin/manual/), [`homeManager`](https://home-manager.dev/manual/23.11/options.xhtml), [`nixvim`](https://nix-community.github.io/nixvim/search/), etc.
+
+And `<aspect>` is the _cross-cutting concern_ or _feature_ that is being configured across
+one or more of these classes.
+
+> [!NOTE]
+> Dendritic is a configuration _pattern_ - a way-of-doing-. Not a library nor a framework.
+> See [No Dependencies](#no-dependencies).
+
+### Example of a dendritic configuration
+
+As an example of what a dendritic nix config looks like, suppose we want to configure ssh facilities
+(the `ssh` aspect) across our NixOS, Nix-darwin hosts and user homes.
 
 ```nix
-perSystem = { config, ... }: {
-  provider = {
-    hostenvHostname = "hostenv.example.invalid";
-    letsEncrypt = {
-      adminEmail = "ops@example.com";
-      acceptTerms = true;
-    };
-    deployPublicKeys = [ "ssh-ed25519 AAAA... deployment" ];
-    nodeFor = {
-      production = "backend04";
-      testing = "backend02";
-      development = "backend02";
-      default = "backend02";
-    };
-    planSource = "disk";                  # or "eval" to consume generated plan directly
+# modules/ssh.nix -- like every other file inside modules, this is a flake-parts module.
+{ inputs, config, ... }: let
+  scpPort = 2277; # let-bindings or custom flake-parts options communicate values across classes
+in {
+  flake.modules.nixos.ssh = {
+    # Linux config: setup OpenSSH server, firewall-ports, etc.
   };
-};
+
+  flake.modules.darwin.ssh = {
+    # MacOS config: enable MacOS builtin ssh server, etc.
+  };
+
+  flake.modules.homeManager.ssh = {
+    # setup ~/.ssh/config, authorized_keys, private keys secrets, etc.
+  };
+
+  perSystem = {pkgs, ...}: {
+    # custom packages taking advantage of ssh facilities, eg deployment-scripts.
+  };
+}
 ```
 
-## Branches
+That's it. This is what Dendritic is all about. By following this configuration pattern you
+will notice your code now incorporates the following:
 
-- `modules/environments.nix` defines the canonical environments schema; it is bridged into `hostenv.environments` for feature modules.
-- Nodes live under `nodes/` (`configuration.nix` + hardware config).
-- Secrets live under `secrets/secrets.yaml` (sops). Provide your own example or copy from provider secrets when bootstrapping.
-- The provider template includes starter node stubs in `nodes/sample/`; copy and adapt for a new provider setup. Secrets are created with `sops` at `secrets/secrets.yaml`.
-- `nodeSystems` maps node name → system (e.g. `x86_64-linux`); required if nodes are heterogeneous.
-- Client project inputs should point at the `.hostenv` flake (e.g. `dir=.hostenv`).
+## Dendritic Advantages
 
-## Leaves
+### No need to use `specialArgs` for communicating values
 
-- Hostenv project inputs (end-user flakes) provide environments; plan generation discovers them automatically from flake inputs that expose `hostenv`.
-- Feature modules (branches) consume `config.hostenv.environments`:
-  - `modules/nixos/users-slices.nix` — Unix users + slices per env
-  - `modules/nixos/nginx-hostenv.nix` — reverse proxy to per-env socket
-  - `modules/nixos/backups-hostenv.nix` — restic jobs keyed off per-env hostenv backups options
-- `modules/nixos/monitoring-hostenv.nix` — monitoring labels (placeholder)
+A common pattern for passing values between different nix configurations types (e.g., between a `nixos` config and a `homeManager` one),
+is to use the [`specialArgs`](https://nixos.org/manual/nixos/stable/options#opt-_module.args) module argument or [`home-manager.extraSpecialArgs`](https://home-manager.dev/manual/23.11/nixos-options.xhtml#nixos-opt-home-manager.extraSpecialArgs).
 
-## Split of concerns (system vs user level)
+This is considered an _anti-pattern in dendritic setups_, since there's no need to use `specialArgs` at all. Because you can
+always use let bindings (or even define your own _options_ at the flake-parts level) to share values across different configuration classes.
 
-- **System level (provider)**: runs NixOS, creates the Unix users/slices, exposes reverse proxies, backups, monitoring. It pre-creates runtime directories the user-level services will use:
-  - `/run/hostenv/nginx/<env>/` (2770, owner `<env>`, group `nginx`) — where system nginx expects to find the *user-level nginx* upstream socket `in.sock`.
-  - `/run/hostenv/user/<env>/` (2700, owner `<env>`) — where app daemons (e.g. PHP-FPM pools) place their own sockets.
-- **User level (hostenv activation package)**: runs under the environment’s Unix user via `systemd --user`. Pattern:
-  - user-level nginx listens on `${config.hostenv.upstreamRuntimeDir}/in.sock` (group `nginx`, mode `660`) so the system nginx can proxy into it.
-  - PHP-FPM (or other app backend) listens on `${config.hostenv.runtimeDir}/<pool>.sock` (owned by the env user); user-level nginx fastcgi_proxy/uwsgi_proxy to that.
-- User nginx sets `UMask=0007` so its socket inherits group `nginx` (from the setgid upstream dir) and is group-writable.
-- This separation keeps privileged bits (system nginx, restic, node exporter, user creation) on the system side, while application daemons stay unprivileged in the user slice.
+```nix
+# modules/vic.nix -- a flake-parts module that configures the "vic" user aspect.
+let
+  userName = "vic"; # a shared value between classes
+in
+{
+  flake.modules.nixos.${userName} = {
+     users.users.${userName} = { isNormalUser = true; extraGroups = [ "wheel" ]; };
+  };
 
-## Provider workflow
+  flake.modules.darwin.${userName} = {
+     system.primaryUser = userName; # note that configuring a user is different on MacOS than on NixOS.
+  };
 
-1) Generate plan/state/deploy flake artefacts:
+  flake.modules.homeManager.${userName} =
+    { pkgs, lib, ... }:
+    {
+      home.username = lib.mkDefault userName;
+      home.homeDirectory = lib.mkDefault (if pkgs.stdenvNoCC.isDarwin then "/Users/${userName}" else "/home/${userName}");
+      home.stateVersion = lib.mkDefault "25.05";
+    };
+}
+```
 
-   ```
-   nix run .#hostenv-provider plan
-   ```
+### No file organization restrictions
 
-   Outputs go to `generated/`.
-   Why emit a new flake? Flake inputs are static, but client repos expose many environments (often one per branch/tag). Plan generation materialises a flake whose inputs enumerate *every environment* (repo × env), so deploy-rs can build exactly the closures in the plan without re-evaluating dynamic inputs. The bundle `plan.json` + `state.json` + `flake.nix` is the auditable deploy snapshot.
-2) Safety gate + optional Cloudflare CNAME upsert:
+The dendritic pattern imposes no restrictions on how you organize or name your nix files.
 
-   ```
-   CF_API_TOKEN=... CF_ZONE_ID=... nix run .#hostenv-provider dns-gate [--with-dns-update] [-n node]
-   ```
+Unlike other nix-configuration libs/frameworks that mandate a predefined structure. In Dendritic,
+you are free to move or rename each file as it better suits your mental model.
 
-3) Deploy (system then env profiles):
+This is possible because:
 
-   ```
-   nix run .#hostenv-provider deploy [-n node]
-   ```
+### All nix files have the same semantic meaning
 
-## Live deploy outputs in flake-parts
+In a Dendritic setup, each `.nix` file has only one interpretation: A flake-parts module.
 
-When `generated/plan.json` is present, the provider module exposes:
+Unlike other kinds of setup where each nix file can be a `nixos` configuration, or a `home-manager` configuration, or
+a package, or something entirely different. In such setups, loading a file requires you to know what kind of meaning
+each file has before importing it.
 
-- `packages.deploy-nodes`  — NixOS systems per node (for deploy-rs).
-- `packages.deploy-envs`   — environment closures per user/env.
-- `deploy.nodes`           — deploy-rs node spec matching the plan.
+This leads us to having:
 
-If `generated/plan.json` is absent, these remain empty (safe default).
+### No manual file imports
 
-## Golden check
+All files being flake-parts modules, means we have no need for manually importing nix files. They can all be
+loaded at once into a single import.
 
-If you provide a golden plan (recommended path: `tests/golden/plan.json`, or set `provider.goldenPlanPath`), `checks.plan-golden` diffs it against the current plan to catch regressions. If none is present, the check is skipped.
+The Dendritic community commonly uses [`vic/import-tree`](https://github.com/vic/import-tree) for this.
+Note: import-tree ignores any file that has an `/_` as part of its path.
+
+```nix
+# flake.nix
+{
+  inputs = {
+    flake-parts.url = "github:hercules-ci/flake-parts";
+    import-tree.url = "github:vic/import-tree";
+    # all other inputs your flake needs, like nixpkgs.
+  };
+  outputs = inputs: inputs.flake-parts.lib.mkFlake { inherit inputs; } (inputs.import-tree ./modules);
+}
+```
+
+This is the only place you will call `import-tree` and it will load all files under `./modules` recursively.
+
+This means we can have:
+
+### Minimal and focused flake.nix
+
+Instead of having huge `flake.nix` files with lots of nix logic inside. It is now possible
+to move all nix logic into well organized auto-imported flake-parts in `./modules`. This way, `flake.nix` serves more as a manifest of dependencies and flake entrypoint.
+
+Some people go a step further and use [`vic/flake-file`](https://github.com/vic/flake-file) to manage their flake.nix automatically, by letting each flake-parts module also define the flake inputs needed by each module.
+
+Any flake-parts module contributes to flake.nix as needed, either inputs/flake-configuration (by using `vic/flake-file`) or outputs (modules/packages/checks/osConfigurations/etc by using flake-parts options).
+
+```nix
+# ./modules/home/vim.nix
+{ inputs, ... }:
+{
+  flake-file.inputs.nixvim.url = "github:nix-community/nixvim";
+  flake.modules.homeManager.vim = {
+    # use inputs.nixvim
+  };
+}
+```
+
+### Feature Centric instead of Host Centric
+
+As noted by Pol Dellaiera in [Flipping the Configuration Matrix](https://not-a-number.io/2025/refactoring-my-infrastructure-as-code-configurations/#flipping-the-configuration-matrix) -a very recommended read-:
+
+> [In a Dendritic setup] the configuration is now structured around features, not hostnames. It is a shift in the axis of composition, essentially an inversion of configuration control. What may seem like a subtle change at first has profound implications for flexibility, reuse, and maintainability.
+
+You will notice that you start naming your files around the `aspect`s (features) they define
+instead of where they are specifically applied.
+
+It might be useful to ask yourself **_how_** you like to use your Linux Environment, instead of **_what_** components constitute the environment or **_where_** will the environment finally applied. By doing so, you will start naming your aspects around "usability concerns", eg. `macos-like-bindings`, `scrolling-desktop`, `tui` interfaces, nextgen `cli` utilities, `ai` intergation, etc. Instead of naming modules around specific packages or host-names.
+
+In the following example, the `scrolling-desktop` aspect is included accross different operating systems:
+On Linux, `flake.modules.nixos.scrolling-desktop` might enable [`niri`](https://variety4me.github.io/niri_docs/) and on MacOS, `flake.modules.darwin.scrolling-desktop` might enable [`paneru`](https://github.com/karinushka/paneru). Each configuration uses the tools available on the respective platform, but the aspect is the same, and you could use flake-parts level options or let-bindings to configure behaviour on both (e.g, the scrolling animations speed).
+
+```nix
+# ./modules/hosts.nix
+{ inputs, ... }:
+{
+  flake.nixosConfigurations.my-host = inputs.nixpkgs.lib.nixosSystem {
+    system = "aarm64-linux";
+    modules = with inputs.self.modules.nixos;  [ ai ssh vpn mac-like-keyboard scrolling-desktop ];
+  };
+  flake.darwinConfigurations.my-host = inputs.nix-darwin.lib.darwinSystem {
+    system = "aarm64-darwin";
+    modules = with inputs.self.modules.darwin; [ ai ssh vpn scrolling-desktop ];
+  };
+}
+```
+
+### Feature _Closures_
+
+By closure, we mean: everything that is needed for a given _feature_ to work is
+configured closely, in the same unit (file/directory named after the feature).
+
+Because a single `feature.nix` contributes to different configuration classes, it has all
+the information on how feature works, instead of having to look at different files for
+package definitions, nixos or home-manager configurations dispersed over all over the tree.
+
+If you need to look where some feature is defined on a repo you don't know,
+it will be easier to simply guess by path name. _Paths become documentation_.
+
+### _Incremental_ Features
+
+Since all nix files are loaded automatically. You can increment the capabilities that an
+existing `feature-x/basic.nix` provides by just creating another `feature-x/advanced.nix`.
+Both of them should contribute to the same aspect: `flake.modules.<class>.feature-x`, but
+each file focuses on the different capabilities they provide to the system whole.
+
+This way, you can split `feature-x/advanced.nix` into more files. And adding or removing
+files from your modules (or adding an `_` for them to be ignored) has no
+other impact than the overall capabilities provided into your systems.
+
+This is an easy way to disable loading files while on a huge refactor. Or when some hosts
+or features should be decommissioned immediately/temporarily.
+
+### No dependencies
+
+> _Dendritic_ is a configuration _pattern_ - a _way-of-doing_-, not a library nor a framework.
+
+The Dendritic repository has no code at all, any [libraries mentioned](Dendritic-Ecosystem.html) on this guide are mere recommendations and pointers to things other people using the Dendritic pattern has found useful.
+
+You are free and encouraged to explore new ways of doing or wiring Dendritic setups. Be sure to share your insights with the community.
+
+Because all of this, there are many possible implementations of the Dendritic pattern.
+
+It is also possible to have Dendritic setups **without** flakes/flake-parts.
+See [vic/dendritic-unflake](https://github.com/vic/dendritic-unflake).
+
+### Dendritic community
+
+Last but not least. By using the dendritic pattern you open the door to defining or re-using
+existing generic (user/host independent) configurations from the community.
+
+This is the goal of the Dendrix project: To allow people share dendritic configurations and
+socially enhance their capabilities.

@@ -1,8 +1,11 @@
-{ pkgs, makeHostenv }:
+{ pkgs, makeHostenv, inputs }:
 let
   lib = pkgs.lib;
   support = import ../support { inherit pkgs lib; };
   asserts = support.asserts;
+  providerPlan = inputs.self.lib.provider.plan;
+
+  localSystem = pkgs.stdenv.hostPlatform.system;
 
   hostenvInput =
     let
@@ -11,10 +14,9 @@ let
     {
       inherit outPath;
       modules = outPath;
+      makeHostenv.${localSystem} = makeHostenv;
       __toString = self: toString self.outPath;
     };
-
-  localSystem = pkgs.stdenv.hostPlatform.system;
 
   mkProjectInput = { path, organisation, project }:
     let
@@ -60,7 +62,7 @@ let
   secretsStub = pkgs.runCommand "secrets-stub" { } ''echo "{}" > $out'';
   stateStub = pkgs.writers.writeJSON "state-stub.json" { };
 
-  inputs = {
+  inputsEffective = {
     hostenv = hostenvInput;
     acme__drupal = drupal.input;
     acme__drupal7 = drupal7.input;
@@ -75,8 +77,9 @@ let
   };
   lockPath = pkgs.writers.writeJSON "flake.lock" lockData;
 
-  planEval = import ../../provider/plan.nix {
-    inherit inputs pkgs lib;
+  planEval = providerPlan {
+    inputs = inputsEffective;
+    inherit pkgs lib;
     system = localSystem;
     letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
     deployPublicKeys = [ "ssh-ed25519 test" ];
@@ -116,7 +119,7 @@ let
     && lib.strings.hasInfix "parent = {" flakeText
     && lib.strings.hasInfix "url = \"path:..\"" flakeText
       && lib.strings.hasInfix "hostenv = {" flakeText
-      && lib.strings.hasInfix "follows = \"parent/hostenv-platform\"" flakeText
+      && lib.strings.hasInfix "follows = \"parent/hostenv\"" flakeText
       && lib.strings.hasInfix "inputs.parent.lib.provider.deployOutputs" flakeText;
 in
 {
