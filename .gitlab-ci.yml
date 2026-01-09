@@ -10,7 +10,7 @@ variables:
 
 # Enable Nix flakes and configure binary cache
 before_script:
-  - nix profile install --accept-flake-config nixpkgs#cachix
+  - nix profile add --accept-flake-config nixpkgs#cachix
   - cachix use fossar
   - cachix use hostenv
   - cachix authtoken "$cachix_token"
