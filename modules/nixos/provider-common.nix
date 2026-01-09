@@ -52,6 +52,7 @@
 
         users.groups.keys.name = "keys";
 
+        # Gitlab/Github access tokens for projects are kept in this key.
         sops.secrets.access_tokens = {
           mode = "0440";
           group = config.users.groups.keys.name;
