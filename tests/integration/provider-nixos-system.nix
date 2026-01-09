@@ -46,6 +46,7 @@ let
         enable = true;
         type = "production";
         uid = 1001;
+        node = nodeName;
         hostenv = {
           organisation = "acme";
           project = "demo";

@@ -40,13 +40,15 @@ let
         else builtins.throw "No system specified for node '${node}' (set provider.nodeSystems.${node})";
 
       nodeConfig = plan.nodes.${node};
-      environmentWith = userName: plan.environments.${userName};
+      envsAll = plan.environments or { };
+      envsForNode = lib.filterAttrs (_: env: (env.node or null) == node) envsAll;
+      environmentWith = userName: envsForNode.${userName};
       packages = pkgs.${system};
-      envUsers = builtins.attrNames (plan.environments or { });
+      envUsers = builtins.attrNames envsForNode;
 
       hostenvEnvModule = {
         hostenv = {
-          environments = plan.environments or { };
+          environments = envsForNode;
           defaultEnvironment = plan.defaultEnvironment or "main";
         };
       };
@@ -68,7 +70,7 @@ let
 
       envUserMismatch =
         let
-          envs = plan.environments or { };
+          envs = envsForNode;
           mismatched =
             packages.lib.filterAttrs
               (name: env: (env.hostenv.userName or name) != name)
