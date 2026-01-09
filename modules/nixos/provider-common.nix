@@ -13,12 +13,12 @@
       };
 
       config = {
-        services.qemuGuest.enable = true;
-
         sops.defaultSopsFormat = "yaml";
         sops.age.sshKeyPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];
 
         nix = {
+          # Currently disabled `nix.settings.auto-optimise-store` as it seems to fail with remote builders
+          # TODO re-enable when fixed https://github.com/NixOS/nix/issues/7273
           settings.auto-optimise-store = false;
 
           gc = {
@@ -32,14 +32,9 @@
             !include ${config.sops.secrets.access_tokens.path}
           '';
 
+          # See: https://discourse.nixos.org/t/build-failed-due-to-lack-of-signature-by-trusted-key-in-distributed-build/44996/2
           settings.trusted-users = [ "deploy" ];
         };
-
-        environment.systemPackages = with pkgs; [
-          vim
-          wget
-          git
-        ];
 
         services.openssh = {
           enable = true;
