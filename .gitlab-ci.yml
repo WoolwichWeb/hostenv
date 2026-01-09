@@ -5,36 +5,15 @@
 
 image: nixos/nix:latest
 
+variables:
+  NIX_CONFIG: "experimental-features = nix-command flakes"
+
 # Enable Nix flakes and configure binary cache
 before_script:
-  - mkdir -p ~/.config/nix .nix-cache
-  - echo "experimental-features = nix-command flakes" >> ~/.config/nix/nix.conf
-  # Use local file cache in addition to the official cache
-  - echo "extra-substituters = file://$PWD/.nix-cache" >> ~/.config/nix/nix.conf
-  # Trust the local cache (needed for file:// substituters)
-  - echo "trusted-substituters = file://$PWD/.nix-cache" >> ~/.config/nix/nix.conf
-  # Export built paths to the cache after each job
-  - echo "post-build-hook = $PWD/.gitlab-cache-hook.sh" >> ~/.config/nix/nix.conf
-  # Create the post-build hook script
-  - |
-    cat > .gitlab-cache-hook.sh << 'EOF'
-    #!/bin/sh
-    set -eu
-    set -f # disable globbing
-    export IFS=' '
-    echo "Caching paths: $OUT_PATHS"
-    exec nix copy --to "file://$PWD/.nix-cache" $OUT_PATHS
-    EOF
-  - chmod +x .gitlab-cache-hook.sh
   - nix profile install --accept-flake-config nixpkgs#cachix
   - cachix use fossar
-
-# Cache Nix store between runs to speed up builds
-# This caches built derivations in .nix-cache/ which is restored on subsequent runs
-cache:
-  key: nix-store
-  paths:
-    - .nix-cache/
+  - cachix use hostenv
+  - cachix authtoken "$cachix_token"
 
 stages:
   - check
@@ -57,8 +36,8 @@ flake-check:
 # this should change as hostenv matures.
 #
 # Further into the project we will slow the cadence (to weekly updates?),
-# use a stable version of nixpkgs, and probably move to using MRs for updates
-# instead of slinging changes onto main.
+# use a stable version of nixpkgs, and move to using MRs for updates instead
+# of slinging changes onto main.
 #
 # It's worth noting that downstream projects won't especially be affected by
 # these updates as they have their own `flake.lock` files that lock nixpkgs.
@@ -73,8 +52,8 @@ nightly-full-check:
         nix flake update
         if ! git diff --quiet --exit-code; then
           nix flake check --show-trace --all-systems
-          git config --global user.name "Gitlab CI"
-          git config --global user.email ""
+          git config --global user.name "Patch Bot"
+          git config --global user.email "patch-bot@hostenv.sh"
           git commit -m "(chore) update flake.lock dependencies" flake.lock
           git push "https://SelfCI:${GITLAB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
         else
