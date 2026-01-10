@@ -66,7 +66,7 @@ And here's the same idea for a tiny PHP app (no Drupal) using the built‑in `ph
 ## Repository Map
 
 - `modules/` – dendritic flake-parts modules, auto-imported:
-  - `infra/` – flake-parts glue (systems, devshells, tests, templates, docs).
+  - `flake/` – flake-parts glue (systems, devshells, tests, templates, docs).
   - `lib/` – helper functions exported under `flake.lib.*`.
   - `hostenv.nix` – hostenv core + env registry + eval (makeHostenv) + project tools.
   - `features/` – env-level services (nginx, php-fpm, drupal, restic, etc.) plus per-system tooling (CLI, provider service build).

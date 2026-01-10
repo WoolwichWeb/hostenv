@@ -1,9 +1,10 @@
 # Dendritic Refactor Plan + Mapping
 
-This plan aligns the repo with the Dendritic pattern described at https://dendrix.oeiuwq.com/Dendritic.html:
+This plan aligns the repo with the Dendritic pattern described at <https://dendrix.oeiuwq.com/Dendritic.html>:
+
 - Flake-parts modules under `modules/` are auto-imported via `import-tree`. Non-module helpers live under `modules/_impl` (ignored by import-tree) and are imported only where needed.
 - Aspects are published under `flake.modules.<class>.<aspect>`.
-- Minimal `flake.nix`; enable `flake.modules.*` via a flake-parts module (`modules/infra/flake-parts.nix`).
+- Minimal `flake.nix`; enable `flake.modules.*` via a flake-parts module (`modules/flake/flake-parts.nix`).
 - Avoid `specialArgs` for cross-class wiring where feasible.
 - Helpers become modules exporting via `config.flake.lib.*` (Option 1).
 
@@ -17,7 +18,7 @@ This plan aligns the repo with the Dendritic pattern described at https://dendri
    - Add `modules/` tree at repo root.
    - Add `import-tree` input.
    - Update root `flake.nix` to import `inputs.import-tree ./modules`.
-   - Enable `flake.modules.*` via `modules/infra/flake-parts.nix`.
+   - Enable `flake.modules.*` via `modules/flake/flake-parts.nix`.
 
 3) **Convert helpers into flake-parts modules (Option 1)**
    - Replace helper-only files with modules under `modules/lib/*.nix` that export functions via `config.flake.lib.*`.
@@ -54,45 +55,54 @@ This plan aligns the repo with the Dendritic pattern described at https://dendri
    - Gate with `project.enable`.
 
 10) **Replace `make-hostenv` wiring**
-   - Move logic from `platform/flake-modules/make-hostenv.nix` into `modules/hostenv.nix`.
-   - Use `config.flake.modules.hostenv` and avoid `specialArgs` where possible.
-   - Expose `flake.makeHostenv` only if still needed.
 
-11) **Remove `specialArgs` for cross-class communication**
-   - Refactor provider system builder (now `flake.lib.provider.nixosSystem`), provider plan helper (now `flake.lib.provider.plan`), and any hostenv submodule arg usage.
-   - Replace with flake-parts options, let-bindings, or explicit `_module.args` modules in lists.
-   - Keep any `specialArgs` usage confined to tests harnesses (optional to refactor).
+- Move logic from `platform/flake-modules/make-hostenv.nix` into `modules/hostenv.nix`.
+- Use `config.flake.modules.hostenv` and avoid `specialArgs` where possible.
+- Expose `flake.makeHostenv` only if still needed.
 
-12) **Update outputs + exports**
-   - Create `modules/exports.nix` (optional) to expose `flakeModules.project` / `flakeModules.provider` as thin wrappers.
-   - Ensure `flake.modules.*` classes are the primary mechanism.
+1) **Remove `specialArgs` for cross-class communication**
 
-13) **Update templates**
-   - `template/project/.hostenv/flake.nix` imports `hostenv.flakeModules.project` (entrypoint auto-imports hostenv modules).
-   - `template/provider/flake.nix` imports `hostenv.flakeModules.provider` (entrypoint auto-imports hostenv modules).
+- Refactor provider system builder (now `flake.lib.provider.nixosSystem`), provider plan helper (now `flake.lib.provider.plan`), and any hostenv submodule arg usage.
+- Replace with flake-parts options, let-bindings, or explicit `_module.args` modules in lists.
+- Keep any `specialArgs` usage confined to tests harnesses (optional to refactor).
 
-14) **Delete sub-flakes**
-   - Delete `platform/flake.nix`, `platform/flake-modules/*`, `provider/flake.nix`, `provider/flake-modules/*` once replacements are in place.
-   - Update any internal references.
+1) **Update outputs + exports**
 
-15) **Update tests and docs**
-   - Adjust paths/output names in `tests/`, `docs/`, and README(s) to match new structure.
-   - Update this plan if needed.
+- Create `modules/exports.nix` (optional) to expose `flakeModules.project` / `flakeModules.provider` as thin wrappers.
+- Ensure `flake.modules.*` classes are the primary mechanism.
 
-16) **Validate**
-   - Run `nix flake check` (or relevant checks).
-   - Ensure project and provider templates evaluate.
-   - Ensure provider plan/tooling still builds.
+1) **Update templates**
+
+- `template/project/.hostenv/flake.nix` imports `hostenv.flakeModules.project` (entrypoint auto-imports hostenv modules).
+- `template/provider/flake.nix` imports `hostenv.flakeModules.provider` (entrypoint auto-imports hostenv modules).
+
+1) **Delete sub-flakes**
+
+- Delete `platform/flake.nix`, `platform/flake-modules/*`, `provider/flake.nix`, `provider/flake-modules/*` once replacements are in place.
+- Update any internal references.
+
+1) **Update tests and docs**
+
+- Adjust paths/output names in `tests/`, `docs/`, and README(s) to match new structure.
+- Update this plan if needed.
+
+1) **Validate**
+
+- Run `nix flake check` (or relevant checks).
+- Ensure project and provider templates evaluate.
+- Ensure provider plan/tooling still builds.
 
 ## Mapping (current → proposed)
 
 ### Root / infra
-- `flake-parts/docs.nix` → `modules/infra/docs.nix`
-- `flake-parts/tests.nix` → `modules/infra/tests.nix`
-- `flake-parts/devshells.nix` → `modules/infra/devshells.nix`
-- `flake-parts/templates.nix` → `modules/infra/templates.nix`
+
+- `flake-parts/docs.nix` → `modules/flake/docs.nix`
+- `flake-parts/tests.nix` → `modules/flake/tests.nix`
+- `flake-parts/devshells.nix` → `modules/flake/devshells.nix`
+- `flake-parts/templates.nix` → `modules/flake/templates.nix`
 
 ### Platform trunk + env modules
+
 - `platform/hostenv-modules/*` → inline into `modules/hostenv/*.nix` (core aspects).
 - `modules/hostenv.nix` exports:
   - `flake.modules.hostenv.core`
@@ -104,13 +114,16 @@ This plan aligns the repo with the Dendritic pattern described at https://dendri
 - `platform/hostenv-modules/public-environments.nix` → `modules/lib/public-environments.nix`
 
 ### Platform services (env-level features)
+
 - `platform/services/*` → `modules/features/*.nix` (flake-parts modules exporting `flake.modules.hostenv.*`)
 - Nginx helpers are exported via `modules/lib/nginx.nix` under `flake.lib.hostenv.nginx`.
 
 ### Platform NixOS modules (host-level branches)
+
 - `platform/nixos-modules/*` → `modules/nixos/*.nix` (flake-parts modules exporting `flake.modules.nixos.*`).
 
 ### Platform flake-modules (entrypoint wiring)
+
 - `platform/flake-modules/environment-registry.nix` → `modules/entrypoints/project.nix`
 - `platform/flake-modules/project-outputs.nix` → `modules/entrypoints/project.nix`
 - `platform/flake-modules/make-hostenv.nix` → `modules/hostenv.nix`
@@ -119,6 +132,7 @@ This plan aligns the repo with the Dendritic pattern described at https://dendri
 - `platform/flake-modules/exports.nix` → `modules/exports.nix` (entrypoints exported via `flake.flakeModules`)
 
 ### Provider
+
 - `provider/flake-module.nix` → `modules/entrypoints/provider/options.nix`
 - `provider/flake-modules/tooling.nix` → `modules/entrypoints/provider/tooling.nix`
 - `provider/flake-modules/exports.nix` → delete
@@ -129,13 +143,16 @@ This plan aligns the repo with the Dendritic pattern described at https://dendri
 - `provider/read-yaml.nix` → `modules/lib/read-yaml.nix`
 
 ### Templates
+
 - `template/project/.hostenv/flake.nix` → `hostenv.flakeModules.project`
 - `template/provider/flake.nix` → `hostenv.flakeModules.provider`
 
 ## Known anti-dendritic spots to refactor
+
 - Test harness helpers still accept `specialArgs` for convenience (optional cleanup).
 
 ## Notes
+
 - Use `inputs.flake-parts.flakeModules.modules` to enable `flake.modules.*`.
 - The “hostenv” class is a custom class akin to `nixos`/`homeManager` in dendritic terms.
 - Helpers are exported via `config.flake.lib.*` so downstream providers can consume them flexibly.

@@ -2,7 +2,8 @@
 let
   types = lib.types;
   # Used by downstream projects and providers.
-  # Imports hostenv modules with either project or provider enabled.
+  # Allows downstream to import hostenv modules with either project or
+  # provider enabled.
   mkFlakeModule = cfg: { ... }:
     {
       imports = [
