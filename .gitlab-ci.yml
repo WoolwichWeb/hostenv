@@ -23,7 +23,11 @@ stages:
 flake-check:
   stage: check
   script:
-    - nix flake check --show-trace --print-build-logs
+    - nix flake check --show-trace --print-build-logs --keep-failed
+  artifacts:
+    when: always
+    paths:
+      - /nix/var/nix/builds
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
@@ -51,7 +55,7 @@ nightly-full-check:
         git checkout main
         nix flake update
         if ! git diff --quiet --exit-code; then
-          nix flake check --show-trace --print-build-logs
+          nix flake check --show-trace --print-build-logs --keep-failed
           git config --global user.name "Patch Bot"
           git config --global user.email "patch-bot@hostenv.sh"
           git commit -m "(chore) update flake.lock dependencies" flake.lock
@@ -59,6 +63,10 @@ nightly-full-check:
         else
           echo "No updates available"
         fi
+  artifacts:
+    when: always
+    paths:
+      - /nix/var/nix/builds
   tags:
     - saas-linux-small-arm64
   allow_failure: true
