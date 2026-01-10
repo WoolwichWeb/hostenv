@@ -1,15 +1,18 @@
 { inputs, lib, config, ... }:
 let
   flakeParts = inputs.flake-parts.lib;
+  cfgTop = config;
   cfg = config.provider;
   hasProviderConfig = config.provider.enable;
-  providerRoot = /provider;
-  cliPath = providerRoot + /cli.hs;
 
   hostenvInput =
     if inputs ? hostenv then inputs.hostenv
     else if inputs ? self then inputs.self
     else throw "provider tooling requires a hostenv input";
+
+  hostenvRoot = hostenvInput.outPath;
+  providerRoot = hostenvRoot + "/provider";
+  cliPath = providerRoot + "/cli.hs";
 
 in
 {
@@ -29,10 +32,10 @@ in
     };
   });
 
-  config.perSystem = { system, pkgs, ... }:
+  config.perSystem = { system, pkgs, config, ... }:
     lib.mkIf cfg.enable
       (let
-        providerHsDeps = p: map (name: p.${name}) cfg.haskellDevPackages;
+        providerHsDeps = p: map (name: p.${name}) config.provider.haskellDevPackages;
         providerGhc = pkgs.haskellPackages.ghcWithPackages providerHsDeps;
         cliSrc = builtins.path { path = cliPath; name = "hostenv-provider-cli"; };
         hostenvProviderCLI = pkgs.writeShellScriptBin "hostenv-provider" ''
@@ -40,7 +43,7 @@ in
           exec ${providerGhc}/bin/runghc ${cliSrc} "$@"
         '';
 
-        providerPlan = config.flake.lib.provider.plan;
+        providerPlan = cfgTop.flake.lib.provider.plan;
         providerGenerator =
           if !hasProviderConfig then null else
           providerPlan {
@@ -116,8 +119,8 @@ in
           buildInputs = if cfg.enable
           then 
             [
-              config.packages.hostenv-provider
-              config.packages.hostenv-provider-plan
+              hostenvProviderCLI
+              hostenvProviderPlan
               providerGhc
               pkgs.sops
               pkgs.age
