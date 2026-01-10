@@ -7,7 +7,6 @@ let
     config.flake.modules.nixos.hostenv-top-level
     config.flake.modules.nixos.nginx-frontdoor
     config.flake.modules.nixos.nginx-tuning
-    config.flake.modules.nixos.backups
     config.flake.modules.nixos.monitoring
   ];
 
