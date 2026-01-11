@@ -2,14 +2,10 @@
 let
   fp = inputs.flake-parts.lib;
   types = lib.types;
-  projectEnabled = config.project.enable or false;
+  cfg = config.project;
 in
 {
-  options.project.enable = lib.mkOption {
-    type = types.bool;
-    default = false;
-    description = "Enable project outputs and hostenv project evaluation.";
-  };
+  options.project.enable = lib.mkEnableOption "Enable project outputs and hostenv project evaluation.";
 
   options.perSystem = fp.mkPerSystemOption ({ system, config, ... }: {
     options.hostenvProject = {
@@ -47,7 +43,7 @@ in
   });
 
   config.perSystem = { system, config, pkgs, ... }:
-    lib.mkIf projectEnabled
+    lib.mkIf cfg.enable
       (let
         makeHostenv = config.hostenvProject.makeHostenv;
         baseModules = config.hostenvProject.modules;
@@ -78,7 +74,7 @@ in
       });
 
   # Lift perSystem outputs into flake outputs
-  config.flake.lib.hostenv = lib.mkIf projectEnabled
+  config.flake.lib.hostenv = lib.mkIf cfg.enable
     (lib.genAttrs config.systems (system:
       config.allSystems.${system}.hostenvProject.outputs));
 }

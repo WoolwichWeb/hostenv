@@ -1,12 +1,13 @@
 { inputs, lib, config, ... }:
 let
   fp = inputs.flake-parts.lib;
+  cfgTop = config;
   providerEnabled = config.provider.enable or false;
 in
 {
   options.perSystem = fp.mkPerSystemOption ({ config, pkgs, ... }:
     let
-      providerService = config.flake.lib.provider.service;
+      providerService = cfgTop.flake.lib.provider.service;
       packageNames = providerService.haskellDeps;
       serviceSrc = providerService.src;
       ghc = pkgs.haskellPackages.ghcWithPackages (p: map (name: p.${name}) packageNames);
