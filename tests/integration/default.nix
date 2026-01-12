@@ -8,6 +8,7 @@
   // (import ./provider-plan.nix { inherit pkgs makeHostenv inputs; })
   // (import ./provider-full.nix { inherit pkgs makeHostenv inputs; })
   // { provider-nixos-system = import ./provider-nixos-system.nix { inherit pkgs inputs; }; }
+  // { devshells-eval = import ./devshells.nix { inherit pkgs makeHostenv inputs; }; }
   // (import ./socket-contract.nix { inherit pkgs envs; })
   // { hostenv-hostname = import ./hostname.nix { inherit pkgs makeHostenv; }; }
   // { public-env-json = import ./public-env-json.nix { inherit pkgs makeHostenv; }; }
