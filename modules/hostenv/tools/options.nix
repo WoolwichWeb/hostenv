@@ -47,7 +47,6 @@
         };
       });
 
-      devshellSpecType = lib.types.deferredModule;
     in
     {
       options.hostenv.cliPackage = lib.mkOption {
@@ -56,7 +55,7 @@
       };
 
       options.hostenv.devShells = lib.mkOption {
-        type = lib.types.attrsOf devshellSpecType;
+        type = lib.types.attrsOf lib.types.deferredModule;
         description = "Devshell specifications for hostenv project environments.";
       };
 
