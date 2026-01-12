@@ -5,9 +5,11 @@ let
   asserts = support.asserts;
 
   system = pkgs.stdenv.hostPlatform.system;
+  modules = inputs.import-tree ../../modules;
+  moduleList = if builtins.isList modules then modules else [ modules ];
   flake = inputs.flake-parts.lib.mkFlake { inherit inputs; } {
     systems = [ system ];
-    imports = [ (inputs.import-tree ../../modules) ];
+    imports = [ inputs.devshell.flakeModule ] ++ moduleList;
 
     project.enable = true;
 

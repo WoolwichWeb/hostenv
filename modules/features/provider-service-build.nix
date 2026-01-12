@@ -69,7 +69,7 @@ in
           meta.description = "Hostenv provider service (webhooks + admin UI) app";
         };
         hostenv.haskell.devPackages = packageNames;
-        hostenv.devShell.packages = [ servicePkg servicePkgDev ];
+        devshells.default.devshell.packages = [ servicePkg servicePkgDev ];
       };
     });
 }

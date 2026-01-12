@@ -7,6 +7,7 @@ let
   mkFlakeModule = cfg: { ... }:
     {
       imports = [
+        inputs.devshell.flakeModule
         (inputs.import-tree ./.)
       ];
       _file = builtins.toString ./exports.nix;

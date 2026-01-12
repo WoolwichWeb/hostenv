@@ -70,7 +70,7 @@ in
 
         packages = envPackages // { default = defaultEval.config.activatePackage; };
         apps = defaultEval.config.hostenv.apps;
-        devShells = defaultEval.config.hostenv.devShells;
+        devshells = defaultEval.config.hostenv.devShells;
       });
 
   # Lift perSystem outputs into flake outputs

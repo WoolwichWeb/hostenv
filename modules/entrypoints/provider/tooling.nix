@@ -115,24 +115,25 @@ in
           [ "haskell-language-server" ] ++ config.provider.haskellDevPackages
         );
 
-        devShells.default = lib.mkDefault (pkgs.mkShell {
-          buildInputs = if cfg.enable
-          then 
-            [
-              hostenvProviderCLI
-              hostenvProviderPlan
-              providerGhc
-              pkgs.sops
-              pkgs.age
-              pkgs.jq
-              pkgs.bind
-              pkgs.deploy-rs
-              pkgs.postgresql
-              pkgs.haskellPackages.cabal-install
-            ]
-          else
-            [ ];
-
-        });
+        devshells.default = {
+          devshell.packages = [
+            hostenvProviderCLI
+            hostenvProviderPlan
+            providerGhc
+            pkgs.sops
+            pkgs.age
+            pkgs.jq
+            pkgs.bind
+            pkgs.deploy-rs
+            pkgs.postgresql
+            pkgs.haskellPackages.cabal-install
+          ];
+          env = [
+            {
+              name = "DEVSHELL_NO_MOTD";
+              value = 1;
+            }
+          ];
+        };
       });
 }

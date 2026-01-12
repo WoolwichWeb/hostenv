@@ -5,6 +5,10 @@
     nixpkgs.url = "github:liammcdermott/nixpkgs/hotfix/fix-composer-flags";
     flake-parts.url = "github:hercules-ci/flake-parts";
     import-tree.url = "github:vic/import-tree";
+    devshell = {
+      url = "github:numtide/devshell";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     search = {
       url = "github:NuschtOS/search";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -27,6 +31,11 @@
   };
 
   outputs = inputs@{ flake-parts, ... }:
-    flake-parts.lib.mkFlake { inherit inputs; }
-      (inputs.import-tree ./modules);
+    let
+      modules = inputs.import-tree ./modules;
+      moduleList = if builtins.isList modules then modules else [ modules ];
+    in
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      imports = [ inputs.devshell.flakeModule ] ++ moduleList;
+    };
 }

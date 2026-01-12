@@ -72,9 +72,12 @@ let
 
   providerFlake = inputs.flake-parts.lib.mkFlake { inherit inputs; } {
     systems = [ system ];
-    imports = [
-      (inputs.import-tree ../../modules)
-    ];
+    imports =
+      let
+        modules = inputs.import-tree ../../modules;
+        moduleList = if builtins.isList modules then modules else [ modules ];
+      in
+      [ inputs.devshell.flakeModule ] ++ moduleList;
     provider.enable = true;
     project.enable = false;
     provider = {
