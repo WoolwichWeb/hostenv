@@ -289,6 +289,8 @@ runDnsGate mNode mTok mZone withDnsUpdate = do
             plan' <- foldlM (processEnv hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate) plan (KM.toList envs)
             let tmp = dest <> "/plan.json"
             BL.writeFile (T.unpack tmp) (A.encode plan')
+            pretty <- Sh.strict $ Sh.inproc "jq" ["-S", ".", tmp] Sh.empty
+            BL.writeFile (T.unpack tmp) (BL.fromStrict (TE.encodeUtf8 pretty))
             BLC.putStrLn "✅ dns-gate updated plan.json"
   where
     isJustPair (Just _) (Just _) = True

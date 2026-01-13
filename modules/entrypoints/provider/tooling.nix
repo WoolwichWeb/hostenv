@@ -37,10 +37,14 @@ in
         providerHsDeps = p: map (name: p.${name}) config.provider.haskellDevPackages;
         providerGhc = pkgs.haskellPackages.ghcWithPackages providerHsDeps;
         cliSrc = builtins.path { path = cliPath; name = "hostenv-provider-cli"; };
-        hostenvProviderCLI = pkgs.writeShellScriptBin "hostenv-provider" ''
-          set -euo pipefail
-          exec ${providerGhc}/bin/runghc ${cliSrc} "$@"
-        '';
+        hostenvProviderCLI = pkgs.writeShellApplication {
+          name = "hostenv-provider";
+          runtimeInputs = [ pkgs.jq ];
+          text = ''
+            set -euo pipefail
+            exec ${providerGhc}/bin/runghc ${cliSrc} "$@"
+          '';
+        };
 
         providerGenerator =
           if cfg.enable then
