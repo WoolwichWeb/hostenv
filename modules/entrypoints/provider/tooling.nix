@@ -1,9 +1,8 @@
 { inputs, lib, config, ... }:
 let
   flakeParts = inputs.flake-parts.lib;
-  cfgTop = config;
   cfg = config.provider;
-  hasProviderConfig = config.provider.enable;
+  providerPlan = config.flake.lib.provider.plan;
 
   hostenvInput =
     if inputs ? hostenv then inputs.hostenv
@@ -43,29 +42,30 @@ in
           exec ${providerGhc}/bin/runghc ${cliSrc} "$@"
         '';
 
-        providerPlan = cfgTop.flake.lib.provider.plan;
         providerGenerator =
-          if !hasProviderConfig then null else
-          providerPlan {
-            inputs = inputs // { hostenv = hostenvInput; };
-            inherit system;
-            lib = pkgs.lib;
-            pkgs = pkgs;
-            letsEncrypt = cfg.letsEncrypt;
-            deployPublicKeys = cfg.deployPublicKeys;
-            hostenvHostname = cfg.hostenvHostname;
-            nodeFor = cfg.nodeFor;
-            nodeSystems = cfg.nodeSystems;
-            nodeModules = cfg.nodeModules;
-            statePath = cfg.statePath;
-            planPath = cfg.planPath;
-            cloudflare = cfg.cloudflare;
-            planSource = cfg.planSource;
-            generatedFlake = cfg.generatedFlake;
-          };
+          if cfg.enable then
+            providerPlan {
+              inputs = inputs // { hostenv = hostenvInput; };
+              inherit system;
+              lib = pkgs.lib;
+              pkgs = pkgs;
+              letsEncrypt = cfg.letsEncrypt;
+              deployPublicKeys = cfg.deployPublicKeys;
+              hostenvHostname = cfg.hostenvHostname;
+              nodeFor = cfg.nodeFor;
+              nodeSystems = cfg.nodeSystems;
+              nodeModules = cfg.nodeModules;
+              statePath = cfg.statePath;
+              planPath = cfg.planPath;
+              cloudflare = cfg.cloudflare;
+              planSource = cfg.planSource;
+              generatedFlake = cfg.generatedFlake;
+            }
+          else
+            null;
 
         hostenvProviderPlan =
-          if hasProviderConfig then
+          if cfg.enable then
             pkgs.writeShellScriptBin "hostenv-provider-plan" ''
               set -euo pipefail
               dest=generated
