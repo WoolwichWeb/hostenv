@@ -83,7 +83,7 @@ in
               #   and environment metadata. This file is more ephemeral than
               #   the other two, and does not need to be committed to git (but
               #   still needs to be git add-ed for Nix flakes to see it).)
-              cat ${providerGenerator.plan} > "$dest/plan.json"
+              ${pkgs.jq}/bin/jq -S '.' ${providerGenerator.plan} > "$dest/plan.json"
 
               chmod ug+w "$dest"/{state.json,plan.json,flake.nix}
               (cd "$dest" && nix --extra-experimental-features "nix-command flakes" flake update)
