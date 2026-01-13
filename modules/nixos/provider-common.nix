@@ -42,7 +42,7 @@
           settings.KbdInteractiveAuthentication = lib.mkDefault false;
         };
 
-        security.sudo.extraRules = lib.mkDefault [{
+        security.sudo.extraRules = [{
           groups = [ "wheel" ];
           commands = [{
             command = "ALL";
