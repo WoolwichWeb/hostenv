@@ -163,6 +163,7 @@ let
           type = types.nullOr types.str;
           description = "URL of backups hosting service (without the trailing slash).";
           example = "s3:https://s3.amazonaws.com";
+          apply = v: if v == null then null else lib.removeSuffix "/" v;
           default = null;
         };
         projectNameHash = lib.mkOption {
