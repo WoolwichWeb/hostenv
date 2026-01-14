@@ -123,7 +123,34 @@ let
     && builtins.hasAttr "${envName}/backups_env" systemEval.config.sops.secrets
     && !(builtins.hasAttr "deploy/backups_secret" systemEval.config.sops.secrets)
     && !(builtins.hasAttr "deploy/backups_env" systemEval.config.sops.secrets);
+  wheelGroupExists = systemEval.config.users.groups ? wheel;
+  wheelPasswordless =
+    let
+      rules = systemEval.config.security.sudo.extraRules or [ ];
+      hasWheelGroup = rule: builtins.any (g: g == "wheel") (rule.groups or [ ]);
+      cmdHasNopasswd = cmd: builtins.any (opt: opt == "NOPASSWD") (cmd.options or [ ]);
+      ruleHasNopasswd = rule: builtins.any cmdHasNopasswd (rule.commands or [ ]);
+      wheelNeedsPassword = systemEval.config.security.sudo.wheelNeedsPassword or true;
+    in
+    (!wheelNeedsPassword) || builtins.any (rule: hasWheelGroup rule && ruleHasNopasswd rule) rules;
+  sessionVars = systemEval.config.environment.sessionVariables or { };
+  xdgVarsOk =
+    (sessionVars.XDG_CACHE_HOME or null) == "$HOME/.cache"
+    && (sessionVars.XDG_CONFIG_HOME or null) == "$HOME/.config"
+    && (sessionVars.XDG_DATA_HOME or null) == "$HOME/.local/share"
+    && (sessionVars.XDG_STATE_HOME or null) == "$HOME/.local/state";
 in
-asserts.assertTrue "provider-nixos-system-eval"
-  (nginxOk && vhostOk && deployKeysOk && secretsOk && ! systemMismatch.success)
-  "provider nixosSystem should enforce env key/userName alignment"
+{
+  provider-nixos-system-eval =
+    asserts.assertTrue "provider-nixos-system-eval"
+      (nginxOk && vhostOk && deployKeysOk && secretsOk && ! systemMismatch.success)
+      "provider nixosSystem should enforce env key/userName alignment";
+  provider-nixos-system-wheel-sudo =
+    asserts.assertTrue "provider-nixos-system-wheel-sudo"
+      (wheelGroupExists && wheelPasswordless)
+      "provider nixosSystem should keep wheel group and passwordless sudo";
+  provider-nixos-system-session-vars =
+    asserts.assertTrue "provider-nixos-system-session-vars"
+      xdgVarsOk
+      "provider nixosSystem should set XDG session variables";
+}
