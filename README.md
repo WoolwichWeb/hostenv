@@ -2,7 +2,11 @@
 
 *Wow, you found hostenv before it was cool.*
 
-hostenv isn't quite ready for general use yet, but we're getting close! In the meantime, feel free to explore the codebase, browse the Nix modules, or open issues and merge requests. Contributions and curiosity are both welcome.
+hostenv isn't quite ready for general use yet, but we're getting close! In
+the meantime, feel free to explore the codebase, browse the Nix modules, or
+open issues and merge requests.
+
+Contributions and curiosity are both welcome.
 
 ---
 
@@ -10,9 +14,12 @@ hostenv isn't quite ready for general use yet, but we're getting close! In the m
 
 **hostenv** is a Platform as a Service (PaaS) that belongs to all of us.
 
-It lets you define your hosting environment declaratively, using a JSON-like configuration language (Nix). Instead of writing deployment scripts, you describe what you want and hostenv builds the environment for you.
+It lets you define your hosting environment declaratively, using a JSON-like
+configuration language (Nix). Instead of writing deployment scripts, you
+describe what you want and hostenv builds the environment for you.
 
-Here's an example hosting environment for the [Drupal](https://www.drupal.org) CMS:
+Here's an example hosting environment for the
+[Drupal](https://www.drupal.org) CMS:
 
 ```nix
 # hostenv.nix
@@ -46,7 +53,8 @@ Here's an example hosting environment for the [Drupal](https://www.drupal.org) C
 }
 ```
 
-And here's the same idea for a tiny PHP app (no Drupal) using the built‑in `php-app` module:
+And here's the same idea for a simple PHP application using the built‑in
+`php-app` module:
 
 ```nix
 { pkgs, config, ... }: {
@@ -63,69 +71,169 @@ And here's the same idea for a tiny PHP app (no Drupal) using the built‑in `ph
 
 ---
 
-## Repository Map
+## Getting Started (for projects)
 
-- `modules/` – dendritic flake-parts modules, auto-imported:
-  - `flake/` – flake-parts glue (systems, devshells, tests, templates, docs).
-  - `lib/` – helper functions exported under `flake.lib.*`.
-  - `hostenv.nix` – hostenv core + env registry + eval (makeHostenv) + project tools.
-  - `features/` – env-level services (nginx, php-fpm, drupal, restic, etc.) plus per-system tooling (CLI, provider service build).
-  - `nixos/` – host-level modules (front-door nginx, users/slices, backups, monitoring).
-  - `entrypoints/` – project/provider outputs (gated by enable flags).
-  - `_impl/` – non-module helpers and source trees (ignored by import-tree).
-- `provider/` – provider-facing tooling: plan/state generator, CLI, node flake wiring. It now consumes the dendritic modules instead of carrying host glue.
-- `template/project/.hostenv/` – project template used by `nix flake init --template gitlab:woolwichweb/hostenv`.
-- `template/provider/` – provider template for building a hostenv hosting flake.
-- `tests/` – flake checks and fixtures (provider plan regressions, Drupal).
-- `docs/` – design notes, dendritic structure, provider quickstart, review checklists.
+**Audience:** developers setting up hosting for a project.
 
-## Key Workflows
+1. **Install Nix**  
+   Follow the [Nix installation guide](https://nixos.org/download/#download-nix).
 
-- **Add an environment**: edit your project’s `.hostenv/hostenv.nix`, add an entry under `environments.<name> { enable = true; type = ...; virtualHosts = { ... }; }`. Run `nix flake check` to ensure feature modules (nginx, php-fpm, backups) pick it up. Only one environment may be `type = "production"` (enforced).
-- **Remove an environment**: delete or set `enable = false` in `.hostenv/hostenv.nix`; regenerate plan/state (`hostenv-provider plan`) and deploy.
-- **Add a host (provider)**:
-  - Create `nodes/<name>/hardware-configuration.nix` (copy from the machine) and a minimal `nodes/<name>/configuration.nix`.
-  - Map it in `provider.nodeSystems` and, if needed, in `provider.nodeFor` to steer env types to that node.
-  - Regenerate plan/state/flake: `nix run .#hostenv-provider-plan` (writes to `generated/`).
-  - Deploy using your tool (e.g. deploy-rs) against `generated/flake.nix`, targeting that node.
-  - Update secrets: on the host `ssh-keygen -y -f /etc/ssh/ssh_host_ed25519_key | ssh-to-age`, add the key to `.sops.yaml`/`secrets/secrets.yaml`, then `sops updatekeys secrets/secrets.yaml` locally.
-- **Add a feature module**: add a flake-parts module under `modules/` (e.g. `modules/features/<aspect>.nix` for env-level services or `modules/nixos/<aspect>.nix` for host-level concerns) that exports `flake.modules.hostenv.<aspect>` or `flake.modules.nixos.<aspect>`. Files under `modules/` are auto-imported; no manual import lists. Add a test in `tests/`.
-- **Run the hostenv CLI**: from a project’s `.hostenv/` directory run `nix run .#hostenv` to use the project-aware CLI (environments come from your `hostenv.nix`). From this repo you can run `nix run .#hostenv` to get a bundled CLI for demos/tests.
-- **Dev shell**: `nix develop` (repo root) drops you into a shell with provider + CLI tooling; inside a project’s `.hostenv/` you can also use `nix develop` for project-scoped tools.
-- **Docs preview**: `nix run .#serve-docs` serves the generated docs locally.
+2. **Initialise your hostenv project**  
+   Inside your project directory, run:
 
-### Default environment selection
+   ```bash
+   nix --extra-experimental-features "nix-command flakes" flake init --template gitlab:woolwichweb/hostenv#project
+   ```
 
-- If you do **not** set `defaultEnvironment`, hostenv will pick the first **enabled** environment whose `type = "production"`. Only one production env is allowed (asserted).
-- If no production environment is enabled, it falls back to `"main"`.
-- To avoid surprises, set `defaultEnvironment = "<env-name>";` explicitly in your project’s `.hostenv/hostenv.nix` when you want a different default (e.g. `dev`, `staging`).
+3. **Install and configure direnv**  
+   [Install direnv](https://direnv.net/docs/installation.html) and set up the shell hook.  
+   To setup the Shell hook for **Bash**, you would run:
 
-## How environments surface on NixOS
+   ```bash
+   echo 'eval "$(direnv hook bash)"' >> ~/.bashrc
+   ```
 
-- Every enabled environment becomes a Unix user and slice, named by `hostenv.userName` (derived from organisation/project/environment). The provider assigns a numeric UID stored as `environments.<name>.uid` in the plan/state JSON.
-- Host‑level glue (`modules/nixos/`) creates runtime dirs under `/run/hostenv/<env>/`, tmpfiles rules, and system nginx vhosts that proxy to the per‑env user‑level nginx/fastcgi sockets.
-- User‑level services run in that user’s systemd session (packaged by `config.hostenv.activatePackage`) and expose sockets in `/run/hostenv/nginx/<env>/` for the host nginx front‑door.
-- Feature modules such as backups, monitoring, and php-fpm read the same `config.hostenv.environments` data and inject per‑env units or credentials where required.
+   (For other shells, see the [direnv hook documentation](https://direnv.net/docs/hook.html).)
 
-## Getting Started (projects)
+4. **Configure hostenv**  
+   Edit `.hostenv/hostenv.nix` and set options for your project.
 
-1. Install Nix.  
-2. In your project root, apply the **project** template (creates a `.hostenv/` directory):  
-   `nix flake init -t gitlab:woolwichweb/hostenv`  
-3. Install/configure direnv, run `direnv allow` inside `.hostenv/`.  
-4. Configure environments in `.hostenv/hostenv.nix`.  
-5. Ensure your project flake exports `outputs.lib.hostenv` (the template now does). The provider relies on `lib.hostenv.<system>.environments` to discover environments; if it is missing, plan generation will fail fast with a clear error.
+5. **Make hostenv visible to Nix**  
+   Since Nix only includes tracked files, run:
 
-## Getting Started (provider)
+   ```bash
+   git add .hostenv
+   ```
 
-- Start from the **provider** template (in a fresh repo or dir):  
-  `nix flake init -t gitlab:woolwichweb/hostenv#provider`
+6. **Allow direnv to build your environment**
 
-- Create NixOS node configs under `nodes/<node>/configuration.nix` (plus hardware config); set `system.stateVersion`.
-- Generate plan/state/flake: `nix run .#hostenv-provider-plan` (writes to `generated/`).
-- Deploy using your preferred tool (e.g. deploy-rs) against the generated flake.
-- Client project inputs should point at the `.hostenv` flake (e.g. `dir=.hostenv`), so `hostenv.nix` is at the flake root.
+   ```bash
+   cd .hostenv
+   direnv allow
+   ```
+
+7. **Wait for hostenv to build bespoke tooling**  
+   Hostenv will prepare an environment and CLI tailored to your project.
+
+8. **Run hostenv commands**  
+   From your project directory, run:
+
+   ```bash
+   hostenv
+   ```
+
+   to see available commands.
+
+9. **Enjoy automatic integration**  
+   Once deployed, tools such as `drush` and `mysql` will *JustWork™* with the
+   remote environment; no need to manage SSH or tunnels manually, just
+   `cd .hostenv` then `drush`.
+
+## Getting Started (for hosting providers)
+
+**Audience:** People starting their own hostenv hosting provider.
+
+**Important note:** This section is incomplete and is in flux, since we're
+still working on improvements to Provider support.
+
+1. **Install Nix**  
+   Follow the [Nix installation guide](https://nixos.org/download/#download-nix).
+
+2. **Initialise your hostenv project**  
+   Inside your project directory, run:
+
+   ```bash
+   nix --extra-experimental-features "nix-command flakes" flake init --template gitlab:woolwichweb/hostenv#provider
+   ```
+
+3. **Create NixOS node configuration**
+   Under `nodes/<node>/configuration.nix` add your servers' configuration (plus hardware config).
+
+4. **Make flake inputs for projects**
+   Add flake inputs for each project you're hosting:
+
+   ```nix
+   inputs = {
+    # ... nixpkgs, flake-parts, hostenv, etc. from the template ...
+    org__project = {
+      url = "gitlab:org/project?dir=.hostenv&ref=main";
+    };
+   };
+   ```
+
+   Notes:
+
+   - The `org` and `project` can be whatever you choose, however, these
+     directly affect the URL generated by hostenv for each environment.
+   - See the template flake's inputs (generated in step #2) for an example.
+   - The input's `url` points to the git repo containing the project's code
+     and `.hostenv/flake.nix`.
+   - It may be necessary to get an access token for your client's project
+     repo. See the Nix documentation for instructions on using gitlab/github
+     tokens for access to private repositories.
+   - Hostenv uses a single branch as the canonical list of environments and
+     their SSH keys. It's possible to add environments in other branches'
+     `hostenv.nix`, but these will be ignored until they're merged into that
+     canonical branch. This branch is set using `ref=` in the project input.
+     For instance, in the above example the canonical branch for `org__project`
+     is `main`.
+
+5. **Generate plan/state/flake**
+
+   ```bash
+   nix run .#hostenv-provider-plan
+   ```
+
+   This writes: `generated/{flake.nix,plan.json,state.json}`.
+
+   ```bash
+   nix run .#hostenv-provider -- dns-gate
+   ```
+
+   This updates `plan.json` so Let's Encrypt is disabled for any environments
+   where the DNS does not point to the correct server. This prevents
+   entire deployments failing when ACME systemd units cannot start.
+
+   @TODO: `nix run .#hostenv-provider` is capable of updating Cloudflare
+   DNS records automatically, which should be documented here.
+
+6. **Deploy**
+
+  Deploy using `deploy-rs` and `generated/flake.nix`:
+
+  ```bash
+  nix run github:serokell/deploy-rs -- --debug-logs generated/#<node>
+  ```
+
+  A concrete example:
+
+  ```bash
+  nix run github:serokell/deploy-rs -- --debug-logs generated/#backend01
+  ```
+
+  NixOS-anywhere also works:
+
+  ```bash
+  nix run github:numtide/nixos-anywhere -- --flake generated#<node> --target-host root@<node>.hosting.example.com
+  ```
+
+  A concrete nixos-anywhere example:
+
+  ```bash
+  nix run github:numtide/nixos-anywhere -- --flake /home/amir/hosting/generated#backend01 --target-host root@backend01.hostenv.sh
+  ```
+
+  Because hostenv is just Nix (for the most part), deploying using your
+  favourite tool should work.
+
+---
 
 ## Contributing
 
-PRs, issues, and questions welcome. Focus areas that help most: tests for new feature modules, provider UX, and documentation clarity. Thank you!
+We don't have formal contribution guidelines yet, but we welcome all kinds of
+help. Whether it's a merge request, bug report, documentation improvement, or
+a question about how something works.
+
+If you see something that could be better, feel free to open an issue or
+submit an MR (merge request). We'll work things out together as the
+project grows.

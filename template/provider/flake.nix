@@ -49,20 +49,33 @@
 
       provider = {
         hostenvHostname = "hosting.example.com";
-        deployPublicKeys = [ "ssh-ed25519 AAAA..." ]; # replace me
+        deployPublicKeys = [ "ssh-ed25519 AAAA..." ];
         nodeSystems = { default = "x86_64-linux"; };
-        nodeFor = { default = "node-a"; production = "node-a"; testing = "node-a"; development = "node-a"; };
-        # nodeModules = [ "nodes/common.nix" ]; # paths are relative to the provider root
+        nodeFor = { production = "node-a"; testing = "node-a"; development = "node-a"; };
+
+        # Add NixOS system-level configuration that's common to all servers here:
+        # nodeModules = [ "nodes/common.nix" ];
         planSource = "eval";
+
+        # Hostenv generates a new flake in `generated/flake.nix`, which
+        # includes each project environment as a separate Flake input. These
+        # options allow providers to tweak the generated flake's inputs:
         # generatedFlake = {
         #   inputs = {
         #     # extraInput = { url = "github:example/extra"; };
+        #     # disko = {
+        #     #   url = "github:nix-community/disko";
+        #     #   inputs.nixpkgs.follows = "nixpkgs";
+        #     # };
         #   };
         #   envInputs = {
         #     # follows = { nixpkgs = "parent/nixpkgs"; };
         #     # extra = env: { inputs = { sops-nix = { follows = "parent/sops-nix"; }; }; };
         #   };
         # };
+
+        letsEncrypt.adminEmail = "admin@hosting.example.com";
+        letsEncrypt.acceptTerms = true;
       };
     };
 }
