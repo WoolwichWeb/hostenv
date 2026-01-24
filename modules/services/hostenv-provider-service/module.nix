@@ -7,6 +7,7 @@ let
   haskellDeps = [
     "aeson"
     "bytestring"
+    "containers"
     "cookie"
     "cryptonite"
     "http-client"

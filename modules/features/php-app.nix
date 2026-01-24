@@ -4,6 +4,7 @@
     { lib, config, pkgs, ... }:
     let
       cfg = config.services.php-app;
+      migrateBackupName = "php-app-migrate";
     in
     {
       options.services.php-app = {
@@ -50,6 +51,16 @@
       };
 
       config = lib.mkIf cfg.enable {
+        assertions =
+          (lib.optional cfg.backups.enable {
+            assertion = config.services.mysql.backups.enable;
+            message = "services.php-app.backups.enable requires services.mysql.backups.enable = true";
+          })
+          ++ (lib.optional (cfg.backups.enable && builtins.hasAttr migrateBackupName config.services.restic.backups) {
+            assertion = lib.elem migrateBackupName (config.services.restic.backups.${migrateBackupName}.tags or [ ]);
+            message = "services.restic.backups.php-app-migrate.tags must include \"php-app-migrate\" so migrations can locate snapshots";
+          });
+
         services.nginx.virtualHosts = {
           "${cfg.codebase.name}" = lib.mkDefault
             {
@@ -214,27 +225,134 @@
 
         };
 
+        services.mysql.backups = lib.mkIf cfg.backups.enable {
+          enable = lib.mkDefault true;
+        };
+
         services.restic.backups = lib.mkIf cfg.backups.enable {
           php-app = {
-            backupPrepareCommand = ''
-              [ -z "$XDG_STATE_HOME" ] && exit 1
-              mkdir -p "$XDG_STATE_HOME/mariabackup"
-              [ -d "$XDG_STATE_HOME/mariabackup/full" ] && rm -r "$XDG_STATE_HOME/mariabackup/full"
-    
-              ${pkgs.mariadb}/bin/mariabackup \
-                -S "${config.hostenv.runtimeDir}/mysql.sock" \
-                --backup \
-                --target-dir=$XDG_STATE_HOME/mariabackup/full
-            '';
+            backupPrepareCommand = "${config.services.mysql.backups.scripts.full}/bin/mysql-backup-full";
             paths = [
-              "/home/${config.hostenv.userName}/.local/state/mariabackup"
+              "${config.services.mysql.backups.backupDir}"
             ];
             passwordFile = config.hostenv.backupsSecretFile;
             environmentFile = cfg.backups.restic.environmentFile;
             initialize = true;
             wantsUnits = [ "mysql.service" ];
           };
+          "${migrateBackupName}" = {
+            timerConfig = null;
+            backupPrepareCommand = "${config.services.mysql.backups.scripts.incremental}/bin/mysql-backup-incremental";
+            paths = [
+              "${config.services.mysql.backups.backupDir}"
+            ];
+            passwordFile = config.hostenv.backupsSecretFile;
+            environmentFile = cfg.backups.restic.environmentFile;
+            initialize = true;
+            createWrapper = lib.mkForce true;
+            wantsUnits = [ "mysql.service" ];
+            tags = [ migrateBackupName "migrate" ];
+          };
         };
+
+        activate = lib.optionalString cfg.backups.enable ''
+          # HOSTENV_RESTORE_PHP_APP_BEGIN
+          restore_marker_dir="${config.hostenv.stateDir}/hostenv/restored"
+          restore_marker="$restore_marker_dir/php-app"
+          restore_plan="${config.hostenv.runtimeDir}/restore/plan.json"
+          db_initialized=0
+          restore_key="${migrateBackupName}"
+          mysql_runtime_dir="${config.services.mysql.runtimeDir}"
+
+          export XDG_RUNTIME_DIR="''${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+          if [ -f "$restore_marker" ]; then
+            db_initialized=1
+          else
+            mysql_sock="$mysql_runtime_dir/mysql.sock"
+            if [ ! -S "$mysql_sock" ]; then
+              ${config.systemd.package}/bin/systemctl --user start mysql.service || true
+              for _ in $(seq 1 30); do
+                [ -S "$mysql_sock" ] && break
+                sleep 1
+              done
+            fi
+
+            if [ -S "$mysql_sock" ]; then
+              table_count="$(${config.services.mysql.package}/bin/mysql -N -u ${config.hostenv.userName} \
+                --socket="$mysql_sock" \
+                -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='app';" 2>/dev/null || echo 0)"
+              if [ "''${table_count:-0}" -gt 0 ]; then
+                db_initialized=1
+              fi
+            fi
+          fi
+
+          if [ "$db_initialized" -eq 0 ] && [ ! -f "$restore_marker" ]; then
+            if [ ! -f "$restore_plan" ]; then
+              echo "hostenv: restore plan not found; skipping PHP app restore"
+            else
+              echo "hostenv: attempting PHP app restore"
+              restore_snapshot="$(${pkgs.jq}/bin/jq -r '.snapshots["'"$restore_key"'"] // empty' "$restore_plan")"
+              if [ -z "$restore_snapshot" ]; then
+                echo "hostenv: restore plan missing snapshot id for $restore_key" >&2
+                exit 1
+              fi
+
+              restore_tmp="$(mktemp -d)"
+              restic_migrate="${config.services.restic.wrapperScripts.${migrateBackupName}}/bin/restic-${migrateBackupName}"
+
+              ${config.systemd.package}/bin/systemctl --user stop nginx.service || true
+              ${config.systemd.package}/bin/systemctl --user stop phpfpm.target || true
+              ${config.systemd.package}/bin/systemctl --user stop mysql.service || true
+
+              if ! "$restic_migrate" restore "$restore_snapshot" --target "$restore_tmp" --no-owner; then
+                echo "hostenv: restic restore failed" >&2
+                rm -rf "$restore_tmp"
+                exit 1
+              fi
+
+              restore_state_dir="$restore_tmp/${lib.removePrefix "/" config.services.mysql.backups.backupDir}"
+              if ! ${config.services.mysql.backups.scripts.restore}/bin/mysql-backup-restore \
+                "$restore_state_dir" \
+                "${config.services.mysql.dataDir}"; then
+                echo "hostenv: mysql restore failed" >&2
+                rm -rf "$restore_tmp"
+                exit 1
+              fi
+
+              ${config.systemd.package}/bin/systemctl --user start mysql.service || true
+              for _ in $(seq 1 30); do
+                [ -S "$mysql_runtime_dir/mysql.sock" ] && break
+                sleep 1
+              done
+              if [ ! -S "$mysql_runtime_dir/mysql.sock" ]; then
+                echo "hostenv: mysql did not start after restore" >&2
+                rm -rf "$restore_tmp"
+                exit 1
+              fi
+              ${config.systemd.package}/bin/systemctl --user start phpfpm.target || true
+              ${config.systemd.package}/bin/systemctl --user start nginx.service || true
+
+              mkdir -p "$restore_marker_dir"
+              touch "$restore_marker"
+              rm -rf "$restore_tmp"
+            fi
+          fi
+          if [ -f "$restore_plan" ]; then
+            plan_tmp="$(mktemp)"
+            if ${pkgs.jq}/bin/jq -e '(.snapshots // {}) | has("'"$restore_key"'")' "$restore_plan" >/dev/null; then
+              ${pkgs.jq}/bin/jq 'del(.snapshots["'"$restore_key"'"])' "$restore_plan" > "$plan_tmp"
+              if ${pkgs.jq}/bin/jq -e '(.snapshots // {}) | length == 0' "$plan_tmp" >/dev/null; then
+                rm -f "$restore_plan"
+              else
+                mv "$plan_tmp" "$restore_plan"
+              fi
+            fi
+            rm -f "$plan_tmp"
+          fi
+          # HOSTENV_RESTORE_PHP_APP_END
+        '';
       };
     }
   ;

@@ -61,10 +61,13 @@ let
       env = service.environment or { };
       repoOk = (env.RESTIC_REPOSITORY or "") == "s3:https://example.invalid";
       repoFileNull = (env.RESTIC_REPOSITORY_FILE or null) == null;
+      wrapperOk = eval.config.services.restic.wrapperScripts ? ok;
+      execStart = service.serviceConfig.ExecStart or [ ];
+      hasTag = lib.any (cmd: lib.strings.hasInfix "--tag ok" cmd) execStart;
     in
     asserts.assertTrue "restic-repo-envfile-ok"
-      (assertionsOk && repoOk && repoFileNull)
-      "restic repo+envfile should pass assertions and set repository/env correctly";
+      (assertionsOk && repoOk && repoFileNull && wrapperOk && hasTag)
+      "restic repo+envfile should pass assertions, set repository/env correctly, and tag snapshots by default";
 
 in
 {

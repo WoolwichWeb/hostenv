@@ -8,13 +8,24 @@ build-type: Simple
 executable hostenv-provider
   main-is: cli.hs
   hs-source-dirs: .
-  default-language: Haskell2010
   build-depends:
     base >=4.14 && <5,
     Cabal,
     aeson,
     bytestring,
     optparse-applicative,
+    process,
     text,
     text-conversions,
-    turtle
+    turtle,
+    scientific
+  default-language:
+    GHC2021
+  default-extensions:
+    BlockArguments
+    DuplicateRecordFields
+    LambdaCase
+    NoFieldSelectors
+    OverloadedLabels
+    OverloadedRecordDot
+    OverloadedStrings

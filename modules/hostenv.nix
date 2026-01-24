@@ -122,6 +122,11 @@ let
           description = "Server hostname for this project and environment, as a fully qualified domain name (FQDN).";
           example = "hostenv-main-7c25553.hostenv.sh";
         };
+        runtimeRoot = lib.mkOption {
+          type = types.str;
+          description = "Root directory for hostenv runtime sockets and state.";
+          default = "/run/hostenv";
+        };
         root = lib.mkOption {
           type = types.oneOf [ types.str types.path ];
           description = "The application's root directory.";
@@ -129,12 +134,12 @@ let
         runtimeDir = lib.mkOption {
           type = types.str;
           description = "Path (on server) where hostenv sockets and pid files may be found.";
-          example = lib.literalExpression "/run/hostenv/user/\${config.hostenv.userName}";
+          example = lib.literalExpression "${config.runtimeRoot}/user/\${config.hostenv.userName}";
         };
         upstreamRuntimeDir = lib.mkOption {
           type = types.str;
           description = "Path (on server) where upstream reverse proxy socket may be found.";
-          example = lib.literalExpression "/run/hostenv/nginx/\${config.hostenv.userName}";
+          example = lib.literalExpression "${config.runtimeRoot}/nginx/\${config.hostenv.userName}";
         };
         dataDir = lib.mkOption {
           type = types.str;
@@ -214,8 +219,8 @@ let
           # is stripped of some characters that are valid in git branch names,
           # '/' and '--' for example.
           gitRef = lib.mkDefault (config.environmentName or "main");
-          runtimeDir = lib.mkForce "/run/hostenv/user/${config.userName}";
-          upstreamRuntimeDir = lib.mkForce "/run/hostenv/nginx/${config.userName}";
+          runtimeDir = lib.mkForce "${config.runtimeRoot}/user/${config.userName}";
+          upstreamRuntimeDir = lib.mkForce "${config.runtimeRoot}/nginx/${config.userName}";
           dataDir = lib.mkForce "/home/${config.userName}/.local/share";
           stateDir = lib.mkForce "/home/${config.userName}/.local/state";
           cacheDir = lib.mkForce "/home/${config.userName}/.cache";

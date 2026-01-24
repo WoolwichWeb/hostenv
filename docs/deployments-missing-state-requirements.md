@@ -130,7 +130,7 @@ services.mysql.backups = {
   enable = mkEnableOption "MySQL/MariaDB physical backups (mariabackup/xtrabackup)";
 
   # Keep compatible defaults:
-  stateDir = mkOption { type = types.path; default = config.hostenv.stateDir + "/mariabackup"; };
+  backupDir = mkOption { type = types.path; default = config.hostenv.stateDir + "/mariabackup"; };
 
   fullDir = mkOption { type = types.path; readOnly = true; };
   incrementalDir = mkOption { type = types.path; readOnly = true; };
@@ -153,7 +153,7 @@ services.mysql.backups = {
   };
 
   # Concurrency guard:
-  lockFile = mkOption { type = types.path; default = config.hostenv.stateDir + "/mariabackup/.lock"; };
+  lockFile = mkOption { type = types.path; default = config.hostenv.runtimeDir + "/mariabackup.lock"; };
 };
 ```
 
@@ -162,7 +162,7 @@ services.mysql.backups = {
 * `scripts.full`:
 
   * Acquire lock (e.g., `flock` on lockFile; add `util-linux` to runtime inputs).
-  * `rm -rf $stateDir/full $stateDir/incremental` (important: drop incrementals because base changes).
+  * `rm -rf $backupDir/full $backupDir/incremental` (important: drop incrementals because base changes).
   * Run `${tool} --backup -S ${socket} --target-dir=$fullDir`
 * `scripts.incremental`:
 
@@ -347,10 +347,10 @@ Add a “migration metadata” handoff:
        * run each `restic-backups-*-migrate.service` and capture the snapshot ID
 
          * easiest capture method: don’t go through systemd; run the wrapper script directly so it's possible to parse “snapshot <id> saved”.
-       * write a file containing the snapshot IDs (JSON) onto the **target host** in a known location owned by the env user, e.g.:
+      * write a file containing the snapshot IDs (JSON) onto the **target host** in a known location owned by the env user, e.g.:
 
-         * `~/.local/state/hostenv/migrations/<timestamp>.json`
-         * or `~/.local/state/hostenv/restore-plan.json` (overwrite)
+        * `${config.hostenv.runtimeDir}/restore/plan.json` (per-user, 0700 dir / 0600 file)
+        * or `/run/hostenv/user/<env>/restore/plan.json` (concrete default)
 
 3. **Activation restore uses exact IDs if present**
 

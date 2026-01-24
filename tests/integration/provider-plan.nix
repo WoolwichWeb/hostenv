@@ -269,7 +269,7 @@ let
   flakeNoState = evalRun.flake;
   planWithState = (mkPlan {
     state = {
-      ${user1} = { uid = 2001; virtualHosts = [ "env1.example" "alias.example" ]; };
+      ${user1} = { uid = 2001; node = "node1"; virtualHosts = [ "env1.example" "alias.example" ]; };
     };
   }).plan;
   planDisk =
@@ -621,6 +621,14 @@ in
     in asserts.assertTrue "provider-plan-alias-preserved"
       (plan.environments.${user1}.virtualHosts ? "alias.example")
       "aliases from state should be preserved";
+
+  provider-plan-previous-node =
+    let
+      plan = lib.importJSON planWithState;
+      prev = plan.environments.${user1}.previousNode or null;
+    in asserts.assertTrue "provider-plan-previous-node"
+      (prev == "node1")
+      "previousNode should be carried over from state when present";
 
   provider-plan-flake-inputs =
     let flakeText = builtins.readFile flakeNoState;

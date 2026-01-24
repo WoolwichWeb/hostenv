@@ -28,6 +28,7 @@ main = do
   testGitHubSig
   testGitLabToken
   testPlanParsing
+  testNodeOrderWithMigrations
   testProjectHashSelection
   testCommandSequence
   testTemplateRender
@@ -66,6 +67,16 @@ testPlanParsing = do
         Left err -> assert False ("nodesForProject failed: " <> show err)
         Right nodes -> assert (nodes == ["node-a", "node-b"]) "plan parsing should return matching nodes"
 
+testNodeOrderWithMigrations :: IO ()
+testNodeOrderWithMigrations = do
+  let planJson =
+        BLC.pack
+          "{\"environments\":{\"env-a\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"projectNameHash\":\"hash-main\"},\"node\":\"node-b\",\"previousNode\":\"node-a\"},\"env-b\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"projectNameHash\":\"hash-dev\"},\"node\":\"node-a\"}}}"
+  case nodesForProject "acme" "site" planJson of
+    Left err -> assert False ("nodesForProject failed: " <> show err)
+    Right nodes ->
+      assert (nodes == ["node-b", "node-a"]) "migration ordering should deploy destination before source"
+
 
 testCommandSequence :: IO ()
 testCommandSequence = do
@@ -85,9 +96,9 @@ testCommandSequence = do
       let expected =
             [ CommandSpec "nix" ["flake", "update", "acme__site"] "/tmp/provider"
             , CommandSpec "nix" ["run", ".#hostenv-provider-plan"] "/tmp/provider"
-            , CommandSpec "./provider/cli.hs" ["dns-gate"] "/tmp/provider"
-            , CommandSpec "./provider/cli.hs" ["deploy", "--node", "node-a"] "/tmp/provider"
-            , CommandSpec "./provider/cli.hs" ["deploy", "--node", "node-b"] "/tmp/provider"
+            , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "dns-gate"] "/tmp/provider"
+            , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "deploy", "--node", "node-a"] "/tmp/provider"
+            , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "deploy", "--node", "node-b"] "/tmp/provider"
             ]
       assert (cmds == expected) "webhook command sequence should match"
 

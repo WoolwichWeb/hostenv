@@ -1,20 +1,20 @@
-#!/usr/bin/env -S runghc
 {-# LANGUAGE ImportQualifiedPost #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- hostenv-provider CLI: plan | dns-gate | deploy
 -- dns-gate ports the legacy scripts/postgen.hs DNS/ACME gate and Cloudflare upsert logic.
 
-import Control.Monad (forM_, when)
-import Data.Aeson ((.:), (.:?))
+import Control.Monad (forM, forM_, unless, when)
+import Data.Aeson ((.:), (.:?), (.=))
 import Data.Aeson qualified as A
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BLC
-import Data.List (intersect)
-import Data.Maybe (fromMaybe)
+import Data.Char (isHexDigit)
+import Data.List (find, intersect)
+import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
+import Data.Scientific (floatingOrInteger)
 import Data.String (fromString)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -24,12 +24,14 @@ import Distribution.Compat.Prelude qualified as Sh
 import Options.Applicative qualified as OA
 import System.Environment qualified as Env
 import System.Exit (ExitCode (..))
+import System.IO (hClose)
+import System.Process (StdStream (CreatePipe), createProcess, proc, std_in, waitForProcess)
 import Turtle (FilePath, (<|>))
 import Turtle qualified as Sh
 import Prelude hiding (FilePath)
 
 -- -------- CLI --------
-data Command = CmdPlan | CmdDnsGate {cNode :: Maybe Text, cToken :: Maybe Text, cZone :: Maybe Text, cWithDnsUpdate :: Bool} | CmdDeploy {cNode :: Maybe Text}
+data Command = CmdPlan | CmdDnsGate {node :: Maybe Text, token :: Maybe Text, zone :: Maybe Text, withDnsUpdate :: Bool} | CmdDeploy {node :: Maybe Text}
 
 data CLI = CLI {cliCmd :: Command}
 
@@ -102,6 +104,20 @@ dnsPointsTo vhost expectedHost = do
             vhIPs <- digAddrs vhost
             pure $ not (null (expIPs `intersect` vhIPs))
 
+discoverPrevNodeFromDns :: Text -> [Text] -> IO (Maybe Text)
+discoverPrevNodeFromDns hostenvHostname vhosts =
+    let suffix = "." <> T.toLower hostenvHostname
+        go [] = pure Nothing
+        go (vh : rest) = do
+            cn <- digCNAMEs vh
+            case find (T.isSuffixOf suffix) cn of
+                Just cname ->
+                    case T.stripSuffix suffix cname of
+                        Just node | node /= "" -> pure (Just node)
+                        _ -> pure Nothing
+                Nothing -> go rest
+     in go vhosts
+
 -- -------- JSON helpers --------
 lookupText :: KM.Key -> KM.KeyMap A.Value -> Maybe Text
 lookupText k o = case KM.lookup k o of
@@ -111,6 +127,13 @@ lookupText k o = case KM.lookup k o of
 lookupObj :: KM.Key -> KM.KeyMap A.Value -> Maybe (KM.KeyMap A.Value)
 lookupObj k o = case KM.lookup k o of
     Just (A.Object x) -> Just x
+    _ -> Nothing
+
+lookupInt :: KM.Key -> KM.KeyMap A.Value -> Maybe Integer
+lookupInt k o = case KM.lookup k o of
+    Just (A.Number n) -> case floatingOrInteger n of
+        Right i -> Just i
+        Left (_ :: Double) -> Nothing
     _ -> Nothing
 
 modifyAt :: [KM.Key] -> (A.Value -> A.Value) -> KM.KeyMap A.Value -> KM.KeyMap A.Value
@@ -125,9 +148,9 @@ setBoolAt :: [Text] -> Bool -> KM.KeyMap A.Value -> KM.KeyMap A.Value
 setBoolAt path b = modifyAt (map K.fromText path) (const (A.Bool b))
 
 disableAcmePaths :: Text -> Text -> KM.KeyMap A.Value -> KM.KeyMap A.Value
-disableAcmePaths envName vhostName root =
-    let pEnvEnable = ["environments", envName, "virtualHosts", vhostName, "enableACME"]
-        pEnvSSL = ["environments", envName, "virtualHosts", vhostName, "forceSSL"]
+disableAcmePaths name vhostName root =
+    let pEnvEnable = ["environments", name, "virtualHosts", vhostName, "enableACME"]
+        pEnvSSL = ["environments", name, "virtualHosts", vhostName, "forceSSL"]
      in setBoolAt pEnvSSL False (setBoolAt pEnvEnable False root)
 
 disableAcmeOnNode :: Text -> Text -> KM.KeyMap A.Value -> KM.KeyMap A.Value
@@ -136,13 +159,85 @@ disableAcmeOnNode nodeName vhostName root =
         pNodeSSL = ["nodes", nodeName, "services", "nginx", "virtualHosts", vhostName, "forceSSL"]
      in setBoolAt pNodeSSL False (setBoolAt pNodeEnable False root)
 
+-- -------- Migration helpers --------
+data EnvInfo = EnvInfo
+    { name :: Text
+    , userName :: Text
+    , node :: Text
+    , prevNode :: Maybe Text
+    , migrateBackups :: [Text]
+    , runtimeDir :: Text
+    , vhosts :: [Text]
+    , uid :: Maybe Integer
+    }
+
+data Snapshot = Snapshot {snapId :: Text}
+
+instance A.FromJSON Snapshot where
+    parseJSON = A.withObject "Snapshot" $ \v -> Snapshot <$> v .: "id"
+
+parseSnapshotId :: Text -> Maybe Text
+parseSnapshotId out =
+    case A.eitherDecode' (BL.fromStrict (TE.encodeUtf8 out)) of
+        Right (snaps :: [Snapshot]) ->
+            case snaps of
+                (s : _) -> Just s.snapId
+                _ -> Nothing
+        Left _ -> Nothing
+
+parseSnapshotIdFromJournal :: Text -> Maybe Text
+parseSnapshotIdFromJournal out =
+    let parseLine line =
+            let ws = T.words line
+             in case dropWhile (/= "snapshot") ws of
+                    ("snapshot" : snap : rest) | "saved" `elem` rest ->
+                        let snapId = T.takeWhile isHexDigit snap
+                         in if T.null snapId then Nothing else Just snapId
+                    _ -> Nothing
+     in listToMaybe (mapMaybe parseLine (reverse (T.lines out)))
+
+extractEnvInfos :: KM.KeyMap A.Value -> [EnvInfo]
+extractEnvInfos envs =
+    let parseEnv (kEnv, vEnv) =
+            case vEnv of
+                A.Object envObj ->
+                    case lookupText (K.fromString "node") envObj of
+                        Just nodeName ->
+                            let envNameText = K.toText kEnv
+                                prevNode = lookupText (K.fromString "previousNode") envObj
+                                hostenvObj = lookupObj (K.fromString "hostenv") envObj
+                                envUserName = fromMaybe envNameText (hostenvObj >>= lookupText (K.fromString "userName"))
+                                runtimeRoot = fromMaybe "/run/hostenv" (hostenvObj >>= lookupText (K.fromString "runtimeRoot"))
+                                runtimeDir = fromMaybe (runtimeRoot <> "/user/" <> envUserName) (hostenvObj >>= lookupText (K.fromString "runtimeDir"))
+                                vhosts =
+                                    case lookupObj (K.fromString "virtualHosts") envObj of
+                                        Just vhostsObj -> map (K.toText . fst) (KM.toList vhostsObj)
+                                        Nothing -> []
+                                uid = lookupInt (K.fromString "uid") envObj
+                                backupsObj =
+                                    lookupObj (K.fromString "services") envObj
+                                        >>= lookupObj (K.fromString "restic")
+                                        >>= lookupObj (K.fromString "backups")
+                                migrateBackups =
+                                    case backupsObj of
+                                        Just b ->
+                                            [ K.toText key
+                                            | (key, _) <- KM.toList b
+                                            , T.isSuffixOf "-migrate" (K.toText key)
+                                            ]
+                                        Nothing -> []
+                             in Just (EnvInfo envNameText envUserName nodeName prevNode migrateBackups runtimeDir vhosts uid)
+                        Nothing -> Nothing
+                _ -> Nothing
+     in mapMaybe parseEnv (KM.toList envs)
+
 -- -------- Cloudflare helpers --------
 data CFRecord = CFRecord
-    { rId :: Text
+    { id :: Text
     , rType :: Text
-    , rName :: Text
-    , rContent :: Text
-    , rProxied :: Maybe Bool
+    , name :: Text
+    , content :: Text
+    , proxied :: Maybe Bool
     }
 
 instance A.FromJSON CFRecord where
@@ -196,7 +291,7 @@ cfListByName token zoneId name = do
     let bs = BL.fromStrict (TE.encodeUtf8 out)
     case A.eitherDecode' bs of
         Left _ -> pure []
-        Right lst -> if lSuccess lst then pure (lResult lst) else pure []
+        Right (lst :: CFList) -> if lst.lSuccess then pure lst.lResult else pure []
 
 cfDeleteRecord :: Text -> Text -> Text -> Sh.Shell ()
 cfDeleteRecord token zoneId rid = do
@@ -219,9 +314,9 @@ cfDeleteRecord token zoneId rid = do
 cfUpsertCname :: Text -> Text -> Text -> Text -> IO ()
 cfUpsertCname token zoneId name target = do
     existing <- cfListByName token zoneId name
-    case filter ((== "CNAME") . rType) existing of
+    case filter ((== "CNAME") . (.rType)) existing of
         (c : _) -> do
-            let url = "https://api.cloudflare.com/client/v4/zones/" <> zoneId <> "/dns_records/" <> rId c
+            let url = "https://api.cloudflare.com/client/v4/zones/" <> zoneId <> "/dns_records/" <> c.id
             let body = "{\"type\":\"CNAME\",\"name\":\"" <> name <> "\",\"content\":\"" <> target <> "\",\"proxied\":false}"
             Sh.stdout $ Sh.inproc "curl" ["-sS", "-X", "PUT", "-H", "Authorization: Bearer " <> token, "-H", "Content-Type: application/json", "--data", body, url] Sh.empty
         [] -> do
@@ -247,7 +342,10 @@ cfZoneName token zoneId = do
     let bs = BL.fromStrict (TE.encodeUtf8 out)
     case A.eitherDecode' bs of
         Left _ -> pure Nothing
-        Right resp -> if zSuccess resp then pure (Just (zName (zResult resp))) else pure Nothing
+        Right (resp :: CFZoneResp) ->
+            if resp.zSuccess
+                then pure (Just resp.zResult.zName)
+                else pure Nothing
 
 isSubdomainOf :: Text -> Text -> Bool
 isSubdomainOf host zone =
@@ -287,10 +385,11 @@ runDnsGate mNode mTok mZone withDnsUpdate = do
                 _ -> pure Nothing
             let hasCF = isJustPair cfTok cfZone
             plan' <- foldlM (processEnv hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate) plan (KM.toList envs)
-            let tmp = dest <> "/plan.json"
-            BL.writeFile (T.unpack tmp) (A.encode plan')
-            pretty <- Sh.strict $ Sh.inproc "jq" ["-S", ".", tmp] Sh.empty
-            BL.writeFile (T.unpack tmp) (BL.fromStrict (TE.encodeUtf8 pretty))
+            let tmpPath = dest <> "/plan.json.tmp"
+            BL.writeFile (T.unpack tmpPath) (A.encode plan')
+            pretty <- Sh.strict $ Sh.inproc "jq" ["-S", ".", tmpPath] Sh.empty
+            BL.writeFile (T.unpack tmpPath) (BL.fromStrict (TE.encodeUtf8 pretty))
+            Sh.mv (fromString (T.unpack tmpPath)) (fromString (T.unpack planPath))
             BLC.putStrLn "✅ dns-gate updated plan.json"
   where
     isJustPair (Just _) (Just _) = True
@@ -304,12 +403,12 @@ runDnsGate mNode mTok mZone withDnsUpdate = do
                 let vhosts = fromMaybe KM.empty (lookupObj (K.fromString "virtualHosts") envObj)
                 foldlM (processVhost hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate (K.toText kEnv)) acc (KM.toList vhosts)
             _ -> pure acc
-    processVhost hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate envName planAcc (vhKey, _vhObj) = do
+    processVhost hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate name planAcc (vhKey, _vhObj) = do
         let vhName = K.toText vhKey
-        let envNode = case lookupObj (K.fromString "environments") planAcc >>= KM.lookup (K.fromText envName) of
+        let node = case lookupObj (K.fromString "environments") planAcc >>= KM.lookup (K.fromText name) of
                 Just (A.Object o) -> lookupText (K.fromString "node") o
                 _ -> Nothing
-        let nodeName = fromMaybe "" (envNode <|> mNode)
+        let nodeName = fromMaybe "" (node <|> mNode)
         let expectedHost = if nodeName == "" then vhName else nodeName <> "." <> hostenvHostname
         ok <- dnsPointsTo vhName expectedHost
         planAcc' <-
@@ -327,7 +426,7 @@ runDnsGate mNode mTok mZone withDnsUpdate = do
                                     Nothing -> Sh.print "DNS setup ('dnsGate') failed: could not resolve Cloudflare zone name"
                             (Nothing, _) -> Sh.print "DNS setup ('dnsGate') failed: Cloudflare token was not provided"
                             (_, Nothing) -> Sh.print "DNS setup ('dnsGate') failed: Cloudflare zone was not provided"
-                    let plan1 = disableAcmePaths envName vhName planAcc
+                    let plan1 = disableAcmePaths name vhName planAcc
                     let plan2 = disableAcmeOnNode nodeName vhName plan1
                     pure plan2
         pure planAcc'
@@ -339,10 +438,227 @@ runPlan = do
     pure ()
 
 -- -------- Deploy wrapper --------
+runRemote :: Text -> [Text] -> IO ExitCode
+runRemote userHost args =
+    Sh.proc "ssh" (["-o", "BatchMode=yes", userHost] ++ args) Sh.empty
+
+runRemoteStrict :: Text -> [Text] -> IO Text
+runRemoteStrict userHost args =
+    Sh.strict $ Sh.inproc "ssh" (["-o", "BatchMode=yes", userHost] ++ args) Sh.empty
+
+runMigrationBackup :: Text -> EnvInfo -> Text -> Text -> IO Text
+runMigrationBackup hostenvHostname envInfo prevNode backupName = do
+    let prevHost = prevNode <> "." <> hostenvHostname
+    let deployHost = "deploy@" <> prevHost
+    let sudoArgs cmd =
+            [ "sudo"
+            , "-u"
+            , envInfo.userName
+            , "-H"
+            , "--"
+            , "bash"
+            , "-lc"
+            , cmd
+            ]
+    let unitFor name = "restic-backups-" <> name <> ".service"
+    let userBusPrefix = "export XDG_RUNTIME_DIR=/run/user/$(id -u); "
+    let loadStateCmd unit =
+            userBusPrefix
+                <> "systemctl --user show -p LoadState "
+                <> unit
+                <> " 2>/dev/null || echo \"LoadState=not-found\""
+    let parseState t =
+            let trimmed = T.strip t
+             in fromMaybe trimmed (T.stripPrefix "LoadState=" trimmed)
+    let chooseBackupName = do
+            state <- fmap parseState (runRemoteStrict deployHost (sudoArgs (loadStateCmd (unitFor backupName))))
+            if state == "loaded"
+                then pure backupName
+                else case T.stripSuffix "-migrate" backupName of
+                    Just baseName -> do
+                        baseState <- fmap parseState (runRemoteStrict deployHost (sudoArgs (loadStateCmd (unitFor baseName))))
+                        if baseState == "loaded"
+                            then do
+                                Sh.print
+                                    ( "hostenv: migrate backup unit "
+                                        <> unitFor backupName
+                                        <> " not found on "
+                                        <> prevHost
+                                        <> "; falling back to "
+                                        <> baseName
+                                    )
+                                pure baseName
+                            else error ("migration backup unit missing: " <> T.unpack (unitFor backupName) <> " (fallback " <> T.unpack (unitFor baseName) <> " not found)")
+                    Nothing -> error ("migration backup unit missing: " <> T.unpack (unitFor backupName))
+    effectiveName <- chooseBackupName
+    let unit = unitFor effectiveName
+    let startCmd =
+            "set -euo pipefail; "
+                <> userBusPrefix
+                <> "systemctl --user start --wait "
+                <> unit
+    startExit <- runRemote deployHost (sudoArgs startCmd)
+    case startExit of
+        ExitSuccess -> pure ()
+        ExitFailure code -> error ("migration backup failed for " <> T.unpack envInfo.name <> ":" <> T.unpack backupName <> " (exit " <> show code <> ")")
+
+    let wrapperPath = "~/.local/bin/restic-" <> effectiveName
+    let wrapperCheckCmd = "test -x " <> wrapperPath
+    wrapperExit <- runRemote deployHost (sudoArgs wrapperCheckCmd)
+    if wrapperExit == ExitSuccess
+        then do
+            let snapshotCmdTagged =
+                    "set -euo pipefail; "
+                        <> wrapperPath
+                        <> " snapshots --latest 1 --tag "
+                        <> effectiveName
+                        <> " --json"
+            snapOutTagged <- runRemoteStrict deployHost (sudoArgs snapshotCmdTagged)
+            case parseSnapshotId snapOutTagged of
+                Just snap -> pure snap
+                Nothing -> do
+                    let snapshotCmdUntagged =
+                            "set -euo pipefail; "
+                                <> wrapperPath
+                                <> " snapshots --latest 1 --json"
+                    snapOutUntagged <- runRemoteStrict deployHost (sudoArgs snapshotCmdUntagged)
+                    case parseSnapshotId snapOutUntagged of
+                        Just snap -> do
+                            Sh.print
+                                ( "hostenv: warning: no tagged restic snapshot found for "
+                                    <> effectiveName
+                                    <> " on "
+                                    <> prevHost
+                                    <> "; using latest untagged snapshot"
+                                )
+                            pure snap
+                        Nothing -> error ("could not parse snapshot id for " <> T.unpack envInfo.name <> ":" <> T.unpack backupName <> " (tagged or untagged)")
+        else do
+            Sh.print ("hostenv: restic wrapper missing for " <> effectiveName <> " on " <> prevHost <> "; reading snapshot id from journal")
+            let invocationCmd = userBusPrefix <> "systemctl --user show -p InvocationID --value " <> unit
+            invOut <- runRemoteStrict deployHost (sudoArgs invocationCmd)
+            let invocation = T.strip invOut
+            let journalCmd =
+                    userBusPrefix
+                        <> if T.null invocation
+                            then "journalctl --user -u " <> unit <> " -n 200 -o cat --no-pager || true"
+                            else "journalctl --user _SYSTEMD_INVOCATION_ID=" <> invocation <> " -o cat --no-pager || true"
+            logOut <- runRemoteStrict deployHost (sudoArgs journalCmd)
+            case parseSnapshotIdFromJournal logOut of
+                Just snap -> pure snap
+                Nothing -> error ("could not parse snapshot id from journal for " <> T.unpack envInfo.name <> ":" <> T.unpack backupName)
+
+resolvePrevNode :: Text -> EnvInfo -> IO (Maybe Text)
+resolvePrevNode hostenvHostname envInfo =
+    case envInfo.prevNode of
+        Just prev -> pure (Just prev)
+        Nothing -> do
+            discovered <- discoverPrevNodeFromDns hostenvHostname (envInfo.vhosts)
+            case discovered of
+                Just node -> do
+                    Sh.print ("hostenv: previous node for " <> envInfo.name <> " discovered via DNS: " <> node)
+                    pure (Just node)
+                Nothing -> pure Nothing
+
+writeRestorePlan :: Text -> EnvInfo -> Text -> [(Text, Text)] -> IO ()
+writeRestorePlan hostenvHostname envInfo prevNode snapshots = do
+    let newHost = envInfo.node <> "." <> hostenvHostname
+    let deployHost = "deploy@" <> newHost
+    let runtimeDir = envInfo.runtimeDir
+    let restoreDir = runtimeDir <> "/restore"
+    let restorePath = restoreDir <> "/plan.json"
+    let envUser = envInfo.userName
+    let ownerSpec = maybe envUser (T.pack . show) envInfo.uid
+    let runtimeGroup = "users"
+    let groupSpec = ownerSpec
+    let snapObj = KM.fromList (map (\(name, sid) -> (K.fromText name, A.String sid)) snapshots)
+    let payload =
+            A.object
+                [ "sourceNode" .= prevNode
+                , "snapshots" .= A.Object snapObj
+                ]
+
+    let dirCmd =
+            let
+                args :: (Monoid a) => a -> [a] -> a
+                args x ys = x <> mconcat ys
+             in
+                T.intercalate
+                    " && "
+                    [ "sudo mkdir -p " <> runtimeDir
+                    , "sudo chmod 2700 " <> runtimeDir
+                    , "sudo chown " `args` [ownerSpec, ":", runtimeGroup, " ", runtimeDir]
+                    , "sudo mkdir -p " <> restoreDir
+                    , "sudo chmod 0700 " <> restoreDir
+                    , "sudo chown " `args` [ownerSpec, ":", groupSpec, " ", restoreDir]
+                    ]
+    dirExit <-
+        runRemote
+            deployHost
+            [ "bash"
+            , "-lc"
+            , dirCmd
+            ]
+    case dirExit of
+        ExitSuccess -> pure ()
+        ExitFailure code -> error ("failed to create restore dir on " <> T.unpack deployHost <> " (exit " <> show code <> ")")
+
+    fileExit <- runRemote deployHost ["bash", "-lc", "sudo install -m 0600 /dev/null " <> restorePath <> " && sudo chown " <> ownerSpec <> ":" <> groupSpec <> " " <> restorePath]
+    case fileExit of
+        ExitSuccess -> pure ()
+        ExitFailure code -> error ("failed to create restore plan file on " <> T.unpack deployHost <> " (exit " <> show code <> ")")
+
+    let cmd = "sudo tee " <> restorePath <> " >/dev/null"
+    (mIn, _, _, ph) <- createProcess (proc "ssh" (map T.unpack ["-o", "BatchMode=yes", deployHost, "bash", "-lc", cmd])){std_in = CreatePipe}
+    case mIn of
+        Nothing -> error "failed to open ssh stdin for restore plan write"
+        Just hin -> do
+            BL.hPutStr hin (A.encode payload)
+            hClose hin
+            exit <- waitForProcess ph
+            case exit of
+                ExitSuccess -> pure ()
+                ExitFailure code -> error ("failed to write restore plan for " <> T.unpack envInfo.name <> " (exit " <> show code <> ")")
+
 runDeploy :: Maybe Text -> IO ()
 runDeploy mNode = do
-    let nodeArg = maybe [] (\n -> ["-s", n]) mNode
-    Sh.exit =<< Sh.proc "nix" (["run", "github:serokell/deploy-rs", "--", "--remote-build", ".#"] <> nodeArg) Sh.empty
+    let planPath = "generated/plan.json"
+    planExists <- Sh.testfile (fromString (T.unpack planPath))
+    when (not planExists) $ do
+        BLC.putStrLn "plan.json not found; deploy aborted"
+        Sh.exit (ExitFailure 1)
+
+    raw <- BL.readFile (T.unpack planPath)
+    case A.eitherDecode' raw of
+        Left err -> error err
+        Right (plan :: KM.KeyMap A.Value) -> do
+            let hostenvHostname = fromMaybe "" (lookupText (K.fromString "hostenvHostname") plan)
+            let envs = fromMaybe KM.empty (lookupObj (K.fromString "environments") plan)
+            when (hostenvHostname == "") $ error "hostenvHostname missing from plan.json"
+            let envInfos = extractEnvInfos envs
+            let envInfosFiltered =
+                    case mNode of
+                        Nothing -> envInfos
+                        Just n -> filter (\e -> e.node == n) envInfos
+            migrations <- fmap catMaybes $
+                forM envInfosFiltered $ \envInfo -> do
+                    if envInfo.migrateBackups == []
+                        then pure Nothing
+                        else do
+                            prevNode <- resolvePrevNode hostenvHostname envInfo
+                            pure $ case prevNode of
+                                Just prev | prev /= envInfo.node -> Just (envInfo, prev)
+                                _ -> Nothing
+
+            unless (null migrations) $ do
+                forM_ migrations $ \(envInfo, prevNode) -> do
+                    snapshots <- forM envInfo.migrateBackups $ \backupName -> do
+                        snap <- runMigrationBackup hostenvHostname envInfo prevNode backupName
+                        pure (backupName, snap)
+                    writeRestorePlan hostenvHostname envInfo prevNode snapshots
+
+            let nodeArg = maybe [] (\n -> ["-s", n]) mNode
+            Sh.exit =<< Sh.proc "nix" (["run", "github:serokell/deploy-rs", "--", "--remote-build", ".#"] <> nodeArg) Sh.empty
 
 -- -------- Main --------
 main :: IO ()

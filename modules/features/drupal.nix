@@ -17,6 +17,7 @@
       # This final PHP package is then used in various places in the code, so
       # the same version of PHP is used everywhere.
       drupalPhpPool = config.services.phpfpm.pools."${cfg.codebase.name}";
+      migrateBackupName = "drupal-migrate";
 
       utils = import (pkgs.path + "/nixos/lib/utils.nix") { inherit pkgs lib config; };
       # Type for a valid systemd unit option. Needed for correctly passing "timerConfig" to "systemd.timers"
@@ -238,6 +239,12 @@
           default = "1G";
         };
 
+        databaseName = lib.mkOption {
+          type = lib.types.str;
+          default = "drupal";
+          description = "Name of the Drupal database (used in default settings and restore guard).";
+        };
+
         enableRouteDebugging = (lib.mkEnableOption "route debug information in HTTP headers") //
           {
             description = ''
@@ -391,7 +398,7 @@
             defaultText = lib.literalExpression ''
               // Socket authentication is used here, so there is no password.
               $databases['default']['default'] = [
-                'database' => 'drupal',
+                'database' => '${config.services.drupal.databaseName}',
                 'username' => '${config.hostenv.userName}',
                 'password' => ''',
                 'unix_socket' => '${config.hostenv.runtimeDir}/mysql.sock',
@@ -447,6 +454,15 @@
       };
 
       config = lib.mkIf cfg.enable {
+        assertions =
+          (lib.optional cfg.backups.enable {
+            assertion = config.services.mysql.backups.enable;
+            message = "services.drupal.backups.enable requires services.mysql.backups.enable = true";
+          })
+          ++ (lib.optional (cfg.backups.enable && builtins.hasAttr migrateBackupName config.services.restic.backups) {
+            assertion = lib.elem migrateBackupName (config.services.restic.backups.${migrateBackupName}.tags or [ ]);
+            message = "services.restic.backups.drupal-migrate.tags must include \"drupal-migrate\" so migrations can locate snapshots";
+          });
 
         services.drupal.settings.databases = lib.mkMerge [
 
@@ -461,7 +477,7 @@
           (lib.mkOrder 1000 ''
             // Socket authentication is used here, so there is no password.
             $databases['default']['default'] = [
-              'database' => 'drupal',
+              'database' => '${cfg.databaseName}',
               'username' => '${config.hostenv.userName}',
               'password' => ''',
               'unix_socket' => '${config.hostenv.runtimeDir}/mysql.sock',
@@ -472,23 +488,17 @@
 
         ];
 
+        services.mysql.backups = lib.mkIf cfg.backups.enable {
+          enable = lib.mkDefault true;
+        };
+
         services.restic.backups = lib.mkIf cfg.backups.enable {
           drupal = {
-            backupPrepareCommand = ''
-              [ -z "$XDG_STATE_HOME" ] && exit 1
-    
-              mkdir -p "$XDG_STATE_HOME/mariabackup"
-              [ -d "$XDG_STATE_HOME/mariabackup/full" ] && rm -r "$XDG_STATE_HOME/mariabackup/full"
-    
-              ${pkgs.mariadb}/bin/mariabackup \
-                -S "${config.hostenv.runtimeDir}/mysql.sock" \
-                --backup \
-                --target-dir=$XDG_STATE_HOME/mariabackup/full
-            '';
+            backupPrepareCommand = "${config.services.mysql.backups.scripts.full}/bin/mysql-backup-full";
             paths = [
-              "/home/${config.hostenv.userName}/.local/state/mariabackup"
-              "/home/${config.hostenv.userName}/.local/share/files"
-              "/home/${config.hostenv.userName}/.local/share/private_files"
+              "${config.services.mysql.backups.backupDir}"
+              "${cfg.filesDir}"
+              "${cfg.privateFilesDir}"
             ];
             passwordFile = config.hostenv.backupsSecretFile;
             environmentFile = cfg.backups.restic.environmentFile;
@@ -500,6 +510,21 @@
               "--keep-monthly 12"
               "--keep-yearly 75"
             ];
+          };
+          "${migrateBackupName}" = {
+            timerConfig = null;
+            backupPrepareCommand = "${config.services.mysql.backups.scripts.incremental}/bin/mysql-backup-incremental";
+            paths = [
+              "${config.services.mysql.backups.backupDir}"
+              "${cfg.filesDir}"
+              "${cfg.privateFilesDir}"
+            ];
+            passwordFile = config.hostenv.backupsSecretFile;
+            environmentFile = cfg.backups.restic.environmentFile;
+            initialize = true;
+            createWrapper = lib.mkForce true;
+            wantsUnits = [ "mysql.service" ];
+            tags = [ migrateBackupName "migrate" ];
           };
         };
 
@@ -646,15 +671,15 @@
           dataDir = "${config.hostenv.dataDir}/mysql";
 
           initialDatabases = [
-            { name = "drupal"; }
+            { name = cfg.databaseName; }
           ];
-          ensureDatabases = [ "drupal" ];
+          ensureDatabases = [ cfg.databaseName ];
 
           ensureUsers = [
             {
               name = config.hostenv.userName;
               ensurePermissions = {
-                "drupal.*" = "ALL PRIVILEGES";
+                "${cfg.databaseName}.*" = "ALL PRIVILEGES";
               };
             }
             {
@@ -769,7 +794,126 @@
           };
         };
 
-        activate = ''
+        activate = (lib.optionalString cfg.backups.enable ''
+          # HOSTENV_RESTORE_DRUPAL_BEGIN
+          restore_marker_dir="${config.hostenv.stateDir}/hostenv/restored"
+          restore_marker="$restore_marker_dir/drupal"
+          restore_plan="${config.hostenv.runtimeDir}/restore/plan.json"
+          db_initialized=0
+          restore_key="${migrateBackupName}"
+          mysql_runtime_dir="${config.services.mysql.runtimeDir}"
+
+          export XDG_RUNTIME_DIR="''${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+          if [ -f "$restore_marker" ]; then
+            db_initialized=1
+          else
+            mysql_sock="$mysql_runtime_dir/mysql.sock"
+            if [ ! -S "$mysql_sock" ]; then
+              ${config.systemd.package}/bin/systemctl --user start mysql.service || true
+              for _ in $(seq 1 30); do
+                [ -S "$mysql_sock" ] && break
+                sleep 1
+              done
+            fi
+
+            if [ -S "$mysql_sock" ]; then
+              table_count="$(${config.services.mysql.package}/bin/mysql -N -u ${config.hostenv.userName} \
+                --socket="$mysql_sock" \
+                -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${cfg.databaseName}';" 2>/dev/null || echo 0)"
+              if [ "''${table_count:-0}" -gt 0 ]; then
+                db_initialized=1
+              fi
+            fi
+          fi
+
+          if [ "$db_initialized" -eq 0 ] && [ ! -f "$restore_marker" ]; then
+            if [ ! -f "$restore_plan" ]; then
+              echo "hostenv: restore plan not found; skipping Drupal restore"
+            else
+              echo "hostenv: attempting Drupal restore"
+              restore_snapshot="$(${pkgs.jq}/bin/jq -r '.snapshots["'"$restore_key"'"] // empty' "$restore_plan")"
+              if [ -z "$restore_snapshot" ]; then
+                echo "hostenv: restore plan missing snapshot id for $restore_key" >&2
+                exit 1
+              fi
+
+              restore_tmp="$(mktemp -d)"
+              restic_migrate="${config.services.restic.wrapperScripts.${migrateBackupName}}/bin/restic-${migrateBackupName}"
+
+              ${config.systemd.package}/bin/systemctl --user stop nginx.service || true
+              ${config.systemd.package}/bin/systemctl --user stop phpfpm.target || true
+              ${config.systemd.package}/bin/systemctl --user stop mysql.service || true
+
+              if ! "$restic_migrate" restore "$restore_snapshot" --target "$restore_tmp" --no-owner; then
+                echo "hostenv: restic restore failed" >&2
+                rm -rf "$restore_tmp"
+                exit 1
+              fi
+
+              restore_state_dir="$restore_tmp/${lib.removePrefix "/" config.services.mysql.backups.backupDir}"
+              if ! ${config.services.mysql.backups.scripts.restore}/bin/mysql-backup-restore \
+                "$restore_state_dir" \
+                "${config.services.mysql.dataDir}"; then
+                echo "hostenv: mysql restore failed" >&2
+                rm -rf "$restore_tmp"
+                exit 1
+              fi
+
+              restore_files_dir="$restore_tmp/${lib.removePrefix "/" cfg.filesDir}"
+              if [ -d "$restore_files_dir" ]; then
+                rm -rf "${cfg.filesDir}"
+                mkdir -p "${cfg.filesDir}"
+                if ! cp -a "$restore_files_dir/." "${cfg.filesDir}/"; then
+                  echo "hostenv: failed to restore Drupal files directory" >&2
+                  rm -rf "$restore_tmp"
+                  exit 1
+                fi
+              fi
+
+              restore_private_dir="$restore_tmp/${lib.removePrefix "/" cfg.privateFilesDir}"
+              if [ -d "$restore_private_dir" ]; then
+                rm -rf "${cfg.privateFilesDir}"
+                mkdir -p "${cfg.privateFilesDir}"
+                if ! cp -a "$restore_private_dir/." "${cfg.privateFilesDir}/"; then
+                  echo "hostenv: failed to restore Drupal private files directory" >&2
+                  rm -rf "$restore_tmp"
+                  exit 1
+                fi
+              fi
+
+              ${config.systemd.package}/bin/systemctl --user start mysql.service || true
+              for _ in $(seq 1 30); do
+                [ -S "$mysql_runtime_dir/mysql.sock" ] && break
+                sleep 1
+              done
+              if [ ! -S "$mysql_runtime_dir/mysql.sock" ]; then
+                echo "hostenv: mysql did not start after restore" >&2
+                rm -rf "$restore_tmp"
+                exit 1
+              fi
+              ${config.systemd.package}/bin/systemctl --user start phpfpm.target || true
+              ${config.systemd.package}/bin/systemctl --user start nginx.service || true
+
+              mkdir -p "$restore_marker_dir"
+              touch "$restore_marker"
+              rm -rf "$restore_tmp"
+            fi
+          fi
+          if [ -f "$restore_plan" ]; then
+            plan_tmp="$(mktemp)"
+            if ${pkgs.jq}/bin/jq -e '(.snapshots // {}) | has("'"$restore_key"'")' "$restore_plan" >/dev/null; then
+              ${pkgs.jq}/bin/jq 'del(.snapshots["'"$restore_key"'"])' "$restore_plan" > "$plan_tmp"
+              if ${pkgs.jq}/bin/jq -e '(.snapshots // {}) | length == 0' "$plan_tmp" >/dev/null; then
+                rm -f "$restore_plan"
+              else
+                mv "$plan_tmp" "$restore_plan"
+              fi
+            fi
+            rm -f "$plan_tmp"
+          fi
+          # HOSTENV_RESTORE_DRUPAL_END
+        '') + ''
           # Activate the Drupal application
           mkdir -p "${cfg.filesDir}"
           mkdir -p "${cfg.privateFilesDir}"
@@ -783,7 +927,7 @@
     
           find "${cfg.filesDir}/" -type d -name '__MACOSX' -print0 | xargs -0 rm -rf
           find "${cfg.filesDir}/" -type f -name '.DS_Store' -delete
-    
+
           ${drush}/bin/drush updatedb --cache-clear --yes
         '';
 

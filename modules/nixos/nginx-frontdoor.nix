@@ -63,7 +63,7 @@
       mkUpstream = envName: env:
         let
           user = env.hostenv.userName or envName;
-          socket = (env.hostenv.upstreamRuntimeDir or "/run/hostenv/nginx/${user}") + "/in.sock";
+          socket = (env.hostenv.upstreamRuntimeDir or "${config.hostenv.runtimeRoot}/nginx/${user}") + "/in.sock";
         in
         {
           servers = { "unix:${socket}" = { }; };

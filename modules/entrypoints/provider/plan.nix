@@ -466,11 +466,12 @@ let
               let
                 user = env.hostenv.userName;
                 uidFromState = if builtins.hasAttr user state then state.${user}.uid else null;
+                previousNode = if builtins.hasAttr user state then state.${user}.node or null else null;
                 uid =
                   if uidFromState != null then uidFromState
                   else nextUid + idx;
               in
-              env // { inherit uid; }
+              env // { inherit uid previousNode; }
             )
             allEnvs
         else

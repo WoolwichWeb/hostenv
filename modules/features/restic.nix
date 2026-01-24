@@ -17,7 +17,7 @@
         (name: backup:
           let
             extraOptions = lib.concatMapStrings (arg: " -o ${arg}") backup.extraOptions;
-            resticCmd = "${lib.getExe backup.package}/bin/restic${extraOptions}";
+            resticCmd = "${lib.getExe backup.package}${extraOptions}";
           in
           pkgs.writeShellScriptBin "restic-${name}" ''
             set -a  # automatically export variables
@@ -236,6 +236,16 @@
                     "--exclude-file=/etc/nixos/restic-ignore"
                   ];
                 };
+
+                tags = lib.mkOption {
+                  type = lib.types.listOf lib.types.str;
+                  default = [ name ];
+                  description = ''
+                    Tags to apply to snapshots. Defaults to the backup name. Set
+                    to an empty list to disable tagging for this backup.
+                  '';
+                  example = [ "daily" "app-data" ];
+                };
     
                 extraOptions = lib.mkOption {
                   type = lib.types.listOf lib.types.str;
@@ -393,9 +403,19 @@
     
         };
       };
-    
+
+      options.services.restic.wrapperScripts = lib.mkOption {
+        type = lib.types.attrsOf lib.types.package;
+        readOnly = true;
+        description = ''
+          Restic wrapper scripts generated for backups. Keys match backup names.
+        '';
+      };
+
       config =
         {
+          services.restic.wrapperScripts = wrapperScriptsList;
+
           assertions = lib.flatten (
             lib.mapAttrsToList
               (name: backup: [
@@ -444,6 +464,7 @@
                   "--why=${lib.escapeShellArg "Scheduled backup ${name}"} "
                 ];
                 resticCmd = "${lib.optionalString backup.inhibitsSleep inhibitCmd}${lib.getExe backup.package}${extraOptions}";
+                tagArgs = map (tag: "--tag ${tag}") backup.tags;
                 excludeFlags = lib.optional
                   (
                     backup.exclude != [ ]
@@ -504,7 +525,8 @@
                       lib.optionals doBackup [
                         "${resticCmd} backup ${
                           lib.concatStringsSep " " (
-                            backup.extraBackupArgs
+                            tagArgs
+                            ++ backup.extraBackupArgs
                             ++ lib.optionals fileBackup (excludeFlags ++ [ "--files-from=${filesFromTmpFile}"])
                             ++ lib.optionals commandBackup ([ "--stdin-from-command=true --"] ++ backup.command)
                           )

@@ -14,7 +14,7 @@ Make a plan for a hostenv provider service. Explaining this is going to be a bit
 
     1. When it receives a message from a webhook, the service shells out to the command-line and runs `nix flake update <org>__<project>`.
     2. Then it shells out to run `nix run .#hostenv-provider-plan` which generate `generated/plan.json`.
-    3. Then it shells out to run `./provider/cli.hs dns-gate` to upsert hostenv DNS records and ensure any domains not directed at hostenv won't cause deployment failures.
+    3. Then it shells out to run `nix run .#hostenv-provider -- dns-gate` to upsert hostenv DNS records and ensure any domains not directed at hostenv won't cause deployment failures.
     4. Then it inspects `generated/plan.json` to determine which nodes environments belonging to `<org>` and `<project>` are on.
-    5. Then it shells out to run `./provider/cli.hs deploy --node=` providing a single node taken from the list made in step 4.
+    5. Then it shells out to run `nix run .#hostenv-provider -- deploy --node=` providing a single node taken from the list made in step 4.
     6. It repeats step (5) until every node in the list has been deployed, and reports the results (success or failure).

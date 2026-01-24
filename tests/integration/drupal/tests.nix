@@ -100,6 +100,34 @@ let
     };
   };
 
+  drupalRestoreMarker = env: prefix: {
+    "${prefix}-restore-marker" = asserts.assertRun {
+      name = "${prefix}-restore-marker";
+      inherit env;
+      script = ''
+        activate="$profile/bin/activate"
+        test -f "$activate" || { echo "missing activate script"; exit 1; }
+        grep -q "HOSTENV_RESTORE_DRUPAL_BEGIN" "$activate" || {
+          echo "restore marker missing"
+          exit 1
+        }
+        restore_plan="${env.config.hostenv.runtimeDir}/restore/plan.json"
+        grep -q "$restore_plan" "$activate" || {
+          echo "restore plan path missing"
+          exit 1
+        }
+        grep -q 'del(.snapshots' "$activate" || {
+          echo "restore plan cleanup missing"
+          exit 1
+        }
+        grep -q 'restore_key="drupal-migrate"' "$activate" || {
+          echo "restore plan key missing"
+          exit 1
+        }
+      '';
+    };
+  };
+
 in
   profileStructure envs.drupalProduction "drupal-prod"
   // profileStructure envs.drupalDev "drupal-dev"
@@ -112,3 +140,5 @@ in
   // nginxSocketListen envs.drupalDev "drupal-dev"
   // drupalStructure envs.drupalProduction "drupal-prod"
   // drupalStructure envs.drupalDev "drupal-dev"
+  // drupalRestoreMarker envs.drupalProduction "drupal-prod"
+  // drupalRestoreMarker envs.drupalDev "drupal-dev"

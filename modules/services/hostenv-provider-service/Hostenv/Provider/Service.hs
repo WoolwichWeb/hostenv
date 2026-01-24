@@ -39,8 +39,10 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (toLower)
-import Data.List (nub, sort, sortOn)
-import Data.Maybe (catMaybes, listToMaybe)
+import Data.List (nub, sort, sortOn, foldl')
+import Data.Maybe (catMaybes, listToMaybe, mapMaybe)
+import qualified Data.Map.Strict as M
+import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
 import System.Exit (ExitCode, die)
@@ -80,21 +82,69 @@ nodesForProject :: Text -> Text -> BL.ByteString -> Either Text [Text]
 nodesForProject org project raw = do
   envs <- decodeEnvironments raw
   let matches =
-        [ node
-        | (_kEnv, vEnv) <- KM.toList envs
-        , Just node <- [extractNode vEnv]
+        mapMaybe extractEnv (KM.toList envs)
+      nodes = sort (nub (map envNode matches))
+      deps =
+        [ (envNode info, prev)
+        | info <- matches
+        , Just prev <- [info.envPrevNode]
+        , prev /= info.envNode
         ]
-      uniqueNodes = sort (nub matches)
-  Right uniqueNodes
+  Right (orderNodes nodes deps)
   where
-    extractNode (Object envObj) = do
-      hostenvObj <- lookupObj (K.fromString "hostenv") envObj
-      org' <- lookupText (K.fromString "organisation") hostenvObj
-      project' <- lookupText (K.fromString "project") hostenvObj
-      if org' == org && project' == project
-        then lookupText (K.fromString "node") envObj
-        else Nothing
-    extractNode _ = Nothing
+    extractEnv (_kEnv, vEnv) = case vEnv of
+      Object envObj -> do
+        hostenvObj <- lookupObj (K.fromString "hostenv") envObj
+        org' <- lookupText (K.fromString "organisation") hostenvObj
+        project' <- lookupText (K.fromString "project") hostenvObj
+        if org' == org && project' == project
+          then do
+            node <- lookupText (K.fromString "node") envObj
+            let prevNode = lookupText (K.fromString "previousNode") envObj
+            pure (EnvNodeInfo node prevNode)
+          else Nothing
+      _ -> Nothing
+
+data EnvNodeInfo = EnvNodeInfo
+  { envNode :: Text
+  , envPrevNode :: Maybe Text
+  }
+
+orderNodes :: [Text] -> [(Text, Text)] -> [Text]
+orderNodes nodes deps =
+  let uniqueNodes = sort (nub nodes)
+      nodeSet = S.fromList uniqueNodes
+      deps' =
+        nub
+          [ (a, b)
+          | (a, b) <- deps
+          , a /= b
+          , S.member a nodeSet
+          , S.member b nodeSet
+          ]
+      outgoing = M.fromListWith (<>) [ (a, [b]) | (a, b) <- deps' ]
+      indeg0 = M.fromList [ (n, 0 :: Int) | n <- uniqueNodes ]
+      indeg = foldl' (\m (_a, b) -> M.adjust (+ 1) b m) indeg0 deps'
+      zeros0 = S.fromList [ n | n <- uniqueNodes, M.findWithDefault 0 n indeg == 0 ]
+      (ordered, _indegFinal) = topo outgoing indeg zeros0 []
+      orderedSet = S.fromList ordered
+      remaining = [ n | n <- uniqueNodes, S.notMember n orderedSet ]
+   in if length ordered == length uniqueNodes
+        then ordered
+        else ordered <> remaining
+  where
+    topo outMap indegMap zeros acc =
+      case S.minView zeros of
+        Nothing -> (acc, indegMap)
+        Just (n, zeros') ->
+          let outs = M.findWithDefault [] n outMap
+              (zeros'', indeg') = foldl' step (zeros', indegMap) outs
+           in topo outMap indeg' zeros'' (acc <> [n])
+    step (z, m) dest =
+      let newVal = (M.findWithDefault 0 dest m) - 1
+          m' = M.insert dest newVal m
+          z' = if newVal == 0 then S.insert dest z else z
+       in (z', m')
 
 projectForHash :: Text -> BL.ByteString -> Either Text ProjectRef
 projectForHash hash raw = do
@@ -312,7 +362,7 @@ runWebhookWith runner loadPlan cfg ref = do
       step runner (CommandSpec "nix" ["run", ".#hostenv-provider-plan"] (cfg.whWorkDir)) >>= \case
         Left err -> pure (Left err)
         Right _ ->
-          step runner (CommandSpec "./provider/cli.hs" ["dns-gate"] (cfg.whWorkDir)) >>= \case
+          step runner (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "dns-gate"] (cfg.whWorkDir)) >>= \case
             Left err -> pure (Left err)
             Right _ -> do
               planRaw <- loadPlan
@@ -330,7 +380,7 @@ runWebhookWith runner loadPlan cfg ref = do
         Right _ -> pure (Right ())
 
     deployNode run config acc node = do
-      res <- run (CommandSpec "./provider/cli.hs" ["deploy", "--node", node] (config.whWorkDir))
+      res <- run (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "deploy", "--node", node] (config.whWorkDir))
       case res of
         Right out ->
           pure (acc ++ [DeployResult node True out.outStdout out.outStderr])

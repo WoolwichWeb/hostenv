@@ -11,7 +11,6 @@ let
 
   hostenvRoot = hostenvInput.outPath;
   providerRoot = hostenvRoot + "/provider";
-  cliPath = providerRoot + "/cli.hs";
 
 in
 {
@@ -36,13 +35,13 @@ in
       (let
         providerHsDeps = p: map (name: p.${name}) config.provider.haskellDevPackages;
         providerGhc = pkgs.haskellPackages.ghcWithPackages providerHsDeps;
-        cliSrc = builtins.path { path = cliPath; name = "hostenv-provider-cli"; };
+        cliPkg = pkgs.haskellPackages.callCabal2nix "hostenv-provider-cli" providerRoot { };
         hostenvProviderCLI = pkgs.writeShellApplication {
           name = "hostenv-provider";
           runtimeInputs = [ pkgs.jq ];
           text = ''
             set -euo pipefail
-            exec ${providerGhc}/bin/runghc ${cliSrc} "$@"
+            exec ${cliPkg}/bin/hostenv-provider "$@"
           '';
         };
 

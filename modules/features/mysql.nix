@@ -7,29 +7,29 @@
     # https://discourse.nixos.org/t/passing-parameters-into-import/34082/4
     { config, lib, pkgs, ... }:
     let
-    
+
       cfg = config.services.mysql;
-    
+
       isMariaDB = lib.getName cfg.package == lib.getName pkgs.mariadb;
       isOracle = lib.getName cfg.package == lib.getName pkgs.mysql80;
       # Oracle MySQL has supported "notify" service type since 8.0
       hasNotify = isMariaDB || (isOracle && lib.versionAtLeast cfg.package.version "8.0");
-    
+
       mysqldOptions =
         "--datadir=${cfg.dataDir} --basedir=${cfg.package}";
-    
+
       format = pkgs.formats.ini { listsAsDuplicateKeys = true; };
       configFile = format.generate "my.cnf" cfg.settings;
       defaultDataDir = "/home/${cfg.user}/.local/share/mysql";
     in
     {
-    
+
       ###### interface
-    
+
       options.services.mysql = {
-    
+
         enable = lib.mkEnableOption "MySQL server";
-    
+
         package = lib.mkOption {
           type = lib.types.package;
           example = lib.literalExpression "pkgs.mariadb";
@@ -37,12 +37,12 @@
             Which MySQL derivation to use. MariaDB packages are supported too.
           '';
         };
-    
+
         user = lib.mkOption {
           type = lib.types.str;
           description = "User account under which MySQL runs.";
         };
-    
+
         dataDir = lib.mkOption {
           type = lib.types.str;
           example = "/home/vinod/.local/share/mysql";
@@ -50,7 +50,7 @@
             The data directory for MySQL.
           '';
         };
-    
+
         configFile = lib.mkOption {
           type = lib.types.path;
           default = configFile;
@@ -72,7 +72,7 @@
             ''';
           '';
         };
-    
+
         settings = lib.mkOption {
           type = format.type;
           default = { };
@@ -103,7 +103,7 @@
             }
           '';
         };
-    
+
         initialDatabases = lib.mkOption {
           type = lib.types.listOf (lib.types.submodule {
             options = {
@@ -135,13 +135,13 @@
             ]
           '';
         };
-    
+
         initialScript = lib.mkOption {
           type = lib.types.nullOr lib.types.path;
           default = null;
           description = "A file containing SQL statements to be executed on the first startup. Can be used for granting certain permissions on the database.";
         };
-    
+
         ensureDatabases = lib.mkOption {
           type = lib.types.listOf lib.types.str;
           default = [ ];
@@ -156,7 +156,7 @@
             "matomo"
           ];
         };
-    
+
         ensureUsers = lib.mkOption {
           type = lib.types.listOf (lib.types.submodule {
             options = {
@@ -216,66 +216,225 @@
             ]
           '';
         };
-    
+
         replication = {
           role = lib.mkOption {
             type = lib.types.enum [ "master" "slave" "none" ];
             default = "none";
             description = "Role of the MySQL server instance.";
           };
-    
+
           serverId = lib.mkOption {
             type = lib.types.int;
             default = 1;
             description = "Id of the MySQL server instance. This number must be unique for each instance.";
           };
-    
+
           masterHost = lib.mkOption {
             type = lib.types.str;
             description = "Hostname of the MySQL master server.";
           };
-    
+
           slaveHost = lib.mkOption {
             type = lib.types.str;
             description = "Hostname of the MySQL slave server.";
           };
-    
+
           masterUser = lib.mkOption {
             type = lib.types.str;
             description = "Username of the MySQL replication user.";
           };
-    
+
           masterPassword = lib.mkOption {
             type = lib.types.str;
             description = "Password of the MySQL replication user.";
           };
-    
+
           masterPort = lib.mkOption {
             type = lib.types.port;
             default = 3306;
             description = "Port number on which the MySQL master server runs.";
           };
         };
-    
+
+        backups = {
+          enable = lib.mkEnableOption "physical MySQL/MariaDB backups (mariabackup/xtrabackup)";
+
+          backupDir = lib.mkOption {
+            type = lib.types.str;
+            default = "${config.hostenv.stateDir}/mariabackup";
+            description = "Directory where mariabackup/xtrabackup files are written.";
+          };
+
+          fullDir = lib.mkOption {
+            type = lib.types.str;
+            readOnly = true;
+            default = "${cfg.backups.backupDir}/full";
+            description = "Directory for full backups (read-only).";
+          };
+
+          incrementalDir = lib.mkOption {
+            type = lib.types.str;
+            readOnly = true;
+            default = "${cfg.backups.backupDir}/incremental";
+            description = "Directory for incremental backups (read-only).";
+          };
+
+          tool = lib.mkOption {
+            type = lib.types.enum [ "mariabackup" "xtrabackup" ];
+            default = if isMariaDB then "mariabackup" else "xtrabackup";
+            description = "Backup tool to use (mariabackup for MariaDB, xtrabackup for MySQL).";
+          };
+
+          toolPackage = lib.mkOption {
+            type = lib.types.package;
+            default = if cfg.backups.tool == "mariabackup" then cfg.package else pkgs.percona-xtrabackup;
+            description = "Package providing the backup tool.";
+          };
+
+          lockFile = lib.mkOption {
+            type = lib.types.str;
+            default = "${config.hostenv.runtimeDir}/mariabackup.lock";
+            description = "Lock file used to serialize backup/restore operations.";
+          };
+
+          scripts = {
+            full = lib.mkOption {
+              type = lib.types.nullOr lib.types.package;
+              readOnly = true;
+              description = "Script package to create a full physical backup.";
+            };
+
+            incremental = lib.mkOption {
+              type = lib.types.nullOr lib.types.package;
+              readOnly = true;
+              description = "Script package to create an incremental physical backup.";
+            };
+
+            restore = lib.mkOption {
+              type = lib.types.nullOr lib.types.package;
+              readOnly = true;
+              description = "Script package to restore a physical backup.";
+            };
+          };
+        };
+
         runtimeDir = lib.mkOption {
           type = lib.types.str;
           description = "Optionally supply an absolute path where MySQL should put its pid and socket files.";
-          example = lib.literalExpression "/run/hostenv/user/1000";
+          example = lib.literalExpression "${config.hostenv.runtimeRoot}/user/1000";
         };
-    
+
       };
-    
-    
+
+
       ###### implementation
-    
+
       config = lib.mkIf cfg.enable {
-    
+
         services.mysql.dataDir =
           lib.mkDefault defaultDataDir;
-    
+
         services.mysql.runtimeDir =
-          lib.mkDefault "/run/hostenv/user/${cfg.user}";
-    
+          lib.mkDefault "${config.hostenv.runtimeRoot}/user/${cfg.user}";
+
+        services.mysql.backups =
+          let
+            toolBin =
+              if cfg.backups.tool == "mariabackup"
+              then "${cfg.backups.toolPackage}/bin/mariabackup"
+              else "${cfg.backups.toolPackage}/bin/xtrabackup";
+
+            # Scripts using this will block until the lock below is released.
+            lockSetup = ''
+              lock_file="${cfg.backups.lockFile}"
+              mkdir -p "$(dirname "$lock_file")"
+              exec 9>"$lock_file"
+              ${pkgs.util-linux}/bin/flock -x 9
+            '';
+
+            fullScript = pkgs.writeShellScriptBin "mysql-backup-full" ''
+              set -euo pipefail
+              ${lockSetup}
+
+              rm -rf "${cfg.backups.fullDir}" "${cfg.backups.incrementalDir}"
+              mkdir -p "${cfg.backups.fullDir}"
+
+              exec ${toolBin} --backup --socket="${cfg.runtimeDir}/mysql.sock" --target-dir="${cfg.backups.fullDir}"
+            '';
+
+            incrementalScript = pkgs.writeShellScriptBin "mysql-backup-incremental" ''
+              set -euo pipefail
+              ${lockSetup}
+
+              if [ ! -d "${cfg.backups.fullDir}" ]; then
+                echo "mysql-backup-incremental: full backup missing; creating full and skipping incremental" >&2
+                # Note: deleting fullDir just in case it's not a directory and/or is corrupted.
+                rm -rf "${cfg.backups.fullDir}" "${cfg.backups.incrementalDir}"
+                mkdir -p "${cfg.backups.fullDir}"
+                exec ${toolBin} --backup --socket="${cfg.runtimeDir}/mysql.sock" --target-dir="${cfg.backups.fullDir}"
+              fi
+
+              rm -rf "${cfg.backups.incrementalDir}"
+              mkdir -p "${cfg.backups.incrementalDir}"
+              exec ${toolBin} --backup --socket="${cfg.runtimeDir}/mysql.sock" \
+                --target-dir="${cfg.backups.incrementalDir}" \
+                --incremental-basedir="${cfg.backups.fullDir}"
+            '';
+
+            restoreScript = pkgs.writeShellScriptBin "mysql-backup-restore" ''
+              set -euo pipefail
+              if [ "$#" -ne 2 ]; then
+                echo "usage: mysql-backup-restore <backup-root> <data-dir>" >&2
+                exit 2
+              fi
+
+              backup_root="$1"
+              data_dir="$2"
+
+              if [ -z "$backup_root" ] || [ -z "$data_dir" ] || [ "$data_dir" = "/" ]; then
+                echo "invalid arguments for restore" >&2
+                exit 2
+              fi
+
+              if [ ! -d "$backup_root/full" ]; then
+                echo "missing full backup at $backup_root/full" >&2
+                exit 1
+              fi
+
+              ${lockSetup}
+
+              if [ -d "$backup_root/incremental" ]; then
+                ${toolBin} --prepare --apply-log-only --target-dir="$backup_root/full"
+                ${toolBin} --prepare --target-dir="$backup_root/full" --incremental-dir="$backup_root/incremental"
+              else
+                ${toolBin} --prepare --target-dir="$backup_root/full"
+              fi
+
+              mkdir -p "$data_dir"
+              find "$data_dir" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+
+              exec ${toolBin} --copy-back --target-dir="$backup_root/full" --datadir="$data_dir"
+            '';
+          in
+          {
+            scripts = (
+              lib.optionalAttrs cfg.backups.enable
+                {
+                  full = fullScript;
+                  incremental = incrementalScript;
+                  restore = restoreScript;
+                }
+            ) // (
+              lib.optionalAttrs (!cfg.backups.enable)
+                {
+                  full = null;
+                  incremental = null;
+                  restore = null;
+                }
+            );
+          };
+
         services.mysql.settings.mysqld = lib.mkMerge [
           {
             datadir = builtins.toString cfg.dataDir;
@@ -295,39 +454,38 @@
             plugin-load-add = [ "auth_socket.so" ];
           })
         ];
-    
+
         systemd.services.mysql = {
           name = "mysql.service";
           description = "MySQL Server";
-    
+
           after = [ "network.target" ];
           wantedBy = [ "default.target" ];
           restartTriggers = [ cfg.configFile ];
-    
+
           startLimitIntervalSec = 14400;
           startLimitBurst = 10;
-    
+
           path = [
             # Needed for the mysql_install_db command in the preStart script
             # which calls the hostname command.
             pkgs.nettools
           ];
-    
-          preStart =
-            if isMariaDB then ''
-              mkdir -p "${cfg.dataDir}"
-              if ! test -e ${cfg.dataDir}/mysql; then
-                ${cfg.package}/bin/mysql_install_db --defaults-file=${cfg.configFile} ${mysqldOptions}
-                touch ${cfg.dataDir}/mysql_init
-              fi
-            '' else ''
-              mkdir -p "${cfg.dataDir}"
-              if ! test -e ${cfg.dataDir}/mysql; then
-                ${cfg.package}/bin/mysqld --defaults-file=${cfg.configFile} ${mysqldOptions} --initialize-insecure
-                touch ${cfg.dataDir}/mysql_init
-              fi
-            '';
-    
+
+          preStart = ''
+            mkdir -p "${cfg.dataDir}"
+            if ! test -e ${cfg.dataDir}/mysql; then
+            ${lib.optionalString isMariaDB ''
+              ${cfg.package}/bin/mysql_install_db --defaults-file=${cfg.configFile} ${mysqldOptions}
+              touch ${cfg.dataDir}/mysql_init
+            ''}
+            ${lib.optionalString (! isMariaDB) ''
+              ${cfg.package}/bin/mysqld --defaults-file=${cfg.configFile} ${mysqldOptions} --initialize-insecure
+              touch ${cfg.dataDir}/mysql_init
+            ''}
+            fi
+          '';
+
           script = ''
             # https://mariadb.com/kb/en/getting-started-with-mariadb-galera-cluster/#systemd-and-galera-recovery
             if test -n "''${_WSREP_START_POSITION}"; then
@@ -339,7 +497,7 @@
             # The last two environment variables are used for starting Galera clusters
             exec ${cfg.package}/bin/mysqld --defaults-file=${cfg.configFile} ${mysqldOptions} $_WSREP_NEW_CLUSTER $_WSREP_START_POSITION
           '';
-    
+
           postStart =
             let
               # The super user account to use on *first* run of MySQL server
@@ -435,7 +593,7 @@
                   ) | ${cfg.package}/bin/mysql -N --socket=${cfg.runtimeDir}/mysql.sock
                 '') cfg.ensureUsers}
             '';
-    
+
           serviceConfig = lib.mkMerge [
             {
               Type = if hasNotify then "notify" else "simple";
@@ -448,9 +606,9 @@
             })
           ];
         };
-    
+
         hostenv.subCommands = {
-    
+
           mysql = {
             exec = helpers: ''
               echo >&2
@@ -477,7 +635,7 @@
             makeScript = true;
             description = "Run mysql on the remote hostenv environment.";
           };
-    
+
           mysqldump = {
             exec = helpers: ''
                 echo >&2
@@ -500,22 +658,27 @@
             makeScript = true;
             description = "Run mysqldump on the remote hostenv environment, printing the result on stdout (as if it were run locally).";
           };
-    
+
         };
-    
+
         profile =
           let
             defaultDb = if lib.length cfg.ensureDatabases == 1 then builtins.head cfg.ensureDatabases else "";
-    
+
             mysqlScript = pkgs.writeShellScriptBin "mysql" ''
               ${cfg.package}/bin/mysql -u ${cfg.user} --socket=${cfg.runtimeDir}/mysql.sock ${defaultDb} $@
             '';
             mysqldumpScript = pkgs.writeShellScriptBin "mysqldump" ''
               ${cfg.package}/bin/mysqldump --single-transaction -u ${cfg.user} --socket=${cfg.runtimeDir}/mysql.sock ${defaultDb} $@
             '';
+            backupScripts = lib.optionals cfg.backups.enable [
+              cfg.backups.scripts.full
+              cfg.backups.scripts.incremental
+              cfg.backups.scripts.restore
+            ];
           in
-          [ mysqlScript mysqldumpScript ];
-    
+          [ mysqlScript mysqldumpScript ] ++ backupScripts;
+
       };
     }
   ;

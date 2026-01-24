@@ -75,7 +75,7 @@
     
         runtimeDir = lib.mkOption {
           type = lib.types.str;
-          default = "/run/hostenv/user/${cfg.user}";
+          default = "${config.hostenv.runtimeRoot}/user/${cfg.user}";
           description = "Runtime directory for PostgreSQL socket files.";
         };
     
