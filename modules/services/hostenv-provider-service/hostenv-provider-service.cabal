@@ -1,0 +1,70 @@
+cabal-version: 2.4
+name: hostenv-provider-service
+version: 0.1.0.0
+synopsis: Hostenv provider service (webhooks + admin UI)
+license: LicenseRef-OtherLicense
+build-type: Simple
+
+executable hostenv-provider-service
+  main-is: Main.hs
+  hs-source-dirs: .
+  other-modules:
+    Hostenv.Provider.Command
+    Hostenv.Provider.Config
+    Hostenv.Provider.DB
+    Hostenv.Provider.Gitlab
+    Hostenv.Provider.Http
+    Hostenv.Provider.Project
+    Hostenv.Provider.Repo
+    Hostenv.Provider.Server
+    Hostenv.Provider.Service
+    Hostenv.Provider.Util
+    Hostenv.Provider.Webhook
+    Hostenv.Provider.UI.Helpers
+    Hostenv.Provider.UI.Handlers
+    Hostenv.Provider.UI.Router
+    Hostenv.Provider.UI.Views
+  default-language: Haskell2010
+  build-depends:
+    base >=4.14 && <5,
+    aeson,
+    bytestring,
+    containers,
+    cookie,
+    cryptonite,
+    directory,
+    filepath,
+    http-client,
+    http-client-tls,
+    http-types,
+    lucid,
+    memory,
+    network,
+    postgresql-simple,
+    servant,
+    servant-server,
+    tagged,
+    text,
+    time,
+    turtle,
+    unix,
+    wai,
+    warp
+
+test-suite hostenv-provider-service-tests
+  type: exitcode-stdio-1.0
+  main-is: Test.hs
+  hs-source-dirs: .
+  other-modules:
+    Hostenv.Provider.Service
+  default-language: Haskell2010
+  build-depends:
+    base >=4.14 && <5,
+    aeson,
+    bytestring,
+    containers,
+    cryptonite,
+    directory,
+    memory,
+    text,
+    time

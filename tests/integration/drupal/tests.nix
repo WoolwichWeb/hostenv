@@ -1,0 +1,144 @@
+# Drupal 10+ specific tests (assert-based).
+{ pkgs, envs }:
+
+let
+  lib = pkgs.lib;
+  support = import ../../support { inherit pkgs lib; };
+  asserts = support.asserts;
+
+  profileStructure = env: prefix: {
+    "${prefix}-profile-structure" = asserts.assertRun {
+      name = "${prefix}-profile-structure";
+      inherit env;
+      script = ''
+        test -d "$profile" || { echo "missing $profile"; exit 1; }
+        test -d "$profile/systemd/user" || { echo "missing systemd/user"; exit 1; }
+        test -f "$profile/bin/activate" || { echo "missing bin/activate"; exit 1; }
+        test -f "$profile/etc/nginx/nginx.conf" || { echo "missing nginx.conf"; exit 1; }
+      '';
+    };
+  };
+
+  nginxSyntax = env: prefix: {
+    "${prefix}-test-nginx-config-valid" = asserts.assertRun {
+      name = "${prefix}-test-nginx-config-valid";
+      inherit env;
+      buildInputs = [ pkgs.nginx ];
+      script = ''
+        nginxConf="$profile/etc/nginx/nginx.conf"
+        test -f "$nginxConf" || { echo "nginx.conf not found"; exit 1; }
+        tmpdir=$(mktemp -d)
+        mkdir -p "$tmpdir"/{logs,run}
+        output=$("$profile"/bin/nginx -e "$tmpdir/error.log" -t -c "$nginxConf" -p "$tmpdir" 2>&1 || true)
+        echo "$output" | grep -q "syntax is ok" || { echo "$output"; exit 1; }
+      '';
+    };
+  };
+
+  nginxDebugHeaders = { prod, dev, prefix }: {
+    "${prefix}-prod-no-debug-headers" = asserts.assertRun {
+      name = "${prefix}-prod-no-debug-headers";
+      env = prod;
+      script = ''
+        conf="$profile/etc/nginx/nginx.conf"
+        test -f "$conf" || { echo "missing nginx.conf"; exit 1; }
+        if grep -q '\$hostenv_handled' "$conf"; then
+          echo "\$hostenv_handled present in prod"
+          exit 1
+        fi
+      '';
+    };
+    "${prefix}-dev-has-debug-headers" = asserts.assertRun {
+      name = "${prefix}-dev-has-debug-headers";
+      env = dev;
+      script = ''
+        conf="$profile/etc/nginx/nginx.conf"
+        test -f "$conf" || { echo "missing nginx.conf"; exit 1; }
+        if ! grep -q '\$hostenv_handled' "$conf"; then
+          echo "\$hostenv_handled missing in dev"
+          exit 1
+        fi
+      '';
+    };
+  };
+
+  phpConfig = env: prefix: {
+    "${prefix}-php-config-file" = asserts.assertRun {
+      name = "${prefix}-php-config-file";
+      inherit env;
+      script = ''
+        phpConf="$profile/etc/php-fpm.d"
+        test -d "$phpConf" || { echo "missing $phpConf"; exit 1; }
+        compgen -G "$phpConf/*.ini" >/dev/null || { echo "no ini files in $phpConf"; exit 1; }
+      '';
+    };
+  };
+
+  nginxSocketListen = env: prefix: {
+    "${prefix}-unix-socket-listen" = asserts.assertRun {
+      name = "${prefix}-unix-socket-listen";
+      inherit env;
+      script = ''
+        conf="$profile/etc/nginx/nginx.conf"
+        test -f "$conf" || { echo "missing nginx.conf"; exit 1; }
+        grep -q 'listen.*unix:.*in\.sock' "$conf" || {
+          echo "unix socket listener not found in nginx config"
+          exit 1
+        }
+      '';
+    };
+  };
+
+  drupalStructure = env: prefix: {
+    "${prefix}-test-drupal-structure" = asserts.assertRun {
+      name = "${prefix}-test-drupal-structure";
+      inherit env;
+      script = ''
+        compgen -G "$profile/share/php/*/web" >/dev/null || { echo "missing web directory"; exit 1; }
+        compgen -G "$profile/share/php/*/web/index.php" >/dev/null || { echo "missing web/index.php"; exit 1; }
+      '';
+    };
+  };
+
+  drupalRestoreMarker = env: prefix: {
+    "${prefix}-restore-marker" = asserts.assertRun {
+      name = "${prefix}-restore-marker";
+      inherit env;
+      script = ''
+        activate="$profile/bin/activate"
+        test -f "$activate" || { echo "missing activate script"; exit 1; }
+        grep -q "HOSTENV_RESTORE_DRUPAL_BEGIN" "$activate" || {
+          echo "restore marker missing"
+          exit 1
+        }
+        restore_plan="${env.config.hostenv.runtimeDir}/restore/plan.json"
+        grep -q "$restore_plan" "$activate" || {
+          echo "restore plan path missing"
+          exit 1
+        }
+        grep -q 'del(.snapshots' "$activate" || {
+          echo "restore plan cleanup missing"
+          exit 1
+        }
+        grep -q 'restore_key="drupal-migrate"' "$activate" || {
+          echo "restore plan key missing"
+          exit 1
+        }
+      '';
+    };
+  };
+
+in
+  profileStructure envs.drupalProduction "drupal-prod"
+  // profileStructure envs.drupalDev "drupal-dev"
+  // nginxSyntax envs.drupalProduction "drupal-prod"
+  // nginxSyntax envs.drupalDev "drupal-dev"
+  // (nginxDebugHeaders { prod = envs.drupalProduction; dev = envs.drupalDev; prefix = "drupal"; })
+  // phpConfig envs.drupalDev "drupal-dev"
+  // phpConfig envs.drupalProduction "drupal-prod"
+  // nginxSocketListen envs.drupalProduction "drupal-prod"
+  // nginxSocketListen envs.drupalDev "drupal-dev"
+  // drupalStructure envs.drupalProduction "drupal-prod"
+  // drupalStructure envs.drupalDev "drupal-dev"
+  // drupalRestoreMarker envs.drupalProduction "drupal-prod"
+  // drupalRestoreMarker envs.drupalDev "drupal-dev"
