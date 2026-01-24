@@ -14,7 +14,6 @@ before_script:
   - cachix use fossar
   - cachix use hostenv
   - cachix authtoken "$cachix_token"
-  - cachix watch-store hostenv
 
 stages:
   - check
@@ -24,7 +23,7 @@ stages:
 flake-check:
   stage: check
   script:
-    - nix flake check --show-trace --print-build-logs --keep-failed
+    - nix flake check --show-trace --print-build-logs --keep-failed | cachix push
   artifacts:
     when: always
     paths:
