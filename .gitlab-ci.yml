@@ -14,6 +14,7 @@ before_script:
   - cachix use fossar
   - cachix use hostenv
   - cachix authtoken "$cachix_token"
+  - cachix watch-store hostenv
 
 stages:
   - check
@@ -31,8 +32,8 @@ flake-check:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
-  tags:
-    - saas-linux-small-arm64
+#  tags:
+#    - saas-linux-small-arm64
 
 # Nightly updates and builds.
 # Note: to start updates are run nightly and are automatically committed to
