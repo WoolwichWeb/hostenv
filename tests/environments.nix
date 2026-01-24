@@ -1,37 +1,50 @@
 { pkgs, makeHostenv }:
 
 let
-  hostenvArgs = {
-    organisation = "test";
-    project = "test-project";
-    root = ./drupal;
-    environmentName = "dev";
-    modules = [ ./drupal/hostenv.nix ];
-  };
-in
-{
-  drupalDev = makeHostenv hostenvArgs;
+  drupalRoot = import ./integration/drupal/source.nix { inherit pkgs; };
 
-  drupalProduction = makeHostenv (hostenvArgs // {
-    environmentName = "main";
-  });
-
-  drupal7 = makeHostenv (hostenvArgs // {
-    root = pkgs.stdenv.mkDerivation {
-      pname = "drupal7-test-source";
-      version = "7.103";
-
-      src = pkgs.fetchurl {
-        url = "https://ftp.drupal.org/files/projects/drupal-7.103.tar.gz";
-        sha256 = "sha256-PYoM7tJzsHhyLbXYOX461xEl2dQ4+Y9RWX3EYmrOSfU=";
+  baseModules = [
+    ({ ... }: {
+      hostenv = {
+        organisation = "test";
+        project = "test-project";
+        root = drupalRoot;
+        hostenvHostname = "hosting.test";
       };
+    })
+    ./integration/drupal/hostenv.nix
+  ];
+in {
+  drupalDev = makeHostenv baseModules "dev";
 
-      installPhase = ''
-        mkdir -p $out
-        cp -r . $out/
-      '';
-    };
-    modules = [ ./drupal7/hostenv.nix ];
-    environmentName = "main";
-  });
+  drupalProduction = makeHostenv baseModules "main";
+
+  drupal7 =
+    let
+      drupal7src = pkgs.stdenv.mkDerivation {
+        pname = "drupal7-test-source";
+        version = "7.103";
+
+        src = pkgs.fetchurl {
+          url = "https://ftp.drupal.org/files/projects/drupal-7.103.tar.gz";
+          sha256 = "sha256-PYoM7tJzsHhyLbXYOX461xEl2dQ4+Y9RWX3EYmrOSfU=";
+        };
+
+        installPhase = ''
+          mkdir -p $out
+          cp -r . $out/
+        '';
+      };
+    in
+    makeHostenv [
+      ({ ... }: {
+        hostenv = {
+          organisation = "test";
+          project = "test-project";
+          root = drupal7src;
+          hostenvHostname = "hosting.test";
+        };
+      })
+      ./integration/drupal7/hostenv.nix
+    ] "main";
 }

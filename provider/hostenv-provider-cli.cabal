@@ -1,0 +1,31 @@
+cabal-version: 2.4
+name: hostenv-provider-cli
+version: 0.1.0.0
+synopsis: Hostenv provider CLI (plan, dns-gate, deploy)
+license: LicenseRef-OtherLicense
+build-type: Simple
+
+executable hostenv-provider
+  main-is: cli.hs
+  hs-source-dirs: .
+  build-depends:
+    base >=4.14 && <5,
+    Cabal,
+    aeson,
+    bytestring,
+    optparse-applicative,
+    process,
+    text,
+    text-conversions,
+    turtle,
+    scientific
+  default-language:
+    GHC2021
+  default-extensions:
+    BlockArguments
+    DuplicateRecordFields
+    LambdaCase
+    NoFieldSelectors
+    OverloadedLabels
+    OverloadedRecordDot
+    OverloadedStrings
