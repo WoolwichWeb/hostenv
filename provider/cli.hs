@@ -12,6 +12,7 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BLC
 import Data.Char (isHexDigit)
+import Data.Foldable (toList)
 import Data.List (find, intersect)
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
 import Data.Scientific (floatingOrInteger)
@@ -136,6 +137,14 @@ lookupInt k o = case KM.lookup k o of
         Left (_ :: Double) -> Nothing
     _ -> Nothing
 
+lookupTextList :: KM.Key -> KM.KeyMap A.Value -> [Text]
+lookupTextList k o = case KM.lookup k o of
+    Just (A.Array arr) -> mapMaybe asText (toList arr)
+    _ -> []
+  where
+    asText (A.String t) = Just t
+    asText _ = Nothing
+
 modifyAt :: [KM.Key] -> (A.Value -> A.Value) -> KM.KeyMap A.Value -> KM.KeyMap A.Value
 modifyAt [] _ obj = obj
 modifyAt [k] f obj = maybe obj (\v -> KM.insert k (f v) obj) (KM.lookup k obj)
@@ -214,18 +223,7 @@ extractEnvInfos envs =
                                         Just vhostsObj -> map (K.toText . fst) (KM.toList vhostsObj)
                                         Nothing -> []
                                 uid = lookupInt (K.fromString "uid") envObj
-                                backupsObj =
-                                    lookupObj (K.fromString "services") envObj
-                                        >>= lookupObj (K.fromString "restic")
-                                        >>= lookupObj (K.fromString "backups")
-                                migrateBackups =
-                                    case backupsObj of
-                                        Just b ->
-                                            [ K.toText key
-                                            | (key, _) <- KM.toList b
-                                            , T.isSuffixOf "-migrate" (K.toText key)
-                                            ]
-                                        Nothing -> []
+                                migrateBackups = lookupTextList (K.fromString "migrations") envObj
                              in Just (EnvInfo envNameText envUserName nodeName prevNode migrateBackups runtimeDir vhosts uid)
                         Nothing -> Nothing
                 _ -> Nothing

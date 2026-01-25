@@ -314,6 +314,9 @@ let
                       })
                     ]
                       null;
+                  resticBackups = minimalHostenv.config.services.restic.backups or { };
+                  migrateBackupKeys = builtins.filter (n: lib.hasSuffix "-migrate" n) (builtins.attrNames resticBackups);
+                  migrateEnvExtras = { migrations = migrateBackupKeys; };
 
                 in
                 lib.attrsets.mapAttrsToList
@@ -393,9 +396,10 @@ let
                                 filteredEnvVHosts;
                         in
                         let
+                          envWithMigrations = lib.recursiveUpdate envCfg migrateEnvExtras;
                           hostenv' = hostenv // { hostenvHostname = cfgHostenvHostname; };
                         in
-                        envCfg // {
+                        envWithMigrations // {
                           inherit node authorizedKeys virtualHosts;
                           hostenv = hostenv';
                           repo = repo // { ref = hostenv'.gitRef; };
