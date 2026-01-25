@@ -640,6 +640,10 @@ runDeploy mNode = do
                     case mNode of
                         Nothing -> envInfos
                         Just n -> filter (\e -> e.node == n) envInfos
+            case mNode of
+                Nothing -> pure ()
+                Just n -> Sh.print ("hostenv-provider: deploy filtered to node " <> n)
+            Sh.print ("hostenv-provider: " <> T.pack (show (length envInfosFiltered)) <> " environment(s) considered")
             migrations <- fmap catMaybes $
                 forM envInfosFiltered $ \envInfo -> do
                     if envInfo.migrateBackups == []
@@ -650,15 +654,25 @@ runDeploy mNode = do
                                 Just prev | prev /= envInfo.node -> Just (envInfo, prev)
                                 _ -> Nothing
 
-            unless (null migrations) $ do
-                forM_ migrations $ \(envInfo, prevNode) -> do
-                    snapshots <- forM envInfo.migrateBackups $ \backupName -> do
-                        snap <- runMigrationBackup hostenvHostname envInfo prevNode backupName
-                        pure (backupName, snap)
-                    writeRestorePlan hostenvHostname envInfo prevNode snapshots
+            if null migrations
+                then Sh.print "hostenv-provider: no migrations required"
+                else do
+                    Sh.print ("hostenv-provider: migrations required for " <> T.pack (show (length migrations)) <> " environment(s)")
+                    forM_ migrations $ \(envInfo, prevNode) -> do
+                        let backups = T.intercalate ", " envInfo.migrateBackups
+                        Sh.print ("hostenv-provider: migrate backups for " <> envInfo.name <> " from " <> prevNode <> " -> " <> envInfo.node <> " (" <> backups <> ")")
+                    forM_ migrations $ \(envInfo, prevNode) -> do
+                        snapshots <- forM envInfo.migrateBackups $ \backupName -> do
+                            snap <- runMigrationBackup hostenvHostname envInfo prevNode backupName
+                            pure (backupName, snap)
+                        writeRestorePlan hostenvHostname envInfo prevNode snapshots
+                        let snapshotPairs = map (\(name, sid) -> name <> "=" <> sid) snapshots
+                        Sh.print ("hostenv-provider: restore plan written for " <> envInfo.name <> " (snapshots: " <> T.intercalate ", " snapshotPairs <> ")")
 
             let nodeArg = maybe [] (\n -> ["-s", n]) mNode
-            Sh.exit =<< Sh.proc "nix" (["run", "github:serokell/deploy-rs", "--", "--remote-build", ".#"] <> nodeArg) Sh.empty
+            let deployArgs = ["run", "github:serokell/deploy-rs", "--", "--remote-build", ".#"] <> nodeArg
+            Sh.print ("hostenv-provider: running nix " <> T.unwords deployArgs)
+            Sh.exit =<< Sh.proc "nix" deployArgs Sh.empty
 
 -- -------- Main --------
 main :: IO ()
