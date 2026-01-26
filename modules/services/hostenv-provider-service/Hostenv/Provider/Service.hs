@@ -28,7 +28,8 @@ module Hostenv.Provider.Service
   , runWebhookWith
   ) where
 
-import Control.Monad (foldM)
+import Control.Exception (IOException, try)
+import Control.Monad (foldM, forM)
 import Data.Aeson (Value (..))
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as K
@@ -39,13 +40,14 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (toLower)
-import Data.List (nub, sort, sortOn, foldl')
-import Data.Maybe (catMaybes, listToMaybe, mapMaybe)
+import Data.List (find, foldl', nub, sort, sortOn)
+import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
-import System.Exit (ExitCode, die)
+import System.Exit (ExitCode (..), die)
+import System.Process (readProcessWithExitCode)
 
 import "cryptonite" Crypto.Hash (SHA256)
 import "cryptonite" Crypto.MAC.HMAC (HMAC (..), hmac)
@@ -104,6 +106,47 @@ nodesForProject org project raw = do
             pure (EnvNodeInfo node prevNode)
           else Nothing
       _ -> Nothing
+
+nodesForProjectWithDns :: Text -> Text -> BL.ByteString -> IO (Either Text [Text])
+nodesForProjectWithDns org project raw = do
+  case decodePlanRoot raw of
+    Left err -> pure (Left err)
+    Right root ->
+      case decodeEnvironmentsFromRoot root of
+        Left err -> pure (Left err)
+        Right envs -> do
+          let hostenvHostname = lookupText (K.fromString "hostenvHostname") root
+          matches <- fmap catMaybes $ forM (KM.toList envs) $ \(kEnv, vEnv) ->
+            case vEnv of
+              Object envObj -> do
+                hostenvObj <- pure (lookupObj (K.fromString "hostenv") envObj)
+                let envName = K.toText kEnv
+                let envUserName = fromMaybe envName (hostenvObj >>= lookupText (K.fromString "userName"))
+                let vhosts =
+                      case lookupObj (K.fromString "virtualHosts") envObj of
+                        Just vhostsObj -> map (K.toText . fst) (KM.toList vhostsObj)
+                        Nothing -> []
+                case hostenvObj of
+                  Just hostenvObj' -> do
+                    case (lookupText (K.fromString "organisation") hostenvObj', lookupText (K.fromString "project") hostenvObj') of
+                      (Just org', Just project') | org' == org && project' == project -> do
+                        case lookupText (K.fromString "node") envObj of
+                          Just node -> do
+                            let prevNode = lookupText (K.fromString "previousNode") envObj
+                            resolvedPrev <- resolvePrevNodeFromDns hostenvHostname envUserName vhosts prevNode
+                            pure (Just (EnvNodeInfo node resolvedPrev))
+                          Nothing -> pure Nothing
+                      _ -> pure Nothing
+                  Nothing -> pure Nothing
+              _ -> pure Nothing
+          let nodes = sort (nub (map envNode matches))
+          let deps =
+                [ (envNode info, prev)
+                | info <- matches
+                , Just prev <- [info.envPrevNode]
+                , prev /= info.envNode
+                ]
+          pure (Right (orderNodes nodes deps))
 
 data EnvNodeInfo = EnvNodeInfo
   { envNode :: Text
@@ -215,14 +258,68 @@ chooseCandidate candidates =
           | otherwise -> pick candidates
 
 decodeEnvironments :: BL.ByteString -> Either Text (KM.KeyMap Value)
-decodeEnvironments raw =
+decodeEnvironments raw = do
+  root <- decodePlanRoot raw
+  decodeEnvironmentsFromRoot root
+
+decodePlanRoot :: BL.ByteString -> Either Text (KM.KeyMap Value)
+decodePlanRoot raw =
   case A.eitherDecode' raw of
     Left err -> Left (T.pack err)
-    Right (Object root) ->
-      case lookupObj (K.fromString "environments") root of
-        Nothing -> Left "plan.json missing environments object"
-        Just envs -> Right envs
+    Right (Object root) -> Right root
     Right _ -> Left "plan.json root is not an object"
+
+decodeEnvironmentsFromRoot :: KM.KeyMap Value -> Either Text (KM.KeyMap Value)
+decodeEnvironmentsFromRoot root =
+  case lookupObj (K.fromString "environments") root of
+    Nothing -> Left "plan.json missing environments object"
+    Just envs -> Right envs
+
+stripDot :: Text -> Text
+stripDot = T.dropWhileEnd (== '.')
+
+digRR :: Text -> Text -> IO [Text]
+digRR name rr = do
+  let args = ["+short", T.unpack name, T.unpack rr]
+  res <- try (readProcessWithExitCode "dig" args "") :: IO (Either IOException (ExitCode, String, String))
+  case res of
+    Left _ -> pure []
+    Right (ExitSuccess, out, _) ->
+      let toLine = stripDot . T.toLower . T.strip . T.pack
+       in pure (filter (not . T.null) (map toLine (lines out)))
+    Right _ -> pure []
+
+digCNAMEs :: Text -> IO [Text]
+digCNAMEs name = digRR name "CNAME"
+
+discoverPrevNodeFromDns :: Text -> Text -> [Text] -> IO (Maybe Text)
+discoverPrevNodeFromDns hostenvHostname envName vhosts =
+  let hostenvHost = T.toLower hostenvHostname
+      suffix = "." <> hostenvHost
+      envNameNorm = T.toLower envName
+      envHost =
+        if T.isSuffixOf suffix envNameNorm
+          then envNameNorm
+          else envNameNorm <> suffix
+      go [] = pure Nothing
+      go (vh:rest) = do
+        cn <- digCNAMEs vh
+        case find (T.isSuffixOf suffix) cn of
+          Just cname ->
+            case T.stripSuffix suffix cname of
+              Just node | node /= "" -> pure (Just node)
+              _ -> pure Nothing
+          Nothing -> go rest
+   in go (envHost : vhosts)
+
+resolvePrevNodeFromDns :: Maybe Text -> Text -> [Text] -> Maybe Text -> IO (Maybe Text)
+resolvePrevNodeFromDns hostenvHostname envName vhosts prevNode =
+  case prevNode of
+    Just prev -> pure (Just prev)
+    Nothing ->
+      case hostenvHostname of
+        Nothing -> pure Nothing
+        Just host -> discoverPrevNodeFromDns host envName vhosts
 
 renderProjectInputs :: [(Text, Text)] -> Text
 renderProjectInputs inputs =
@@ -366,7 +463,7 @@ runWebhookWith runner loadPlan cfg ref = do
             Left err -> pure (Left err)
             Right _ -> do
               planRaw <- loadPlan
-              case nodesForProject ref.prOrg ref.prProject planRaw of
+              nodesForProjectWithDns ref.prOrg ref.prProject planRaw >>= \case
                 Left err -> pure (Left (WebhookPlanError err))
                 Right nodes -> do
                   deploys <- foldM (deployNode runner cfg) [] nodes

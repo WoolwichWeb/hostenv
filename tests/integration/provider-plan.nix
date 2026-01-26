@@ -627,8 +627,8 @@ in
       plan = lib.importJSON planWithState;
       prev = plan.environments.${user1}.previousNode or null;
     in asserts.assertTrue "provider-plan-previous-node"
-      (prev == "node1")
-      "previousNode should be carried over from state when present";
+      (prev == null)
+      "previousNode should be null so DNS discovery can be used";
 
   provider-plan-flake-inputs =
     let flakeText = builtins.readFile flakeNoState;

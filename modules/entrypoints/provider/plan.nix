@@ -470,7 +470,7 @@ let
               let
                 user = env.hostenv.userName;
                 uidFromState = if builtins.hasAttr user state then state.${user}.uid else null;
-                previousNode = if builtins.hasAttr user state then state.${user}.node or null else null;
+                previousNode = null;
                 uid =
                   if uidFromState != null then uidFromState
                   else nextUid + idx;

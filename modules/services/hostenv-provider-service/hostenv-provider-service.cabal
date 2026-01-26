@@ -41,6 +41,7 @@ executable hostenv-provider-service
     memory,
     network,
     postgresql-simple,
+    process,
     servant,
     servant-server,
     tagged,
@@ -66,5 +67,6 @@ test-suite hostenv-provider-service-tests
     cryptonite,
     directory,
     memory,
+    process,
     text,
     time

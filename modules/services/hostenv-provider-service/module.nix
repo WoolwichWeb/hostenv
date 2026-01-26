@@ -17,6 +17,7 @@ let
     "memory"
     "network"
     "postgresql-simple"
+    "process"
     "servant"
     "servant-server"
     "text"

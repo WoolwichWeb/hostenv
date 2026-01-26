@@ -105,9 +105,10 @@ dnsPointsTo vhost expectedHost = do
             vhIPs <- digAddrs vhost
             pure $ not (null (expIPs `intersect` vhIPs))
 
-discoverPrevNodeFromDns :: Text -> [Text] -> IO (Maybe Text)
-discoverPrevNodeFromDns hostenvHostname vhosts =
+discoverPrevNodeFromDns :: Text -> Text -> [Text] -> IO (Maybe Text)
+discoverPrevNodeFromDns hostenvHostname envName vhosts =
     let suffix = "." <> T.toLower hostenvHostname
+        envHost = envName <> "." <> hostenvHostname
         go [] = pure Nothing
         go (vh : rest) = do
             cn <- digCNAMEs vh
@@ -117,7 +118,7 @@ discoverPrevNodeFromDns hostenvHostname vhosts =
                         Just node | node /= "" -> pure (Just node)
                         _ -> pure Nothing
                 Nothing -> go rest
-     in go vhosts
+     in go (envHost : vhosts)
 
 -- -------- JSON helpers --------
 lookupText :: KM.Key -> KM.KeyMap A.Value -> Maybe Text
@@ -551,7 +552,7 @@ resolvePrevNode hostenvHostname envInfo =
     case envInfo.prevNode of
         Just prev -> pure (Just prev)
         Nothing -> do
-            discovered <- discoverPrevNodeFromDns hostenvHostname (envInfo.vhosts)
+            discovered <- discoverPrevNodeFromDns hostenvHostname envInfo.userName (envInfo.vhosts)
             case discovered of
                 Just node -> do
                     Sh.print ("hostenv: previous node for " <> envInfo.name <> " discovered via DNS: " <> node)
