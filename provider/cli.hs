@@ -25,8 +25,7 @@ import Distribution.Compat.Prelude qualified as Sh
 import Options.Applicative qualified as OA
 import System.Environment qualified as Env
 import System.Exit (ExitCode (..))
-import System.IO (hClose)
-import System.Process (StdStream (CreatePipe), createProcess, proc, std_in, waitForProcess)
+import System.Process (readProcessWithExitCode)
 import Turtle (FilePath, (<|>))
 import Turtle qualified as Sh
 import Prelude hiding (FilePath)
@@ -437,13 +436,88 @@ runPlan = do
     pure ()
 
 -- -------- Deploy wrapper --------
+shellEscape :: Text -> Text
+shellEscape t =
+    if T.null t
+        then "''"
+        else "'" <> T.replace "'" "'\\''" t <> "'"
+
+pickTag :: Text -> Text -> Text
+pickTag base body =
+    let go n =
+            let tag =
+                    if n == 0
+                        then base
+                        else base <> "_" <> T.pack (show n)
+             in if T.isInfixOf tag body then go (n + 1) else tag
+     in go 0
+
+heredocSubst :: Text -> Text -> Text
+heredocSubst tag body =
+    let body' = if T.isSuffixOf "\n" body then body else body <> "\n"
+     in "\"$(cat <<'" <> tag <> "'\n" <> body' <> tag <> "\n)\""
+
+bashLcCommand :: Text -> Text
+bashLcCommand cmd =
+    let tag = pickTag "HOSTENV_CMD" cmd
+     in "bash -lc " <> heredocSubst tag cmd
+
+sudoBashLcCommand :: Text -> Text -> Text
+sudoBashLcCommand user cmd =
+    "sudo -u " <> shellEscape user <> " -H -- " <> bashLcCommand cmd
+
+scriptForArgs :: [Text] -> Text
+scriptForArgs args =
+    let header = "#!/usr/bin/env bash\nset -euo pipefail\n"
+     in case args of
+            ["bash", "-lc", cmd] ->
+                header <> bashLcCommand cmd <> "\n"
+            ["sudo", "-u", user, "-H", "--", "bash", "-lc", cmd] ->
+                header <> sudoBashLcCommand user cmd <> "\n"
+            _ ->
+                header <> "exec " <> T.intercalate " " (map shellEscape args) <> "\n"
+
+runRemoteScript :: Text -> Text -> IO ExitCode
+runRemoteScript userHost script = do
+    let runner =
+            "tmp=$(mktemp /tmp/hostenv-provider-XXXXXX.sh); "
+                <> "cat > \"$tmp\"; "
+                <> "bash \"$tmp\"; "
+                <> "status=$?; "
+                <> "rm -f \"$tmp\"; "
+                <> "exit $status"
+    (code, _out, _err) <- readProcessWithExitCode "ssh" ["-o", "BatchMode=yes", T.unpack userHost, T.unpack runner] (T.unpack script)
+    pure code
+
+runRemoteScriptStrict :: Text -> Text -> IO Text
+runRemoteScriptStrict userHost script = do
+    let runner =
+            "tmp=$(mktemp /tmp/hostenv-provider-XXXXXX.sh); "
+                <> "cat > \"$tmp\"; "
+                <> "bash \"$tmp\"; "
+                <> "status=$?; "
+                <> "rm -f \"$tmp\"; "
+                <> "exit $status"
+    (code, out, err) <- readProcessWithExitCode "ssh" ["-o", "BatchMode=yes", T.unpack userHost, T.unpack runner] (T.unpack script)
+    case code of
+        ExitSuccess -> pure (T.pack out)
+        ExitFailure c ->
+            error
+                ( "ssh failed for "
+                    <> T.unpack userHost
+                    <> " (exit "
+                    <> show c
+                    <> "): "
+                    <> err
+                )
+
 runRemote :: Text -> [Text] -> IO ExitCode
 runRemote userHost args =
-    Sh.proc "ssh" (["-o", "BatchMode=yes", userHost] ++ args) Sh.empty
+    runRemoteScript userHost (scriptForArgs args)
 
 runRemoteStrict :: Text -> [Text] -> IO Text
 runRemoteStrict userHost args =
-    Sh.strict $ Sh.inproc "ssh" (["-o", "BatchMode=yes", userHost] ++ args) Sh.empty
+    runRemoteScriptStrict userHost (scriptForArgs args)
 
 runMigrationBackup :: Text -> EnvInfo -> Text -> Text -> IO Text
 runMigrationBackup hostenvHostname envInfo prevNode backupName = do
@@ -607,17 +681,18 @@ writeRestorePlan hostenvHostname envInfo prevNode snapshots = do
         ExitSuccess -> pure ()
         ExitFailure code -> error ("failed to create restore plan file on " <> T.unpack deployHost <> " (exit " <> show code <> ")")
 
-    let cmd = "sudo tee " <> restorePath <> " >/dev/null"
-    (mIn, _, _, ph) <- createProcess (proc "ssh" (map T.unpack ["-o", "BatchMode=yes", deployHost, "bash", "-lc", cmd])){std_in = CreatePipe}
-    case mIn of
-        Nothing -> error "failed to open ssh stdin for restore plan write"
-        Just hin -> do
-            BL.hPutStr hin (A.encode payload)
-            hClose hin
-            exit <- waitForProcess ph
-            case exit of
-                ExitSuccess -> pure ()
-                ExitFailure code -> error ("failed to write restore plan for " <> T.unpack envInfo.name <> " (exit " <> show code <> ")")
+    let payloadText = TE.decodeUtf8 (BL.toStrict (A.encode payload))
+    let payloadTag = pickTag "HOSTENV_JSON" payloadText
+    let writeCmd =
+            T.unlines
+                [ "sudo tee " <> shellEscape restorePath <> " >/dev/null <<'" <> payloadTag <> "'"
+                , payloadText
+                , payloadTag
+                ]
+    writeExit <- runRemote deployHost ["bash", "-lc", writeCmd]
+    case writeExit of
+        ExitSuccess -> pure ()
+        ExitFailure code -> error ("failed to write restore plan for " <> T.unpack envInfo.name <> " (exit " <> show code <> ")")
 
 runDeploy :: Maybe Text -> IO ()
 runDeploy mNode = do
