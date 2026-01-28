@@ -4,6 +4,7 @@
 -- hostenv-provider CLI: plan | dns-gate | deploy
 -- dns-gate ports the legacy scripts/postgen.hs DNS/ACME gate and Cloudflare upsert logic.
 
+import Control.Exception (SomeException, displayException, try)
 import Control.Monad (forM, forM_, unless, when)
 import Data.Aeson ((.:), (.:?), (.=))
 import Data.Aeson qualified as A
@@ -13,7 +14,7 @@ import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BLC
 import Data.Char (isHexDigit)
 import Data.Foldable (toList)
-import Data.List (find, intersect)
+import Data.List (find, intersect, (\\))
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
 import Data.Scientific (floatingOrInteger)
 import Data.String (fromString)
@@ -31,7 +32,10 @@ import Turtle qualified as Sh
 import Prelude hiding (FilePath)
 
 -- -------- CLI --------
-data Command = CmdPlan | CmdDnsGate {node :: Maybe Text, token :: Maybe Text, zone :: Maybe Text, withDnsUpdate :: Bool} | CmdDeploy {node :: Maybe Text}
+data Command
+    = CmdPlan
+    | CmdDnsGate {node :: Maybe Text, token :: Maybe Text, zone :: Maybe Text, withDnsUpdate :: Bool}
+    | CmdDeploy {node :: Maybe Text, skipMigrations :: [Text], ignoreMigrationErrors :: Bool}
 
 data CLI = CLI {cliCmd :: Command}
 
@@ -58,13 +62,29 @@ withDnsUpdateOpt =
             <> OA.help "Allow Cloudflare upserts (otherwise only checks and disables ACME/forceSSL)"
         )
 
+skipMigrationsOpt :: OA.Parser [Text]
+skipMigrationsOpt =
+    OA.many . fmap T.pack $
+        OA.strOption
+            ( OA.long "skip-migrations"
+                <> OA.metavar "ENV"
+                <> OA.help "Skip migrations for an environment (repeatable)"
+            )
+
+ignoreMigrationErrorsOpt :: OA.Parser Bool
+ignoreMigrationErrorsOpt =
+    OA.switch
+        ( OA.long "ignore-migration-errors"
+            <> OA.help "Continue deployment even if migration steps fail (may deploy with stale data)"
+        )
+
 cliParser :: OA.Parser CLI
 cliParser =
     CLI
         <$> OA.hsubparser
             ( OA.command "plan" (OA.info (pure CmdPlan) (OA.progDesc "Generate plan.json, state.json, and flake.nix"))
                 <> OA.command "dns-gate" (OA.info (CmdDnsGate <$> nodeOpt <*> tokenOpt <*> zoneOpt <*> withDnsUpdateOpt) (OA.progDesc "Disable ACME/forceSSL for vhosts not pointing at node; add --with-dns-update to upsert Cloudflare records"))
-                <> OA.command "deploy" (OA.info (CmdDeploy <$> nodeOpt) (OA.progDesc "Deploy via deploy-rs"))
+                <> OA.command "deploy" (OA.info (CmdDeploy <$> nodeOpt <*> skipMigrationsOpt <*> ignoreMigrationErrorsOpt) (OA.progDesc "Deploy via deploy-rs"))
             )
 
 cliOpts :: OA.ParserInfo CLI
@@ -694,8 +714,8 @@ writeRestorePlan hostenvHostname envInfo prevNode snapshots = do
         ExitSuccess -> pure ()
         ExitFailure code -> error ("failed to write restore plan for " <> T.unpack envInfo.name <> " (exit " <> show code <> ")")
 
-runDeploy :: Maybe Text -> IO ()
-runDeploy mNode = do
+runDeploy :: Maybe Text -> [Text] -> Bool -> IO ()
+runDeploy mNode skipMigrations ignoreMigrationErrors = do
     let planPath = "generated/plan.json"
     planExists <- Sh.testfile (fromString (T.unpack planPath))
     when (not planExists) $ do
@@ -714,19 +734,35 @@ runDeploy mNode = do
                     case mNode of
                         Nothing -> envInfos
                         Just n -> filter (\e -> e.node == n) envInfos
+            let shouldSkip envInfo =
+                    envInfo.name `elem` skipMigrations || envInfo.userName `elem` skipMigrations
+            let skipHits =
+                    filter
+                        (\s -> any (\e -> e.name == s || e.userName == s) envInfosFiltered)
+                        skipMigrations
+            let skipMisses = skipMigrations \\ skipHits
             case mNode of
                 Nothing -> pure ()
                 Just n -> Sh.print ("hostenv-provider: deploy filtered to node " <> n)
             Sh.print ("hostenv-provider: " <> T.pack (show (length envInfosFiltered)) <> " environment(s) considered")
+            when (not (null skipHits)) $
+                Sh.print ("hostenv-provider: skipping migrations for: " <> T.intercalate ", " skipHits)
+            when (not (null skipMisses)) $
+                Sh.print ("hostenv-provider: warning: skip-migrations targets not found: " <> T.intercalate ", " skipMisses)
+            when ignoreMigrationErrors $
+                Sh.print "hostenv-provider: warning: migration errors will be ignored; deployments may proceed with stale data"
             migrations <- fmap catMaybes $
                 forM envInfosFiltered $ \envInfo -> do
-                    if envInfo.migrateBackups == []
+                    if shouldSkip envInfo
                         then pure Nothing
-                        else do
-                            prevNode <- resolvePrevNode hostenvHostname envInfo
-                            pure $ case prevNode of
-                                Just prev | prev /= envInfo.node -> Just (envInfo, prev)
-                                _ -> Nothing
+                        else
+                            if envInfo.migrateBackups == []
+                                then pure Nothing
+                                else do
+                                    prevNode <- resolvePrevNode hostenvHostname envInfo
+                                    pure $ case prevNode of
+                                        Just prev | prev /= envInfo.node -> Just (envInfo, prev)
+                                        _ -> Nothing
 
             if null migrations
                 then Sh.print "hostenv-provider: no migrations required"
@@ -735,13 +771,27 @@ runDeploy mNode = do
                     forM_ migrations $ \(envInfo, prevNode) -> do
                         let backups = T.intercalate ", " envInfo.migrateBackups
                         Sh.print ("hostenv-provider: migrate backups for " <> envInfo.name <> " from " <> prevNode <> " -> " <> envInfo.node <> " (" <> backups <> ")")
-                    forM_ migrations $ \(envInfo, prevNode) -> do
-                        snapshots <- forM envInfo.migrateBackups $ \backupName -> do
-                            snap <- runMigrationBackup hostenvHostname envInfo prevNode backupName
-                            pure (backupName, snap)
-                        writeRestorePlan hostenvHostname envInfo prevNode snapshots
-                        let snapshotPairs = map (\(name, sid) -> name <> "=" <> sid) snapshots
-                        Sh.print ("hostenv-provider: restore plan written for " <> envInfo.name <> " (snapshots: " <> T.intercalate ", " snapshotPairs <> ")")
+                    let runMigration (envInfo, prevNode) = do
+                            snapshots <- forM envInfo.migrateBackups $ \backupName -> do
+                                snap <- runMigrationBackup hostenvHostname envInfo prevNode backupName
+                                pure (backupName, snap)
+                            writeRestorePlan hostenvHostname envInfo prevNode snapshots
+                            let snapshotPairs = map (\(name, sid) -> name <> "=" <> sid) snapshots
+                            Sh.print ("hostenv-provider: restore plan written for " <> envInfo.name <> " (snapshots: " <> T.intercalate ", " snapshotPairs <> ")")
+                    if ignoreMigrationErrors
+                        then do
+                            failures <- fmap catMaybes $
+                                forM migrations $ \(envInfo, prevNode) -> do
+                                    res <- try (runMigration (envInfo, prevNode)) :: IO (Either SomeException ())
+                                    case res of
+                                        Right _ -> pure Nothing
+                                        Left err -> do
+                                            Sh.print ("hostenv-provider: warning: migration failed for " <> envInfo.name <> ": " <> T.pack (displayException err))
+                                            pure (Just envInfo.name)
+                            when (not (null failures)) $
+                                Sh.print ("hostenv-provider: warning: ignored migration failures for " <> T.intercalate ", " failures)
+                        else
+                            forM_ migrations runMigration
 
             let nodeArg = maybe [] (\n -> ["-s", n]) mNode
             let deployArgs = ["run", "github:serokell/deploy-rs", "--", "--remote-build", ".#"] <> nodeArg
@@ -755,4 +805,4 @@ main = do
     case cmd of
         CmdPlan -> runPlan
         CmdDnsGate mNode mTok mZone withDnsUpdate -> runDnsGate mNode mTok mZone withDnsUpdate
-        CmdDeploy mNode -> runDeploy mNode
+        CmdDeploy mNode skipMigrations ignoreMigrationErrors -> runDeploy mNode skipMigrations ignoreMigrationErrors
