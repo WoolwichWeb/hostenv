@@ -219,9 +219,10 @@ parseSnapshotIdFromJournal out =
     let parseLine line =
             let ws = T.words line
              in case dropWhile (/= "snapshot") ws of
-                    ("snapshot" : snap : rest) | "saved" `elem` rest ->
-                        let snapId = T.takeWhile isHexDigit snap
-                         in if T.null snapId then Nothing else Just snapId
+                    ("snapshot" : snap : rest)
+                        | "saved" `elem` rest ->
+                            let snapId = T.takeWhile isHexDigit snap
+                             in if T.null snapId then Nothing else Just snapId
                     _ -> Nothing
      in listToMaybe (mapMaybe parseLine (reverse (T.lines out)))
 
@@ -793,8 +794,13 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
                         else
                             forM_ migrations runMigration
 
-            let nodeArg = maybe [] (\n -> ["-s", n]) mNode
-            let deployArgs = ["run", "github:serokell/deploy-rs", "--", "--remote-build", ".#"] <> nodeArg
+            let nodeArg = maybe [] (\n -> [".#" <> n <> ".system"]) mNode
+            -- `--skip-checks` used here as deploy-rs checks fail when the
+            -- local and remote architectures differ. For example: when on an
+            -- x86 machine deploying to an ARM server.
+            -- @todo: we could add a `--skip-checks` parameter to this CLI
+            -- and pass it through to deploy-rs.
+            let deployArgs = ["run", "github:serokell/deploy-rs", "--", "--skip-checks", "--remote-build"] <> nodeArg
             Sh.print ("hostenv-provider: running nix " <> T.unwords deployArgs)
             Sh.exit =<< Sh.proc "nix" deployArgs Sh.empty
 
