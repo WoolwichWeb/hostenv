@@ -794,7 +794,7 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
                         else
                             forM_ migrations runMigration
 
-            let nodeArg = maybe [] (\n -> [".#" <> n <> ".system"]) mNode
+            let nodeArg = maybe [] (\n -> ["generated/.#" <> n <> ".system"]) mNode
             -- `--skip-checks` used here as deploy-rs checks fail when the
             -- local and remote architectures differ. For example: when on an
             -- x86 machine deploying to an ARM server.
