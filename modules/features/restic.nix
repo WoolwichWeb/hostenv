@@ -469,7 +469,10 @@
                   (
                     backup.exclude != [ ]
                   ) "--exclude-file=${pkgs.writeText "exclude-patterns" (lib.concatStringsSep "\n" backup.exclude)}";
-                filesFromTmpFile = "$RUNTIME_DIRECTORY/includes";
+                runtimeDirName = "restic-backups-${name}";
+                # ExecStart doesn't expand $RUNTIME_DIRECTORY, so use %t there and $RUNTIME_DIRECTORY in shell hooks.
+                filesFromTmpFile = "%t/${runtimeDirName}/includes";
+                filesFromTmpFileShell = "$RUNTIME_DIRECTORY/includes";
                 fileBackup = (backup.dynamicFilesFrom != null) || (backup.paths != null && backup.paths != [ ]);
                 commandBackup = backup.command != [ ];
                 doBackup = fileBackup || commandBackup;
@@ -534,7 +537,7 @@
                       ]
                       ++ pruneCmd
                       ++ checkCmd;
-                    RuntimeDirectory = "restic-backups-${name}";
+                    RuntimeDirectory = runtimeDirName;
                     CacheDirectory = "restic-backups-${name}";
                     CacheDirectoryMode = "0700";
                     PrivateTmp = true;
@@ -552,10 +555,10 @@
                       ${resticCmd} cat config > /dev/null || ${resticCmd} init
                     ''}
                     ${lib.optionalString (backup.paths != null && backup.paths != []) ''
-                      cat ${pkgs.writeText "staticPaths" (lib.concatLines backup.paths)} >> ${filesFromTmpFile}
+                      cat ${pkgs.writeText "staticPaths" (lib.concatLines backup.paths)} >> ${filesFromTmpFileShell}
                     ''}
                     ${lib.optionalString (backup.dynamicFilesFrom != null) ''
-                      ${pkgs.writeScript "dynamicFilesFromScript" backup.dynamicFilesFrom} >> ${filesFromTmpFile}
+                      ${pkgs.writeScript "dynamicFilesFromScript" backup.dynamicFilesFrom} >> ${filesFromTmpFileShell}
                     ''}
                   '';
                 }
@@ -565,7 +568,7 @@
                       ${pkgs.writeScript "backupCleanupCommand" backup.backupCleanupCommand}
                     ''}
                     ${lib.optionalString doBackup ''
-                      rm ${filesFromTmpFile}
+                      rm ${filesFromTmpFileShell}
                     ''}
                   '';
                 }
