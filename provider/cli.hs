@@ -6,10 +6,11 @@
 
 import Control.Exception (SomeException, displayException, try)
 import Control.Monad (forM, forM_, unless, when)
-import Data.Aeson ((.:), (.:?), (.=))
+import Data.Aeson ((.!=), (.:), (.:?), (.=))
 import Data.Aeson qualified as A
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
+import Data.Aeson.Types (iparseEither, parseJSON)
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BLC
 import Data.Char (isHexDigit)
@@ -17,6 +18,7 @@ import Data.Foldable (toList)
 import Data.List (find, intersect, (\\))
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
 import Data.Scientific (floatingOrInteger)
+import Data.Set qualified as S
 import Data.String (fromString)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -189,6 +191,7 @@ disableAcmeOnNode nodeName vhostName root =
      in setBoolAt pNodeSSL False (setBoolAt pNodeEnable False root)
 
 -- -------- Migration helpers --------
+data DeploymentStatus = NotAttempted | Skipped | Succeeded | Failed ExitCode
 data EnvInfo = EnvInfo
     { name :: Text
     , userName :: Text
@@ -198,7 +201,33 @@ data EnvInfo = EnvInfo
     , runtimeDir :: Text
     , vhosts :: [Text]
     , uid :: Maybe Integer
+    , deploymentStatus :: DeploymentStatus
     }
+
+toNamed :: [EnvInfo] -> [(Text, EnvInfo)]
+toNamed = map (\e -> (e.name, e))
+
+uniqueNames :: [EnvInfo] -> [Text]
+uniqueNames = S.toList . S.fromList . map (.name)
+
+toNodeNamed :: [EnvInfo] -> [(Text, EnvInfo)]
+toNodeNamed = map (\e -> (e.node, e))
+
+uniqueNodeNames :: [EnvInfo] -> [Text]
+uniqueNodeNames = S.toList . S.fromList . map (.node)
+
+instance A.FromJSON EnvInfo where
+    parseJSON = A.withObject "EnvInfo" $ \o ->
+        EnvInfo
+            <$> o .: "name"
+            <*> o .: "userName"
+            <*> o .: "node"
+            <*> o .:? "prevNode"
+            <*> (o .:? "migrateBackups" .!= [])
+            <*> o .: "runtimeDir"
+            <*> (o .:? "vhosts" .!= [])
+            <*> o .:? "uid"
+            <*> pure NotAttempted
 
 data Snapshot = Snapshot {snapId :: Text}
 
@@ -225,30 +254,6 @@ parseSnapshotIdFromJournal out =
                              in if T.null snapId then Nothing else Just snapId
                     _ -> Nothing
      in listToMaybe (mapMaybe parseLine (reverse (T.lines out)))
-
-extractEnvInfos :: KM.KeyMap A.Value -> [EnvInfo]
-extractEnvInfos envs =
-    let parseEnv (kEnv, vEnv) =
-            case vEnv of
-                A.Object envObj ->
-                    case lookupText (K.fromString "node") envObj of
-                        Just nodeName ->
-                            let envNameText = K.toText kEnv
-                                prevNode = lookupText (K.fromString "previousNode") envObj
-                                hostenvObj = lookupObj (K.fromString "hostenv") envObj
-                                envUserName = fromMaybe envNameText (hostenvObj >>= lookupText (K.fromString "userName"))
-                                runtimeRoot = fromMaybe "/run/hostenv" (hostenvObj >>= lookupText (K.fromString "runtimeRoot"))
-                                runtimeDir = fromMaybe (runtimeRoot <> "/user/" <> envUserName) (hostenvObj >>= lookupText (K.fromString "runtimeDir"))
-                                vhosts =
-                                    case lookupObj (K.fromString "virtualHosts") envObj of
-                                        Just vhostsObj -> map (K.toText . fst) (KM.toList vhostsObj)
-                                        Nothing -> []
-                                uid = lookupInt (K.fromString "uid") envObj
-                                migrateBackups = lookupTextList (K.fromString "migrations") envObj
-                             in Just (EnvInfo envNameText envUserName nodeName prevNode migrateBackups runtimeDir vhosts uid)
-                        Nothing -> Nothing
-                _ -> Nothing
-     in mapMaybe parseEnv (KM.toList envs)
 
 -- -------- Cloudflare helpers --------
 data CFRecord = CFRecord
@@ -727,14 +732,24 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
     case A.eitherDecode' raw of
         Left err -> error err
         Right (plan :: KM.KeyMap A.Value) -> do
-            let hostenvHostname = fromMaybe "" (lookupText (K.fromString "hostenvHostname") plan)
+            let hostenvHostname = case lookupText (K.fromString "hostenvHostname") plan of
+                    Nothing -> error "hostenvHostname missing from plan.json"
+                    Just hostname -> hostname
             let envs = fromMaybe KM.empty (lookupObj (K.fromString "environments") plan)
-            when (hostenvHostname == "") $ error "hostenvHostname missing from plan.json"
-            let envInfos = extractEnvInfos envs
+
+            -- Gets the @EnvInfo@s from JSON (taken from plan.json).
+            envInfosSub <- forM (KM.elems envs) $ \env -> case iparseEither parseJSON env of
+                -- Using lists here (so the type becomes @[[EnvInfo]]@) as
+                -- they're easy to @concat@ later.
+                Left err -> Sh.print ("hostenv-provider: error reading from plan JSON at '" <> T.pack (show $ fst err) <> " - '" <> T.pack (snd err) <> "'") >> pure []
+                Right env_ -> pure [env_]
+
+            -- Filter environments to node requested by the user.
             let envInfosFiltered =
                     case mNode of
-                        Nothing -> envInfos
-                        Just n -> filter (\e -> e.node == n) envInfos
+                        Nothing -> concat envInfosSub
+                        Just n -> filter (\e -> e.node == n) (concat envInfosSub)
+
             let shouldSkip envInfo =
                     envInfo.name `elem` skipMigrations || envInfo.userName `elem` skipMigrations
             let skipHits =
@@ -742,6 +757,8 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
                         (\s -> any (\e -> e.name == s || e.userName == s) envInfosFiltered)
                         skipMigrations
             let skipMisses = skipMigrations \\ skipHits
+
+            -- Perform data migrations if the environment has moved node.
             case mNode of
                 Nothing -> pure ()
                 Just n -> Sh.print ("hostenv-provider: deploy filtered to node " <> n)
@@ -794,15 +811,53 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
                         else
                             forM_ migrations runMigration
 
-            let nodeArg = maybe [] (\n -> ["generated/.#" <> n <> ".system"]) mNode
+            -- Perform deployment
+            --
+            -- Start with the system deployment, since deploy-rs tends to
+            -- fail deployments where this is not run separately (if there are
+            -- new user accounts/environments added to the server).
+
             -- `--skip-checks` used here as deploy-rs checks fail when the
             -- local and remote architectures differ. For example: when on an
             -- x86 machine deploying to an ARM server.
             -- @todo: we could add a `--skip-checks` parameter to this CLI
             -- and pass it through to deploy-rs.
-            let deployArgs = ["run", "github:serokell/deploy-rs", "--", "--skip-checks", "--remote-build"] <> nodeArg
-            Sh.print ("hostenv-provider: running nix " <> T.unwords deployArgs)
-            Sh.exit =<< Sh.proc "nix" deployArgs Sh.empty
+            let deployArgs deployArgM =
+                    ["run", "github:serokell/deploy-rs", "--", "--skip-checks", "--remote-build"]
+                        <> case deployArgM of
+                            Just dArg -> ["generated/.#" <> dArg]
+                            Nothing -> ["generated/"]
+            let deployGuard res args = when (res /= ExitSuccess) $ Sh.print ("hostenv-provider: deploying " <> T.unwords args <> "failed")
+
+            -- System deployment of each node. Retains results, so we can
+            -- cowardly refuse to deploy environments where the system deploy
+            -- failed to complete.
+            systemDeployRes <- forM (uniqueNodeNames envInfosFiltered) $ \nodeName -> do
+                let args = deployArgs $ Just $ nodeName <> ".system"
+                Sh.print ("hostenv-provider: running nix " <> T.unwords args)
+                res <- Sh.proc "nix" args Sh.empty
+                deployGuard res args
+                pure (nodeName, res)
+
+            -- Environments deployment for the node.
+            envDeployRes <- forM (toNamed envInfosFiltered) $ \(envName, envInfo) -> do
+                let args = deployArgs $ Just $ envInfo.node <> "." <> envInfo.name
+                let systemStatus = case filter ((==) envInfo.node . fst) systemDeployRes of
+                        [] -> Left "node not in system deployment list"
+                        (_, ExitSuccess) : [] -> Right ExitSuccess
+                        _moreThanOneNode -> Left "multiple matching nodes found in system deployment list"
+
+                Sh.print ("hostenv-provider: running nix " <> T.unwords args)
+                case systemStatus of
+                    Left err -> Sh.print ("hostenv-provider: " <> err) >> pure (ExitFailure 1)
+                    Right ExitSuccess -> do
+                        res <- Sh.proc "nix" args Sh.empty
+                        deployGuard res args
+                        pure res
+
+            let failures = (>) 1 $ length $ filter (/= ExitSuccess) envDeployRes
+            when failures $ Sh.print "hostenv-provider: deployment completed with errors"
+            Sh.exitWith $ if failures then ExitFailure 1 else ExitSuccess
 
 -- -------- Main --------
 main :: IO ()
