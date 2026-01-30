@@ -400,6 +400,7 @@ let
                           hostenv' = hostenv // { hostenvHostname = cfgHostenvHostname; };
                         in
                         envWithMigrations // {
+                          name = envName;
                           inherit node authorizedKeys virtualHosts;
                           hostenv = hostenv';
                           repo = repo // { ref = hostenv'.gitRef; };
