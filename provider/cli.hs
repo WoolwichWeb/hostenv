@@ -220,16 +220,27 @@ uniqueNodeNames :: [EnvInfo] -> [Text]
 uniqueNodeNames = S.toList . S.fromList . map (.node)
 
 instance A.FromJSON EnvInfo where
-    parseJSON = A.withObject "EnvInfo" $ \o ->
-        EnvInfo
-            <$> o .: "userName"
-            <*> o .: "node"
-            <*> o .:? "prevNode"
-            <*> (o .:? "migrateBackups" .!= [])
-            <*> o .: "runtimeDir"
-            <*> (o .:? "vhosts" .!= [])
-            <*> o .:? "uid"
-            <*> pure NotAttempted
+    parseJSON = A.withObject "EnvInfo" $ \o -> do
+        hostenvObj <- o .: "hostenv"
+        userName <- hostenvObj .: "userName"
+        runtimeDir <- hostenvObj .: "runtimeDir"
+        node <- o .: "node"
+        prevNode <- o .:? "previousNode"
+        migrateBackups <- o .:? "migrations" .!= []
+        vhostsObj <- o .:? "virtualHosts" .!= (KM.empty :: KM.KeyMap A.Value)
+        let vhosts = map (K.toText . fst) (KM.toList vhostsObj)
+        uid <- o .:? "uid"
+        pure $
+            EnvInfo
+                { userName = userName
+                , node = node
+                , prevNode = prevNode
+                , migrateBackups = migrateBackups
+                , runtimeDir = runtimeDir
+                , vhosts = vhosts
+                , uid = uid
+                , deploymentStatus = NotAttempted
+                }
 
 data Snapshot = Snapshot {snapId :: Text}
 
