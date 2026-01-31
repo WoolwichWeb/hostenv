@@ -193,8 +193,7 @@ disableAcmeOnNode nodeName vhostName root =
 -- -------- Migration helpers --------
 data DeploymentStatus = NotAttempted | Skipped | Succeeded | Failed ExitCode
 data EnvInfo = EnvInfo
-    { name :: Text
-    , userName :: Text
+    { userName :: Text
     , node :: Text
     , prevNode :: Maybe Text
     , migrateBackups :: [Text]
@@ -204,11 +203,15 @@ data EnvInfo = EnvInfo
     , deploymentStatus :: DeploymentStatus
     }
 
+-- Note: check the nix code that generates plan.json
+-- (modules/entrypoints/provider/plan.nix)
+-- The name key is always == userName. So, it's okay to use
+-- userName here as the environment name/identifier.
 toNamed :: [EnvInfo] -> [(Text, EnvInfo)]
-toNamed = map (\e -> (e.name, e))
+toNamed = map (\e -> (e.userName, e))
 
 uniqueNames :: [EnvInfo] -> [Text]
-uniqueNames = S.toList . S.fromList . map (.name)
+uniqueNames = S.toList . S.fromList . map (.userName)
 
 toNodeNamed :: [EnvInfo] -> [(Text, EnvInfo)]
 toNodeNamed = map (\e -> (e.node, e))
@@ -219,8 +222,7 @@ uniqueNodeNames = S.toList . S.fromList . map (.node)
 instance A.FromJSON EnvInfo where
     parseJSON = A.withObject "EnvInfo" $ \o ->
         EnvInfo
-            <$> o .: "name"
-            <*> o .: "userName"
+            <$> o .: "userName"
             <*> o .: "node"
             <*> o .:? "prevNode"
             <*> (o .:? "migrateBackups" .!= [])
@@ -599,7 +601,7 @@ runMigrationBackup hostenvHostname envInfo prevNode backupName = do
     startExit <- runRemote deployHost (sudoArgs startCmd)
     case startExit of
         ExitSuccess -> pure ()
-        ExitFailure code -> error ("migration backup failed for " <> T.unpack envInfo.name <> ":" <> T.unpack backupName <> " (exit " <> show code <> ")")
+        ExitFailure code -> error ("migration backup failed for " <> T.unpack envInfo.userName <> ":" <> T.unpack backupName <> " (exit " <> show code <> ")")
 
     let wrapperPath = "~/.local/bin/restic-" <> effectiveName
     let wrapperCheckCmd = "test -x " <> wrapperPath
@@ -631,7 +633,7 @@ runMigrationBackup hostenvHostname envInfo prevNode backupName = do
                                     <> "; using latest untagged snapshot"
                                 )
                             pure snap
-                        Nothing -> error ("could not parse snapshot id for " <> T.unpack envInfo.name <> ":" <> T.unpack backupName <> " (tagged or untagged)")
+                        Nothing -> error ("could not parse snapshot id for " <> T.unpack envInfo.userName <> ":" <> T.unpack backupName <> " (tagged or untagged)")
         else do
             Sh.print ("hostenv: restic wrapper missing for " <> effectiveName <> " on " <> prevHost <> "; reading snapshot id from journal")
             let invocationCmd = userBusPrefix <> "systemctl --user show -p InvocationID --value " <> unit
@@ -645,7 +647,7 @@ runMigrationBackup hostenvHostname envInfo prevNode backupName = do
             logOut <- runRemoteStrict deployHost (sudoArgs journalCmd)
             case parseSnapshotIdFromJournal logOut of
                 Just snap -> pure snap
-                Nothing -> error ("could not parse snapshot id from journal for " <> T.unpack envInfo.name <> ":" <> T.unpack backupName)
+                Nothing -> error ("could not parse snapshot id from journal for " <> T.unpack envInfo.userName <> ":" <> T.unpack backupName)
 
 resolvePrevNode :: Text -> EnvInfo -> IO (Maybe Text)
 resolvePrevNode hostenvHostname envInfo =
@@ -655,7 +657,7 @@ resolvePrevNode hostenvHostname envInfo =
             discovered <- discoverPrevNodeFromDns hostenvHostname envInfo.userName (envInfo.vhosts)
             case discovered of
                 Just node -> do
-                    Sh.print ("hostenv: previous node for " <> envInfo.name <> " discovered via DNS: " <> node)
+                    Sh.print ("hostenv: previous node for " <> envInfo.userName <> " discovered via DNS: " <> node)
                     pure (Just node)
                 Nothing -> pure Nothing
 
@@ -718,7 +720,7 @@ writeRestorePlan hostenvHostname envInfo prevNode snapshots = do
     writeExit <- runRemote deployHost ["bash", "-lc", writeCmd]
     case writeExit of
         ExitSuccess -> pure ()
-        ExitFailure code -> error ("failed to write restore plan for " <> T.unpack envInfo.name <> " (exit " <> show code <> ")")
+        ExitFailure code -> error ("failed to write restore plan for " <> T.unpack envInfo.userName <> " (exit " <> show code <> ")")
 
 runDeploy :: Maybe Text -> [Text] -> Bool -> IO ()
 runDeploy mNode skipMigrations ignoreMigrationErrors = do
@@ -750,11 +752,9 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
                         Nothing -> concat envInfosSub
                         Just n -> filter (\e -> e.node == n) (concat envInfosSub)
 
-            let shouldSkip envInfo =
-                    envInfo.name `elem` skipMigrations || envInfo.userName `elem` skipMigrations
             let skipHits =
                     filter
-                        (\s -> any (\e -> e.name == s || e.userName == s) envInfosFiltered)
+                        (\s -> any (\e -> e.userName == s) envInfosFiltered)
                         skipMigrations
             let skipMisses = skipMigrations \\ skipHits
 
@@ -771,16 +771,13 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
                 Sh.print "hostenv-provider: warning: migration errors will be ignored; deployments may proceed with stale data"
             migrations <- fmap catMaybes $
                 forM envInfosFiltered $ \envInfo -> do
-                    if shouldSkip envInfo
+                    if envInfo.userName `elem` skipMigrations || envInfo.migrateBackups == []
                         then pure Nothing
-                        else
-                            if envInfo.migrateBackups == []
-                                then pure Nothing
-                                else do
-                                    prevNode <- resolvePrevNode hostenvHostname envInfo
-                                    pure $ case prevNode of
-                                        Just prev | prev /= envInfo.node -> Just (envInfo, prev)
-                                        _ -> Nothing
+                        else do
+                            prevNode <- resolvePrevNode hostenvHostname envInfo
+                            pure $ case prevNode of
+                                Just prev | prev /= envInfo.node -> Just (envInfo, prev)
+                                _ -> Nothing
 
             if null migrations
                 then Sh.print "hostenv-provider: no migrations required"
@@ -788,14 +785,14 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
                     Sh.print ("hostenv-provider: migrations required for " <> T.pack (show (length migrations)) <> " environment(s)")
                     forM_ migrations $ \(envInfo, prevNode) -> do
                         let backups = T.intercalate ", " envInfo.migrateBackups
-                        Sh.print ("hostenv-provider: migrate backups for " <> envInfo.name <> " from " <> prevNode <> " -> " <> envInfo.node <> " (" <> backups <> ")")
+                        Sh.print ("hostenv-provider: migrate backups for " <> envInfo.userName <> " from " <> prevNode <> " -> " <> envInfo.node <> " (" <> backups <> ")")
                     let runMigration (envInfo, prevNode) = do
                             snapshots <- forM envInfo.migrateBackups $ \backupName -> do
                                 snap <- runMigrationBackup hostenvHostname envInfo prevNode backupName
                                 pure (backupName, snap)
                             writeRestorePlan hostenvHostname envInfo prevNode snapshots
                             let snapshotPairs = map (\(name, sid) -> name <> "=" <> sid) snapshots
-                            Sh.print ("hostenv-provider: restore plan written for " <> envInfo.name <> " (snapshots: " <> T.intercalate ", " snapshotPairs <> ")")
+                            Sh.print ("hostenv-provider: restore plan written for " <> envInfo.userName <> " (snapshots: " <> T.intercalate ", " snapshotPairs <> ")")
                     if ignoreMigrationErrors
                         then do
                             failures <- fmap catMaybes $
@@ -804,8 +801,8 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
                                     case res of
                                         Right _ -> pure Nothing
                                         Left err -> do
-                                            Sh.print ("hostenv-provider: warning: migration failed for " <> envInfo.name <> ": " <> T.pack (displayException err))
-                                            pure (Just envInfo.name)
+                                            Sh.print ("hostenv-provider: warning: migration failed for " <> envInfo.userName <> ": " <> T.pack (displayException err))
+                                            pure (Just envInfo.userName)
                             when (not (null failures)) $
                                 Sh.print ("hostenv-provider: warning: ignored migration failures for " <> T.intercalate ", " failures)
                         else
@@ -841,7 +838,7 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
 
             -- Environments deployment for the node.
             envDeployRes <- forM (toNamed envInfosFiltered) $ \(envName, envInfo) -> do
-                let args = deployArgs $ Just $ envInfo.node <> "." <> envInfo.name
+                let args = deployArgs $ Just $ envInfo.node <> "." <> envInfo.userName
                 let systemStatus = case filter ((==) envInfo.node . fst) systemDeployRes of
                         [] -> Left "node not in system deployment list"
                         (_, ExitSuccess) : [] -> Right ExitSuccess

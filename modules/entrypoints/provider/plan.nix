@@ -333,7 +333,7 @@ let
                           in
                           builtins.concatLists (map (u: u.publicKeys or [ ]) allUsers);
 
-                        # Hostname reservation logic (copied from legacy generator).
+                        # Hostname reservation logic.
                         # Remove current env by username (state keyed by hostenv.userName), not envName.
                         stateVHosts =
                           builtins.concatLists (
@@ -400,7 +400,6 @@ let
                           hostenv' = hostenv // { hostenvHostname = cfgHostenvHostname; };
                         in
                         envWithMigrations // {
-                          name = envName;
                           inherit node authorizedKeys virtualHosts;
                           hostenv = hostenv';
                           repo = repo // { ref = hostenv'.gitRef; };
