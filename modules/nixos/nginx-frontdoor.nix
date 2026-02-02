@@ -134,6 +134,8 @@
           ])
           envs);
 
+        networking.firewall.allowedTCPPorts = lib.mkDefault [ 80 443 22 ];
+
         services.nginx = {
           enable = true;
           recommendedProxySettings = true;
