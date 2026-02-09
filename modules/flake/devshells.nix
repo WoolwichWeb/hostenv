@@ -35,7 +35,6 @@ in
           devshell = {
             packages =
               (lib.optional providerEnabled config.packages.hostenv-provider)
-              ++ (lib.optional providerEnabled config.packages.hostenv-provider-plan)
               ++ [
                 pkgs.jq
                 pkgs.haskellPackages.cabal-install

@@ -95,7 +95,7 @@ testCommandSequence = do
       cmds <- readIORef ref
       let expected =
             [ CommandSpec "nix" ["flake", "update", "acme__site"] "/tmp/provider"
-            , CommandSpec "nix" ["run", ".#hostenv-provider-plan"] "/tmp/provider"
+            , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] "/tmp/provider"
             , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "dns-gate"] "/tmp/provider"
             , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "deploy", "--node", "node-a"] "/tmp/provider"
             , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "deploy", "--node", "node-b"] "/tmp/provider"

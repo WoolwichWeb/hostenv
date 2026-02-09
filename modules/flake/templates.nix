@@ -23,7 +23,7 @@
 
           - Set `provider.*` options in flake.nix (hostname, deploy key, nodes).
           - Add node configs under nodes/<name>/configuration.nix.
-          - Generate plan/state: nix run .#hostenv-provider-plan
+          - Generate plan/state: nix run .#hostenv-provider -- plan
           - Deploy using generated/flake.nix (e.g. via deploy-rs).
         '';
       };

@@ -46,7 +46,7 @@ Client inputs should point at the `.hostenv` flake (e.g. `dir=.hostenv`) so `hos
 3) Generate plan/state (optional if using planSource=eval):
 
 ```
-nix run .#hostenv-provider plan
+nix run .#hostenv-provider -- plan
 ```
 
 Why the generated `flake.nix` exists: flake inputs are static, but your client
@@ -59,13 +59,13 @@ state.json,flake.nix}` is the deployable, auditable snapshot.
 4) DNS/ACME safety + Cloudflare (optional):
 
 ```
-CF_API_TOKEN=... CF_ZONE_ID=... nix run .#hostenv-provider dns-gate [--with-dns-update] [-n node]
+CF_API_TOKEN=... CF_ZONE_ID=... nix run .#hostenv-provider -- dns-gate [--with-dns-update] [-n node]
 ```
 
 5) Deploy:
 
 ```
-nix run .#hostenv-provider deploy [-n node]
+nix run .#hostenv-provider -- deploy [-n node]
 ```
 
 Outputs:

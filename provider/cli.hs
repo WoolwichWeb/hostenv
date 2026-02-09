@@ -469,10 +469,64 @@ runDnsGate mNode mTok mZone withDnsUpdate = do
         pure planAcc'
 
 -- -------- Plan (copy from provider package) --------
+data PlanPaths = PlanPaths
+    { planPath :: Text
+    , statePath :: Text
+    , flakePath :: Text
+    }
+
+instance A.FromJSON PlanPaths where
+    parseJSON = A.withObject "PlanPaths" $ \o ->
+        PlanPaths
+            <$> o .: "plan"
+            <*> o .: "state"
+            <*> o .: "flake"
+
 runPlan :: IO ()
 runPlan = do
-    _ <- Sh.procs "hostenv-provider-plan" [] Sh.empty
-    pure ()
+    let dest = "generated" :: Text
+    let planDest = dest <> "/plan.json"
+    let stateDest = dest <> "/state.json"
+    let flakeDest = dest <> "/flake.nix"
+    Sh.mktree (fromString (T.unpack dest))
+
+    stateExists <- Sh.testfile (fromString (T.unpack stateDest))
+    unless stateExists $ do
+        BLC.writeFile (T.unpack stateDest) "{}\n"
+        _ <- Sh.procs "git" ["add", stateDest] Sh.empty
+        pure ()
+
+    system <- nixEvalRaw ["eval", "--raw", "--expr", "builtins.currentSystem"]
+    planPaths <- nixEvalPlanPaths (T.strip system)
+
+    planRaw <- BL.readFile (T.unpack planPaths.planPath)
+    BL.writeFile (T.unpack planDest) planRaw
+    pretty <- Sh.strict $ Sh.inproc "jq" ["-S", ".", planDest] Sh.empty
+    BL.writeFile (T.unpack planDest) (BL.fromStrict (TE.encodeUtf8 pretty))
+
+    stateRaw <- BL.readFile (T.unpack planPaths.statePath)
+    BL.writeFile (T.unpack stateDest) stateRaw
+
+    flakeRaw <- BL.readFile (T.unpack planPaths.flakePath)
+    BL.writeFile (T.unpack flakeDest) flakeRaw
+
+    _ <- Sh.procs "nix" (nixCommonArgs ++ ["flake", "update", dest]) Sh.empty
+    _ <- Sh.procs "git" ["add", dest] Sh.empty
+    BLC.putStrLn ("✅ Infrastructure configuration written to " <> BLC.pack (T.unpack dest))
+  where
+    nixCommonArgs :: [Text]
+    nixCommonArgs = ["--extra-experimental-features", "nix-command flakes"]
+
+    nixEvalRaw :: [Text] -> IO Text
+    nixEvalRaw args = T.strip <$> Sh.strict (Sh.inproc "nix" (nixCommonArgs ++ args) Sh.empty)
+
+    nixEvalPlanPaths :: Text -> IO PlanPaths
+    nixEvalPlanPaths system = do
+        let attr = ".#lib.provider.planPaths." <> system
+        raw <- Sh.strict $ Sh.inproc "nix" (nixCommonArgs ++ ["eval", "--json", attr]) Sh.empty
+        case A.eitherDecode' (BL.fromStrict (TE.encodeUtf8 raw)) of
+            Left err -> error ("hostenv-provider: failed to decode plan paths: " <> err)
+            Right paths -> pure paths
 
 -- -------- Deploy wrapper --------
 shellEscape :: Text -> Text

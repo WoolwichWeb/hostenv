@@ -181,7 +181,7 @@ still working on improvements to Provider support.
 5. **Generate plan/state/flake**
 
    ```bash
-   nix run .#hostenv-provider-plan
+   nix run .#hostenv-provider -- plan
    ```
 
    This writes: `generated/{flake.nix,plan.json,state.json}`.

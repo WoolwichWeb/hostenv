@@ -456,7 +456,7 @@ runWebhookWith runner loadPlan cfg ref = do
   step runner (CommandSpec "nix" ["flake", "update", inputName] (cfg.whWorkDir)) >>= \case
     Left err -> pure (Left err)
     Right _ ->
-      step runner (CommandSpec "nix" ["run", ".#hostenv-provider-plan"] (cfg.whWorkDir)) >>= \case
+      step runner (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] (cfg.whWorkDir)) >>= \case
         Left err -> pure (Left err)
         Right _ ->
           step runner (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "dns-gate"] (cfg.whWorkDir)) >>= \case

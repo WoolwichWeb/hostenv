@@ -72,7 +72,7 @@ addProjectFlow cfg sess repoId orgInput projectInput = withDb cfg $ \conn -> do
                   case cmdRes of
                     Left err -> pure (Left (commandErrorText err))
                     Right _ -> do
-                      planRes <- runCommand cfg (CommandSpec "nix" ["run", ".#hostenv-provider-plan"] (appWorkDir cfg))
+                      planRes <- runCommand cfg (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] (appWorkDir cfg))
                       case planRes of
                         Left err -> pure (Left (commandErrorText err))
                         Right _ -> do

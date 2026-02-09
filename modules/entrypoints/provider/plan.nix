@@ -103,11 +103,19 @@ let
             ${hint}
           '';
 
-      statePathChecked = requirePath {
-        name = "statePath";
-        path = statePath;
-        hint = "Set provider.statePath (or pass statePath explicitly) and ensure the file exists (it can be an empty JSON object).";
-      };
+      statePathChecked =
+        if planSource == "disk" then
+          requirePath {
+            name = "statePath";
+            path = statePath;
+            hint = "Set provider.statePath (or pass statePath explicitly) and ensure the file exists (it can be an empty JSON object).";
+          }
+        else if statePath == null then
+          null
+        else if builtins.pathExists statePath then
+          statePath
+        else
+          null;
 
       planPathChecked =
         if planSource == "disk" then
@@ -187,8 +195,14 @@ let
           true;
 
       state =
-        let rawValues = lib.importJSON statePathChecked;
-        in lib.filterAttrs (name: _: name != "_description") rawValues;
+        let
+          rawValues =
+            if statePathChecked == null then
+              { }
+            else
+              lib.importJSON statePathChecked;
+        in
+        lib.filterAttrs (name: _: name != "_description") rawValues;
 
       lockData =
         if builtins.pathExists lockPath

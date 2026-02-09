@@ -11,7 +11,7 @@ This template boots a provider flake that consumes hostenv projects and generate
 4. Create `secrets/secrets.yaml` with `sops` (provider uses this at deploy time).
 5. Create `generated/state.json` (can be `{}` initially).
 6. Add NixOS node configs under `nodes/<node>/configuration.nix` (with `system.stateVersion`).
-7. Run `nix run .#hostenv-provider-plan` to write `generated/{flake.nix,plan.json,state.json}`.
+7. Run `nix run .#hostenv-provider -- plan` to write `generated/{flake.nix,plan.json,state.json}`.
 8. Deploy using your tool of choice (e.g. deploy-rs) pointing at `generated/flake.nix`.
 
 ## Admin UI template
@@ -33,7 +33,6 @@ Edit `flake.template.nix` to make structural changes while keeping the marker:
 
 ## Outputs
 
-- `apps.hostenv-provider-plan`: generate plan/state/flake into `generated/`.
 - `packages.hostenv-provider`: CLI wrapper.
 
 ## Customisation tips
