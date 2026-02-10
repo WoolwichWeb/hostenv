@@ -405,7 +405,9 @@
               ${lockSetup}
 
               if [ -d "$backup_root/incremental" ]; then
-                ${toolBin} --prepare --apply-log-only --target-dir="$backup_root/full"
+                # Prepare the base backup before applying incrementals.
+                # MariaDB's mariabackup no longer accepts --apply-log-only.
+                ${toolBin} --prepare ${lib.optionalString (cfg.backups.tool == "xtrabackup") "--apply-log-only"} --target-dir="$backup_root/full"
                 ${toolBin} --prepare --target-dir="$backup_root/full" --incremental-dir="$backup_root/incremental"
               else
                 ${toolBin} --prepare --target-dir="$backup_root/full"

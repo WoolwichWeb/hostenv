@@ -32,8 +32,9 @@
             !include ${config.sops.secrets.access_tokens.path}
           '';
 
-          # See: https://discourse.nixos.org/t/build-failed-due-to-lack-of-signature-by-trusted-key-in-distributed-build/44996/2
-          settings.trusted-users = lib.mkDefault [ "deploy" ];
+          # Allow deploy-rs uploads from the provider host without disabling
+          # signature checks globally on the node.
+          settings.trusted-users = lib.mkAfter [ "deploy" ];
         };
 
         services.openssh = {

@@ -97,6 +97,7 @@
           buildPhase =
             let
               settingsPhp = ''
+                // HOSTENV_SETTINGS_INCLUDE_BEGIN
                 if (isset($app_root) && isset($site_path)) {
                   $sitesDir = $app_root . '/' . $site_path;
                 } else {
@@ -109,26 +110,41 @@
                   echo('Could not find settings file');
                   throw new Exception('Could not find settings file: "${hostenvSettingsFile}"');
                 }
+                // HOSTENV_SETTINGS_INCLUDE_END
               '';
+              settingsPhpSnippet = pkgs.writeText "settings.hostenv.include.php" settingsPhp;
             in
             ''
+              ${lib.optionalString cfg.composer.enable ''
+              cp -r ${composerPackage}/share/php/${cfg.codebase.name}/. .
+              ''}
+
               if [ -d web ]; then
                 export WEBROOT="web/"
               else
                 export WEBROOT=""
               fi
-    
-              cat >> "$WEBROOT"sites/default/settings.php <<'EOF'
-              ${settingsPhp}
-              EOF
-    
+
+              settings_path="$WEBROOT"sites/default/settings.php
+              default_settings_path="$WEBROOT"sites/default/default.settings.php
+
+              if [ ! -f "$settings_path" ]; then
+                if [ -f "$default_settings_path" ]; then
+                  cp "$default_settings_path" "$settings_path"
+                else
+                  printf '%s\n' '<?php' > "$settings_path"
+                fi
+              fi
+
+              if ! grep -q 'HOSTENV_SETTINGS_INCLUDE_BEGIN' "$settings_path"; then
+                cat ${settingsPhpSnippet} >> "$settings_path"
+              fi
+
               [ -d "$WEBROOT"sites/default/files ] && mv "$WEBROOT"sites/default/files ./project_files
-    
+
+              rm -f "$WEBROOT"sites/default/files
               ln -s "${cfg.filesDir}" "$WEBROOT"sites/default/files
               ln -s "${hostenvSettingsFile}" "$WEBROOT"sites/default/hostenv.settings.php
-              ${lib.optionalString cfg.composer.enable ''
-              cp -r ${composerPackage}/share/php/${cfg.codebase.name}/. .
-              ''}
             '';
 
           installPhase = ''
@@ -845,7 +861,7 @@
               ${config.systemd.package}/bin/systemctl --user stop phpfpm.target || true
               ${config.systemd.package}/bin/systemctl --user stop mysql.service || true
 
-              if ! "$restic_migrate" restore "$restore_snapshot" --target "$restore_tmp" --no-owner; then
+              if ! "$restic_migrate" restore "$restore_snapshot" --target "$restore_tmp"; then
                 echo "hostenv: restic restore failed" >&2
                 rm -rf "$restore_tmp"
                 exit 1
@@ -928,7 +944,15 @@
           find "${cfg.filesDir}/" -type d -name '__MACOSX' -print0 | xargs -0 rm -rf
           find "${cfg.filesDir}/" -type f -name '.DS_Store' -delete
 
-          ${drush}/bin/drush updatedb --cache-clear --yes
+          if ${config.services.mysql.package}/bin/mysql --batch --skip-column-names \
+            --socket="${config.hostenv.runtimeDir}/mysql.sock" \
+            -u "${config.hostenv.userName}" \
+            -e "SELECT 1 FROM information_schema.tables WHERE table_schema='${cfg.databaseName}' AND table_name='key_value' LIMIT 1;" 2>/dev/null \
+            | grep -qx "1"; then
+            ${drush}/bin/drush updatedb --cache-clear --yes
+          else
+            echo "hostenv: Drupal database is not initialized yet; skipping drush updatedb" >&2
+          fi
         '';
 
         profile =

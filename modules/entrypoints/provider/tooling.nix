@@ -32,7 +32,6 @@ in
 
     options.provider.planPaths = lib.mkOption {
       type = lib.types.attrsOf lib.types.path;
-      readOnly = true;
       default = { };
       description = "Generated plan/state/flake store paths for provider tooling.";
     };
@@ -65,6 +64,12 @@ in
               hostenvHostname = cfg.hostenvHostname;
               nodeFor = cfg.nodeFor;
               nodeSystems = cfg.nodeSystems;
+              nodeAddresses = cfg.nodeAddresses;
+              nodeSshPorts = cfg.nodeSshPorts;
+              nodeSshOpts = cfg.nodeSshOpts;
+              nodeRemoteBuild = cfg.nodeRemoteBuild;
+              nodeMagicRollback = cfg.nodeMagicRollback;
+              nodeAutoRollback = cfg.nodeAutoRollback;
               nodeModules = cfg.nodeModules;
               statePath = cfg.statePath;
               planPath = cfg.planPath;

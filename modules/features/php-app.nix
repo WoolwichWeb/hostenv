@@ -306,7 +306,7 @@
               ${config.systemd.package}/bin/systemctl --user stop phpfpm.target || true
               ${config.systemd.package}/bin/systemctl --user stop mysql.service || true
 
-              if ! "$restic_migrate" restore "$restore_snapshot" --target "$restore_tmp" --no-owner; then
+              if ! "$restic_migrate" restore "$restore_snapshot" --target "$restore_tmp"; then
                 echo "hostenv: restic restore failed" >&2
                 rm -rf "$restore_tmp"
                 exit 1

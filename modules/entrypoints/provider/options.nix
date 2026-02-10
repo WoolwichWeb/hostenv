@@ -169,6 +169,12 @@ let
     , secretsPath
     , nodeModules ? [ ]
     , nodeSystems ? { }
+    , nodeAddresses ? { }
+    , nodeSshPorts ? { }
+    , nodeSshOpts ? { }
+    , nodeRemoteBuild ? { }
+    , nodeMagicRollback ? { }
+    , nodeAutoRollback ? { }
     }:
     let
       forEachSystem = nixpkgs.lib.genAttrs (import systems);
@@ -201,6 +207,8 @@ let
 
       packages = forEachSystem (system:
         let
+          nodeSystemOf = sys: sys.pkgs.stdenv.hostPlatform.system;
+
           envPkgs = nixpkgs.lib.mapAttrs'
             (name: drv: { name = "env-${name}"; value = drv; })
             environments.${system};
@@ -211,7 +219,7 @@ let
               value = sys.config.system.build.toplevel;
             })
             (nixpkgs.lib.filterAttrs
-              (_: sys: sys.config.nixpkgs.hostPlatform.system == system)
+              (_: sys: nodeSystemOf sys == system)
               nodes);
         in
         envPkgs // nodePkgs
@@ -219,13 +227,43 @@ let
 
       deploy.nodes = builtins.mapAttrs
         (node: _: {
-          hostname = node + "." + config.hostenvHostname;
+          # Allow local demos and non-standard network topologies to override
+          # default `<node>.<hostenvHostname>` SSH addressing.
+          hostname =
+            if builtins.hasAttr node nodeAddresses
+            then nodeAddresses.${node}
+            else node + "." + config.hostenvHostname;
+          # Keep port override and raw ssh options separate so callers can use
+          # either `nodeSshPorts` or `nodeSshOpts` without duplicating flags.
+          sshOpts =
+            let
+              portOpts =
+                if builtins.hasAttr node nodeSshPorts
+                then [ "-p" (builtins.toString nodeSshPorts.${node}) ]
+                else [ ];
+              extraOpts =
+                if builtins.hasAttr node nodeSshOpts
+                then nodeSshOpts.${node}
+                else [ ];
+            in
+            portOpts ++ extraOpts;
           fastConnection = true;
-          remoteBuild = true;
+          remoteBuild =
+            if builtins.hasAttr node nodeRemoteBuild
+            then nodeRemoteBuild.${node}
+            else false;
+          magicRollback =
+            if builtins.hasAttr node nodeMagicRollback
+            then nodeMagicRollback.${node}
+            else true;
+          autoRollback =
+            if builtins.hasAttr node nodeAutoRollback
+            then nodeAutoRollback.${node}
+            else true;
           profilesOrder = [ "system" ] ++ builtins.attrNames (environmentsWith node).${localSystem};
           profiles =
             let
-              remoteSystem = nodes.${node}.config.nixpkgs.hostPlatform.system;
+              remoteSystem = nodes.${node}.pkgs.stdenv.hostPlatform.system;
             in
             {
               system = {
@@ -270,6 +308,36 @@ in
       type = types.attrs;
       default = { };
       description = "Map of node name -> system string (e.g. x86_64-linux, aarch64-linux).";
+    };
+    nodeAddresses = mkOption {
+      type = types.attrsOf types.str;
+      default = { };
+      description = "Optional map of node name -> SSH hostname/IP override for deploy-rs.";
+    };
+    nodeSshPorts = mkOption {
+      type = types.attrsOf types.int;
+      default = { };
+      description = "Optional map of node name -> SSH port override for deploy-rs.";
+    };
+    nodeSshOpts = mkOption {
+      type = types.attrsOf (types.listOf types.str);
+      default = { };
+      description = "Optional map of node name -> extra SSH options for deploy-rs.";
+    };
+    nodeRemoteBuild = mkOption {
+      type = types.attrsOf types.bool;
+      default = { };
+      description = "Optional map of node name -> whether deploy-rs should build on the remote host.";
+    };
+    nodeMagicRollback = mkOption {
+      type = types.attrsOf types.bool;
+      default = { };
+      description = "Optional map of node name -> deploy-rs magicRollback override.";
+    };
+    nodeAutoRollback = mkOption {
+      type = types.attrsOf types.bool;
+      default = { };
+      description = "Optional map of node name -> deploy-rs autoRollback override.";
     };
     nodeModules = mkOption {
       type = types.listOf (types.oneOf [ types.path types.str ]);

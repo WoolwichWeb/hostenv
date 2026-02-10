@@ -37,7 +37,12 @@ import Prelude hiding (FilePath)
 data Command
     = CmdPlan
     | CmdDnsGate {node :: Maybe Text, token :: Maybe Text, zone :: Maybe Text, withDnsUpdate :: Bool}
-    | CmdDeploy {node :: Maybe Text, skipMigrations :: [Text], ignoreMigrationErrors :: Bool}
+    | CmdDeploy
+        { node :: Maybe Text
+        , skipMigrations :: [Text]
+        , migrationSources :: [Text]
+        , ignoreMigrationErrors :: Bool
+        }
 
 data CLI = CLI {cliCmd :: Command}
 
@@ -80,13 +85,22 @@ ignoreMigrationErrorsOpt =
             <> OA.help "Continue deployment even if migration steps fail (may deploy with stale data)"
         )
 
+migrationSourceOpt :: OA.Parser [Text]
+migrationSourceOpt =
+    OA.many . fmap T.pack $
+        OA.strOption
+            ( OA.long "migration-source"
+                <> OA.metavar "ENV=NODE"
+                <> OA.help "Force migration source node for an environment (repeatable)"
+            )
+
 cliParser :: OA.Parser CLI
 cliParser =
     CLI
         <$> OA.hsubparser
             ( OA.command "plan" (OA.info (pure CmdPlan) (OA.progDesc "Generate plan.json, state.json, and flake.nix"))
                 <> OA.command "dns-gate" (OA.info (CmdDnsGate <$> nodeOpt <*> tokenOpt <*> zoneOpt <*> withDnsUpdateOpt) (OA.progDesc "Disable ACME/forceSSL for vhosts not pointing at node; add --with-dns-update to upsert Cloudflare records"))
-                <> OA.command "deploy" (OA.info (CmdDeploy <$> nodeOpt <*> skipMigrationsOpt <*> ignoreMigrationErrorsOpt) (OA.progDesc "Deploy via deploy-rs"))
+                <> OA.command "deploy" (OA.info (CmdDeploy <$> nodeOpt <*> skipMigrationsOpt <*> migrationSourceOpt <*> ignoreMigrationErrorsOpt) (OA.progDesc "Deploy via deploy-rs"))
             )
 
 cliOpts :: OA.ParserInfo CLI
@@ -242,6 +256,36 @@ instance A.FromJSON EnvInfo where
                 , deploymentStatus = NotAttempted
                 }
 
+data NodeConnection = NodeConnection
+    { connHostname :: Text
+    , connSshOpts :: [Text]
+    }
+
+instance A.FromJSON NodeConnection where
+    parseJSON = A.withObject "NodeConnection" $ \o ->
+        NodeConnection
+            <$> o .: "hostname"
+            <*> o .:? "sshOpts" .!= []
+
+defaultNodeConnection :: Text -> Text -> NodeConnection
+defaultNodeConnection hostenvHostname nodeName =
+    NodeConnection
+        { connHostname = nodeName <> "." <> hostenvHostname
+        , connSshOpts = []
+        }
+
+lookupNodeConnection :: KM.KeyMap A.Value -> Text -> Maybe NodeConnection
+lookupNodeConnection plan nodeName = do
+    conns <- lookupObj (K.fromString "nodeConnections") plan
+    raw <- KM.lookup (K.fromText nodeName) conns
+    either (const Nothing) Just (iparseEither parseJSON raw)
+
+nodeConnectionFor :: KM.KeyMap A.Value -> Text -> Text -> NodeConnection
+nodeConnectionFor plan hostenvHostname nodeName =
+    fromMaybe
+        (defaultNodeConnection hostenvHostname nodeName)
+        (lookupNodeConnection plan nodeName)
+
 data Snapshot = Snapshot {snapId :: Text}
 
 instance A.FromJSON Snapshot where
@@ -267,6 +311,23 @@ parseSnapshotIdFromJournal out =
                              in if T.null snapId then Nothing else Just snapId
                     _ -> Nothing
      in listToMaybe (mapMaybe parseLine (reverse (T.lines out)))
+
+parseMigrationSource :: Text -> Maybe (Text, Text)
+parseMigrationSource raw =
+    let (envName, rest) = T.breakOn "=" raw
+        nodeName = T.drop 1 rest
+     in if T.null envName || T.null rest || T.null nodeName
+            then Nothing
+            else Just (envName, nodeName)
+
+duplicateValues :: [Text] -> [Text]
+duplicateValues =
+    S.toList . snd . foldl step (S.empty, S.empty)
+  where
+    step (seen, dups) value =
+        if S.member value seen
+            then (seen, S.insert value dups)
+            else (S.insert value seen, dups)
 
 -- -------- Cloudflare helpers --------
 data CFRecord = CFRecord
@@ -468,20 +529,6 @@ runDnsGate mNode mTok mZone withDnsUpdate = do
                     pure plan2
         pure planAcc'
 
--- -------- Plan (copy from provider package) --------
-data PlanPaths = PlanPaths
-    { planPath :: Text
-    , statePath :: Text
-    , flakePath :: Text
-    }
-
-instance A.FromJSON PlanPaths where
-    parseJSON = A.withObject "PlanPaths" $ \o ->
-        PlanPaths
-            <$> o .: "plan"
-            <*> o .: "state"
-            <*> o .: "flake"
-
 runPlan :: IO ()
 runPlan = do
     let dest = "generated" :: Text
@@ -496,21 +543,25 @@ runPlan = do
         _ <- Sh.procs "git" ["add", stateDest] Sh.empty
         pure ()
 
-    system <- nixEvalRaw ["eval", "--raw", "--expr", "builtins.currentSystem"]
-    planPaths <- nixEvalPlanPaths (T.strip system)
+    system <- nixEvalRaw ["eval", "--impure", "--raw", "--expr", "builtins.currentSystem"]
+    let planAttrBase = ".#lib.provider.planPaths." <> T.strip system
+    planSource <- nixBuildPath (planAttrBase <> ".plan")
+    stateSource <- nixBuildPath (planAttrBase <> ".state")
+    flakeSource <- nixBuildPath (planAttrBase <> ".flake")
 
-    planRaw <- BL.readFile (T.unpack planPaths.planPath)
+    planRaw <- BL.readFile (T.unpack planSource)
     BL.writeFile (T.unpack planDest) planRaw
     pretty <- Sh.strict $ Sh.inproc "jq" ["-S", ".", planDest] Sh.empty
     BL.writeFile (T.unpack planDest) (BL.fromStrict (TE.encodeUtf8 pretty))
 
-    stateRaw <- BL.readFile (T.unpack planPaths.statePath)
+    stateRaw <- BL.readFile (T.unpack stateSource)
     BL.writeFile (T.unpack stateDest) stateRaw
 
-    flakeRaw <- BL.readFile (T.unpack planPaths.flakePath)
+    flakeRaw <- BL.readFile (T.unpack flakeSource)
     BL.writeFile (T.unpack flakeDest) flakeRaw
 
-    _ <- Sh.procs "nix" (nixCommonArgs ++ ["flake", "update", dest]) Sh.empty
+    _ <- Sh.procs "git" ["add", dest] Sh.empty
+    _ <- Sh.procs "nix" (nixCommonArgs ++ ["flake", "lock", "./" <> dest]) Sh.empty
     _ <- Sh.procs "git" ["add", dest] Sh.empty
     BLC.putStrLn ("✅ Infrastructure configuration written to " <> BLC.pack (T.unpack dest))
   where
@@ -520,13 +571,9 @@ runPlan = do
     nixEvalRaw :: [Text] -> IO Text
     nixEvalRaw args = T.strip <$> Sh.strict (Sh.inproc "nix" (nixCommonArgs ++ args) Sh.empty)
 
-    nixEvalPlanPaths :: Text -> IO PlanPaths
-    nixEvalPlanPaths system = do
-        let attr = ".#lib.provider.planPaths." <> system
-        raw <- Sh.strict $ Sh.inproc "nix" (nixCommonArgs ++ ["eval", "--json", attr]) Sh.empty
-        case A.eitherDecode' (BL.fromStrict (TE.encodeUtf8 raw)) of
-            Left err -> error ("hostenv-provider: failed to decode plan paths: " <> err)
-            Right paths -> pure paths
+    nixBuildPath :: Text -> IO Text
+    nixBuildPath attr =
+        T.strip <$> Sh.strict (Sh.inproc "nix" (nixCommonArgs ++ ["build", "--no-link", "--print-out-paths", attr]) Sh.empty)
 
 -- -------- Deploy wrapper --------
 shellEscape :: Text -> Text
@@ -570,8 +617,22 @@ scriptForArgs args =
             _ ->
                 header <> "exec " <> T.intercalate " " (map shellEscape args) <> "\n"
 
-runRemoteScript :: Text -> Text -> IO ExitCode
-runRemoteScript userHost script = do
+data SshTarget = SshTarget
+    { targetUserHost :: Text
+    , targetHost :: Text
+    , targetSshOpts :: [Text]
+    }
+
+mkSshTarget :: Text -> NodeConnection -> SshTarget
+mkSshTarget user conn =
+    SshTarget
+        { targetUserHost = user <> "@" <> conn.connHostname
+        , targetHost = conn.connHostname
+        , targetSshOpts = conn.connSshOpts
+        }
+
+runRemoteScript :: SshTarget -> Text -> IO ExitCode
+runRemoteScript target script = do
     let runner =
             "tmp=$(mktemp /tmp/hostenv-provider-XXXXXX.sh); "
                 <> "cat > \"$tmp\"; "
@@ -579,11 +640,12 @@ runRemoteScript userHost script = do
                 <> "status=$?; "
                 <> "rm -f \"$tmp\"; "
                 <> "exit $status"
-    (code, _out, _err) <- readProcessWithExitCode "ssh" ["-o", "BatchMode=yes", T.unpack userHost, T.unpack runner] (T.unpack script)
+    let sshArgs = ["-o", "BatchMode=yes"] ++ target.targetSshOpts ++ [target.targetUserHost, runner]
+    (code, _out, _err) <- readProcessWithExitCode "ssh" (map T.unpack sshArgs) (T.unpack script)
     pure code
 
-runRemoteScriptStrict :: Text -> Text -> IO Text
-runRemoteScriptStrict userHost script = do
+runRemoteScriptStrict :: SshTarget -> Text -> IO Text
+runRemoteScriptStrict target script = do
     let runner =
             "tmp=$(mktemp /tmp/hostenv-provider-XXXXXX.sh); "
                 <> "cat > \"$tmp\"; "
@@ -591,31 +653,32 @@ runRemoteScriptStrict userHost script = do
                 <> "status=$?; "
                 <> "rm -f \"$tmp\"; "
                 <> "exit $status"
-    (code, out, err) <- readProcessWithExitCode "ssh" ["-o", "BatchMode=yes", T.unpack userHost, T.unpack runner] (T.unpack script)
+    let sshArgs = ["-o", "BatchMode=yes"] ++ target.targetSshOpts ++ [target.targetUserHost, runner]
+    (code, out, err) <- readProcessWithExitCode "ssh" (map T.unpack sshArgs) (T.unpack script)
     case code of
         ExitSuccess -> pure (T.pack out)
         ExitFailure c ->
             error
                 ( "ssh failed for "
-                    <> T.unpack userHost
+                    <> T.unpack target.targetUserHost
                     <> " (exit "
                     <> show c
                     <> "): "
                     <> err
                 )
 
-runRemote :: Text -> [Text] -> IO ExitCode
-runRemote userHost args =
-    runRemoteScript userHost (scriptForArgs args)
+runRemote :: SshTarget -> [Text] -> IO ExitCode
+runRemote target args =
+    runRemoteScript target (scriptForArgs args)
 
-runRemoteStrict :: Text -> [Text] -> IO Text
-runRemoteStrict userHost args =
-    runRemoteScriptStrict userHost (scriptForArgs args)
+runRemoteStrict :: SshTarget -> [Text] -> IO Text
+runRemoteStrict target args =
+    runRemoteScriptStrict target (scriptForArgs args)
 
-runMigrationBackup :: Text -> EnvInfo -> Text -> Text -> IO Text
-runMigrationBackup hostenvHostname envInfo prevNode backupName = do
-    let prevHost = prevNode <> "." <> hostenvHostname
-    let deployHost = "deploy@" <> prevHost
+runMigrationBackup :: (Text -> NodeConnection) -> EnvInfo -> Text -> Text -> IO Text
+runMigrationBackup nodeConnection envInfo prevNode backupName = do
+    let sourceTarget = mkSshTarget "deploy" (nodeConnection prevNode)
+    let sourceHost = sourceTarget.targetHost
     let sudoArgs cmd =
             [ "sudo"
             , "-u"
@@ -637,19 +700,19 @@ runMigrationBackup hostenvHostname envInfo prevNode backupName = do
             let trimmed = T.strip t
              in fromMaybe trimmed (T.stripPrefix "LoadState=" trimmed)
     let chooseBackupName = do
-            state <- fmap parseState (runRemoteStrict deployHost (sudoArgs (loadStateCmd (unitFor backupName))))
+            state <- fmap parseState (runRemoteStrict sourceTarget (sudoArgs (loadStateCmd (unitFor backupName))))
             if state == "loaded"
                 then pure backupName
                 else case T.stripSuffix "-migrate" backupName of
                     Just baseName -> do
-                        baseState <- fmap parseState (runRemoteStrict deployHost (sudoArgs (loadStateCmd (unitFor baseName))))
+                        baseState <- fmap parseState (runRemoteStrict sourceTarget (sudoArgs (loadStateCmd (unitFor baseName))))
                         if baseState == "loaded"
                             then do
                                 Sh.print
                                     ( "hostenv: migrate backup unit "
                                         <> unitFor backupName
                                         <> " not found on "
-                                        <> prevHost
+                                        <> sourceHost
                                         <> "; falling back to "
                                         <> baseName
                                     )
@@ -663,14 +726,14 @@ runMigrationBackup hostenvHostname envInfo prevNode backupName = do
                 <> userBusPrefix
                 <> "systemctl --user start --wait "
                 <> unit
-    startExit <- runRemote deployHost (sudoArgs startCmd)
+    startExit <- runRemote sourceTarget (sudoArgs startCmd)
     case startExit of
         ExitSuccess -> pure ()
         ExitFailure code -> error ("migration backup failed for " <> T.unpack envInfo.userName <> ":" <> T.unpack backupName <> " (exit " <> show code <> ")")
 
     let wrapperPath = "~/.local/bin/restic-" <> effectiveName
     let wrapperCheckCmd = "test -x " <> wrapperPath
-    wrapperExit <- runRemote deployHost (sudoArgs wrapperCheckCmd)
+    wrapperExit <- runRemote sourceTarget (sudoArgs wrapperCheckCmd)
     if wrapperExit == ExitSuccess
         then do
             let snapshotCmdTagged =
@@ -679,7 +742,7 @@ runMigrationBackup hostenvHostname envInfo prevNode backupName = do
                         <> " snapshots --latest 1 --tag "
                         <> effectiveName
                         <> " --json"
-            snapOutTagged <- runRemoteStrict deployHost (sudoArgs snapshotCmdTagged)
+            snapOutTagged <- runRemoteStrict sourceTarget (sudoArgs snapshotCmdTagged)
             case parseSnapshotId snapOutTagged of
                 Just snap -> pure snap
                 Nothing -> do
@@ -687,37 +750,39 @@ runMigrationBackup hostenvHostname envInfo prevNode backupName = do
                             "set -euo pipefail; "
                                 <> wrapperPath
                                 <> " snapshots --latest 1 --json"
-                    snapOutUntagged <- runRemoteStrict deployHost (sudoArgs snapshotCmdUntagged)
+                    snapOutUntagged <- runRemoteStrict sourceTarget (sudoArgs snapshotCmdUntagged)
                     case parseSnapshotId snapOutUntagged of
                         Just snap -> do
                             Sh.print
                                 ( "hostenv: warning: no tagged restic snapshot found for "
                                     <> effectiveName
                                     <> " on "
-                                    <> prevHost
+                                    <> sourceHost
                                     <> "; using latest untagged snapshot"
                                 )
                             pure snap
                         Nothing -> error ("could not parse snapshot id for " <> T.unpack envInfo.userName <> ":" <> T.unpack backupName <> " (tagged or untagged)")
         else do
-            Sh.print ("hostenv: restic wrapper missing for " <> effectiveName <> " on " <> prevHost <> "; reading snapshot id from journal")
+            Sh.print ("hostenv: restic wrapper missing for " <> effectiveName <> " on " <> sourceHost <> "; reading snapshot id from journal")
             let invocationCmd = userBusPrefix <> "systemctl --user show -p InvocationID --value " <> unit
-            invOut <- runRemoteStrict deployHost (sudoArgs invocationCmd)
+            invOut <- runRemoteStrict sourceTarget (sudoArgs invocationCmd)
             let invocation = T.strip invOut
             let journalCmd =
                     userBusPrefix
                         <> if T.null invocation
                             then "journalctl --user -u " <> unit <> " -n 200 -o cat --no-pager || true"
                             else "journalctl --user _SYSTEMD_INVOCATION_ID=" <> invocation <> " -o cat --no-pager || true"
-            logOut <- runRemoteStrict deployHost (sudoArgs journalCmd)
+            logOut <- runRemoteStrict sourceTarget (sudoArgs journalCmd)
             case parseSnapshotIdFromJournal logOut of
                 Just snap -> pure snap
                 Nothing -> error ("could not parse snapshot id from journal for " <> T.unpack envInfo.userName <> ":" <> T.unpack backupName)
 
-resolvePrevNode :: Text -> EnvInfo -> IO (Maybe Text)
-resolvePrevNode hostenvHostname envInfo =
-    case envInfo.prevNode of
-        Just prev -> pure (Just prev)
+resolvePrevNode :: (Text -> Maybe Text) -> Text -> EnvInfo -> IO (Maybe Text)
+resolvePrevNode explicitSourceFor hostenvHostname envInfo =
+    case explicitSourceFor envInfo.userName of
+        Just sourceNode -> do
+            Sh.print ("hostenv: previous node for " <> envInfo.userName <> " forced via --migration-source: " <> sourceNode)
+            pure (Just sourceNode)
         Nothing -> do
             discovered <- discoverPrevNodeFromDns hostenvHostname envInfo.userName (envInfo.vhosts)
             case discovered of
@@ -726,10 +791,9 @@ resolvePrevNode hostenvHostname envInfo =
                     pure (Just node)
                 Nothing -> pure Nothing
 
-writeRestorePlan :: Text -> EnvInfo -> Text -> [(Text, Text)] -> IO ()
-writeRestorePlan hostenvHostname envInfo prevNode snapshots = do
-    let newHost = envInfo.node <> "." <> hostenvHostname
-    let deployHost = "deploy@" <> newHost
+writeRestorePlan :: (Text -> NodeConnection) -> EnvInfo -> Text -> [(Text, Text)] -> IO ()
+writeRestorePlan nodeConnection envInfo prevNode snapshots = do
+    let deployTarget = mkSshTarget "deploy" (nodeConnection envInfo.node)
     let runtimeDir = envInfo.runtimeDir
     let restoreDir = runtimeDir <> "/restore"
     let restorePath = restoreDir <> "/plan.json"
@@ -760,19 +824,19 @@ writeRestorePlan hostenvHostname envInfo prevNode snapshots = do
                     ]
     dirExit <-
         runRemote
-            deployHost
+            deployTarget
             [ "bash"
             , "-lc"
             , dirCmd
             ]
     case dirExit of
         ExitSuccess -> pure ()
-        ExitFailure code -> error ("failed to create restore dir on " <> T.unpack deployHost <> " (exit " <> show code <> ")")
+        ExitFailure code -> error ("failed to create restore dir on " <> T.unpack deployTarget.targetUserHost <> " (exit " <> show code <> ")")
 
-    fileExit <- runRemote deployHost ["bash", "-lc", "sudo install -m 0600 /dev/null " <> restorePath <> " && sudo chown " <> ownerSpec <> ":" <> groupSpec <> " " <> restorePath]
+    fileExit <- runRemote deployTarget ["bash", "-lc", "sudo install -m 0600 /dev/null " <> restorePath <> " && sudo chown " <> ownerSpec <> ":" <> groupSpec <> " " <> restorePath]
     case fileExit of
         ExitSuccess -> pure ()
-        ExitFailure code -> error ("failed to create restore plan file on " <> T.unpack deployHost <> " (exit " <> show code <> ")")
+        ExitFailure code -> error ("failed to create restore plan file on " <> T.unpack deployTarget.targetUserHost <> " (exit " <> show code <> ")")
 
     let payloadText = TE.decodeUtf8 (BL.toStrict (A.encode payload))
     let payloadTag = pickTag "HOSTENV_JSON" payloadText
@@ -782,13 +846,13 @@ writeRestorePlan hostenvHostname envInfo prevNode snapshots = do
                 , payloadText
                 , payloadTag
                 ]
-    writeExit <- runRemote deployHost ["bash", "-lc", writeCmd]
+    writeExit <- runRemote deployTarget ["bash", "-lc", writeCmd]
     case writeExit of
         ExitSuccess -> pure ()
         ExitFailure code -> error ("failed to write restore plan for " <> T.unpack envInfo.userName <> " (exit " <> show code <> ")")
 
-runDeploy :: Maybe Text -> [Text] -> Bool -> IO ()
-runDeploy mNode skipMigrations ignoreMigrationErrors = do
+runDeploy :: Maybe Text -> [Text] -> [Text] -> Bool -> IO ()
+runDeploy mNode skipMigrations migrationSourceSpecs ignoreMigrationErrors = do
     let planPath = "generated/plan.json"
     planExists <- Sh.testfile (fromString (T.unpack planPath))
     when (not planExists) $ do
@@ -802,7 +866,16 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
             let hostenvHostname = case lookupText (K.fromString "hostenvHostname") plan of
                     Nothing -> error "hostenvHostname missing from plan.json"
                     Just hostname -> hostname
+            let resolveNodeConnection = nodeConnectionFor plan hostenvHostname
             let envs = fromMaybe KM.empty (lookupObj (K.fromString "environments") plan)
+            migrationSources <-
+                forM migrationSourceSpecs $ \raw ->
+                    case parseMigrationSource raw of
+                        Just parsed -> pure parsed
+                        Nothing -> error ("invalid --migration-source value '" <> T.unpack raw <> "' (expected ENV=NODE)")
+            let duplicateOverrides = duplicateValues (map fst migrationSources)
+            unless (null duplicateOverrides) $
+                error ("duplicate --migration-source overrides for: " <> T.unpack (T.intercalate ", " duplicateOverrides))
 
             -- Gets the @EnvInfo@s from JSON (taken from plan.json).
             envInfosSub <- forM (KM.elems envs) $ \env -> case iparseEither parseJSON env of
@@ -822,6 +895,9 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
                         (\s -> any (\e -> e.userName == s) envInfosFiltered)
                         skipMigrations
             let skipMisses = skipMigrations \\ skipHits
+            let sourceHits = filter (\(envName, _) -> any (\e -> e.userName == envName) envInfosFiltered) migrationSources
+            let sourceMisses = map fst migrationSources \\ map fst sourceHits
+            let sourceFor envName = lookup envName migrationSources
 
             -- Perform data migrations if the environment has moved node.
             case mNode of
@@ -832,6 +908,10 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
                 Sh.print ("hostenv-provider: skipping migrations for: " <> T.intercalate ", " skipHits)
             when (not (null skipMisses)) $
                 Sh.print ("hostenv-provider: warning: skip-migrations targets not found: " <> T.intercalate ", " skipMisses)
+            forM_ sourceHits $ \(envName, sourceNode) ->
+                Sh.print ("hostenv-provider: migration source override " <> envName <> " -> " <> sourceNode)
+            when (not (null sourceMisses)) $
+                Sh.print ("hostenv-provider: warning: migration-source targets not found: " <> T.intercalate ", " sourceMisses)
             when ignoreMigrationErrors $
                 Sh.print "hostenv-provider: warning: migration errors will be ignored; deployments may proceed with stale data"
             migrations <- fmap catMaybes $
@@ -839,7 +919,7 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
                     if envInfo.userName `elem` skipMigrations || envInfo.migrateBackups == []
                         then pure Nothing
                         else do
-                            prevNode <- resolvePrevNode hostenvHostname envInfo
+                            prevNode <- resolvePrevNode sourceFor hostenvHostname envInfo
                             pure $ case prevNode of
                                 Just prev | prev /= envInfo.node -> Just (envInfo, prev)
                                 _ -> Nothing
@@ -853,9 +933,9 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
                         Sh.print ("hostenv-provider: migrate backups for " <> envInfo.userName <> " from " <> prevNode <> " -> " <> envInfo.node <> " (" <> backups <> ")")
                     let runMigration (envInfo, prevNode) = do
                             snapshots <- forM envInfo.migrateBackups $ \backupName -> do
-                                snap <- runMigrationBackup hostenvHostname envInfo prevNode backupName
+                                snap <- runMigrationBackup resolveNodeConnection envInfo prevNode backupName
                                 pure (backupName, snap)
-                            writeRestorePlan hostenvHostname envInfo prevNode snapshots
+                            writeRestorePlan resolveNodeConnection envInfo prevNode snapshots
                             let snapshotPairs = map (\(name, sid) -> name <> "=" <> sid) snapshots
                             Sh.print ("hostenv-provider: restore plan written for " <> envInfo.userName <> " (snapshots: " <> T.intercalate ", " snapshotPairs <> ")")
                     if ignoreMigrationErrors
@@ -885,7 +965,13 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
             -- @todo: we could add a `--skip-checks` parameter to this CLI
             -- and pass it through to deploy-rs.
             let deployArgs deployArgM =
-                    ["run", "github:serokell/deploy-rs", "--", "--skip-checks", "--remote-build"]
+                    [ "run"
+                    , "--inputs-from"
+                    , "./generated"
+                    , "nixpkgs#deploy-rs"
+                    , "--"
+                    , "--skip-checks"
+                    ]
                         <> case deployArgM of
                             Just dArg -> ["generated/.#" <> dArg]
                             Nothing -> ["generated/"]
@@ -894,12 +980,14 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
             -- System deployment of each node. Retains results, so we can
             -- cowardly refuse to deploy environments where the system deploy
             -- failed to complete.
-            systemDeployRes <- forM (uniqueNodeNames envInfosFiltered) $ \nodeName -> do
-                let args = deployArgs $ Just $ nodeName <> ".system"
-                Sh.print ("hostenv-provider: running nix " <> T.unwords args)
-                res <- Sh.proc "nix" args Sh.empty
-                deployGuard res args
-                pure (nodeName, res)
+            let targetNodes = uniqueNodeNames envInfosFiltered
+            systemDeployRes <-
+                forM targetNodes $ \nodeName -> do
+                    let args = deployArgs $ Just $ nodeName <> ".system"
+                    Sh.print ("hostenv-provider: running nix " <> T.unwords args)
+                    res <- Sh.proc "nix" args Sh.empty
+                    deployGuard res args
+                    pure (nodeName, res)
 
             -- Environments deployment for the node.
             envDeployRes <- forM (toNamed envInfosFiltered) $ \(envName, envInfo) -> do
@@ -907,17 +995,18 @@ runDeploy mNode skipMigrations ignoreMigrationErrors = do
                 let systemStatus = case filter ((==) envInfo.node . fst) systemDeployRes of
                         [] -> Left "node not in system deployment list"
                         (_, ExitSuccess) : [] -> Right ExitSuccess
+                        (_, code) : [] -> Left ("system deployment failed for node " <> envInfo.node <> " (exit " <> T.pack (show code) <> ")")
                         _moreThanOneNode -> Left "multiple matching nodes found in system deployment list"
 
                 Sh.print ("hostenv-provider: running nix " <> T.unwords args)
                 case systemStatus of
-                    Left err -> Sh.print ("hostenv-provider: " <> err) >> pure (ExitFailure 1)
+                    Left err -> Sh.print ("hostenv-provider: " <> err) >> pure (envName, ExitFailure 1)
                     Right ExitSuccess -> do
                         res <- Sh.proc "nix" args Sh.empty
                         deployGuard res args
-                        pure res
+                        pure (envName, res)
 
-            let failures = (>) 1 $ length $ filter (/= ExitSuccess) envDeployRes
+            let failures = any (\(_, code) -> code /= ExitSuccess) envDeployRes
             when failures $ Sh.print "hostenv-provider: deployment completed with errors"
             Sh.exitWith $ if failures then ExitFailure 1 else ExitSuccess
 
@@ -928,4 +1017,4 @@ main = do
     case cmd of
         CmdPlan -> runPlan
         CmdDnsGate mNode mTok mZone withDnsUpdate -> runDnsGate mNode mTok mZone withDnsUpdate
-        CmdDeploy mNode skipMigrations ignoreMigrationErrors -> runDeploy mNode skipMigrations ignoreMigrationErrors
+        CmdDeploy mNode skipMigrations migrationSources ignoreMigrationErrors -> runDeploy mNode skipMigrations migrationSources ignoreMigrationErrors

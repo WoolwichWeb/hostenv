@@ -37,6 +37,8 @@ in
               (lib.optional providerEnabled config.packages.hostenv-provider)
               ++ [
                 pkgs.jq
+                pkgs.sops
+                pkgs.age
                 pkgs.haskellPackages.cabal-install
                 devGhc
               ];

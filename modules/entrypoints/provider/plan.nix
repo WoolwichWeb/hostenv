@@ -14,6 +14,12 @@ let
     , statePath ? (if inputs ? self then inputs.self + /generated/state.json else null)
     , planPath ? (if inputs ? self then inputs.self + /generated/plan.json else null)
     , nodeSystems ? { }
+    , nodeAddresses ? { }
+    , nodeSshPorts ? { }
+    , nodeSshOpts ? { }
+    , nodeRemoteBuild ? { }
+    , nodeMagicRollback ? { }
+    , nodeAutoRollback ? { }
     , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
     , planSource ? "eval"
     , generatedFlake ? { }
@@ -484,7 +490,18 @@ let
               let
                 user = env.hostenv.userName;
                 uidFromState = if builtins.hasAttr user state then state.${user}.uid else null;
-                previousNode = null;
+                stateNodeRaw =
+                  if builtins.hasAttr user state
+                  then state.${user}.node or null
+                  else null;
+                stateNode =
+                  if builtins.isString stateNodeRaw && stateNodeRaw != ""
+                  then stateNodeRaw
+                  else null;
+                previousNode =
+                  if stateNode != null && stateNode != env.node
+                  then stateNode
+                  else null;
                 uid =
                   if uidFromState != null then uidFromState
                   else nextUid + idx;
@@ -495,10 +512,71 @@ let
         else
           map
             (env:
-              let uid = env.uid or null;
-              in env // { inherit uid; }
+              let
+                uid = env.uid or null;
+                previousNode = env.previousNode or null;
+              in
+              env // { inherit uid previousNode; }
             )
             allEnvs;
+
+      nodeConnections =
+        let
+          # Include nodes referenced by currently evaluated environments.
+          namesFromEnvs = map (env: env.node) allEnvsWithUid;
+          # Include nodes remembered in state.json so migrations can still target
+          # previous nodes that are no longer in the current evaluated set.
+          namesFromState =
+            map
+              (name:
+                let
+                  nodeName = state.${name}.node or null;
+                in
+                if builtins.isString nodeName && nodeName != ""
+                then nodeName
+                else null
+              )
+              (builtins.attrNames state);
+          # Build one canonical node list from:
+          # - explicit per-node config attrsets (systems/address/ssh overrides)
+          # - nodes referenced by current envs
+          # - nodes referenced by persisted state
+          # and drop sentinel/empty values.
+          knownNodes =
+            lib.filter
+              (name: builtins.isString name && name != "" && name != "default")
+              (lib.unique (
+                (builtins.attrNames nodeSystems)
+                ++ (builtins.attrNames nodeAddresses)
+                ++ (builtins.attrNames nodeSshPorts)
+                ++ (builtins.attrNames nodeSshOpts)
+                ++ namesFromEnvs
+                ++ (lib.filter (name: name != null) namesFromState)
+              ));
+          mkNodeConnection = node: {
+            # Resolve deploy hostname via explicit override first, otherwise use
+            # the conventional "<node>.<hostenvHostname>" form.
+            hostname =
+              if builtins.hasAttr node nodeAddresses
+              then nodeAddresses.${node}
+              else node + "." + cfgHostenvHostname;
+            sshOpts =
+              let
+                # If a per-node SSH port is configured, convert it to OpenSSH args.
+                portOpts =
+                  if builtins.hasAttr node nodeSshPorts
+                  then [ "-p" (builtins.toString nodeSshPorts.${node}) ]
+                  else [ ];
+                # Append raw extra per-node OpenSSH options as-is.
+                extraOpts =
+                  if builtins.hasAttr node nodeSshOpts
+                  then nodeSshOpts.${node}
+                  else [ ];
+              in
+              portOpts ++ extraOpts;
+          };
+        in
+        builtins.listToAttrs (map (node: { name = node; value = mkNodeConnection node; }) knownNodes);
 
       generatedFlakeFile =
         let
@@ -548,7 +626,7 @@ let
 
           baseInputs = {
             parent.url = "path:..";
-            systems.url = "github:nix-systems/default";
+            systems.follows = "parent/deploy-rs/utils/systems";
             deploy-rs.follows = "parent/deploy-rs";
             sops-nix.follows = "parent/sops-nix";
             hostenv.follows = "parent/hostenv";
@@ -580,6 +658,12 @@ let
                       nodesPath = ../nodes;
                       secretsPath = ../secrets/secrets.yaml;
                       nodeSystems = ${lib.generators.toPretty {} nodeSystems};
+                      nodeAddresses = ${lib.generators.toPretty {} nodeAddresses};
+                      nodeSshPorts = ${lib.generators.toPretty {} nodeSshPorts};
+                      nodeSshOpts = ${lib.generators.toPretty {} nodeSshOpts};
+                      nodeRemoteBuild = ${lib.generators.toPretty {} nodeRemoteBuild};
+                      nodeMagicRollback = ${lib.generators.toPretty {} nodeMagicRollback};
+                      nodeAutoRollback = ${lib.generators.toPretty {} nodeAutoRollback};
                       nodeModules = [
           ${nodeModulesText}
                       ];
@@ -594,15 +678,17 @@ let
             base = {
               _description = ''
                 Contains a build and deployment plan for hostenv servers on NixOS.
-                There are two data substructures:
+                There are three data substructures:
 
                 1. Under **environments** is a JSON representation of hostenv's own modules config, retaining the original structure of that representation.
                 2. Each element under **nodes** is NixOS server configuration, and will be merged into the configuration of that server during build.
+                3. Under **nodeConnections** is deploy SSH metadata used by provider tooling (hostname + ssh options).
 
                 Note: all manual changes to this file will be discarded.
               '';
               hostenvHostname = cfgHostenvHostname;
               cloudflare = cloudflare;
+              nodeConnections = nodeConnections;
               environments = { };
               nodes = { };
             };
