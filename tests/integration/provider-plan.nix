@@ -295,6 +295,87 @@ let
     };
   customFlakeText = builtins.readFile planCustom.flake;
 
+  backupsMixedProjectDir = pkgs.runCommand "hostenv-project-backups-mixed" { } ''
+    mkdir -p $out
+    cat > $out/hostenv.nix <<'EOF'
+    { ... }: {
+      defaultEnvironment = "main";
+      environments = {
+        main = {
+          enable = true;
+          type = "development";
+          hostenv.backupsRepoHost = "s3:https://backups-main.invalid";
+          virtualHosts."main.example" = {
+            enableLetsEncrypt = true;
+            globalRedirect = null;
+            locations = { };
+          };
+        };
+        test = {
+          enable = true;
+          type = "development";
+          virtualHosts."test.example" = {
+            enableLetsEncrypt = true;
+            globalRedirect = null;
+            locations = { };
+          };
+        };
+      };
+      hostenv = {
+        organisation = "org";
+        project = "proj";
+        hostenvHostname = "hosting.test";
+        root = "/srv/proj";
+      };
+    }
+    EOF
+  '';
+  backupsMixedEval = makeHostenv [ (backupsMixedProjectDir + /hostenv.nix) ] null;
+  backupsMixedInput = {
+    outPath = backupsMixedProjectDir;
+    __toString = self: toString backupsMixedProjectDir;
+    lib = {
+      hostenv = {
+        "${"x86_64-linux"}" = {
+          environments = backupsMixedEval.config.environments;
+          defaultEnvironment = backupsMixedEval.config.defaultEnvironment;
+        };
+      };
+    };
+  };
+  backupsMixedLockPath = pkgs.writers.writeJSON "flake.lock" {
+    nodes = {
+      "org__proj" = {
+        original = {
+          type = "git";
+          url = "https://example.invalid/org/proj.git";
+          ref = "main";
+        };
+      };
+    };
+  };
+  backupsMixedPlan = providerPlan {
+    inputs = {
+      hostenv = mkHostenvStub "x86_64-linux";
+      org__proj = backupsMixedInput;
+    };
+    system = "x86_64-linux";
+    inherit lib pkgs;
+    letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
+    deployPublicKeys = [ "ssh-ed25519 test" ];
+    hostenvHostname = "custom.host";
+    nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
+    statePath = dummyStatePath;
+    planPath = null;
+    lockPath = backupsMixedLockPath;
+    nodeSystems = { };
+    cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
+    planSource = "eval";
+  };
+  backupsMixedPlanData = lib.importJSON backupsMixedPlan.plan;
+  backupsMixedMainUser = backupsMixedEval.config.environments.main.hostenv.userName;
+  backupsMixedTestUser = backupsMixedEval.config.environments.test.hostenv.userName;
+
   quotedInvalidProject = mkProjectInput { organisation = "acme"; project = "4demo"; envName = "main"; };
   quotedValidProject = mkProjectInput { organisation = "acme"; project = "demo-project"; envName = "main"; };
 
@@ -699,6 +780,15 @@ in
     asserts.assertTrue "provider-plan-security-headers"
       (hasCsp && hasReportTo && hasReferrer && hasRobots && hasHsts && noCspOnAlias)
       "plan should emit security headers for configured virtual hosts and omit CSP when unset";
+
+  provider-plan-backups-repo-host-per-env =
+    let
+      mainBackups = backupsMixedPlanData.environments.${backupsMixedMainUser}.hostenv.backupsRepoHost or null;
+      testBackups = backupsMixedPlanData.environments.${backupsMixedTestUser}.hostenv.backupsRepoHost or null;
+    in
+    asserts.assertTrue "provider-plan-backups-repo-host-per-env"
+      (mainBackups == "s3:https://backups-main.invalid" && testBackups == null)
+      "plan should preserve per-environment backupsRepoHost values from project outputs";
 
   provider-plan-default-lock =
     asserts.assertTrue "provider-plan-default-lock"

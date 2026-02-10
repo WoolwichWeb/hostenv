@@ -111,11 +111,12 @@ let
 
       statePathChecked =
         if planSource == "disk" then
-          requirePath {
-            name = "statePath";
-            path = statePath;
-            hint = "Set provider.statePath (or pass statePath explicitly) and ensure the file exists (it can be an empty JSON object).";
-          }
+          requirePath
+            {
+              name = "statePath";
+              path = statePath;
+              hint = "Set provider.statePath (or pass statePath explicitly) and ensure the file exists (it can be an empty JSON object).";
+            }
         else if statePath == null then
           null
         else if builtins.pathExists statePath then
@@ -282,6 +283,9 @@ let
         { inherit project organisation; };
 
       # Build a list of hostenv projects, then build a list of environments for each project.
+      # This overrides options set in the user's .hostenv/flake.nix, using
+      # values from provider inputs. For example: see `inputNameToProject` and
+      # how it is used in this function.
       realEnvs =
         if useEval then
           builtins.concatLists
@@ -314,6 +318,7 @@ let
                     if builtins.hasAttr "defaultEnvironment" projectHostenvSystem
                     then projectHostenvSystem.defaultEnvironment
                     else builtins.throw "provider plan: input '${name}' is missing lib.hostenv.${system}.defaultEnvironment (export outputs.lib.hostenv from the project flake).";
+
                   envCfg =
                     if builtins.hasAttr defaultEnvName projectEnvironments then projectEnvironments.${defaultEnvName}
                     else builtins.throw "provider plan: defaultEnvironment '${defaultEnvName}' missing in ${name}.lib.hostenv.${system}.environments";
@@ -334,9 +339,13 @@ let
                       })
                     ]
                       null;
-                  resticBackups = minimalHostenv.config.services.restic.backups or { };
-                  migrateBackupKeys = builtins.filter (n: lib.hasSuffix "-migrate" n) (builtins.attrNames resticBackups);
-                  migrateEnvExtras = { migrations = migrateBackupKeys; };
+
+                  migrateEnvExtras =
+                    let
+                      resticBackups = minimalHostenv.config.services.restic.backups or { };
+                      migrateBackupKeys = builtins.filter (n: lib.hasSuffix "-migrate" n) (builtins.attrNames resticBackups);
+                    in
+                    { migrations = migrateBackupKeys; };
 
                 in
                 lib.attrsets.mapAttrsToList
@@ -417,7 +426,17 @@ let
                         in
                         let
                           envWithMigrations = lib.recursiveUpdate envCfg migrateEnvExtras;
-                          hostenv' = hostenv // { hostenvHostname = cfgHostenvHostname; };
+                          projectEnvCfg =
+                            if builtins.hasAttr envName projectEnvironments
+                            then projectEnvironments.${envName}
+                            else envCfg;
+                          hostenv' = hostenv // {
+                            hostenvHostname = cfgHostenvHostname;
+                            backupsRepoHost =
+                              if projectEnvCfg ? hostenv && projectEnvCfg.hostenv ? backupsRepoHost
+                              then projectEnvCfg.hostenv.backupsRepoHost
+                              else hostenv.backupsRepoHost or null;
+                          };
                         in
                         envWithMigrations // {
                           inherit node authorizedKeys virtualHosts;
@@ -431,21 +450,25 @@ let
 
       allEnvsUnvalidated =
         if useEval then realEnvs
-        else builtins.attrValues (planFromDisk.environments or { });
+        else
+          builtins.attrValues
+            (planFromDisk.environments or { });
 
       # Fail fast on any virtualHost collisions (state or new envs) in one pass.
       allEnvs =
         let
-          stateClaims = builtins.concatLists (map
-            (name:
-              let vhosts = lib.unique (state.${name}.virtualHosts or [ ]);
-              in map (v: { name = v; owner = "state:${name}"; }) vhosts
-            )
-            (builtins.attrNames state));
+          stateClaims = builtins.concatLists
+            (map
+              (name:
+                let vhosts = lib.unique (state.${name}.virtualHosts or [ ]);
+                in map (v: { name = v; owner = "state:${name}"; }) vhosts
+              )
+              (builtins.attrNames state));
 
-          newClaims = builtins.concatLists (map
-            (env: map (v: { name = v; owner = env.hostenv.userName; }) (builtins.attrNames (env.virtualHosts or { })))
-            allEnvsUnvalidated);
+          newClaims = builtins.concatLists
+            (map
+              (env: map (v: { name = v; owner = env.hostenv.userName; }) (builtins.attrNames (env.virtualHosts or { })))
+              allEnvsUnvalidated);
 
           claimTable =
             lib.foldl'
@@ -470,15 +493,18 @@ let
               { }
               (stateClaims ++ newClaims);
 
-          duplicates = lib.filter (x: (lib.length x.ownerKeys) > 1) (builtins.attrValues claimTable);
+          duplicates = lib.filter
+            (x: (lib.length x.ownerKeys) > 1)
+            (builtins.attrValues claimTable);
         in
         if duplicates != [ ] then
-          builtins.throw ''
-            provider plan: duplicate virtualHosts detected: ${
-              lib.concatStringsSep "; "
-                (map (d: "${d.name} claimed by ${lib.concatStringsSep "," d.owners}") duplicates)
-            }
-          ''
+          builtins.throw
+            ''
+              provider plan: duplicate virtualHosts detected: ${
+                lib.concatStringsSep "; "
+                  (map (d: "${d.name} claimed by ${lib.concatStringsSep "," d.owners}") duplicates)
+              }
+            ''
         else allEnvsUnvalidated;
 
       # Assign unique UIDs to new environments when evaluating; in disk mode keep the
@@ -523,7 +549,9 @@ let
       nodeConnections =
         let
           # Include nodes referenced by currently evaluated environments.
-          namesFromEnvs = map (env: env.node) allEnvsWithUid;
+          namesFromEnvs = map
+            (env: env.node)
+            allEnvsWithUid;
           # Include nodes remembered in state.json so migrations can still target
           # previous nodes that are no longer in the current evaluated set.
           namesFromState =
@@ -576,7 +604,8 @@ let
               portOpts ++ extraOpts;
           };
         in
-        builtins.listToAttrs (map (node: { name = node; value = mkNodeConnection node; }) knownNodes);
+        builtins.listToAttrs
+          (map (node: { name = node; value = mkNodeConnection node; }) knownNodes);
 
       generatedFlakeFile =
         let
@@ -622,7 +651,8 @@ let
                 else
                   [ ];
             in
-            builtins.listToAttrs (inputsList ++ cfInputs);
+            builtins.listToAttrs
+              (inputsList ++ cfInputs);
 
           baseInputs = {
             parent.url = "path:..";
@@ -635,41 +665,46 @@ let
             phps.follows = "parent/phps";
           };
           inputsMerged = baseInputs // generatedFlakeInputs // envInputs;
-          inputsText = lib.generators.toPretty { } inputsMerged;
+          inputsText = lib.generators.toPretty
+            { }
+            inputsMerged;
           nodeModulesText =
-            lib.concatMapStringsSep "\n"
+            lib.concatMapStringsSep
+              "\n"
               (rel: ''            (inputs.parent + "/${rel}")'')
               nodeModulesRel;
 
         in
-        pkgs.writeText "flake.nix" ''
-                {
-                  inputs = ${inputsText};
+        pkgs.writeText
+          "flake.nix"
+          ''
+                  {
+                    inputs = ${inputsText};
 
-                  outputs = { self, nixpkgs, deploy-rs, systems, ... } @ inputs:
-                    let
-                      config = builtins.removeAttrs
-                        (builtins.fromJSON (builtins.readFile ./plan.json))
-                        [ "_description" ];
-                      localSystem = "x86_64-linux";
-                    in
-                    inputs.parent.lib.provider.deployOutputs {
-                      inherit config nixpkgs deploy-rs systems inputs localSystem;
-                      nodesPath = ../nodes;
-                      secretsPath = ../secrets/secrets.yaml;
-                      nodeSystems = ${lib.generators.toPretty {} nodeSystems};
-                      nodeAddresses = ${lib.generators.toPretty {} nodeAddresses};
-                      nodeSshPorts = ${lib.generators.toPretty {} nodeSshPorts};
-                      nodeSshOpts = ${lib.generators.toPretty {} nodeSshOpts};
-                      nodeRemoteBuild = ${lib.generators.toPretty {} nodeRemoteBuild};
-                      nodeMagicRollback = ${lib.generators.toPretty {} nodeMagicRollback};
-                      nodeAutoRollback = ${lib.generators.toPretty {} nodeAutoRollback};
-                      nodeModules = [
-          ${nodeModulesText}
-                      ];
-                    };
-                }
-        '';
+                    outputs = { self, nixpkgs, deploy-rs, systems, ... } @ inputs:
+                      let
+                        config = builtins.removeAttrs
+                          (builtins.fromJSON (builtins.readFile ./plan.json))
+                          [ "_description" ];
+                        localSystem = "x86_64-linux";
+                      in
+                      inputs.parent.lib.provider.deployOutputs {
+                        inherit config nixpkgs deploy-rs systems inputs localSystem;
+                        nodesPath = ../nodes;
+                        secretsPath = ../secrets/secrets.yaml;
+                        nodeSystems = ${lib.generators.toPretty {} nodeSystems};
+                        nodeAddresses = ${lib.generators.toPretty {} nodeAddresses};
+                        nodeSshPorts = ${lib.generators.toPretty {} nodeSshPorts};
+                        nodeSshOpts = ${lib.generators.toPretty {} nodeSshOpts};
+                        nodeRemoteBuild = ${lib.generators.toPretty {} nodeRemoteBuild};
+                        nodeMagicRollback = ${lib.generators.toPretty {} nodeMagicRollback};
+                        nodeAutoRollback = ${lib.generators.toPretty {} nodeAutoRollback};
+                        nodeModules = [
+            ${nodeModulesText}
+                        ];
+                      };
+                  }
+          '';
 
       # JSON representation of every environment returned by each hostenv flake.
       generatedConfig =
@@ -768,32 +803,39 @@ let
               base
               allEnvsWithUid;
           in
-          pkgs.writers.writeJSON "plan.json" configAttrs
+          pkgs.writers.writeJSON
+            "plan.json"
+            configAttrs
         else
           planPathChecked;
 
       generatedState =
         if useEval then
           let
-            planState = builtins.listToAttrs (builtins.map
-              (envCfg: {
-                name = envCfg.hostenv.userName;
-                value = {
-                  userName = envCfg.hostenv.userName;
-                  uid = envCfg.uid;
-                  node = envCfg.node;
-                  virtualHosts = builtins.attrNames envCfg.virtualHosts;
-                };
-              })
-              allEnvsWithUid);
+            planState = builtins.listToAttrs
+              (builtins.map
+                (envCfg: {
+                  name = envCfg.hostenv.userName;
+                  value = {
+                    userName = envCfg.hostenv.userName;
+                    uid = envCfg.uid;
+                    node = envCfg.node;
+                    virtualHosts = builtins.attrNames envCfg.virtualHosts;
+                  };
+                })
+                allEnvsWithUid);
             mergedState =
               {
                 _description = ''
                   Persistent state to retain across deployments. Should be committed to version control.
                 '';
-              } // lib.recursiveUpdate state planState;
+              } // lib.recursiveUpdate
+                state
+                planState;
           in
-          pkgs.writers.writeJSON "state.json" mergedState
+          pkgs.writers.writeJSON
+            "state.json"
+            mergedState
         else statePathChecked;
 
     in
