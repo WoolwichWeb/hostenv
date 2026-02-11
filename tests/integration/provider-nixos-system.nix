@@ -7,6 +7,8 @@ let
   envName = "acme__demo-main";
   hostName = "${envName}.hostenv.test";
   nodeName = "node-a";
+  deployUser = "shipper";
+  trustedSigningKey = "hostenv-provider-test-1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
   systemsInput = pkgs.writeText "systems.nix" ''[ "${system}" ]'';
 
   nodesPath = pkgs.runCommand "nodes-stub" { } ''
@@ -32,6 +34,8 @@ let
   nodeSystems = { "${nodeName}" = system; };
 
   config = {
+    deployUser = deployUser;
+    nixSigning.trustedPublicKeys = [ trustedSigningKey ];
     nodes = {
       "${nodeName}" = {
         users.users = {
@@ -39,6 +43,8 @@ let
         };
         provider = {
           deployPublicKeys = [ "ssh-ed25519 test" ];
+          deployUser = deployUser;
+          nixSigning.trustedPublicKeys = [ trustedSigningKey ];
         };
       };
     };
@@ -84,6 +90,8 @@ let
     provider = {
       hostenvHostname = "hosting.test";
       deployPublicKeys = [ "ssh-ed25519 test" ];
+      deployUser = deployUser;
+      nixSigning.trustedPublicKeys = [ trustedSigningKey ];
       nodeFor = { default = nodeName; };
       nodeSystems = nodeSystems;
     };
@@ -127,7 +135,9 @@ let
   nginxOk = systemEval.config.services.nginx.enable == true;
   vhostOk = builtins.hasAttr hostName systemEval.config.services.nginx.virtualHosts;
   deployKeysOk =
-    lib.elem "ssh-ed25519 test" (systemEval.config.users.users.deploy.openssh.authorizedKeys.keys or [ ]);
+    lib.elem "ssh-ed25519 test" (systemEval.config.users.users.${deployUser}.openssh.authorizedKeys.keys or [ ]);
+  trustedPublicKeysOk =
+    lib.elem trustedSigningKey (systemEval.config.nix.settings.trusted-public-keys or [ ]);
   secretsOk =
     builtins.hasAttr "${envName}/backups_secret" systemEval.config.sops.secrets
     && builtins.hasAttr "${envName}/backups_env" systemEval.config.sops.secrets
@@ -149,14 +159,14 @@ let
     && (sessionVars.XDG_CONFIG_HOME or null) == "$HOME/.config"
     && (sessionVars.XDG_DATA_HOME or null) == "$HOME/.local/share"
     && (sessionVars.XDG_STATE_HOME or null) == "$HOME/.local/state";
-  deploySystemSshUserOk = (deployProfiles.system.sshUser or null) == "deploy";
-  deployEnvSshUserOk = (deployProfiles.${envName}.sshUser or null) == "deploy";
+  deploySystemSshUserOk = (deployProfiles.system.sshUser or null) == deployUser;
+  deployEnvSshUserOk = (deployProfiles.${envName}.sshUser or null) == deployUser;
   deployEnvProfileUserOk = (deployProfiles.${envName}.user or null) == envName;
 in
 {
   provider-nixos-system-eval =
     asserts.assertTrue "provider-nixos-system-eval"
-      (nginxOk && vhostOk && deployKeysOk && secretsOk && deploySystemSshUserOk && deployEnvSshUserOk && deployEnvProfileUserOk && ! systemMismatch.success)
+      (nginxOk && vhostOk && deployKeysOk && trustedPublicKeysOk && secretsOk && deploySystemSshUserOk && deployEnvSshUserOk && deployEnvProfileUserOk && ! systemMismatch.success)
       "provider nixosSystem should enforce env key/userName alignment";
   provider-nixos-system-wheel-sudo =
     asserts.assertTrue "provider-nixos-system-wheel-sudo"

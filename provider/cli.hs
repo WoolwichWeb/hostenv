@@ -13,7 +13,7 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.Aeson.Types (iparseEither, parseJSON)
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BLC
-import Data.Char (isHexDigit)
+import Data.Char (isAlphaNum, isHexDigit)
 import Data.Foldable (toList)
 import Data.List (find, intersect, (\\))
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
@@ -25,10 +25,12 @@ import Data.Text qualified as T
 import Data.Text.Conversions (convertText)
 import Data.Text.Encoding qualified as TE
 import Distribution.Compat.Prelude qualified as Sh
-import Hostenv.Provider.NixTrustBootstrap qualified as NixTrust
+import Hostenv.Provider.DeployPreflight qualified as Preflight
 import Options.Applicative qualified as OA
+import System.Directory qualified as Dir
 import System.Environment qualified as Env
 import System.Exit (ExitCode (..))
+import System.FilePath qualified as FP
 import System.Process (readProcessWithExitCode)
 import Turtle (FilePath, (<|>))
 import Turtle qualified as Sh
@@ -40,6 +42,7 @@ data Command
     | CmdDnsGate {node :: Maybe Text, token :: Maybe Text, zone :: Maybe Text, withDnsUpdate :: Bool}
     | CmdDeploy
         { node :: Maybe Text
+        , signingKeyFile :: Maybe Text
         , skipMigrations :: [Text]
         , migrationSources :: [Text]
         , ignoreMigrationErrors :: Bool
@@ -79,6 +82,15 @@ skipMigrationsOpt =
                 <> OA.help "Skip migrations for an environment (repeatable)"
             )
 
+signingKeyFileOpt :: OA.Parser (Maybe Text)
+signingKeyFileOpt =
+    OA.optional . fmap T.pack $
+        OA.strOption
+            ( OA.long "signing-key-file"
+                <> OA.metavar "PATH"
+                <> OA.help "Path to Nix signing secret key (defaults to HOSTENV_SIGNING_KEY_FILE or secrets/signing/secret.key)"
+            )
+
 ignoreMigrationErrorsOpt :: OA.Parser Bool
 ignoreMigrationErrorsOpt =
     OA.switch
@@ -101,7 +113,7 @@ cliParser =
         <$> OA.hsubparser
             ( OA.command "plan" (OA.info (pure CmdPlan) (OA.progDesc "Generate plan.json, state.json, and flake.nix"))
                 <> OA.command "dns-gate" (OA.info (CmdDnsGate <$> nodeOpt <*> tokenOpt <*> zoneOpt <*> withDnsUpdateOpt) (OA.progDesc "Disable ACME/forceSSL for vhosts not pointing at node; add --with-dns-update to upsert Cloudflare records"))
-                <> OA.command "deploy" (OA.info (CmdDeploy <$> nodeOpt <*> skipMigrationsOpt <*> migrationSourceOpt <*> ignoreMigrationErrorsOpt) (OA.progDesc "Deploy via deploy-rs"))
+                <> OA.command "deploy" (OA.info (CmdDeploy <$> nodeOpt <*> signingKeyFileOpt <*> skipMigrationsOpt <*> migrationSourceOpt <*> ignoreMigrationErrorsOpt) (OA.progDesc "Deploy via deploy-rs"))
             )
 
 cliOpts :: OA.ParserInfo CLI
@@ -181,6 +193,11 @@ lookupTextList k o = case KM.lookup k o of
   where
     asText (A.String t) = Just t
     asText _ = Nothing
+
+lookupBool :: KM.Key -> KM.KeyMap A.Value -> Maybe Bool
+lookupBool k o = case KM.lookup k o of
+    Just (A.Bool b) -> Just b
+    _ -> Nothing
 
 modifyAt :: [KM.Key] -> (A.Value -> A.Value) -> KM.KeyMap A.Value -> KM.KeyMap A.Value
 modifyAt [] _ obj = obj
@@ -693,19 +710,171 @@ runRemoteOutput :: SshTarget -> [Text] -> IO (ExitCode, Text, Text)
 runRemoteOutput target args =
     runRemoteScriptOutput target (scriptForArgs args)
 
-ensureNodeNixTrust :: (Text -> NodeConnection) -> Text -> IO ExitCode
-ensureNodeNixTrust resolveNodeConnection nodeName = do
-    let target = mkSshTarget "deploy" (resolveNodeConnection nodeName)
-    NixTrust.ensureNodeNixTrust
-        NixTrust.NixTrustBootstrapConfig
+data SigningKeyInfo = SigningKeyInfo
+    { secretKeyPath :: Text
+    , publicKeyPath :: Text
+    , publicKey :: Text
+    , wasGenerated :: Bool
+    }
+
+defaultSigningKeyPath :: Text
+defaultSigningKeyPath = "secrets/signing/secret.key"
+
+resolveSigningKeyPath :: Maybe Text -> IO Text
+resolveSigningKeyPath mArg = do
+    envPath <- Env.lookupEnv "HOSTENV_SIGNING_KEY_FILE"
+    pure $
+        fromMaybe
+            defaultSigningKeyPath
+            (mArg <|> (T.pack <$> envPath))
+
+sanitizeKeyName :: Text -> Text
+sanitizeKeyName =
+    T.map (\c -> if isAlphaNum c || c `elem` ['.', '-', '_'] then c else '-')
+
+signingKeyNameFor :: Text -> Text
+signingKeyNameFor hostenvHostname =
+    let normalized = sanitizeKeyName (T.toLower (T.strip hostenvHostname))
+     in if T.null normalized
+            then "hostenv-provider-1"
+            else normalized <> "-hostenv-provider-1"
+
+localCommandFailure :: Text -> [Text] -> ExitCode -> Text -> Text -> Text
+localCommandFailure context args code out err =
+    let out' = T.strip out
+        err' = T.strip err
+        detail =
+            if T.null err'
+                then out'
+                else err'
+     in context
+            <> ": "
+            <> T.unwords (map shellEscape args)
+            <> " (exit "
+            <> T.pack (show code)
+            <> ")"
+            <> if T.null detail then "" else " - " <> detail
+
+convertSecretToPublic :: Text -> IO Text
+convertSecretToPublic secret = do
+    (code, out, err) <- readProcessWithExitCode "nix" ["key", "convert-secret-to-public"] (T.unpack secret <> "\n")
+    case code of
+        ExitSuccess ->
+            let pub = T.strip (T.pack out)
+             in if T.null pub
+                    then error "hostenv-provider: failed to derive public signing key (empty output)"
+                    else pure pub
+        ExitFailure _ ->
+            error (T.unpack (localCommandFailure "hostenv-provider: failed to derive public signing key" ["nix", "key", "convert-secret-to-public"] code (T.pack out) (T.pack err)))
+
+chmodPath :: Text -> Text -> IO ()
+chmodPath mode path = do
+    (code, out, err) <- readProcessWithExitCode "chmod" [T.unpack mode, T.unpack path] ""
+    case code of
+        ExitSuccess -> pure ()
+        ExitFailure _ ->
+            error (T.unpack (localCommandFailure "hostenv-provider: failed to set file permissions" ["chmod", mode, path] code (T.pack out) (T.pack err)))
+
+ensureSigningKeyInfo :: Text -> Maybe Text -> IO SigningKeyInfo
+ensureSigningKeyInfo hostenvHostname mKeyPath = do
+    keyPath <- resolveSigningKeyPath mKeyPath
+    let keyPathS = T.unpack keyPath
+    let keyDirS = FP.takeDirectory keyPathS
+    let pubPathS = keyDirS FP.</> "public.key"
+    let pubPath = T.pack pubPathS
+    keyExists <- Dir.doesFileExist keyPathS
+    if keyExists
+        then do
+            secret <- T.strip . T.pack <$> readFile keyPathS
+            when (T.null secret) $
+                error ("hostenv-provider: signing key exists but is empty: " <> keyPathS)
+            pub <- convertSecretToPublic secret
+            Dir.createDirectoryIfMissing True keyDirS
+            sidecarRes <- try (writeFile pubPathS (T.unpack pub <> "\n") >> chmodPath "0644" pubPath) :: IO (Either SomeException ())
+            case sidecarRes of
+                Left err ->
+                    Sh.print ("hostenv-provider: warning: could not update public key sidecar at " <> pubPath <> ": " <> T.pack (displayException err))
+                Right _ -> pure ()
+            pure
+                SigningKeyInfo
+                    { secretKeyPath = keyPath
+                    , publicKeyPath = pubPath
+                    , publicKey = pub
+                    , wasGenerated = False
+                    }
+        else do
+            Dir.createDirectoryIfMissing True keyDirS
+            when (keyDirS /= "." && keyDirS /= "") $
+                chmodPath "0700" (T.pack keyDirS)
+            let keyName = signingKeyNameFor hostenvHostname
+            let generateArgs = ["key", "generate-secret", "--key-name", keyName]
+            (genCode, genOut, genErr) <- readProcessWithExitCode "nix" (map T.unpack generateArgs) ""
+            case genCode of
+                ExitFailure _ ->
+                    error (T.unpack (localCommandFailure "hostenv-provider: failed to generate signing key" ("nix" : generateArgs) genCode (T.pack genOut) (T.pack genErr)))
+                ExitSuccess -> do
+                    let secret = T.strip (T.pack genOut)
+                    when (T.null secret) $
+                        error "hostenv-provider: generated signing key is empty"
+                    writeFile keyPathS (T.unpack secret <> "\n")
+                    chmodPath "0600" keyPath
+                    pub <- convertSecretToPublic secret
+                    writeFile pubPathS (T.unpack pub <> "\n")
+                    chmodPath "0644" pubPath
+                    pure
+                        SigningKeyInfo
+                            { secretKeyPath = keyPath
+                            , publicKeyPath = pubPath
+                            , publicKey = pub
+                            , wasGenerated = True
+                            }
+
+signInstallable :: SigningKeyInfo -> Text -> IO ExitCode
+signInstallable keyInfo target = do
+    let args =
+            [ "store"
+            , "sign"
+            , "-r"
+            , "-k"
+            , keyInfo.secretKeyPath
+            , "generated/.#" <> target
+            ]
+    Sh.print ("hostenv-provider: signing " <> target)
+    Sh.proc "nix" args Sh.empty
+
+planDeployUser :: KM.KeyMap A.Value -> Text
+planDeployUser plan =
+    fromMaybe "deploy" (lookupText (K.fromString "deployUser") plan)
+
+planTrustedPublicKeys :: KM.KeyMap A.Value -> [Text]
+planTrustedPublicKeys plan =
+    case lookupObj (K.fromString "nixSigning") plan of
+        Just signingObj -> lookupTextList (K.fromString "trustedPublicKeys") signingObj
+        Nothing -> []
+
+planNodeRemoteBuild :: KM.KeyMap A.Value -> KM.KeyMap A.Value
+planNodeRemoteBuild plan =
+    fromMaybe KM.empty (lookupObj (K.fromString "nodeRemoteBuild") plan)
+
+nodeUsesRemoteBuild :: KM.KeyMap A.Value -> Text -> Bool
+nodeUsesRemoteBuild remoteBuildMap nodeName =
+    fromMaybe False (lookupBool (K.fromText nodeName) remoteBuildMap)
+
+runNodeDeployPreflight :: (Text -> NodeConnection) -> Text -> Text -> Bool -> Maybe Text -> IO (Maybe Preflight.PreflightFailure)
+runNodeDeployPreflight resolveNodeConnection deployUser nodeName requiresTrustedKey signingPublicKey = do
+    let target = mkSshTarget deployUser (resolveNodeConnection nodeName)
+    Preflight.runPreflight
+        Preflight.DeployPreflightConfig
             { nodeName = nodeName
+            , deployUser = deployUser
+            , requiresTrustedKey = requiresTrustedKey
+            , signingPublicKey = signingPublicKey
             , runRemote = runRemoteOutput target
-            , logLine = Sh.print
             }
 
-runMigrationBackup :: (Text -> NodeConnection) -> EnvInfo -> Text -> Text -> IO Text
-runMigrationBackup nodeConnection envInfo prevNode backupName = do
-    let sourceTarget = mkSshTarget "deploy" (nodeConnection prevNode)
+runMigrationBackup :: Text -> (Text -> NodeConnection) -> EnvInfo -> Text -> Text -> IO Text
+runMigrationBackup deployUser nodeConnection envInfo prevNode backupName = do
+    let sourceTarget = mkSshTarget deployUser (nodeConnection prevNode)
     let sourceHost = sourceTarget.targetHost
     let sudoArgs cmd =
             [ "sudo"
@@ -819,9 +988,9 @@ resolvePrevNode explicitSourceFor hostenvHostname envInfo =
                     pure (Just node)
                 Nothing -> pure Nothing
 
-writeRestorePlan :: (Text -> NodeConnection) -> EnvInfo -> Text -> [(Text, Text)] -> IO ()
-writeRestorePlan nodeConnection envInfo prevNode snapshots = do
-    let deployTarget = mkSshTarget "deploy" (nodeConnection envInfo.node)
+writeRestorePlan :: Text -> (Text -> NodeConnection) -> EnvInfo -> Text -> [(Text, Text)] -> IO ()
+writeRestorePlan deployUser nodeConnection envInfo prevNode snapshots = do
+    let deployTarget = mkSshTarget deployUser (nodeConnection envInfo.node)
     let runtimeDir = envInfo.runtimeDir
     let restoreDir = runtimeDir <> "/restore"
     let restorePath = restoreDir <> "/plan.json"
@@ -879,8 +1048,8 @@ writeRestorePlan nodeConnection envInfo prevNode snapshots = do
         ExitSuccess -> pure ()
         ExitFailure code -> error ("failed to write restore plan for " <> T.unpack envInfo.userName <> " (exit " <> show code <> ")")
 
-runDeploy :: Maybe Text -> [Text] -> [Text] -> Bool -> IO ()
-runDeploy mNode skipMigrations migrationSourceSpecs ignoreMigrationErrors = do
+runDeploy :: Maybe Text -> Maybe Text -> [Text] -> [Text] -> Bool -> IO ()
+runDeploy mNode mSigningKeyPath skipMigrations migrationSourceSpecs ignoreMigrationErrors = do
     let planPath = "generated/plan.json"
     planExists <- Sh.testfile (fromString (T.unpack planPath))
     when (not planExists) $ do
@@ -944,10 +1113,54 @@ runDeploy mNode skipMigrations migrationSourceSpecs ignoreMigrationErrors = do
                 Sh.print "hostenv-provider: warning: migration errors will be ignored; deployments may proceed with stale data"
 
             let targetNodes = uniqueNodeNames envInfosFiltered
-            trustBootstrapRes <- forM targetNodes (ensureNodeNixTrust resolveNodeConnection)
-            let trustBootstrapFailed = any (/= ExitSuccess) trustBootstrapRes
-            when trustBootstrapFailed $ do
-                Sh.print "hostenv-provider: aborting deployment because nix trust bootstrap failed on one or more nodes"
+            let deployUser = planDeployUser plan
+            let remoteBuildMap = planNodeRemoteBuild plan
+            let requiresLocalPush nodeName = not (nodeUsesRemoteBuild remoteBuildMap nodeName)
+            let nodesRequiringLocalPush = filter requiresLocalPush targetNodes
+            let trustedPublicKeys = planTrustedPublicKeys plan
+            let localPushSet = S.fromList nodesRequiringLocalPush
+
+            signingKeyInfo <-
+                if null nodesRequiringLocalPush
+                    then pure Nothing
+                    else do
+                        keyInfo <- ensureSigningKeyInfo hostenvHostname mSigningKeyPath
+                        when keyInfo.wasGenerated $ do
+                            Sh.print ("hostenv-provider: generated signing key at " <> keyInfo.secretKeyPath)
+                            Sh.print ("hostenv-provider: wrote corresponding public key to " <> keyInfo.publicKeyPath)
+                        pure (Just keyInfo)
+
+            forM_ signingKeyInfo $ \keyInfo -> do
+                when (null trustedPublicKeys) $ do
+                    Sh.print "hostenv-provider: deployment aborted; provider.nixSigning.trustedPublicKeys is empty in generated/plan.json"
+                    Sh.print ("hostenv-provider: add this key to provider.nixSigning.trustedPublicKeys and regenerate plan: " <> keyInfo.publicKey)
+                    Sh.exitWith (ExitFailure 1)
+                when (keyInfo.publicKey `notElem` trustedPublicKeys) $ do
+                    Sh.print "hostenv-provider: deployment aborted; local signing key is not present in provider.nixSigning.trustedPublicKeys"
+                    Sh.print ("hostenv-provider: signing key public value: " <> keyInfo.publicKey)
+                    Sh.print "hostenv-provider: either update provider.nixSigning.trustedPublicKeys or pass --signing-key-file with a matching key"
+                    Sh.exitWith (ExitFailure 1)
+
+            forM_ targetNodes $ \nodeName ->
+                when (not (S.member nodeName localPushSet)) $
+                    Sh.print ("hostenv-provider: node " <> nodeName <> " uses remoteBuild=true; skipping local signing trust check")
+
+            preflightFailures <- fmap catMaybes $
+                forM targetNodes $ \nodeName -> do
+                    let requiresTrustedKey = S.member nodeName localPushSet
+                    runNodeDeployPreflight
+                        resolveNodeConnection
+                        deployUser
+                        nodeName
+                        requiresTrustedKey
+                        ((.publicKey) <$> signingKeyInfo)
+
+            when (not (null preflightFailures)) $ do
+                forM_ preflightFailures $ \failure -> do
+                    Sh.print ("hostenv-provider: deploy preflight failed on node " <> failure.failureNode <> ": " <> failure.failureReason)
+                    forM_ failure.failureRemediation $ \line ->
+                        Sh.print ("hostenv-provider: remediation for " <> failure.failureNode <> ": " <> line)
+                Sh.print "hostenv-provider: aborting deployment because one or more preflight checks failed"
                 Sh.exitWith (ExitFailure 1)
 
             migrations <- fmap catMaybes $
@@ -969,9 +1182,9 @@ runDeploy mNode skipMigrations migrationSourceSpecs ignoreMigrationErrors = do
                         Sh.print ("hostenv-provider: migrate backups for " <> envInfo.userName <> " from " <> prevNode <> " -> " <> envInfo.node <> " (" <> backups <> ")")
                     let runMigration (envInfo, prevNode) = do
                             snapshots <- forM envInfo.migrateBackups $ \backupName -> do
-                                snap <- runMigrationBackup resolveNodeConnection envInfo prevNode backupName
+                                snap <- runMigrationBackup deployUser resolveNodeConnection envInfo prevNode backupName
                                 pure (backupName, snap)
-                            writeRestorePlan resolveNodeConnection envInfo prevNode snapshots
+                            writeRestorePlan deployUser resolveNodeConnection envInfo prevNode snapshots
                             let snapshotPairs = map (\(name, sid) -> name <> "=" <> sid) snapshots
                             Sh.print ("hostenv-provider: restore plan written for " <> envInfo.userName <> " (snapshots: " <> T.intercalate ", " snapshotPairs <> ")")
                     if ignoreMigrationErrors
@@ -1010,6 +1223,7 @@ runDeploy mNode skipMigrations migrationSourceSpecs ignoreMigrationErrors = do
                     -- those don't carry over when using this parameter.
                     , "--"
                     , "--skip-checks"
+                    , "--checksigs"
                     ]
                         <> case deployArgM of
                             Just dArg -> ["generated/.#" <> dArg]
@@ -1021,15 +1235,30 @@ runDeploy mNode skipMigrations migrationSourceSpecs ignoreMigrationErrors = do
             -- failed to complete.
             systemDeployRes <-
                 forM targetNodes $ \nodeName -> do
-                    let args = deployArgs $ Just $ nodeName <> ".system"
-                    Sh.print ("hostenv-provider: running nix " <> T.unwords args)
-                    res <- Sh.proc "nix" args Sh.empty
-                    deployGuard res args
-                    pure (nodeName, res)
+                    let target = nodeName <> ".system"
+                    signRes <-
+                        if S.member nodeName localPushSet
+                            then case signingKeyInfo of
+                                Just keyInfo -> signInstallable keyInfo target
+                                Nothing -> do
+                                    Sh.print ("hostenv-provider: signing configuration missing for node " <> nodeName)
+                                    pure (ExitFailure 1)
+                            else pure ExitSuccess
+                    if signRes /= ExitSuccess
+                        then do
+                            Sh.print ("hostenv-provider: failed to sign deployment target " <> target)
+                            pure (nodeName, signRes)
+                        else do
+                            let args = deployArgs (Just target)
+                            Sh.print ("hostenv-provider: running nix " <> T.unwords args)
+                            res <- Sh.proc "nix" args Sh.empty
+                            deployGuard res args
+                            pure (nodeName, res)
 
             -- Environments deployment for the node.
             envDeployRes <- forM (toNamed envInfosFiltered) $ \(envName, envInfo) -> do
-                let args = deployArgs $ Just $ envInfo.node <> "." <> envInfo.userName
+                let target = envInfo.node <> "." <> envInfo.userName
+                let args = deployArgs (Just target)
                 let systemStatus = case filter ((==) envInfo.node . fst) systemDeployRes of
                         [] -> Left "node not in system deployment list"
                         (_, ExitSuccess) : [] -> Right ExitSuccess
@@ -1040,9 +1269,22 @@ runDeploy mNode skipMigrations migrationSourceSpecs ignoreMigrationErrors = do
                 case systemStatus of
                     Left err -> Sh.print ("hostenv-provider: " <> err) >> pure (envName, ExitFailure 1)
                     Right ExitSuccess -> do
-                        res <- Sh.proc "nix" args Sh.empty
-                        deployGuard res args
-                        pure (envName, res)
+                        signRes <-
+                            if S.member envInfo.node localPushSet
+                                then case signingKeyInfo of
+                                    Just keyInfo -> signInstallable keyInfo target
+                                    Nothing -> do
+                                        Sh.print ("hostenv-provider: signing configuration missing for node " <> envInfo.node)
+                                        pure (ExitFailure 1)
+                                else pure ExitSuccess
+                        if signRes /= ExitSuccess
+                            then do
+                                Sh.print ("hostenv-provider: failed to sign deployment target " <> target)
+                                pure (envName, signRes)
+                            else do
+                                res <- Sh.proc "nix" args Sh.empty
+                                deployGuard res args
+                                pure (envName, res)
 
             let failures = any (\(_, code) -> code /= ExitSuccess) envDeployRes
             when failures $ Sh.print "hostenv-provider: deployment completed with errors"
@@ -1055,4 +1297,5 @@ main = do
     case cmd of
         CmdPlan -> runPlan
         CmdDnsGate mNode mTok mZone withDnsUpdate -> runDnsGate mNode mTok mZone withDnsUpdate
-        CmdDeploy mNode skipMigrations migrationSources ignoreMigrationErrors -> runDeploy mNode skipMigrations migrationSources ignoreMigrationErrors
+        CmdDeploy mNode mSigningKeyPath skipMigrations migrationSources ignoreMigrationErrors ->
+            runDeploy mNode mSigningKeyPath skipMigrations migrationSources ignoreMigrationErrors

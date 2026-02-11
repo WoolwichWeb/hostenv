@@ -4,12 +4,29 @@
     { config, lib, pkgs, ... }:
     let
       deployPublicKeys = config.provider.deployPublicKeys or [ ];
+      deployUser = config.provider.deployUser or "deploy";
+      trustedPublicKeys =
+        if config.provider ? nixSigning && config.provider.nixSigning ? trustedPublicKeys
+        then config.provider.nixSigning.trustedPublicKeys
+        else [ ];
     in
     {
-      options.provider.deployPublicKeys = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = [ ];
-        description = "SSH public keys for the deploy user (provider-level).";
+      options.provider = {
+        deployPublicKeys = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ ];
+          description = "SSH public keys for the deploy user (provider-level).";
+        };
+        deployUser = lib.mkOption {
+          type = lib.types.str;
+          default = "deploy";
+          description = "SSH/sudo user used by deploy-rs and provider tooling.";
+        };
+        nixSigning.trustedPublicKeys = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ ];
+          description = "Public signing keys trusted by nix-daemon on provider nodes.";
+        };
       };
 
       config = {
@@ -34,7 +51,8 @@
 
           # Allow deploy-rs uploads from the provider host without disabling
           # signature checks globally on the node.
-          settings.trusted-users = lib.mkAfter [ "deploy" ];
+          settings.trusted-users = lib.mkAfter [ deployUser ];
+          settings.trusted-public-keys = lib.mkAfter trustedPublicKeys;
         };
 
         services.openssh = {
@@ -60,7 +78,7 @@
         };
 
         users.mutableUsers = lib.mkDefault false;
-        users.users.deploy = {
+        users.users.${deployUser} = {
           isNormalUser = lib.mkDefault true;
           extraGroups = lib.mkDefault [ "wheel" "keys" ];
           openssh.authorizedKeys.keys = lib.mkDefault deployPublicKeys;

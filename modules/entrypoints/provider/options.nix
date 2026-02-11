@@ -267,14 +267,14 @@ let
             in
             {
               system = {
-                sshUser = "deploy";
+                sshUser = config.deployUser or "deploy";
                 user = "root";
                 path = deploy-rs.lib.${remoteSystem}.activate.nixos nodes.${node};
               };
             } // builtins.mapAttrs
               (name: environment: {
                 user = name;
-                sshUser = "deploy";
+                sshUser = config.deployUser or "deploy";
                 path = deploy-rs.lib.${remoteSystem}.activate.custom environment "./bin/activate";
               })
               (environmentsWith node).${remoteSystem};
@@ -298,8 +298,26 @@ in
       default = "example.invalid";
       description = "Hostenv control-plane hostname (must be set by provider).";
     };
+    deployUser = mkOption {
+      type = types.str;
+      default = "deploy";
+      description = "SSH/sudo user used for deploy-rs operations.";
+    };
     letsEncrypt = mkOption { type = types.attrs; default = { adminEmail = "admin@example.invalid"; acceptTerms = true; }; };
     deployPublicKeys = mkOption { type = types.listOf types.str; default = [ ]; description = "SSH public keys for deploy user; must be set by provider."; };
+    nixSigning = mkOption {
+      type = types.submodule {
+        options = {
+          trustedPublicKeys = mkOption {
+            type = types.listOf types.str;
+            default = [ ];
+            description = "Public Nix signing keys trusted by provider nodes for deploy-rs copy checks.";
+          };
+        };
+      };
+      default = { };
+      description = "Nix signing key configuration shared by generated plan and node configuration.";
+    };
     nodeFor = mkOption {
       type = types.attrs;
       default = { default = null; };
@@ -406,5 +424,7 @@ in
     nixosSystem = providerNixosSystem;
     deployOutputs = providerDeployOutputs;
     deployPublicKeys = config.provider.deployPublicKeys;
+    deployUser = config.provider.deployUser;
+    nixSigning = config.provider.nixSigning;
   };
 }

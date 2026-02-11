@@ -8,6 +8,8 @@ let
     , pkgs
     , letsEncrypt
     , deployPublicKeys ? [ ]
+    , deployUser ? "deploy"
+    , nixSigning ? { trustedPublicKeys = [ ]; }
     , hostenvHostname
     , nodeFor ? { default = null; }
     , nodeModules ? [ ]
@@ -723,6 +725,11 @@ let
               '';
               hostenvHostname = cfgHostenvHostname;
               cloudflare = cloudflare;
+              deployUser = deployUser;
+              nixSigning = {
+                trustedPublicKeys = nixSigning.trustedPublicKeys or [ ];
+              };
+              nodeRemoteBuild = nodeRemoteBuild;
               nodeConnections = nodeConnections;
               environments = { };
               nodes = { };
@@ -754,6 +761,8 @@ let
 
                         provider = {
                           inherit deployPublicKeys;
+                          inherit deployUser;
+                          nixSigning.trustedPublicKeys = nixSigning.trustedPublicKeys or [ ];
                         };
 
                         users.groups.${elem.hostenv.userName} = {

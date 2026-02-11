@@ -3,3 +3,4 @@
 /for_refactoring/
 /dist-newstyle
 /cabal.project.local
+/secrets/signing/secret.key

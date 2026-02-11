@@ -61,6 +61,8 @@ in
               pkgs = pkgs;
               letsEncrypt = cfg.letsEncrypt;
               deployPublicKeys = cfg.deployPublicKeys;
+              deployUser = cfg.deployUser;
+              nixSigning = cfg.nixSigning;
               hostenvHostname = cfg.hostenvHostname;
               nodeFor = cfg.nodeFor;
               nodeSystems = cfg.nodeSystems;
