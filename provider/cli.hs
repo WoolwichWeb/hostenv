@@ -25,6 +25,7 @@ import Data.Text qualified as T
 import Data.Text.Conversions (convertText)
 import Data.Text.Encoding qualified as TE
 import Distribution.Compat.Prelude qualified as Sh
+import Hostenv.Provider.NixTrustBootstrap qualified as NixTrust
 import Options.Applicative qualified as OA
 import System.Environment qualified as Env
 import System.Exit (ExitCode (..))
@@ -644,6 +645,19 @@ runRemoteScript target script = do
     (code, _out, _err) <- readProcessWithExitCode "ssh" (map T.unpack sshArgs) (T.unpack script)
     pure code
 
+runRemoteScriptOutput :: SshTarget -> Text -> IO (ExitCode, Text, Text)
+runRemoteScriptOutput target script = do
+    let runner =
+            "tmp=$(mktemp /tmp/hostenv-provider-XXXXXX.sh); "
+                <> "cat > \"$tmp\"; "
+                <> "bash \"$tmp\"; "
+                <> "status=$?; "
+                <> "rm -f \"$tmp\"; "
+                <> "exit $status"
+    let sshArgs = ["-o", "BatchMode=yes"] ++ target.targetSshOpts ++ [target.targetUserHost, runner]
+    (code, out, err) <- readProcessWithExitCode "ssh" (map T.unpack sshArgs) (T.unpack script)
+    pure (code, T.pack out, T.pack err)
+
 runRemoteScriptStrict :: SshTarget -> Text -> IO Text
 runRemoteScriptStrict target script = do
     let runner =
@@ -674,6 +688,20 @@ runRemote target args =
 runRemoteStrict :: SshTarget -> [Text] -> IO Text
 runRemoteStrict target args =
     runRemoteScriptStrict target (scriptForArgs args)
+
+runRemoteOutput :: SshTarget -> [Text] -> IO (ExitCode, Text, Text)
+runRemoteOutput target args =
+    runRemoteScriptOutput target (scriptForArgs args)
+
+ensureNodeNixTrust :: (Text -> NodeConnection) -> Text -> IO ExitCode
+ensureNodeNixTrust resolveNodeConnection nodeName = do
+    let target = mkSshTarget "deploy" (resolveNodeConnection nodeName)
+    NixTrust.ensureNodeNixTrust
+        NixTrust.NixTrustBootstrapConfig
+            { nodeName = nodeName
+            , runRemote = runRemoteOutput target
+            , logLine = Sh.print
+            }
 
 runMigrationBackup :: (Text -> NodeConnection) -> EnvInfo -> Text -> Text -> IO Text
 runMigrationBackup nodeConnection envInfo prevNode backupName = do
@@ -914,6 +942,14 @@ runDeploy mNode skipMigrations migrationSourceSpecs ignoreMigrationErrors = do
                 Sh.print ("hostenv-provider: warning: migration-source targets not found: " <> T.intercalate ", " sourceMisses)
             when ignoreMigrationErrors $
                 Sh.print "hostenv-provider: warning: migration errors will be ignored; deployments may proceed with stale data"
+
+            let targetNodes = uniqueNodeNames envInfosFiltered
+            trustBootstrapRes <- forM targetNodes (ensureNodeNixTrust resolveNodeConnection)
+            let trustBootstrapFailed = any (/= ExitSuccess) trustBootstrapRes
+            when trustBootstrapFailed $ do
+                Sh.print "hostenv-provider: aborting deployment because nix trust bootstrap failed on one or more nodes"
+                Sh.exitWith (ExitFailure 1)
+
             migrations <- fmap catMaybes $
                 forM envInfosFiltered $ \envInfo -> do
                     if envInfo.userName `elem` skipMigrations || envInfo.migrateBackups == []
@@ -983,7 +1019,6 @@ runDeploy mNode skipMigrations migrationSourceSpecs ignoreMigrationErrors = do
             -- System deployment of each node. Retains results, so we can
             -- cowardly refuse to deploy environments where the system deploy
             -- failed to complete.
-            let targetNodes = uniqueNodeNames envInfosFiltered
             systemDeployRes <-
                 forM targetNodes $ \nodeName -> do
                     let args = deployArgs $ Just $ nodeName <> ".system"

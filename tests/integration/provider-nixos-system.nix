@@ -7,6 +7,7 @@ let
   envName = "acme__demo-main";
   hostName = "${envName}.hostenv.test";
   nodeName = "node-a";
+  systemsInput = pkgs.writeText "systems.nix" ''[ "${system}" ]'';
 
   nodesPath = pkgs.runCommand "nodes-stub" { } ''
     mkdir -p "$out/${nodeName}"
@@ -95,6 +96,15 @@ let
   };
 
   nixosSystem = providerFlake.lib.provider.nixosSystem;
+  deployOutputs = providerFlake.lib.provider.deployOutputs {
+    inherit config nodeSystems nodesPath secretsPath;
+    inputs = inputsForSystem;
+    nixpkgs = inputs.nixpkgs;
+    deploy-rs = inputs.deploy-rs;
+    systems = systemsInput;
+    localSystem = system;
+  };
+  deployProfiles = deployOutputs.deploy.nodes.${nodeName}.profiles;
   systemEval = nixosSystem {
     inherit config nodeSystems nodesPath secretsPath;
     node = nodeName;
@@ -139,11 +149,14 @@ let
     && (sessionVars.XDG_CONFIG_HOME or null) == "$HOME/.config"
     && (sessionVars.XDG_DATA_HOME or null) == "$HOME/.local/share"
     && (sessionVars.XDG_STATE_HOME or null) == "$HOME/.local/state";
+  deploySystemSshUserOk = (deployProfiles.system.sshUser or null) == "deploy";
+  deployEnvSshUserOk = (deployProfiles.${envName}.sshUser or null) == "deploy";
+  deployEnvProfileUserOk = (deployProfiles.${envName}.user or null) == envName;
 in
 {
   provider-nixos-system-eval =
     asserts.assertTrue "provider-nixos-system-eval"
-      (nginxOk && vhostOk && deployKeysOk && secretsOk && ! systemMismatch.success)
+      (nginxOk && vhostOk && deployKeysOk && secretsOk && deploySystemSshUserOk && deployEnvSshUserOk && deployEnvProfileUserOk && ! systemMismatch.success)
       "provider nixosSystem should enforce env key/userName alignment";
   provider-nixos-system-wheel-sudo =
     asserts.assertTrue "provider-nixos-system-wheel-sudo"

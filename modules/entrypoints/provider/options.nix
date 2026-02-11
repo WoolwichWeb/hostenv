@@ -274,7 +274,7 @@ let
             } // builtins.mapAttrs
               (name: environment: {
                 user = name;
-                sshUser = name;
+                sshUser = "deploy";
                 path = deploy-rs.lib.${remoteSystem}.activate.custom environment "./bin/activate";
               })
               (environmentsWith node).${remoteSystem};
