@@ -966,9 +966,12 @@ runDeploy mNode skipMigrations migrationSourceSpecs ignoreMigrationErrors = do
             -- and pass it through to deploy-rs.
             let deployArgs deployArgM =
                     [ "run"
-                    , "--inputs-from"
-                    , "./generated"
                     , "nixpkgs#deploy-rs"
+                    -- Thinking of adding `--inputs-from` here?
+                    -- We have an organisation that starts with a number and
+                    -- `--inputs-from` returns an error if we use it. In the
+                    -- flake.nix's inputs we can just wrap it in quotes, but
+                    -- those don't carry over when using this parameter.
                     , "--"
                     , "--skip-checks"
                     ]
