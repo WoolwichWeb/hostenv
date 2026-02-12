@@ -7,6 +7,7 @@
       scripts = builtins.filter (cmd: cmd.value.makeScript) subCommandList;
 
       hostenvShells =
+        # Build a hostenv CLI for each environment.
         lib.mapAttrs
           (environmentName: environment:
             let
@@ -15,6 +16,8 @@
                   exec hostenv ${cmd.name} -- "$@"
                 '')
                 scripts;
+              # Ensure the project git branch tied to this hostenv environment
+              # is checked out.
               envStartup = ''
                 currentBranch=$(git symbolic-ref --short HEAD)
 
@@ -50,26 +53,30 @@
           default = {
             devshell = {
               name = "hostenv";
+              # On startup of the project CLI, we check if the current git
+              # branch is tied to a hostenv environment. If it is, we set the
+              # CLI to work with that environment. If it is not, we warn the
+              # user, and provide some quick guidance.
               startup.hostenv = {
                 text = ''
-                  ENV_JSON='${builtins.toJSON (lib.filterAttrs (_: v: v.enable) config.hostenv.publicEnvironments)}'
+                    ENV_JSON='${builtins.toJSON (lib.filterAttrs (_: v: v.enable) config.hostenv.publicEnvironments)}'
 
-                  if gitRef=$(git symbolic-ref -q --short HEAD 2>/dev/null); then
-                    # Is current branch a hostenv environment?
-                    if jq -e --arg ref "$gitRef" 'has($ref)' <<<"$ENV_JSON" >/dev/null; then
-                      : # OK
+                    if gitRef=$(git symbolic-ref -q --short HEAD 2>/dev/null); then
+                      # Is current branch a hostenv environment?
+                      if jq -e --arg ref "$gitRef" 'has($ref)' <<<"$ENV_JSON" >/dev/null; then
+                        : # OK
+                      else
+                        printf '%s\n\n%s\n' \
+                  "⚠️  Cannot load hostenv — '$gitRef' is not a hostenv environment" \
+                  "ℹ️  Add 'environments.$gitRef.enable = true;' to your hostenv.nix if you would like to make it a hostenv environment."
+                      fi
                     else
-                      printf '%s\n\n%s\n' \
-                "⚠️  Cannot load hostenv — '$gitRef' is not a hostenv environment" \
-                "ℹ️  Add 'environments.$gitRef.enable = true;' to your hostenv.nix if you would like to make it a hostenv environment."
+                      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+                        echo "⚠️  Cannot load hostenv — git is in detached HEAD state"
+                      else
+                        echo "⚠️  Cannot load hostenv — this is not a git repository"
+                      fi
                     fi
-                  else
-                    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-                      echo "⚠️  Cannot load hostenv — git is in detached HEAD state"
-                    else
-                      echo "⚠️  Cannot load hostenv — this is not a git repository"
-                    fi
-                  fi
                 '';
               };
             };

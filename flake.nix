@@ -2,7 +2,7 @@
   description = "Hostenv: the PaaS you control";
 
   inputs = {
-    nixpkgs.url = "github:liammcdermott/nixpkgs/hotfix/fix-composer-flags";
+    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
     import-tree.url = "github:vic/import-tree";
     devshell = {
@@ -39,18 +39,18 @@
       imports = [ inputs.devshell.flakeModule ] ++ moduleList;
     };
 
-    #
-    # Hostenv uses flake-parts, which is great since it means everything
-    # is a module, and modules are the best thing about Nix! But it also
-    # sucks, as it means things we're used to seeing in a flake.nix aren't
-    # here, where we expect.
-    #
-    # So, you may be looking for:
-    #
-    # devShells → modules/flake/devshells.nix
-    # packages → there's no single file for packages, but an example is
-    #            modules/flake/docs.nix
-    # apps → there's no single file for apps, but an example is
-    #        modules/flake/docs.nix
-    #
+  #
+  # Hostenv uses flake-parts, which is great since it means everything
+  # is a module, and that means users can alter almost anything! But it also
+  # sucks, as it means things we're used to seeing in a flake.nix aren't
+  # here, where we expect.
+  #
+  # So, you may be looking for:
+  #
+  # devShells → modules/flake/devshells.nix
+  # packages → there's no single file for packages, but an example is
+  #            modules/flake/docs.nix
+  # apps → there's no single file for apps, but an example is
+  #        modules/flake/docs.nix
+  #
 }

@@ -1,3 +1,11 @@
+# Hostenv projects CLI engine.
+# Built on top of the excellent Pog:
+# https://github.com/jpetrucciani/pog
+#
+# When a user runs `cd <project name>/.hostenv` this gives them a pleasant CLI
+# tool that's tailored to their hosting environments.
+# For example, it might allow them to download a database dump from mariadb or
+# Postgres, or run framework-specific commands like `drush` seamlessly.
 { ... }:
 {
   flake.modules.hostenv.tools-cli-engine =
@@ -68,7 +76,7 @@
         };
       };
 
-      # Main CLI package (rename local var to avoid confusion with removed flake-parts hostenvCli option)
+      # Main CLI package.
       cliPkg = pog.pog {
         name = "hostenv";
         description = ''Interact with your hosting environments.
@@ -184,7 +192,8 @@
       };
     in
     {
-      # Provide base commands as defaults so services can extend freely.
+      # Only basic commands are defined here, others are defined by
+      # services (see: /modules/features/ for examples).
       config.hostenv.subCommands =
         lib.mapAttrs (_: v: lib.mkDefault v) baseSubCommands;
 
