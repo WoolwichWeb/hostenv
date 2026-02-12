@@ -548,10 +548,10 @@ runDnsGate mNode mTok mZone withDnsUpdate = do
                                     Just zoneName ->
                                         if isSubdomainOf vhName zoneName
                                             then cfUpsertCname (T.pack t) (T.pack z) vhName expectedHost >> pure ()
-                                            else Sh.print ("Skipping Cloudflare upsert for " <> vhName <> " (outside zone " <> zoneName <> ")")
-                                    Nothing -> Sh.print "DNS setup ('dnsGate') failed: could not resolve Cloudflare zone name"
-                            (Nothing, _) -> Sh.print "DNS setup ('dnsGate') failed: Cloudflare token was not provided"
-                            (_, Nothing) -> Sh.print "DNS setup ('dnsGate') failed: Cloudflare zone was not provided"
+                                            else printProviderLine ("Skipping Cloudflare upsert for " <> vhName <> " (outside zone " <> zoneName <> ")")
+                                    Nothing -> printProviderLine "DNS setup ('dnsGate') failed: could not resolve Cloudflare zone name"
+                            (Nothing, _) -> printProviderLine "DNS setup ('dnsGate') failed: Cloudflare token was not provided"
+                            (_, Nothing) -> printProviderLine "DNS setup ('dnsGate') failed: Cloudflare zone was not provided"
                     let plan1 = disableAcmePaths name vhName planAcc
                     let plan2 = disableAcmeOnNode nodeName vhName plan1
                     pure plan2
@@ -803,7 +803,7 @@ ensureSigningKeyInfo hostenvHostname mKeyPath = do
             sidecarRes <- try (writeFile pubPathS (T.unpack pub <> "\n") >> chmodPath "0644" pubPath) :: IO (Either SomeException ())
             case sidecarRes of
                 Left err ->
-                    Sh.print ("hostenv-provider: warning: could not update public key sidecar at " <> pubPath <> ": " <> T.pack (displayException err))
+                    printProviderLine ("hostenv-provider: warning: could not update public key sidecar at " <> pubPath <> ": " <> T.pack (displayException err))
                 Right _ -> pure ()
             pure
                 SigningKeyInfo
@@ -850,7 +850,7 @@ signInstallable keyInfo installable target = do
     (buildCode, buildOut, buildErr) <- readProcessWithExitCode "nix" (map T.unpack buildArgs) ""
     case buildCode of
         ExitFailure _ -> do
-            Sh.print (localCommandFailure "hostenv-provider: failed to realise deployment target for signing" ("nix" : buildArgs) buildCode (T.pack buildOut) (T.pack buildErr))
+            printProviderLine (localCommandFailure "hostenv-provider: failed to realise deployment target for signing" ("nix" : buildArgs) buildCode (T.pack buildOut) (T.pack buildErr))
             pure (ExitFailure 1)
         ExitSuccess -> do
             let outputPaths =
@@ -858,7 +858,7 @@ signInstallable keyInfo installable target = do
                         map T.strip (T.lines (T.pack buildOut))
             if null outputPaths
                 then do
-                    Sh.print ("hostenv-provider: no output paths produced while realising " <> target)
+                    printProviderLine ("hostenv-provider: no output paths produced while realising " <> target)
                     pure (ExitFailure 1)
                 else do
                     let args =
@@ -869,7 +869,7 @@ signInstallable keyInfo installable target = do
                             , keyInfo.secretKeyPath
                             ]
                                 <> outputPaths
-                    Sh.print ("hostenv-provider: signing " <> target)
+                    printProviderLine ("hostenv-provider: signing " <> target)
                     Sh.proc "nix" args Sh.empty
 
 printProviderLine :: Text -> IO ()
@@ -963,7 +963,7 @@ runMigrationBackup deployUser nodeConnection envInfo prevNode backupName = do
                         baseState <- fmap parseState (runRemoteStrict sourceTarget (sudoArgs (loadStateCmd (unitFor baseName))))
                         if baseState == "loaded"
                             then do
-                                Sh.print
+                                printProviderLine
                                     ( "hostenv: migrate backup unit "
                                         <> unitFor backupName
                                         <> " not found on "
@@ -1008,7 +1008,7 @@ runMigrationBackup deployUser nodeConnection envInfo prevNode backupName = do
                     snapOutUntagged <- runRemoteStrict sourceTarget (sudoArgs snapshotCmdUntagged)
                     case parseSnapshotId snapOutUntagged of
                         Just snap -> do
-                            Sh.print
+                            printProviderLine
                                 ( "hostenv: warning: no tagged restic snapshot found for "
                                     <> effectiveName
                                     <> " on "
@@ -1018,7 +1018,7 @@ runMigrationBackup deployUser nodeConnection envInfo prevNode backupName = do
                             pure snap
                         Nothing -> error ("could not parse snapshot id for " <> T.unpack envInfo.userName <> ":" <> T.unpack backupName <> " (tagged or untagged)")
         else do
-            Sh.print ("hostenv: restic wrapper missing for " <> effectiveName <> " on " <> sourceHost <> "; reading snapshot id from journal")
+            printProviderLine ("hostenv: restic wrapper missing for " <> effectiveName <> " on " <> sourceHost <> "; reading snapshot id from journal")
             let invocationCmd = userBusPrefix <> "systemctl --user show -p InvocationID --value " <> unit
             invOut <- runRemoteStrict sourceTarget (sudoArgs invocationCmd)
             let invocation = T.strip invOut
@@ -1036,13 +1036,13 @@ resolvePrevNode :: (Text -> Maybe Text) -> Text -> EnvInfo -> IO (Maybe Text)
 resolvePrevNode explicitSourceFor hostenvHostname envInfo =
     case explicitSourceFor envInfo.userName of
         Just sourceNode -> do
-            Sh.print ("hostenv: previous node for " <> envInfo.userName <> " forced via --migration-source: " <> sourceNode)
+            printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " forced via --migration-source: " <> sourceNode)
             pure (Just sourceNode)
         Nothing -> do
             discovered <- discoverPrevNodeFromDns hostenvHostname envInfo.userName (envInfo.vhosts)
             case discovered of
                 Just node -> do
-                    Sh.print ("hostenv: previous node for " <> envInfo.userName <> " discovered via DNS: " <> node)
+                    printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " discovered via DNS: " <> node)
                     pure (Just node)
                 Nothing -> pure Nothing
 
@@ -1136,7 +1136,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
             envInfosSub <- forM (KM.elems envs) $ \env -> case iparseEither parseJSON env of
                 -- Using lists here (so the type becomes @[[EnvInfo]]@) as
                 -- they're easy to @concat@ later.
-                Left err -> Sh.print ("hostenv-provider: error reading from plan JSON at '" <> T.pack (show $ fst err) <> " - '" <> T.pack (snd err) <> "'") >> pure []
+                Left err -> printProviderLine ("hostenv-provider: error reading from plan JSON at '" <> T.pack (show $ fst err) <> " - '" <> T.pack (snd err) <> "'") >> pure []
                 Right env_ -> pure [env_]
 
             -- Filter environments to node requested by the user.
@@ -1157,18 +1157,18 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
             -- Perform data migrations if the environment has moved node.
             case mNode of
                 Nothing -> pure ()
-                Just n -> Sh.print ("hostenv-provider: deploy filtered to node " <> n)
-            Sh.print ("hostenv-provider: " <> T.pack (show (length envInfosFiltered)) <> " environment(s) considered")
+                Just n -> printProviderLine ("hostenv-provider: deploy filtered to node " <> n)
+            printProviderLine ("hostenv-provider: " <> T.pack (show (length envInfosFiltered)) <> " environment(s) considered")
             when (not (null skipHits)) $
-                Sh.print ("hostenv-provider: skipping migrations for: " <> T.intercalate ", " skipHits)
+                printProviderLine ("hostenv-provider: skipping migrations for: " <> T.intercalate ", " skipHits)
             when (not (null skipMisses)) $
-                Sh.print ("hostenv-provider: warning: skip-migrations targets not found: " <> T.intercalate ", " skipMisses)
+                printProviderLine ("hostenv-provider: warning: skip-migrations targets not found: " <> T.intercalate ", " skipMisses)
             forM_ sourceHits $ \(envName, sourceNode) ->
-                Sh.print ("hostenv-provider: migration source override " <> envName <> " -> " <> sourceNode)
+                printProviderLine ("hostenv-provider: migration source override " <> envName <> " -> " <> sourceNode)
             when (not (null sourceMisses)) $
-                Sh.print ("hostenv-provider: warning: migration-source targets not found: " <> T.intercalate ", " sourceMisses)
+                printProviderLine ("hostenv-provider: warning: migration-source targets not found: " <> T.intercalate ", " sourceMisses)
             when ignoreMigrationErrors $
-                Sh.print "hostenv-provider: warning: migration errors will be ignored; deployments may proceed with stale data"
+                printProviderLine "hostenv-provider: warning: migration errors will be ignored; deployments may proceed with stale data"
 
             let targetNodes = uniqueNodeNames envInfosFiltered
             let deployUser = planDeployUser plan
@@ -1185,8 +1185,8 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                     else do
                         keyInfo <- ensureSigningKeyInfo hostenvHostname mSigningKeyPath
                         when keyInfo.wasGenerated $ do
-                            Sh.print ("hostenv-provider: generated signing key at " <> keyInfo.secretKeyPath)
-                            Sh.print ("hostenv-provider: wrote corresponding public key to " <> keyInfo.publicKeyPath)
+                            printProviderLine ("hostenv-provider: generated signing key at " <> keyInfo.secretKeyPath)
+                            printProviderLine ("hostenv-provider: wrote corresponding public key to " <> keyInfo.publicKeyPath)
                         pure (Just keyInfo)
 
             flakeKeyStatus <- forM signingKeyInfo (detectFlakeKeyStatus . (.publicKey))
@@ -1194,21 +1194,21 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
             forM_ signingKeyInfo $ \keyInfo -> do
                 let keyStatus = fromMaybe (FlakeKeyUnknown "signing key flake status unavailable") flakeKeyStatus
                 when (null trustedPublicKeys) $ do
-                    Sh.print "hostenv-provider: deployment aborted; provider.nixSigning.trustedPublicKeys is empty in generated/plan.json"
+                    printProviderLine "hostenv-provider: deployment aborted; provider.nixSigning.trustedPublicKeys is empty in generated/plan.json"
                     printProviderLines (localTrustSetupLines keyStatus keyInfo.publicKey)
                     Sh.exitWith (ExitFailure 1)
                 when (keyInfo.publicKey `notElem` trustedPublicKeys) $ do
-                    Sh.print "hostenv-provider: deployment aborted; local signing key is not present in provider.nixSigning.trustedPublicKeys"
-                    Sh.print ("hostenv-provider: signing key public value: " <> keyInfo.publicKey)
+                    printProviderLine "hostenv-provider: deployment aborted; local signing key is not present in provider.nixSigning.trustedPublicKeys"
+                    printProviderLine ("hostenv-provider: signing key public value: " <> keyInfo.publicKey)
                     printProviderLines (localTrustSetupLines keyStatus keyInfo.publicKey)
-                    Sh.print "hostenv-provider: alternatively, pass --signing-key-file with a key that already matches trustedPublicKeys."
+                    printProviderLine "hostenv-provider: alternatively, pass --signing-key-file with a key that already matches trustedPublicKeys."
                     Sh.exitWith (ExitFailure 1)
 
             when forceRemoteBuild $
-                Sh.print "hostenv-provider: --remote-build enabled; skipping local signing trust checks for all nodes"
+                printProviderLine "hostenv-provider: --remote-build enabled; skipping local signing trust checks for all nodes"
             forM_ targetNodes $ \nodeName ->
                 when (not forceRemoteBuild && not (S.member nodeName localPushSet)) $
-                    Sh.print ("hostenv-provider: node " <> nodeName <> " uses remoteBuild=true; skipping local signing trust check")
+                    printProviderLine ("hostenv-provider: node " <> nodeName <> " uses remoteBuild=true; skipping local signing trust check")
 
             preflightFailures <- fmap catMaybes $
                 forM targetNodes $ \nodeName -> do
@@ -1222,7 +1222,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
 
             when (not (null preflightFailures)) $ do
                 forM_ preflightFailures $ \failure -> do
-                    Sh.print ("hostenv-provider: deploy preflight failed on node " <> failure.failureNode <> ": " <> failure.failureReason)
+                    printProviderLine ("hostenv-provider: deploy preflight failed on node " <> failure.failureNode <> ": " <> failure.failureReason)
                     let remediationLines =
                             if failure.failureReason == Preflight.signingKeyNotTrustedReason
                                 then case (signingKeyInfo, flakeKeyStatus) of
@@ -1232,7 +1232,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                                 else failure.failureRemediation
                     printProviderLine ("hostenv-provider: remediation for " <> failure.failureNode <> ":")
                     printRemediationBlock remediationLines
-                Sh.print "hostenv-provider: aborting deployment because one or more preflight checks failed"
+                printProviderLine "hostenv-provider: aborting deployment because one or more preflight checks failed"
                 Sh.exitWith (ExitFailure 1)
 
             migrations <- fmap catMaybes $
@@ -1246,19 +1246,19 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                                 _ -> Nothing
 
             if null migrations
-                then Sh.print "hostenv-provider: no migrations required"
+                then printProviderLine "hostenv-provider: no migrations required"
                 else do
-                    Sh.print ("hostenv-provider: migrations required for " <> T.pack (show (length migrations)) <> " environment(s)")
+                    printProviderLine ("hostenv-provider: migrations required for " <> T.pack (show (length migrations)) <> " environment(s)")
                     forM_ migrations $ \(envInfo, prevNode) -> do
                         let backups = T.intercalate ", " envInfo.migrateBackups
-                        Sh.print ("hostenv-provider: migrate backups for " <> envInfo.userName <> " from " <> prevNode <> " -> " <> envInfo.node <> " (" <> backups <> ")")
+                        printProviderLine ("hostenv-provider: migrate backups for " <> envInfo.userName <> " from " <> prevNode <> " -> " <> envInfo.node <> " (" <> backups <> ")")
                     let runMigration (envInfo, prevNode) = do
                             snapshots <- forM envInfo.migrateBackups $ \backupName -> do
                                 snap <- runMigrationBackup deployUser resolveNodeConnection envInfo prevNode backupName
                                 pure (backupName, snap)
                             writeRestorePlan deployUser resolveNodeConnection envInfo prevNode snapshots
                             let snapshotPairs = map (\(name, sid) -> name <> "=" <> sid) snapshots
-                            Sh.print ("hostenv-provider: restore plan written for " <> envInfo.userName <> " (snapshots: " <> T.intercalate ", " snapshotPairs <> ")")
+                            printProviderLine ("hostenv-provider: restore plan written for " <> envInfo.userName <> " (snapshots: " <> T.intercalate ", " snapshotPairs <> ")")
                     if ignoreMigrationErrors
                         then do
                             failures <- fmap catMaybes $
@@ -1267,10 +1267,10 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                                     case res of
                                         Right _ -> pure Nothing
                                         Left err -> do
-                                            Sh.print ("hostenv-provider: warning: migration failed for " <> envInfo.userName <> ": " <> T.pack (displayException err))
+                                            printProviderLine ("hostenv-provider: warning: migration failed for " <> envInfo.userName <> ": " <> T.pack (displayException err))
                                             pure (Just envInfo.userName)
                             when (not (null failures)) $
-                                Sh.print ("hostenv-provider: warning: ignored migration failures for " <> T.intercalate ", " failures)
+                                printProviderLine ("hostenv-provider: warning: ignored migration failures for " <> T.intercalate ", " failures)
                         else
                             forM_ migrations runMigration
 
@@ -1305,7 +1305,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                     ]
                         <> remoteBuildArgs
                         <> targetArgs
-            let deployGuard res args = when (res /= ExitSuccess) $ Sh.print ("hostenv-provider: deploying " <> T.unwords args <> " failed")
+            let deployGuard res args = when (res /= ExitSuccess) $ printProviderLine ("hostenv-provider: deploying " <> T.unwords args <> " failed")
 
             -- System deployment of each node. Retains results, so we can
             -- cowardly refuse to deploy environments where the system deploy
@@ -1319,16 +1319,16 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                             then case signingKeyInfo of
                                 Just keyInfo -> signInstallable keyInfo targetInstallable target
                                 Nothing -> do
-                                    Sh.print ("hostenv-provider: signing configuration missing for node " <> nodeName)
+                                    printProviderLine ("hostenv-provider: signing configuration missing for node " <> nodeName)
                                     pure (ExitFailure 1)
                             else pure ExitSuccess
                     if signRes /= ExitSuccess
                         then do
-                            Sh.print ("hostenv-provider: failed to sign deployment target " <> target)
+                            printProviderLine ("hostenv-provider: failed to sign deployment target " <> target)
                             pure (nodeName, signRes)
                         else do
                             let args = deployArgs (Just target)
-                            Sh.print ("hostenv-provider: running nix " <> T.unwords args)
+                            printProviderLine ("hostenv-provider: running nix " <> T.unwords args)
                             res <- Sh.proc "nix" args Sh.empty
                             deployGuard res args
                             pure (nodeName, res)
@@ -1344,21 +1344,21 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                         (_, code) : [] -> Left ("system deployment failed for node " <> envInfo.node <> " (exit " <> T.pack (show code) <> ")")
                         _moreThanOneNode -> Left "multiple matching nodes found in system deployment list"
 
-                Sh.print ("hostenv-provider: running nix " <> T.unwords args)
+                printProviderLine ("hostenv-provider: running nix " <> T.unwords args)
                 case systemStatus of
-                    Left err -> Sh.print ("hostenv-provider: " <> err) >> pure (envName, ExitFailure 1)
+                    Left err -> printProviderLine ("hostenv-provider: " <> err) >> pure (envName, ExitFailure 1)
                     Right ExitSuccess -> do
                         signRes <-
                             if S.member envInfo.node localPushSet
                                 then case signingKeyInfo of
                                     Just keyInfo -> signInstallable keyInfo targetInstallable target
                                     Nothing -> do
-                                        Sh.print ("hostenv-provider: signing configuration missing for node " <> envInfo.node)
+                                        printProviderLine ("hostenv-provider: signing configuration missing for node " <> envInfo.node)
                                         pure (ExitFailure 1)
                                 else pure ExitSuccess
                         if signRes /= ExitSuccess
                             then do
-                                Sh.print ("hostenv-provider: failed to sign deployment target " <> target)
+                                printProviderLine ("hostenv-provider: failed to sign deployment target " <> target)
                                 pure (envName, signRes)
                             else do
                                 res <- Sh.proc "nix" args Sh.empty
@@ -1366,7 +1366,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                                 pure (envName, res)
 
             let failures = any (\(_, code) -> code /= ExitSuccess) envDeployRes
-            when failures $ Sh.print "hostenv-provider: deployment completed with errors"
+            when failures $ printProviderLine "hostenv-provider: deployment completed with errors"
             Sh.exitWith $ if failures then ExitFailure 1 else ExitSuccess
 
 quoteDeployTarget :: Text -> Text
