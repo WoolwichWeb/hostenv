@@ -1,12 +1,12 @@
 module Hostenv.Provider.DeployPreflight
     ( DeployPreflightConfig (..)
     , PreflightFailure (..)
+    , signingKeyNotTrustedReason
     , runPreflight
     ) where
 
 import Data.Text (Text)
 import Data.Text qualified as T
-import Hostenv.Provider.DeployGuidance (trustedKeySetupLines)
 import System.Exit (ExitCode (..))
 
 data DeployPreflightConfig = DeployPreflightConfig
@@ -22,6 +22,9 @@ data PreflightFailure = PreflightFailure
     , failureReason :: Text
     , failureRemediation :: [Text]
     }
+
+signingKeyNotTrustedReason :: Text
+signingKeyNotTrustedReason = "signing key is not trusted by remote Nix daemon"
 
 runPreflight :: DeployPreflightConfig -> IO (Maybe PreflightFailure)
 runPreflight cfg = do
@@ -77,11 +80,9 @@ runPreflight cfg = do
                                         pure . Just $
                                             PreflightFailure
                                                 { failureNode = cfg.nodeName
-                                                , failureReason = "signing key is not trusted by remote Nix daemon"
+                                                , failureReason = signingKeyNotTrustedReason
                                                 , failureRemediation =
-                                                    trustedKeySetupLines key
-                                                    ++
-                                                    [ "If this node has not yet received the trusted key, apply updated NixOS configuration on the node before retrying."
+                                                    [ "remote Nix reports the signing key is missing from trusted-public-keys."
                                                     ]
                                                 }
 

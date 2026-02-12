@@ -25,7 +25,7 @@ import Data.Text qualified as T
 import Data.Text.Conversions (convertText)
 import Data.Text.Encoding qualified as TE
 import Distribution.Compat.Prelude qualified as Sh
-import Hostenv.Provider.DeployGuidance (trustedKeySetupLines)
+import Hostenv.Provider.DeployGuidance (FlakeKeyStatus (..), localTrustSetupLines, remoteNodeTrustLines)
 import Hostenv.Provider.DeployPreflight qualified as Preflight
 import Options.Applicative qualified as OA
 import System.Directory qualified as Dir
@@ -855,10 +855,29 @@ printProviderLine :: Text -> IO ()
 printProviderLine line =
     BLC.putStrLn (BLC.pack (T.unpack line))
 
-printTrustedKeySetupHint :: Text -> IO ()
-printTrustedKeySetupHint key =
-    forM_ (trustedKeySetupLines key) $ \line ->
-        printProviderLine ("hostenv-provider: " <> line)
+printProviderLines :: [Text] -> IO ()
+printProviderLines =
+    mapM_ (printProviderLine . ("hostenv-provider: " <>))
+
+printRemediationBlock :: [Text] -> IO ()
+printRemediationBlock =
+    mapM_ (printProviderLine . ("hostenv-provider:   " <>))
+
+detectFlakeKeyStatus :: Text -> IO FlakeKeyStatus
+detectFlakeKeyStatus key = do
+    let flakePath = "flake.nix"
+    flakeExists <- Dir.doesFileExist flakePath
+    if not flakeExists
+        then pure (FlakeKeyUnknown "flake.nix not found in current working directory")
+        else do
+            flakeRead <- try (readFile flakePath) :: IO (Either SomeException String)
+            pure $ case flakeRead of
+                Left err ->
+                    FlakeKeyUnknown (T.pack (displayException err))
+                Right contents ->
+                    if key `T.isInfixOf` T.pack contents
+                        then FlakeKeyPresent
+                        else FlakeKeyMissing
 
 planDeployUser :: KM.KeyMap A.Value -> Text
 planDeployUser plan =
@@ -1149,16 +1168,19 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                             Sh.print ("hostenv-provider: wrote corresponding public key to " <> keyInfo.publicKeyPath)
                         pure (Just keyInfo)
 
+            flakeKeyStatus <- forM signingKeyInfo (detectFlakeKeyStatus . (.publicKey))
+
             forM_ signingKeyInfo $ \keyInfo -> do
+                let keyStatus = fromMaybe (FlakeKeyUnknown "signing key flake status unavailable") flakeKeyStatus
                 when (null trustedPublicKeys) $ do
                     Sh.print "hostenv-provider: deployment aborted; provider.nixSigning.trustedPublicKeys is empty in generated/plan.json"
-                    printTrustedKeySetupHint keyInfo.publicKey
+                    printProviderLines (localTrustSetupLines keyStatus keyInfo.publicKey)
                     Sh.exitWith (ExitFailure 1)
                 when (keyInfo.publicKey `notElem` trustedPublicKeys) $ do
                     Sh.print "hostenv-provider: deployment aborted; local signing key is not present in provider.nixSigning.trustedPublicKeys"
                     Sh.print ("hostenv-provider: signing key public value: " <> keyInfo.publicKey)
-                    printTrustedKeySetupHint keyInfo.publicKey
-                    Sh.print "hostenv-provider: or pass --signing-key-file with a key that already matches trustedPublicKeys."
+                    printProviderLines (localTrustSetupLines keyStatus keyInfo.publicKey)
+                    Sh.print "hostenv-provider: alternatively, pass --signing-key-file with a key that already matches trustedPublicKeys."
                     Sh.exitWith (ExitFailure 1)
 
             when forceRemoteBuild $
@@ -1180,8 +1202,15 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
             when (not (null preflightFailures)) $ do
                 forM_ preflightFailures $ \failure -> do
                     Sh.print ("hostenv-provider: deploy preflight failed on node " <> failure.failureNode <> ": " <> failure.failureReason)
-                    forM_ failure.failureRemediation $ \line ->
-                        printProviderLine ("hostenv-provider: remediation for " <> failure.failureNode <> ": " <> line)
+                    let remediationLines =
+                            if failure.failureReason == Preflight.signingKeyNotTrustedReason
+                                then case (signingKeyInfo, flakeKeyStatus) of
+                                    (Just keyInfo, Just keyStatus) -> remoteNodeTrustLines keyStatus keyInfo.publicKey
+                                    (Just keyInfo, Nothing) -> remoteNodeTrustLines (FlakeKeyUnknown "signing key flake status unavailable") keyInfo.publicKey
+                                    _ -> failure.failureRemediation
+                                else failure.failureRemediation
+                    printProviderLine ("hostenv-provider: remediation for " <> failure.failureNode <> ":")
+                    printRemediationBlock remediationLines
                 Sh.print "hostenv-provider: aborting deployment because one or more preflight checks failed"
                 Sh.exitWith (ExitFailure 1)
 
