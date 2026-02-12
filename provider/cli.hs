@@ -1265,6 +1265,12 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
             -- @todo: we could add a `--skip-checks` parameter to this CLI
             -- and pass it through to deploy-rs.
             let deployArgs deployArgM =
+                    let remoteBuildArgs =
+                            if forceRemoteBuild then ["--remote-build"] else []
+                        targetArgs = case deployArgM of
+                            Just dArg -> ["generated/.#" <> dArg]
+                            Nothing -> ["generated/"]
+                     in
                     [ "run"
                     , "nixpkgs#deploy-rs"
                     -- Thinking of adding `--inputs-from` here?
@@ -1276,11 +1282,9 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                     , "--skip-checks"
                     , "--checksigs"
                     ]
-                        <> if forceRemoteBuild then ["--remote-build"] else []
-                        <> case deployArgM of
-                            Just dArg -> ["generated/.#" <> dArg]
-                            Nothing -> ["generated/"]
-            let deployGuard res args = when (res /= ExitSuccess) $ Sh.print ("hostenv-provider: deploying " <> T.unwords args <> "failed")
+                        <> remoteBuildArgs
+                        <> targetArgs
+            let deployGuard res args = when (res /= ExitSuccess) $ Sh.print ("hostenv-provider: deploying " <> T.unwords args <> " failed")
 
             -- System deployment of each node. Retains results, so we can
             -- cowardly refuse to deploy environments where the system deploy
