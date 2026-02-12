@@ -26,6 +26,7 @@ import Data.Text.Conversions (convertText)
 import Data.Text.Encoding qualified as TE
 import Distribution.Compat.Prelude qualified as Sh
 import Hostenv.Provider.DeployGuidance (FlakeKeyStatus (..), localTrustSetupLines, remoteNodeTrustLines)
+import Hostenv.Provider.DnsGateFilter (filterEnvironmentsByNode)
 import Hostenv.Provider.DeployPreflight qualified as Preflight
 import Hostenv.Provider.SigningTarget (deployProfilePathInstallable)
 import Options.Applicative qualified as OA
@@ -226,8 +227,9 @@ disableAcmePaths name vhostName root =
         pEnvSSL = ["environments", name, "virtualHosts", vhostName, "forceSSL"]
      in setBoolAt pEnvSSL False (setBoolAt pEnvEnable False root)
 
-disableAcmeOnNode :: Text -> Text -> KM.KeyMap A.Value -> KM.KeyMap A.Value
-disableAcmeOnNode nodeName vhostName root =
+disableAcmeOnNode :: Maybe Text -> Text -> KM.KeyMap A.Value -> KM.KeyMap A.Value
+disableAcmeOnNode Nothing _ root = root
+disableAcmeOnNode (Just nodeName) vhostName root =
     let pNodeEnable = ["nodes", nodeName, "services", "nginx", "virtualHosts", vhostName, "enableACME"]
         pNodeSSL = ["nodes", nodeName, "services", "nginx", "virtualHosts", vhostName, "forceSSL"]
      in setBoolAt pNodeSSL False (setBoolAt pNodeEnable False root)
@@ -494,7 +496,8 @@ runDnsGate mNode mTok mZone withDnsUpdate = do
         Right (plan :: KM.KeyMap A.Value) -> do
             let hostenvHostname = fromMaybe "" (lookupText (K.fromString "hostenvHostname") plan)
             let cfPlan = lookupObj (K.fromString "cloudflare") plan
-            let envs = fromMaybe KM.empty (lookupObj (K.fromString "environments") plan)
+            let envsAll = fromMaybe KM.empty (lookupObj (K.fromString "environments") plan)
+            let envs = filterEnvironmentsByNode mNode envsAll
             let nodes = fromMaybe KM.empty (lookupObj (K.fromString "nodes") plan)
             cfTok <- case mTok of
                 Just t -> pure (Just (T.unpack t))
@@ -534,8 +537,7 @@ runDnsGate mNode mTok mZone withDnsUpdate = do
         let node = case lookupObj (K.fromString "environments") planAcc >>= KM.lookup (K.fromText name) of
                 Just (A.Object o) -> lookupText (K.fromString "node") o
                 _ -> Nothing
-        let nodeName = fromMaybe "" (node <|> mNode)
-        let expectedHost = if nodeName == "" then vhName else nodeName <> "." <> hostenvHostname
+        let expectedHost = maybe vhName (<> "." <> hostenvHostname) node
         ok <- dnsPointsTo vhName expectedHost
         planAcc' <-
             if ok
@@ -553,7 +555,7 @@ runDnsGate mNode mTok mZone withDnsUpdate = do
                             (Nothing, _) -> printProviderLine "DNS setup ('dnsGate') failed: Cloudflare token was not provided"
                             (_, Nothing) -> printProviderLine "DNS setup ('dnsGate') failed: Cloudflare zone was not provided"
                     let plan1 = disableAcmePaths name vhName planAcc
-                    let plan2 = disableAcmeOnNode nodeName vhName plan1
+                    let plan2 = disableAcmeOnNode node vhName plan1
                     pure plan2
         pure planAcc'
 

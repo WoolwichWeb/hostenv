@@ -160,7 +160,7 @@ let
     && (sessionVars.XDG_DATA_HOME or null) == "$HOME/.local/share"
     && (sessionVars.XDG_STATE_HOME or null) == "$HOME/.local/state";
   deploySystemSshUserOk = (deployProfiles.system.sshUser or null) == deployUser;
-  deployEnvSshUserOk = (deployProfiles.${envName}.sshUser or null) == deployUser;
+  deployEnvSshUserOk = (deployProfiles.${envName}.sshUser or null) == envName;
   deployEnvProfileUserOk = (deployProfiles.${envName}.user or null) == envName;
 in
 {

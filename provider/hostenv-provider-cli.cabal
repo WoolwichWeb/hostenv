@@ -10,6 +10,7 @@ executable hostenv-provider
   hs-source-dirs: .
   other-modules:
     Hostenv.Provider.DeployGuidance
+    Hostenv.Provider.DnsGateFilter
     Hostenv.Provider.DeployPreflight
     Hostenv.Provider.SigningTarget
   build-depends:
