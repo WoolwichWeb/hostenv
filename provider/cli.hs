@@ -851,10 +851,14 @@ signInstallable keyInfo target = do
     Sh.print ("hostenv-provider: signing " <> target)
     Sh.proc "nix" args Sh.empty
 
+printProviderLine :: Text -> IO ()
+printProviderLine line =
+    BLC.putStrLn (BLC.pack (T.unpack line))
+
 printTrustedKeySetupHint :: Text -> IO ()
 printTrustedKeySetupHint key =
     forM_ (trustedKeySetupLines key) $ \line ->
-        Sh.print ("hostenv-provider: " <> line)
+        printProviderLine ("hostenv-provider: " <> line)
 
 planDeployUser :: KM.KeyMap A.Value -> Text
 planDeployUser plan =
@@ -1177,7 +1181,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                 forM_ preflightFailures $ \failure -> do
                     Sh.print ("hostenv-provider: deploy preflight failed on node " <> failure.failureNode <> ": " <> failure.failureReason)
                     forM_ failure.failureRemediation $ \line ->
-                        Sh.print ("hostenv-provider: remediation for " <> failure.failureNode <> ": " <> line)
+                        printProviderLine ("hostenv-provider: remediation for " <> failure.failureNode <> ": " <> line)
                 Sh.print "hostenv-provider: aborting deployment because one or more preflight checks failed"
                 Sh.exitWith (ExitFailure 1)
 
