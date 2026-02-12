@@ -588,7 +588,7 @@ runPlan = do
     BL.writeFile (T.unpack flakeDest) flakeRaw
 
     _ <- Sh.procs "git" ["add", dest] Sh.empty
-    _ <- Sh.procs "nix" (nixCommonArgs ++ ["flake", "lock", "./" <> dest]) Sh.empty
+    _ <- Sh.procs "nix" (nixCommonArgs ++ ["flake", "update", "--flake", "./" <> dest, "parent"]) Sh.empty
     _ <- Sh.procs "git" ["add", dest] Sh.empty
     BLC.putStrLn ("✅ Infrastructure configuration written to " <> BLC.pack (T.unpack dest))
   where
@@ -1268,7 +1268,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                     let remoteBuildArgs =
                             if forceRemoteBuild then ["--remote-build"] else []
                         targetArgs = case deployArgM of
-                            Just dArg -> ["generated/.#" <> dArg]
+                            Just dArg -> ["generated/.#" <> quoteDeployTarget dArg]
                             Nothing -> ["generated/"]
                      in
                     [ "run"
@@ -1345,6 +1345,18 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
             let failures = any (\(_, code) -> code /= ExitSuccess) envDeployRes
             when failures $ Sh.print "hostenv-provider: deployment completed with errors"
             Sh.exitWith $ if failures then ExitFailure 1 else ExitSuccess
+
+quoteDeployTarget :: Text -> Text
+quoteDeployTarget deployTarget =
+    case T.breakOn "." deployTarget of
+        (nodeName, profileWithDot)
+            | not (T.null profileWithDot) ->
+                let profileName = T.drop 1 profileWithDot
+                 in quoteDeployToken nodeName <> "." <> quoteDeployToken profileName
+        _ -> deployTarget
+  where
+    quoteDeployToken token =
+        "\"" <> T.replace "\"" "\\\"" token <> "\""
 
 -- -------- Main --------
 main :: IO ()
