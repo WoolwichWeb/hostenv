@@ -20,4 +20,11 @@ in
     ${ghc}/bin/runghc -i${src} ${src}/TestDnsGateFilter.hs
     echo ok > "$out"
   '';
+  provider-cli-dry-run-help = pkgs.runCommand "provider-cli-dry-run-help" { } ''
+    set -euo pipefail
+    for subcmd in plan dns-gate deploy; do
+      ${cliPkg}/bin/hostenv-provider "$subcmd" --help | ${pkgs.gnugrep}/bin/grep -q -- "--dry-run"
+    done
+    echo ok > "$out"
+  '';
 }

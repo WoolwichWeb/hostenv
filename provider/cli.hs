@@ -4,7 +4,7 @@
 -- hostenv-provider CLI: plan | dns-gate | deploy
 -- dns-gate ports the legacy scripts/postgen.hs DNS/ACME gate and Cloudflare upsert logic.
 
-import Control.Exception (SomeException, displayException, try)
+import Control.Exception (SomeException, displayException, finally, try)
 import Control.Monad (forM, forM_, unless, when)
 import Data.Aeson ((.!=), (.:), (.:?), (.=))
 import Data.Aeson qualified as A
@@ -34,6 +34,7 @@ import System.Directory qualified as Dir
 import System.Environment qualified as Env
 import System.Exit (ExitCode (..))
 import System.FilePath qualified as FP
+import System.IO (hClose, openTempFile, stderr)
 import System.Process (readProcessWithExitCode)
 import Turtle (FilePath, (<|>))
 import Turtle qualified as Sh
@@ -41,8 +42,8 @@ import Prelude hiding (FilePath)
 
 -- -------- CLI --------
 data Command
-    = CmdPlan
-    | CmdDnsGate {node :: Maybe Text, token :: Maybe Text, zone :: Maybe Text, withDnsUpdate :: Bool}
+    = CmdPlan {dryRun :: Bool}
+    | CmdDnsGate {node :: Maybe Text, token :: Maybe Text, zone :: Maybe Text, withDnsUpdate :: Bool, dryRun :: Bool}
     | CmdDeploy
         { node :: Maybe Text
         , signingKeyFile :: Maybe Text
@@ -50,6 +51,7 @@ data Command
         , skipMigrations :: [Text]
         , migrationSources :: [Text]
         , ignoreMigrationErrors :: Bool
+        , dryRun :: Bool
         }
 
 data CLI = CLI {cliCmd :: Command}
@@ -75,6 +77,13 @@ withDnsUpdateOpt =
     OA.switch
         ( OA.long "with-dns-update"
             <> OA.help "Allow Cloudflare upserts (otherwise only checks and disables ACME/forceSSL)"
+        )
+
+dryRunOpt :: OA.Parser Bool
+dryRunOpt =
+    OA.switch
+        ( OA.long "dry-run"
+            <> OA.help "Preview changes without mutating generated files or remote state"
         )
 
 skipMigrationsOpt :: OA.Parser [Text]
@@ -122,9 +131,9 @@ cliParser :: OA.Parser CLI
 cliParser =
     CLI
         <$> OA.hsubparser
-            ( OA.command "plan" (OA.info (pure CmdPlan) (OA.progDesc "Generate plan.json, state.json, and flake.nix"))
-                <> OA.command "dns-gate" (OA.info (CmdDnsGate <$> nodeOpt <*> tokenOpt <*> zoneOpt <*> withDnsUpdateOpt) (OA.progDesc "Disable ACME/forceSSL for vhosts not pointing at node; add --with-dns-update to upsert Cloudflare records"))
-                <> OA.command "deploy" (OA.info (CmdDeploy <$> nodeOpt <*> signingKeyFileOpt <*> remoteBuildOpt <*> skipMigrationsOpt <*> migrationSourceOpt <*> ignoreMigrationErrorsOpt) (OA.progDesc "Deploy via deploy-rs"))
+            ( OA.command "plan" (OA.info (CmdPlan <$> dryRunOpt) (OA.progDesc "Generate plan.json, state.json, and flake.nix"))
+                <> OA.command "dns-gate" (OA.info (CmdDnsGate <$> nodeOpt <*> tokenOpt <*> zoneOpt <*> withDnsUpdateOpt <*> dryRunOpt) (OA.progDesc "Disable ACME/forceSSL for vhosts not pointing at node; add --with-dns-update to upsert Cloudflare records"))
+                <> OA.command "deploy" (OA.info (CmdDeploy <$> nodeOpt <*> signingKeyFileOpt <*> remoteBuildOpt <*> skipMigrationsOpt <*> migrationSourceOpt <*> ignoreMigrationErrorsOpt <*> dryRunOpt) (OA.progDesc "Deploy via deploy-rs"))
             )
 
 cliOpts :: OA.ParserInfo CLI
@@ -233,6 +242,60 @@ disableAcmeOnNode (Just nodeName) vhostName root =
     let pNodeEnable = ["nodes", nodeName, "services", "nginx", "virtualHosts", vhostName, "enableACME"]
         pNodeSSL = ["nodes", nodeName, "services", "nginx", "virtualHosts", vhostName, "forceSSL"]
      in setBoolAt pNodeSSL False (setBoolAt pNodeEnable False root)
+
+prettyJson :: BL.ByteString -> IO BL.ByteString
+prettyJson raw = do
+    (code, out, err) <- readProcessWithExitCode "jq" ["-S", "."] (T.unpack (TE.decodeUtf8 (BL.toStrict raw)))
+    case code of
+        ExitSuccess -> pure (BL.fromStrict (TE.encodeUtf8 (T.pack out)))
+        ExitFailure c ->
+            error ("jq failed while formatting JSON (exit " <> show c <> "): " <> err)
+
+withTempBytesFile :: String -> BL.ByteString -> (FilePath -> IO a) -> IO a
+withTempBytesFile template content action = do
+    tmpDir <- Dir.getTemporaryDirectory
+    (tmpPath, handle) <- openTempFile tmpDir template
+    BL.hPut handle content
+    hClose handle
+    action tmpPath
+        `finally` do
+            _ <- try (Dir.removeFile tmpPath) :: IO (Either SomeException ())
+            pure ()
+
+printUnifiedDiff :: Text -> BL.ByteString -> BL.ByteString -> IO Bool
+printUnifiedDiff path oldContent newContent =
+    withTempBytesFile "hostenv-provider-old-XXXXXX.json" oldContent $ \oldPath ->
+        withTempBytesFile "hostenv-provider-new-XXXXXX.json" newContent $ \newPath -> do
+            let oldLabel = T.unpack (path <> " (current)")
+            let newLabel = T.unpack (path <> " (proposed)")
+            (code, out, err) <- readProcessWithExitCode "diff" ["-u", "--label", oldLabel, "--label", newLabel, oldPath, newPath] ""
+            case code of
+                ExitSuccess -> pure False
+                ExitFailure 1 -> do
+                    BLC.putStr (BLC.pack out)
+                    pure True
+                ExitFailure c -> do
+                    printProviderErrLine ("hostenv-provider: warning: failed to render diff for " <> path <> " (exit " <> T.pack (show c) <> ")")
+                    when (not (null err)) $
+                        printProviderErrLine ("hostenv-provider: diff stderr: " <> T.pack err)
+                    pure True
+
+printDiffAgainstFile :: Text -> BL.ByteString -> IO Bool
+printDiffAgainstFile path proposedPretty = do
+    pathExists <- Dir.doesFileExist (T.unpack path)
+    if not pathExists
+        then do
+            printProviderLine ("hostenv-provider: dry-run: " <> path <> " does not exist; generated content would be:")
+            BLC.putStr proposedPretty
+            pure True
+        else do
+            currentRaw <- BL.readFile (T.unpack path)
+            currentPretty <- prettyJson currentRaw
+            if currentPretty == proposedPretty
+                then do
+                    printProviderLine ("hostenv-provider: dry-run: no changes for " <> path)
+                    pure False
+                else printUnifiedDiff path currentPretty proposedPretty
 
 -- -------- Migration helpers --------
 data DeploymentStatus = NotAttempted | Skipped | Succeeded | Failed ExitCode
@@ -482,8 +545,8 @@ isSubdomainOf host zone =
      in host' == zone' || T.isSuffixOf ("." <> zone') host'
 
 -- -------- DNS gate --------
-runDnsGate :: Maybe Text -> Maybe Text -> Maybe Text -> Bool -> IO ()
-runDnsGate mNode mTok mZone withDnsUpdate = do
+runDnsGate :: Maybe Text -> Maybe Text -> Maybe Text -> Bool -> Bool -> IO ()
+runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
     let dest = "generated"
     let planPath = dest <> "/plan.json"
     planExists <- Sh.testfile (fromString (T.unpack planPath))
@@ -513,87 +576,111 @@ runDnsGate mNode mTok mZone withDnsUpdate = do
                 (Just t, Just z) -> cfZoneName (T.pack t) (T.pack z)
                 _ -> pure Nothing
             let hasCF = isJustPair cfTok cfZone
-            plan' <- foldlM (processEnv hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate) plan (KM.toList envs)
-            let tmpPath = dest <> "/plan.json.tmp"
-            BL.writeFile (T.unpack tmpPath) (A.encode plan')
-            pretty <- Sh.strict $ Sh.inproc "jq" ["-S", ".", tmpPath] Sh.empty
-            BL.writeFile (T.unpack tmpPath) (BL.fromStrict (TE.encodeUtf8 pretty))
-            Sh.mv (fromString (T.unpack tmpPath)) (fromString (T.unpack planPath))
-            BLC.putStrLn "✅ dns-gate updated plan.json"
+            when (withDnsUpdate && not hasCF) $
+                printProviderErrLine $
+                    "hostenv-provider: warning: --with-dns-update requested but Cloudflare credentials are missing (set both --cf-token/CF_API_TOKEN and --cf-zone/CF_ZONE_ID). "
+                        <> "Continuing in check-only mode without DNS updates."
+            (plan', cfDryRunCalls) <- foldlM (processEnv hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate dryRun) (plan, []) (KM.toList envs)
+            planPretty <- prettyJson (A.encode plan')
+            if dryRun
+                then do
+                    _ <- printDiffAgainstFile planPath planPretty
+                    when withDnsUpdate $
+                        if null cfDryRunCalls
+                            then printProviderLine "hostenv-provider: dry-run: no Cloudflare DNS API calls would be made"
+                            else do
+                                printProviderLine "hostenv-provider: dry-run: Cloudflare DNS API calls that would be made:"
+                                mapM_ (printProviderLine . ("hostenv-provider:   " <>)) cfDryRunCalls
+                    printProviderLine "hostenv-provider: dry-run: generated/plan.json was not modified"
+                else do
+                    let tmpPath = dest <> "/plan.json.tmp"
+                    BL.writeFile (T.unpack tmpPath) planPretty
+                    Sh.mv (fromString (T.unpack tmpPath)) (fromString (T.unpack planPath))
+                    BLC.putStrLn "✅ dns-gate updated plan.json"
   where
     isJustPair (Just _) (Just _) = True
     isJustPair _ _ = False
     readFileTrim p = T.unpack . T.strip . T.pack <$> readFile p
     foldlM f z [] = pure z
     foldlM f z (x : xs) = f z x >>= \z' -> foldlM f z' xs
-    processEnv hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate acc (kEnv, vEnv) =
+    processEnv hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate dryRun acc (kEnv, vEnv) =
         case vEnv of
             A.Object envObj -> do
                 let vhosts = fromMaybe KM.empty (lookupObj (K.fromString "virtualHosts") envObj)
-                foldlM (processVhost hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate (K.toText kEnv)) acc (KM.toList vhosts)
+                foldlM (processVhost hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate dryRun (K.toText kEnv)) acc (KM.toList vhosts)
             _ -> pure acc
-    processVhost hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate name planAcc (vhKey, _vhObj) = do
+    processVhost hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate dryRun name (planAcc, cfOps) (vhKey, _vhObj) = do
         let vhName = K.toText vhKey
         let node = case lookupObj (K.fromString "environments") planAcc >>= KM.lookup (K.fromText name) of
                 Just (A.Object o) -> lookupText (K.fromString "node") o
                 _ -> Nothing
         let expectedHost = maybe vhName (<> "." <> hostenvHostname) node
         ok <- dnsPointsTo vhName expectedHost
-        planAcc' <-
+        (planAcc', cfOps') <-
             if ok
-                then pure planAcc
+                then pure (planAcc, cfOps)
                 else do
-                    when (hasCF && withDnsUpdate) $
-                        case (cfTok, cfZone) of
-                            (Just t, Just z) ->
-                                case cfZoneName' of
-                                    Just zoneName ->
-                                        if isSubdomainOf vhName zoneName
-                                            then cfUpsertCname (T.pack t) (T.pack z) vhName expectedHost >> pure ()
-                                            else printProviderLine ("Skipping Cloudflare upsert for " <> vhName <> " (outside zone " <> zoneName <> ")")
-                                    Nothing -> printProviderLine "DNS setup ('dnsGate') failed: could not resolve Cloudflare zone name"
-                            (Nothing, _) -> printProviderLine "DNS setup ('dnsGate') failed: Cloudflare token was not provided"
-                            (_, Nothing) -> printProviderLine "DNS setup ('dnsGate') failed: Cloudflare zone was not provided"
+                    cfOps' <-
+                        if hasCF && withDnsUpdate
+                            then case (cfTok, cfZone) of
+                                (Just t, Just z) ->
+                                    case cfZoneName' of
+                                        Just zoneName ->
+                                            if isSubdomainOf vhName zoneName
+                                                then
+                                                    if dryRun
+                                                        then pure (cfOps <> ["upsert CNAME " <> vhName <> " -> " <> expectedHost <> " in zone " <> T.pack z])
+                                                        else cfUpsertCname (T.pack t) (T.pack z) vhName expectedHost >> pure cfOps
+                                                else printProviderLine ("Skipping Cloudflare upsert for " <> vhName <> " (outside zone " <> zoneName <> ")") >> pure cfOps
+                                        Nothing -> printProviderLine "DNS setup ('dnsGate') failed: could not resolve Cloudflare zone name" >> pure cfOps
+                                _ -> pure cfOps
+                            else pure cfOps
                     let plan1 = disableAcmePaths name vhName planAcc
                     let plan2 = disableAcmeOnNode node vhName plan1
-                    pure plan2
-        pure planAcc'
+                    pure (plan2, cfOps')
+        pure (planAcc', cfOps')
 
-runPlan :: IO ()
-runPlan = do
+runPlan :: Bool -> IO ()
+runPlan dryRun = do
     let dest = "generated" :: Text
     let planDest = dest <> "/plan.json"
     let stateDest = dest <> "/state.json"
     let flakeDest = dest <> "/flake.nix"
-    Sh.mktree (fromString (T.unpack dest))
 
-    stateExists <- Sh.testfile (fromString (T.unpack stateDest))
-    unless stateExists $ do
-        BLC.writeFile (T.unpack stateDest) "{}\n"
-        _ <- Sh.procs "git" ["add", stateDest] Sh.empty
-        pure ()
+    unless dryRun $ do
+        Sh.mktree (fromString (T.unpack dest))
+        stateExists <- Sh.testfile (fromString (T.unpack stateDest))
+        unless stateExists $ do
+            BLC.writeFile (T.unpack stateDest) "{}\n"
+            _ <- Sh.procs "git" ["add", stateDest] Sh.empty
+            pure ()
 
     system <- nixEvalRaw ["eval", "--impure", "--raw", "--expr", "builtins.currentSystem"]
     let planAttrBase = ".#lib.provider.planPaths." <> T.strip system
     planSource <- nixBuildPath (planAttrBase <> ".plan")
-    stateSource <- nixBuildPath (planAttrBase <> ".state")
-    flakeSource <- nixBuildPath (planAttrBase <> ".flake")
 
     planRaw <- BL.readFile (T.unpack planSource)
-    BL.writeFile (T.unpack planDest) planRaw
-    pretty <- Sh.strict $ Sh.inproc "jq" ["-S", ".", planDest] Sh.empty
-    BL.writeFile (T.unpack planDest) (BL.fromStrict (TE.encodeUtf8 pretty))
+    planPretty <- prettyJson planRaw
+    if dryRun
+        then do
+            _ <- printDiffAgainstFile planDest planPretty
+            printProviderLine "hostenv-provider: dry-run: generated/plan.json was not modified"
+        else do
+            stateSource <- nixBuildPath (planAttrBase <> ".state")
+            flakeSource <- nixBuildPath (planAttrBase <> ".flake")
 
-    stateRaw <- BL.readFile (T.unpack stateSource)
-    BL.writeFile (T.unpack stateDest) stateRaw
+            BL.writeFile (T.unpack planDest) planPretty
 
-    flakeRaw <- BL.readFile (T.unpack flakeSource)
-    BL.writeFile (T.unpack flakeDest) flakeRaw
+            stateRaw <- BL.readFile (T.unpack stateSource)
+            BL.writeFile (T.unpack stateDest) stateRaw
 
-    _ <- Sh.procs "git" ["add", dest] Sh.empty
-    _ <- Sh.procs "nix" (nixCommonArgs ++ ["flake", "update", "--flake", "./" <> dest, "parent"]) Sh.empty
-    _ <- Sh.procs "git" ["add", dest] Sh.empty
-    BLC.putStrLn ("✅ Infrastructure configuration written to " <> BLC.pack (T.unpack dest))
+            flakeRaw <- BL.readFile (T.unpack flakeSource)
+            BL.writeFile (T.unpack flakeDest) flakeRaw
+
+            _ <- Sh.procs "git" ["add", dest] Sh.empty
+            _ <- Sh.procs "nix" (nixCommonArgs ++ ["flake", "update", "--flake", "./" <> dest, "parent"]) Sh.empty
+            _ <- Sh.procs "git" ["add", dest] Sh.empty
+            BLC.putStrLn ("✅ Infrastructure configuration written to " <> BLC.pack (T.unpack dest))
   where
     nixCommonArgs :: [Text]
     nixCommonArgs = ["--extra-experimental-features", "nix-command flakes"]
@@ -878,6 +965,10 @@ printProviderLine :: Text -> IO ()
 printProviderLine line =
     BLC.putStrLn (BLC.pack (T.unpack line))
 
+printProviderErrLine :: Text -> IO ()
+printProviderErrLine line =
+    BLC.hPutStrLn stderr (BLC.pack (T.unpack line))
+
 printProviderLines :: [Text] -> IO ()
 printProviderLines =
     mapM_ (printProviderLine . ("hostenv-provider: " <>))
@@ -1108,8 +1199,8 @@ writeRestorePlan deployUser nodeConnection envInfo prevNode snapshots = do
         ExitSuccess -> pure ()
         ExitFailure code -> error ("failed to write restore plan for " <> T.unpack envInfo.userName <> " (exit " <> show code <> ")")
 
-runDeploy :: Maybe Text -> Maybe Text -> Bool -> [Text] -> [Text] -> Bool -> IO ()
-runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceSpecs ignoreMigrationErrors = do
+runDeploy :: Maybe Text -> Maybe Text -> Bool -> [Text] -> [Text] -> Bool -> Bool -> IO ()
+runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceSpecs ignoreMigrationErrors dryRun = do
     let planPath = "generated/plan.json"
     planExists <- Sh.testfile (fromString (T.unpack planPath))
     when (not planExists) $ do
@@ -1173,6 +1264,59 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                 printProviderLine "hostenv-provider: warning: migration errors will be ignored; deployments may proceed with stale data"
 
             let targetNodes = uniqueNodeNames envInfosFiltered
+            let deployArgs useCheckSigs useDryActivate deployArgM =
+                    let remoteBuildArgs =
+                            if forceRemoteBuild then ["--remote-build"] else []
+                        targetArgs = case deployArgM of
+                            Just dArg -> ["generated/.#" <> quoteDeployTarget dArg]
+                            Nothing -> ["generated/"]
+                        sigArgs = if useCheckSigs then ["--checksigs"] else []
+                        dryActivateArgs = if useDryActivate then ["--dry-activate"] else []
+                     in
+                    [ "run"
+                    , "nixpkgs#deploy-rs"
+                    , "--"
+                    , "--skip-checks"
+                    ]
+                        <> sigArgs
+                        <> dryActivateArgs
+                        <> remoteBuildArgs
+                        <> targetArgs
+            let deployGuard res args = when (res /= ExitSuccess) $ printProviderLine ("hostenv-provider: deploying " <> T.unwords args <> " failed")
+
+            when dryRun $ do
+                printProviderLine "hostenv-provider: --dry-run enabled; skipping migrations, signing, and deploy preflight checks"
+                let dryArgs = deployArgs False True
+                systemDeployRes <-
+                    forM targetNodes $ \nodeName -> do
+                        let target = nodeName <> ".system"
+                        let args = dryArgs (Just target)
+                        printProviderLine ("hostenv-provider: running nix " <> T.unwords args)
+                        res <- Sh.proc "nix" args Sh.empty
+                        deployGuard res args
+                        pure (nodeName, res)
+
+                envDeployRes <- forM (toNamed envInfosFiltered) $ \(envName, envInfo) -> do
+                    let target = envInfo.node <> "." <> envInfo.userName
+                    let args = dryArgs (Just target)
+                    let systemStatus = case filter ((==) envInfo.node . fst) systemDeployRes of
+                            [] -> Left "node not in system deployment list"
+                            (_, ExitSuccess) : [] -> Right ExitSuccess
+                            (_, code) : [] -> Left ("system deployment failed for node " <> envInfo.node <> " (exit " <> T.pack (show code) <> ")")
+                            _moreThanOneNode -> Left "multiple matching nodes found in system deployment list"
+
+                    printProviderLine ("hostenv-provider: running nix " <> T.unwords args)
+                    case systemStatus of
+                        Left err -> printProviderLine ("hostenv-provider: " <> err) >> pure (envName, ExitFailure 1)
+                        Right ExitSuccess -> do
+                            res <- Sh.proc "nix" args Sh.empty
+                            deployGuard res args
+                            pure (envName, res)
+
+                let failures = any (\(_, code) -> code /= ExitSuccess) envDeployRes
+                when failures $ printProviderLine "hostenv-provider: dry-run deployment completed with errors"
+                Sh.exitWith $ if failures then ExitFailure 1 else ExitSuccess
+
             let deployUser = planDeployUser plan
             let remoteBuildMap = planNodeRemoteBuild plan
             let usesRemoteBuild nodeName = forceRemoteBuild || nodeUsesRemoteBuild remoteBuildMap nodeName
@@ -1287,27 +1431,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
             -- x86 machine deploying to an ARM server.
             -- @todo: we could add a `--skip-checks` parameter to this CLI
             -- and pass it through to deploy-rs.
-            let deployArgs deployArgM =
-                    let remoteBuildArgs =
-                            if forceRemoteBuild then ["--remote-build"] else []
-                        targetArgs = case deployArgM of
-                            Just dArg -> ["generated/.#" <> quoteDeployTarget dArg]
-                            Nothing -> ["generated/"]
-                     in
-                    [ "run"
-                    , "nixpkgs#deploy-rs"
-                    -- Thinking of adding `--inputs-from` here?
-                    -- We have an organisation that starts with a number and
-                    -- `--inputs-from` returns an error if we use it. In the
-                    -- flake.nix's inputs we can just wrap it in quotes, but
-                    -- those don't carry over when using this parameter.
-                    , "--"
-                    , "--skip-checks"
-                    , "--checksigs"
-                    ]
-                        <> remoteBuildArgs
-                        <> targetArgs
-            let deployGuard res args = when (res /= ExitSuccess) $ printProviderLine ("hostenv-provider: deploying " <> T.unwords args <> " failed")
+            let deployArgs' = deployArgs True False
 
             -- System deployment of each node. Retains results, so we can
             -- cowardly refuse to deploy environments where the system deploy
@@ -1329,7 +1453,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                             printProviderLine ("hostenv-provider: failed to sign deployment target " <> target)
                             pure (nodeName, signRes)
                         else do
-                            let args = deployArgs (Just target)
+                            let args = deployArgs' (Just target)
                             printProviderLine ("hostenv-provider: running nix " <> T.unwords args)
                             res <- Sh.proc "nix" args Sh.empty
                             deployGuard res args
@@ -1339,7 +1463,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
             envDeployRes <- forM (toNamed envInfosFiltered) $ \(envName, envInfo) -> do
                 let target = envInfo.node <> "." <> envInfo.userName
                 let targetInstallable = deployProfilePathInstallable envInfo.node envInfo.userName
-                let args = deployArgs (Just target)
+                let args = deployArgs' (Just target)
                 let systemStatus = case filter ((==) envInfo.node . fst) systemDeployRes of
                         [] -> Left "node not in system deployment list"
                         (_, ExitSuccess) : [] -> Right ExitSuccess
@@ -1388,7 +1512,7 @@ main :: IO ()
 main = do
     CLI cmd <- OA.execParser cliOpts
     case cmd of
-        CmdPlan -> runPlan
-        CmdDnsGate mNode mTok mZone withDnsUpdate -> runDnsGate mNode mTok mZone withDnsUpdate
-        CmdDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSources ignoreMigrationErrors ->
-            runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSources ignoreMigrationErrors
+        CmdPlan dryRun -> runPlan dryRun
+        CmdDnsGate mNode mTok mZone withDnsUpdate dryRun -> runDnsGate mNode mTok mZone withDnsUpdate dryRun
+        CmdDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSources ignoreMigrationErrors dryRun ->
+            runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSources ignoreMigrationErrors dryRun
