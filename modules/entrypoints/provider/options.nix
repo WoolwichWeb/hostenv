@@ -274,7 +274,9 @@ let
             } // builtins.mapAttrs
               (name: environment: {
                 user = name;
-                sshUser = config.deployUser or "deploy";
+                # Environment activation must run in a real user session so
+                # systemd --user units can start reliably.
+                sshUser = name;
                 path = deploy-rs.lib.${remoteSystem}.activate.custom environment "./bin/activate";
               })
               (environmentsWith node).${remoteSystem};
