@@ -27,6 +27,7 @@ import Data.Text.Encoding qualified as TE
 import Distribution.Compat.Prelude qualified as Sh
 import Hostenv.Provider.DeployGuidance (FlakeKeyStatus (..), localTrustSetupLines, remoteNodeTrustLines)
 import Hostenv.Provider.DeployPreflight qualified as Preflight
+import Hostenv.Provider.SigningTarget (deployProfilePathInstallable)
 import Options.Applicative qualified as OA
 import System.Directory qualified as Dir
 import System.Environment qualified as Env
@@ -838,18 +839,38 @@ ensureSigningKeyInfo hostenvHostname mKeyPath = do
                             , wasGenerated = True
                             }
 
-signInstallable :: SigningKeyInfo -> Text -> IO ExitCode
-signInstallable keyInfo target = do
-    let args =
-            [ "store"
-            , "sign"
-            , "-r"
-            , "-k"
-            , keyInfo.secretKeyPath
-            , "generated/.#" <> target
+signInstallable :: SigningKeyInfo -> Text -> Text -> IO ExitCode
+signInstallable keyInfo installable target = do
+    let buildArgs =
+            [ "build"
+            , "--no-link"
+            , "--print-out-paths"
+            , installable
             ]
-    Sh.print ("hostenv-provider: signing " <> target)
-    Sh.proc "nix" args Sh.empty
+    (buildCode, buildOut, buildErr) <- readProcessWithExitCode "nix" (map T.unpack buildArgs) ""
+    case buildCode of
+        ExitFailure _ -> do
+            Sh.print (localCommandFailure "hostenv-provider: failed to realise deployment target for signing" ("nix" : buildArgs) buildCode (T.pack buildOut) (T.pack buildErr))
+            pure (ExitFailure 1)
+        ExitSuccess -> do
+            let outputPaths =
+                    filter (not . T.null) $
+                        map T.strip (T.lines (T.pack buildOut))
+            if null outputPaths
+                then do
+                    Sh.print ("hostenv-provider: no output paths produced while realising " <> target)
+                    pure (ExitFailure 1)
+                else do
+                    let args =
+                            [ "store"
+                            , "sign"
+                            , "-r"
+                            , "-k"
+                            , keyInfo.secretKeyPath
+                            ]
+                                <> outputPaths
+                    Sh.print ("hostenv-provider: signing " <> target)
+                    Sh.proc "nix" args Sh.empty
 
 printProviderLine :: Text -> IO ()
 printProviderLine line =
@@ -1292,10 +1313,11 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
             systemDeployRes <-
                 forM targetNodes $ \nodeName -> do
                     let target = nodeName <> ".system"
+                    let targetInstallable = deployProfilePathInstallable nodeName "system"
                     signRes <-
                         if S.member nodeName localPushSet
                             then case signingKeyInfo of
-                                Just keyInfo -> signInstallable keyInfo target
+                                Just keyInfo -> signInstallable keyInfo targetInstallable target
                                 Nothing -> do
                                     Sh.print ("hostenv-provider: signing configuration missing for node " <> nodeName)
                                     pure (ExitFailure 1)
@@ -1314,6 +1336,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
             -- Environments deployment for the node.
             envDeployRes <- forM (toNamed envInfosFiltered) $ \(envName, envInfo) -> do
                 let target = envInfo.node <> "." <> envInfo.userName
+                let targetInstallable = deployProfilePathInstallable envInfo.node envInfo.userName
                 let args = deployArgs (Just target)
                 let systemStatus = case filter ((==) envInfo.node . fst) systemDeployRes of
                         [] -> Left "node not in system deployment list"
@@ -1328,7 +1351,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                         signRes <-
                             if S.member envInfo.node localPushSet
                                 then case signingKeyInfo of
-                                    Just keyInfo -> signInstallable keyInfo target
+                                    Just keyInfo -> signInstallable keyInfo targetInstallable target
                                     Nothing -> do
                                         Sh.print ("hostenv-provider: signing configuration missing for node " <> envInfo.node)
                                         pure (ExitFailure 1)
