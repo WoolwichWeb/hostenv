@@ -232,9 +232,6 @@
     
             settings = lib.mapAttrs (_n: lib.mkDefault) {
               listen = poolCfg.socket;
-              "listen.owner" = config.hostenv.userName;
-              "listen.group" = config.hostenv.userName;
-              "listen.mode" = "660";
             };
           };
         };
