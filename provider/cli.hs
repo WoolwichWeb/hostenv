@@ -25,6 +25,7 @@ import Data.Text qualified as T
 import Data.Text.Conversions (convertText)
 import Data.Text.Encoding qualified as TE
 import Distribution.Compat.Prelude qualified as Sh
+import Hostenv.Provider.DeployGuidance (trustedKeySetupLines)
 import Hostenv.Provider.DeployPreflight qualified as Preflight
 import Options.Applicative qualified as OA
 import System.Directory qualified as Dir
@@ -43,6 +44,7 @@ data Command
     | CmdDeploy
         { node :: Maybe Text
         , signingKeyFile :: Maybe Text
+        , remoteBuild :: Bool
         , skipMigrations :: [Text]
         , migrationSources :: [Text]
         , ignoreMigrationErrors :: Bool
@@ -91,6 +93,13 @@ signingKeyFileOpt =
                 <> OA.help "Path to Nix signing secret key (defaults to HOSTENV_SIGNING_KEY_FILE or secrets/signing/secret.key)"
             )
 
+remoteBuildOpt :: OA.Parser Bool
+remoteBuildOpt =
+    OA.switch
+        ( OA.long "remote-build"
+            <> OA.help "Force deploy-rs remote builds for all targets in this run"
+        )
+
 ignoreMigrationErrorsOpt :: OA.Parser Bool
 ignoreMigrationErrorsOpt =
     OA.switch
@@ -113,7 +122,7 @@ cliParser =
         <$> OA.hsubparser
             ( OA.command "plan" (OA.info (pure CmdPlan) (OA.progDesc "Generate plan.json, state.json, and flake.nix"))
                 <> OA.command "dns-gate" (OA.info (CmdDnsGate <$> nodeOpt <*> tokenOpt <*> zoneOpt <*> withDnsUpdateOpt) (OA.progDesc "Disable ACME/forceSSL for vhosts not pointing at node; add --with-dns-update to upsert Cloudflare records"))
-                <> OA.command "deploy" (OA.info (CmdDeploy <$> nodeOpt <*> signingKeyFileOpt <*> skipMigrationsOpt <*> migrationSourceOpt <*> ignoreMigrationErrorsOpt) (OA.progDesc "Deploy via deploy-rs"))
+                <> OA.command "deploy" (OA.info (CmdDeploy <$> nodeOpt <*> signingKeyFileOpt <*> remoteBuildOpt <*> skipMigrationsOpt <*> migrationSourceOpt <*> ignoreMigrationErrorsOpt) (OA.progDesc "Deploy via deploy-rs"))
             )
 
 cliOpts :: OA.ParserInfo CLI
@@ -842,6 +851,11 @@ signInstallable keyInfo target = do
     Sh.print ("hostenv-provider: signing " <> target)
     Sh.proc "nix" args Sh.empty
 
+printTrustedKeySetupHint :: Text -> IO ()
+printTrustedKeySetupHint key =
+    forM_ (trustedKeySetupLines key) $ \line ->
+        Sh.print ("hostenv-provider: " <> line)
+
 planDeployUser :: KM.KeyMap A.Value -> Text
 planDeployUser plan =
     fromMaybe "deploy" (lookupText (K.fromString "deployUser") plan)
@@ -1048,8 +1062,8 @@ writeRestorePlan deployUser nodeConnection envInfo prevNode snapshots = do
         ExitSuccess -> pure ()
         ExitFailure code -> error ("failed to write restore plan for " <> T.unpack envInfo.userName <> " (exit " <> show code <> ")")
 
-runDeploy :: Maybe Text -> Maybe Text -> [Text] -> [Text] -> Bool -> IO ()
-runDeploy mNode mSigningKeyPath skipMigrations migrationSourceSpecs ignoreMigrationErrors = do
+runDeploy :: Maybe Text -> Maybe Text -> Bool -> [Text] -> [Text] -> Bool -> IO ()
+runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceSpecs ignoreMigrationErrors = do
     let planPath = "generated/plan.json"
     planExists <- Sh.testfile (fromString (T.unpack planPath))
     when (not planExists) $ do
@@ -1115,7 +1129,8 @@ runDeploy mNode mSigningKeyPath skipMigrations migrationSourceSpecs ignoreMigrat
             let targetNodes = uniqueNodeNames envInfosFiltered
             let deployUser = planDeployUser plan
             let remoteBuildMap = planNodeRemoteBuild plan
-            let requiresLocalPush nodeName = not (nodeUsesRemoteBuild remoteBuildMap nodeName)
+            let usesRemoteBuild nodeName = forceRemoteBuild || nodeUsesRemoteBuild remoteBuildMap nodeName
+            let requiresLocalPush nodeName = not (usesRemoteBuild nodeName)
             let nodesRequiringLocalPush = filter requiresLocalPush targetNodes
             let trustedPublicKeys = planTrustedPublicKeys plan
             let localPushSet = S.fromList nodesRequiringLocalPush
@@ -1133,16 +1148,19 @@ runDeploy mNode mSigningKeyPath skipMigrations migrationSourceSpecs ignoreMigrat
             forM_ signingKeyInfo $ \keyInfo -> do
                 when (null trustedPublicKeys) $ do
                     Sh.print "hostenv-provider: deployment aborted; provider.nixSigning.trustedPublicKeys is empty in generated/plan.json"
-                    Sh.print ("hostenv-provider: add this key to provider.nixSigning.trustedPublicKeys and regenerate plan: " <> keyInfo.publicKey)
+                    printTrustedKeySetupHint keyInfo.publicKey
                     Sh.exitWith (ExitFailure 1)
                 when (keyInfo.publicKey `notElem` trustedPublicKeys) $ do
                     Sh.print "hostenv-provider: deployment aborted; local signing key is not present in provider.nixSigning.trustedPublicKeys"
                     Sh.print ("hostenv-provider: signing key public value: " <> keyInfo.publicKey)
-                    Sh.print "hostenv-provider: either update provider.nixSigning.trustedPublicKeys or pass --signing-key-file with a matching key"
+                    printTrustedKeySetupHint keyInfo.publicKey
+                    Sh.print "hostenv-provider: or pass --signing-key-file with a key that already matches trustedPublicKeys."
                     Sh.exitWith (ExitFailure 1)
 
+            when forceRemoteBuild $
+                Sh.print "hostenv-provider: --remote-build enabled; skipping local signing trust checks for all nodes"
             forM_ targetNodes $ \nodeName ->
-                when (not (S.member nodeName localPushSet)) $
+                when (not forceRemoteBuild && not (S.member nodeName localPushSet)) $
                     Sh.print ("hostenv-provider: node " <> nodeName <> " uses remoteBuild=true; skipping local signing trust check")
 
             preflightFailures <- fmap catMaybes $
@@ -1225,6 +1243,7 @@ runDeploy mNode mSigningKeyPath skipMigrations migrationSourceSpecs ignoreMigrat
                     , "--skip-checks"
                     , "--checksigs"
                     ]
+                        <> if forceRemoteBuild then ["--remote-build"] else []
                         <> case deployArgM of
                             Just dArg -> ["generated/.#" <> dArg]
                             Nothing -> ["generated/"]
@@ -1297,5 +1316,5 @@ main = do
     case cmd of
         CmdPlan -> runPlan
         CmdDnsGate mNode mTok mZone withDnsUpdate -> runDnsGate mNode mTok mZone withDnsUpdate
-        CmdDeploy mNode mSigningKeyPath skipMigrations migrationSources ignoreMigrationErrors ->
-            runDeploy mNode mSigningKeyPath skipMigrations migrationSources ignoreMigrationErrors
+        CmdDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSources ignoreMigrationErrors ->
+            runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSources ignoreMigrationErrors

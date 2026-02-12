@@ -6,6 +6,7 @@ module Hostenv.Provider.DeployPreflight
 
 import Data.Text (Text)
 import Data.Text qualified as T
+import Hostenv.Provider.DeployGuidance (trustedKeySetupLines)
 import System.Exit (ExitCode (..))
 
 data DeployPreflightConfig = DeployPreflightConfig
@@ -78,8 +79,9 @@ runPreflight cfg = do
                                                 { failureNode = cfg.nodeName
                                                 , failureReason = "signing key is not trusted by remote Nix daemon"
                                                 , failureRemediation =
-                                                    [ "Add the key to provider config: `provider.nixSigning.trustedPublicKeys = [ \"" <> key <> "\" ];`."
-                                                    , "Apply the updated NixOS configuration on this node, regenerate `generated/plan.json`, and retry deploy."
+                                                    trustedKeySetupLines key
+                                                    ++
+                                                    [ "If this node has not yet received the trusted key, apply updated NixOS configuration on the node before retrying."
                                                     ]
                                                 }
 
