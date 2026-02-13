@@ -150,10 +150,50 @@ cliOpts =
 stripDot :: Text -> Text
 stripDot = T.dropWhileEnd (== '.')
 
+digRRRaw :: Maybe Text -> Text -> Text -> IO [Text]
+digRRRaw mNameserver name rr = do
+    let serverArgs = maybe [] (\nameserver -> ["@" <> T.unpack nameserver]) mNameserver
+    let args = serverArgs <> ["+short", T.unpack name, T.unpack rr]
+    (code, out, _err) <- readProcessWithExitCode "dig" args ""
+    case code of
+        ExitFailure _ -> pure []
+        ExitSuccess ->
+            pure $
+                filter (not . T.null) $
+                    map (stripDot . T.toLower . T.strip . T.pack) $
+                        lines out
+
+zoneCandidates :: Text -> [Text]
+zoneCandidates name =
+    let labels = filter (not . T.null) (T.splitOn "." (T.toLower (stripDot name)))
+        labelCount = length labels
+        indices =
+            if labelCount < 2
+                then []
+                else [0 .. labelCount - 2]
+     in map (\idx -> T.intercalate "." (drop idx labels)) indices
+
+findAuthoritativeNameservers :: Text -> IO [Text]
+findAuthoritativeNameservers name = go (zoneCandidates name)
+  where
+    go [] = pure []
+    go (candidate : rest) = do
+        nameservers <- digRRRaw Nothing candidate "NS"
+        if null nameservers
+            then go rest
+            else pure nameservers
+
 digRR :: Text -> Text -> IO [Text]
 digRR name rr = do
-    out <- Sh.strict $ Sh.inproc "dig" ["+short", name, rr] Sh.empty
-    pure $ filter (not . T.null) $ map (stripDot . T.toLower . T.strip) $ T.lines out
+    authoritativeNameservers <- findAuthoritativeNameservers name
+    case authoritativeNameservers of
+        [] -> digRRRaw Nothing name rr
+        nameservers -> do
+            answersByNameserver <- forM nameservers (\nameserver -> digRRRaw (Just nameserver) name rr)
+            let nonEmptyAnswers = filter (not . null) answersByNameserver
+            if null nonEmptyAnswers
+                then digRRRaw Nothing name rr
+                else pure (S.toList (S.fromList (concat nonEmptyAnswers)))
 
 digCNAMEs :: Text -> IO [Text]
 digCNAMEs name = digRR name "CNAME"
