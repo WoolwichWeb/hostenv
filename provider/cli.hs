@@ -1015,7 +1015,7 @@ runPlan dryRun = do
             BL.writeFile (T.unpack flakeDest) flakeRaw
 
             _ <- Sh.procs "git" ["add", dest] Sh.empty
-            _ <- Sh.procs "nix" (nixCommonArgs ++ ["flake", "update", "--flake", "./" <> dest, "parent"]) Sh.empty
+            _ <- Sh.procs "nix" (nixCommonArgs ++ ["flake", "update", "--flake", "./" <> dest]) Sh.empty
             _ <- Sh.procs "git" ["add", dest] Sh.empty
             BLC.putStrLn ("✅ Infrastructure configuration written to " <> BLC.pack (T.unpack dest))
   where
