@@ -1267,36 +1267,47 @@ ensureSigningKeyInfo hostenvHostname mKeyPath = do
 
 signInstallable :: SigningKeyInfo -> Text -> Text -> IO ExitCode
 signInstallable keyInfo installable target = do
-    let buildArgs =
-            [ "build"
-            , "--no-link"
-            , "--print-out-paths"
+    let evalArgs =
+            [ "eval"
+            , "--raw"
             , installable
             ]
-    (buildCode, buildOut, buildErr) <- readProcessWithExitCode "nix" (map T.unpack buildArgs) ""
-    case buildCode of
+    (evalCode, evalOut, evalErr) <- readProcessWithExitCode "nix" (map T.unpack evalArgs) ""
+    case evalCode of
         ExitFailure _ -> do
-            printProviderLine (localCommandFailure "hostenv-provider: failed to realise deployment target for signing" ("nix" : buildArgs) buildCode (T.pack buildOut) (T.pack buildErr))
+            printProviderLine (localCommandFailure "hostenv-provider: failed to evaluate deployment target for signing" ("nix" : evalArgs) evalCode (T.pack evalOut) (T.pack evalErr))
             pure (ExitFailure 1)
         ExitSuccess -> do
-            let outputPaths =
-                    filter (not . T.null) $
-                        map T.strip (T.lines (T.pack buildOut))
-            if null outputPaths
+            let outputPath = T.strip (T.pack evalOut)
+            if T.null outputPath
                 then do
-                    printProviderLine ("hostenv-provider: no output paths produced while realising " <> target)
+                    printProviderLine ("hostenv-provider: no output path produced while evaluating " <> target)
                     pure (ExitFailure 1)
                 else do
-                    let args =
-                            [ "store"
-                            , "sign"
-                            , "-r"
-                            , "-k"
-                            , keyInfo.secretKeyPath
+                    let buildArgs =
+                            [ "build"
+                            , "--no-link"
+                            , "--print-build-logs"
+                            , "--print-out-paths"
+                            , installable
                             ]
-                                <> outputPaths
-                    printProviderLine ("hostenv-provider: signing " <> target)
-                    Sh.proc "nix" args Sh.empty
+                    printProviderLine ("hostenv-provider: running nix " <> T.unwords buildArgs)
+                    buildCode <- Sh.proc "nix" buildArgs Sh.empty
+                    case buildCode of
+                        ExitFailure code -> do
+                            printProviderLine ("hostenv-provider: failed to realise deployment target for signing " <> target <> " (exit " <> T.pack (show code) <> ")")
+                            pure (ExitFailure 1)
+                        ExitSuccess -> do
+                            let args =
+                                    [ "store"
+                                    , "sign"
+                                    , "-r"
+                                    , "-k"
+                                    , keyInfo.secretKeyPath
+                                    , outputPath
+                                    ]
+                            printProviderLine ("hostenv-provider: signing " <> target)
+                            Sh.proc "nix" args Sh.empty
 
 printProviderLine :: Text -> IO ()
 printProviderLine line =
