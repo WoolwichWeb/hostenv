@@ -515,23 +515,36 @@ cfListByName token zoneId name = do
         Left _ -> pure []
         Right (lst :: CFList) -> if lst.lSuccess then pure lst.lResult else pure []
 
-cfDeleteRecord :: Text -> Text -> Text -> Sh.Shell ()
+cfWriteCall :: [String] -> IO (Either Text ())
+cfWriteCall curlArgs = do
+    (code, out, err) <- readProcessWithExitCode "curl" curlArgs ""
+    case code of
+        ExitFailure c ->
+            pure (Left ("curl failed with exit " <> T.pack (show c) <> ": " <> T.pack err))
+        ExitSuccess ->
+            let outBs = BL.fromStrict (TE.encodeUtf8 (T.pack out))
+             in case A.eitherDecode' outBs of
+                    Left decodeErr ->
+                        pure (Left ("invalid Cloudflare response: " <> T.pack decodeErr))
+                    Right (resp :: CFWrite) ->
+                        if resp.wSuccess
+                            then pure (Right ())
+                            else pure (Left (cfWriteFailureReason resp))
+
+cfDeleteRecord :: Text -> Text -> Text -> IO (Either Text ())
 cfDeleteRecord token zoneId rid = do
     let url = "https://api.cloudflare.com/client/v4/zones/" <> zoneId <> "/dns_records/" <> rid
-    _ <-
-        Sh.inproc
-            "curl"
+    let curlArgs =
             [ "-sS"
             , "-X"
             , "DELETE"
             , "-H"
-            , "Authorization: Bearer " <> token
+            , "Authorization: Bearer " <> T.unpack token
             , "-H"
             , "Content-Type: application/json"
-            , url
+            , T.unpack url
             ]
-            Sh.empty
-    pure ()
+    cfWriteCall curlArgs
 
 cfUpsertCname :: Text -> Text -> Text -> Text -> IO (Either Text ())
 cfUpsertCname token zoneId name target = do
@@ -544,38 +557,65 @@ cfUpsertCname token zoneId name target = do
     case existing of
         Left err -> pure (Left err)
         Right rows -> do
-            let (method, url) =
-                    case filter ((== "CNAME") . (.rType)) rows of
-                        (c : _) ->
-                            ("PUT", "https://api.cloudflare.com/client/v4/zones/" <> zoneId <> "/dns_records/" <> c.id)
+            let isConflictType rec = rec.rType `elem` ["A", "AAAA", "CNAME"]
+            let conflicts = filter isConflictType rows
+            let mAnchor =
+                    case filter ((== "CNAME") . (.rType)) conflicts of
+                        (c : _) -> Just c
                         [] ->
-                            ("POST", "https://api.cloudflare.com/client/v4/zones/" <> zoneId <> "/dns_records")
-            let body = "{\"type\":\"CNAME\",\"name\":\"" <> name <> "\",\"content\":\"" <> target <> "\",\"proxied\":false}"
-            let curlArgs =
-                    [ "-sS"
-                    , "-X"
-                    , T.unpack method
-                    , "-H"
-                    , "Authorization: Bearer " <> T.unpack token
-                    , "-H"
-                    , "Content-Type: application/json"
-                    , "--data"
-                    , T.unpack body
-                    , T.unpack url
-                    ]
-            (code, out, err) <- readProcessWithExitCode "curl" curlArgs ""
-            case code of
-                ExitFailure c ->
-                    pure (Left ("curl failed with exit " <> T.pack (show c) <> ": " <> T.pack err))
-                ExitSuccess ->
-                    let outBs = BL.fromStrict (TE.encodeUtf8 (T.pack out))
-                     in case A.eitherDecode' outBs of
-                            Left decodeErr ->
-                                pure (Left ("invalid Cloudflare response: " <> T.pack decodeErr))
-                            Right (resp :: CFWrite) ->
-                                if resp.wSuccess
-                                    then pure (Right ())
-                                    else pure (Left (cfWriteFailureReason resp))
+                            case conflicts of
+                                (rec : _) -> Just rec
+                                [] -> Nothing
+            let staleConflicts =
+                    case mAnchor of
+                        Just anchor -> filter (\rec -> rec.id /= anchor.id) conflicts
+                        Nothing -> []
+            deleteResult <- foldlM deleteConflict (Right ()) staleConflicts
+            case deleteResult of
+                Left err ->
+                    pure (Left err)
+                Right () -> do
+                    let (method, url) =
+                            case mAnchor of
+                                Just anchor ->
+                                    ("PUT", "https://api.cloudflare.com/client/v4/zones/" <> zoneId <> "/dns_records/" <> anchor.id)
+                                Nothing ->
+                                    ("POST", "https://api.cloudflare.com/client/v4/zones/" <> zoneId <> "/dns_records")
+                    let body = "{\"type\":\"CNAME\",\"name\":\"" <> name <> "\",\"content\":\"" <> target <> "\",\"proxied\":false}"
+                    let curlArgs =
+                            [ "-sS"
+                            , "-X"
+                            , T.unpack method
+                            , "-H"
+                            , "Authorization: Bearer " <> T.unpack token
+                            , "-H"
+                            , "Content-Type: application/json"
+                            , "--data"
+                            , T.unpack body
+                            , T.unpack url
+                            ]
+                    cfWriteCall curlArgs
+  where
+    foldlM f z [] = pure z
+    foldlM f z (x : xs) = f z x >>= \z' -> foldlM f z' xs
+    deleteConflict acc rec =
+        case acc of
+            Left err -> pure (Left err)
+            Right () -> do
+                deleteResp <- cfDeleteRecord token zoneId rec.id
+                case deleteResp of
+                    Left err ->
+                        pure
+                            ( Left
+                                ( "failed to delete conflicting "
+                                    <> rec.rType
+                                    <> " record (id "
+                                    <> rec.id
+                                    <> ") before CNAME upsert: "
+                                    <> err
+                                )
+                            )
+                    Right () -> pure (Right ())
 
 cfZoneName :: Text -> Text -> IO (Maybe Text)
 cfZoneName token zoneId = do
