@@ -922,10 +922,14 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
                                 mapM_ (printProviderLine . ("hostenv-provider:   " <>)) cfDryRunCalls
                     printProviderLine "hostenv-provider: dry-run: generated/plan.json was not modified"
                 else do
-                    let tmpPath = dest <> "/plan.json.tmp"
-                    BL.writeFile (T.unpack tmpPath) planPretty
-                    Sh.mv (fromString (T.unpack tmpPath)) (fromString (T.unpack planPath))
-                    BLC.putStrLn "✅ dns-gate updated plan.json"
+                    existingPretty <- prettyJson raw
+                    if existingPretty == planPretty
+                        then printProviderLine "hostenv-provider: dns-gate made no plan changes"
+                        else do
+                            let tmpPath = dest <> "/plan.json.tmp"
+                            BL.writeFile (T.unpack tmpPath) planPretty
+                            Sh.mv (fromString (T.unpack tmpPath)) (fromString (T.unpack planPath))
+                            BLC.putStrLn "✅ dns-gate updated plan.json"
   where
     isJustPair (Just _) (Just _) = True
     isJustPair _ _ = False
