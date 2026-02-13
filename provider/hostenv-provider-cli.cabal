@@ -9,6 +9,7 @@ executable hostenv-provider
   main-is: cli.hs
   hs-source-dirs: .
   other-modules:
+    Hostenv.Provider.DnsBackoff
     Hostenv.Provider.DeployGuidance
     Hostenv.Provider.DnsGateFilter
     Hostenv.Provider.DeployPreflight

@@ -6,6 +6,7 @@
 
 import Control.Exception (SomeException, displayException, finally, try)
 import Control.Monad (forM, forM_, unless, when)
+import Control.Concurrent (threadDelay)
 import Data.Aeson ((.!=), (.:), (.:?), (.=))
 import Data.Aeson qualified as A
 import Data.Aeson.Key qualified as K
@@ -16,7 +17,7 @@ import Data.ByteString.Lazy.Char8 qualified as BLC
 import Data.Char (isAlphaNum, isHexDigit)
 import Data.Foldable (toList)
 import Data.List (find, intersect, (\\))
-import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe, mapMaybe)
 import Data.Scientific (floatingOrInteger)
 import Data.Set qualified as S
 import Data.String (fromString)
@@ -26,6 +27,7 @@ import Data.Text.Conversions (convertText)
 import Data.Text.Encoding qualified as TE
 import Distribution.Compat.Prelude qualified as Sh
 import Hostenv.Provider.DeployGuidance (FlakeKeyStatus (..), localTrustSetupLines, remoteNodeTrustLines)
+import Hostenv.Provider.DnsBackoff (backoffDelays)
 import Hostenv.Provider.DnsGateFilter (filterEnvironmentsByNode)
 import Hostenv.Provider.DeployPreflight qualified as Preflight
 import Hostenv.Provider.SigningTarget (deployProfilePathInstallable)
@@ -502,18 +504,49 @@ cfDeleteRecord token zoneId rid = do
             Sh.empty
     pure ()
 
-cfUpsertCname :: Text -> Text -> Text -> Text -> IO ()
+cfUpsertCname :: Text -> Text -> Text -> Text -> IO (Either Text ())
 cfUpsertCname token zoneId name target = do
-    existing <- cfListByName token zoneId name
-    case filter ((== "CNAME") . (.rType)) existing of
-        (c : _) -> do
-            let url = "https://api.cloudflare.com/client/v4/zones/" <> zoneId <> "/dns_records/" <> c.id
+    existingRes <- try (cfListByName token zoneId name) :: IO (Either SomeException [CFRecord])
+    existing <- case existingRes of
+        Left err ->
+            pure (Left ("failed to list existing DNS records: " <> T.pack (displayException err)))
+        Right rows ->
+            pure (Right rows)
+    case existing of
+        Left err -> pure (Left err)
+        Right rows -> do
+            let (method, url) =
+                    case filter ((== "CNAME") . (.rType)) rows of
+                        (c : _) ->
+                            ("PUT", "https://api.cloudflare.com/client/v4/zones/" <> zoneId <> "/dns_records/" <> c.id)
+                        [] ->
+                            ("POST", "https://api.cloudflare.com/client/v4/zones/" <> zoneId <> "/dns_records")
             let body = "{\"type\":\"CNAME\",\"name\":\"" <> name <> "\",\"content\":\"" <> target <> "\",\"proxied\":false}"
-            Sh.stdout $ Sh.inproc "curl" ["-sS", "-X", "PUT", "-H", "Authorization: Bearer " <> token, "-H", "Content-Type: application/json", "--data", body, url] Sh.empty
-        [] -> do
-            let url = "https://api.cloudflare.com/client/v4/zones/" <> zoneId <> "/dns_records"
-            let body = "{\"type\":\"CNAME\",\"name\":\"" <> name <> "\",\"content\":\"" <> target <> "\",\"proxied\":false}"
-            Sh.stdout $ Sh.inproc "curl" ["-sS", "-X", "POST", "-H", "Authorization: Bearer " <> token, "-H", "Content-Type: application/json", "--data", body, url] Sh.empty
+            let curlArgs =
+                    [ "-sS"
+                    , "-X"
+                    , T.unpack method
+                    , "-H"
+                    , "Authorization: Bearer " <> T.unpack token
+                    , "-H"
+                    , "Content-Type: application/json"
+                    , "--data"
+                    , T.unpack body
+                    , T.unpack url
+                    ]
+            (code, out, err) <- readProcessWithExitCode "curl" curlArgs ""
+            case code of
+                ExitFailure c ->
+                    pure (Left ("curl failed with exit " <> T.pack (show c) <> ": " <> T.pack err))
+                ExitSuccess ->
+                    let outBs = BL.fromStrict (TE.encodeUtf8 (T.pack out))
+                     in case A.eitherDecode' outBs of
+                            Left decodeErr ->
+                                pure (Left ("invalid Cloudflare response: " <> T.pack decodeErr))
+                            Right (resp :: CFWrite) ->
+                                if resp.wSuccess
+                                    then pure (Right ())
+                                    else pure (Left "Cloudflare API reported success=false")
 
 cfZoneName :: Text -> Text -> IO (Maybe Text)
 cfZoneName token zoneId = do
@@ -544,6 +577,100 @@ isSubdomainOf host zone =
         zone' = T.toLower (stripDot zone)
      in host' == zone' || T.isSuffixOf ("." <> zone') host'
 
+type DnsGateKey = (Text, Text)
+
+data DnsGateItem = DnsGateItem
+    { dgiEnvName :: Text
+    , dgiNodeName :: Maybe Text
+    , dgiVhostName :: Text
+    , dgiExpectedHost :: Text
+    }
+
+data DnsUpsertEligibility = UpsertEligible | UpsertIneligible Text
+
+data DnsUpsertOutcome
+    = UpsertPlanned
+    | UpsertSucceeded
+    | UpsertFailed Text
+    | UpsertUnavailable Text
+
+data DnsGateMismatch = DnsGateMismatch
+    { dgmItem :: DnsGateItem
+    , dgmOutcome :: DnsUpsertOutcome
+    }
+
+dnsGateKey :: DnsGateItem -> DnsGateKey
+dnsGateKey item = (item.dgiEnvName, item.dgiVhostName)
+
+collectDnsGateItems :: Text -> KM.KeyMap A.Value -> [DnsGateItem]
+collectDnsGateItems hostenvHostname envs =
+    concatMap collectEnv (KM.toList envs)
+  where
+    collectEnv (kEnv, vEnv) =
+        case vEnv of
+            A.Object envObj ->
+                let envName = K.toText kEnv
+                    nodeName = lookupText (K.fromString "node") envObj
+                    expectedHostFor vh = maybe vh (<> "." <> hostenvHostname) nodeName
+                    vhosts = fromMaybe KM.empty (lookupObj (K.fromString "virtualHosts") envObj)
+                 in map
+                        (\(vhKey, _) ->
+                            let vhName = K.toText vhKey
+                             in DnsGateItem
+                                    { dgiEnvName = envName
+                                    , dgiNodeName = nodeName
+                                    , dgiVhostName = vhName
+                                    , dgiExpectedHost = expectedHostFor vhName
+                                    }
+                        )
+                        (KM.toList vhosts)
+            _ -> []
+
+classifyUpsertEligibility :: Bool -> Maybe Text -> Maybe Text -> Maybe Text -> Text -> DnsUpsertEligibility
+classifyUpsertEligibility withDnsUpdate mToken mZoneId mZoneName vhName
+    | not withDnsUpdate = UpsertIneligible "dns updates are disabled (use --with-dns-update)"
+    | isNothing mToken = UpsertIneligible "Cloudflare token was not provided"
+    | isNothing mZoneId = UpsertIneligible "Cloudflare zone was not provided"
+    | isNothing mZoneName = UpsertIneligible "could not resolve Cloudflare zone name"
+    | otherwise =
+        case mZoneName of
+            Just zoneName ->
+                if isSubdomainOf vhName zoneName
+                    then UpsertEligible
+                    else UpsertIneligible ("host is outside Cloudflare zone " <> zoneName)
+            Nothing -> UpsertIneligible "could not resolve Cloudflare zone name"
+
+waitForDnsPropagation :: [DnsGateItem] -> IO (S.Set DnsGateKey, [DnsGateItem])
+waitForDnsPropagation items = do
+    (resolved0, unresolved0) <- partitionByDns items
+    go resolved0 unresolved0 (backoffDelays 1 30 600)
+  where
+    partitionByDns recs = do
+        checks <- forM recs $ \item -> do
+            ok <- dnsPointsTo item.dgiVhostName item.dgiExpectedHost
+            pure (item, ok)
+        pure
+            ( [ item
+              | (item, True) <- checks
+              ]
+            , [ item
+              | (item, False) <- checks
+              ]
+            )
+    go resolved unresolved _ | null unresolved = pure (S.fromList (map dnsGateKey resolved), [])
+    go resolved unresolved [] = pure (S.fromList (map dnsGateKey resolved), unresolved)
+    go resolved unresolved (delaySec : restDelays) = do
+        printProviderLine
+            ( "hostenv-provider: waiting "
+                <> T.pack (show delaySec)
+                <> "s before rechecking DNS propagation for "
+                <> T.pack (show (length unresolved))
+                <> " vhost(s)"
+            )
+        threadDelay (delaySec * 1000000)
+        (resolvedNow, unresolvedNow) <- partitionByDns unresolved
+        go (resolved <> resolvedNow) unresolvedNow restDelays
+
 -- -------- DNS gate --------
 runDnsGate :: Maybe Text -> Maybe Text -> Maybe Text -> Bool -> Bool -> IO ()
 runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
@@ -561,26 +688,119 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
             let cfPlan = lookupObj (K.fromString "cloudflare") plan
             let envsAll = fromMaybe KM.empty (lookupObj (K.fromString "environments") plan)
             let envs = filterEnvironmentsByNode mNode envsAll
-            let nodes = fromMaybe KM.empty (lookupObj (K.fromString "nodes") plan)
-            cfTok <- case mTok of
-                Just t -> pure (Just (T.unpack t))
+            mCfToken <- case mTok of
+                Just t -> pure (Just t)
                 Nothing -> case cfPlan >>= lookupText (K.fromString "apiTokenFile") of
-                    Just path -> Just <$> readFileTrim (T.unpack path)
-                    Nothing -> Env.lookupEnv "CF_API_TOKEN"
-            cfZone <- case mZone of
-                Just z -> pure (Just (T.unpack z))
+                    Just path -> Just . T.pack <$> readFileTrim (T.unpack path)
+                    Nothing -> fmap T.pack <$> Env.lookupEnv "CF_API_TOKEN"
+            mCfZone <- case mZone of
+                Just z -> pure (Just z)
                 Nothing -> case cfPlan >>= lookupText (K.fromString "zoneId") of
-                    Just z -> pure (Just (T.unpack z))
-                    Nothing -> Env.lookupEnv "CF_ZONE_ID"
-            cfZoneName' <- case (cfTok, cfZone) of
-                (Just t, Just z) -> cfZoneName (T.pack t) (T.pack z)
+                    Just z -> pure (Just z)
+                    Nothing -> fmap T.pack <$> Env.lookupEnv "CF_ZONE_ID"
+            mCfZoneName <- case (mCfToken, mCfZone) of
+                (Just t, Just z) -> cfZoneName t z
                 _ -> pure Nothing
-            let hasCF = isJustPair cfTok cfZone
+            let hasCF = isJustPair mCfToken mCfZone
             when (withDnsUpdate && not hasCF) $
                 printProviderErrLine $
                     "hostenv-provider: warning: --with-dns-update requested but Cloudflare credentials are missing (set both --cf-token/CF_API_TOKEN and --cf-zone/CF_ZONE_ID). "
                         <> "Continuing in check-only mode without DNS updates."
-            (plan', cfDryRunCalls) <- foldlM (processEnv hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate dryRun) (plan, []) (KM.toList envs)
+
+            let items = collectDnsGateItems hostenvHostname envs
+            checked <- forM items $ \item -> do
+                ok <- dnsPointsTo item.dgiVhostName item.dgiExpectedHost
+                pure (item, ok)
+
+            let mismatched =
+                    [ item
+                    | (item, False) <- checked
+                    ]
+
+            (mismatchOutcomesRev, cfDryRunCallsRev) <- foldlM (processMismatch mCfToken mCfZone mCfZoneName withDnsUpdate dryRun) ([], []) mismatched
+            let mismatchOutcomes = reverse mismatchOutcomesRev
+            let cfDryRunCalls = reverse cfDryRunCallsRev
+
+            let upsertedItems =
+                    [ mismatch.dgmItem
+                    | mismatch <- mismatchOutcomes
+                    , case mismatch.dgmOutcome of
+                        UpsertSucceeded -> True
+                        _ -> False
+                    ]
+
+            when (not dryRun && not (null upsertedItems)) $
+                printProviderLine
+                    ( "hostenv-provider: waiting for DNS propagation for "
+                        <> T.pack (show (length upsertedItems))
+                        <> " vhost(s) with exponential backoff (max 30s, total 10m)"
+                    )
+
+            (propagatedKeys, timedOutItems) <-
+                if dryRun
+                    then pure (S.empty, [])
+                    else waitForDnsPropagation upsertedItems
+
+            when dryRun $
+                when withDnsUpdate $
+                    printProviderLine
+                        "hostenv-provider: dry-run: propagation waiting is skipped; real runs wait up to 10 minutes before deciding ACME/SSL changes"
+
+            forM_ timedOutItems $ \item ->
+                printProviderErrLine
+                    ( "hostenv-provider: warning: DNS did not propagate within 10 minutes for "
+                        <> item.dgiVhostName
+                        <> " -> "
+                        <> item.dgiExpectedHost
+                    )
+
+            let shouldDisable mismatch =
+                    case mismatch.dgmOutcome of
+                        UpsertPlanned -> False
+                        UpsertSucceeded -> S.notMember (dnsGateKey mismatch.dgmItem) propagatedKeys
+                        UpsertFailed _ -> True
+                        UpsertUnavailable _ -> True
+
+            let disableTargets =
+                    [ mismatch
+                    | mismatch <- mismatchOutcomes
+                    , shouldDisable mismatch
+                    ]
+
+            forM_ disableTargets $ \mismatch ->
+                case mismatch.dgmOutcome of
+                    UpsertUnavailable reason ->
+                        printProviderErrLine
+                            ( "hostenv-provider: warning: disabling ACME/forceSSL for "
+                                <> mismatch.dgmItem.dgiVhostName
+                                <> " because DNS does not point to "
+                                <> mismatch.dgmItem.dgiExpectedHost
+                                <> " and remediation is unavailable ("
+                                <> reason
+                                <> ")"
+                            )
+                    UpsertFailed reason ->
+                        printProviderErrLine
+                            ( "hostenv-provider: warning: disabling ACME/forceSSL for "
+                                <> mismatch.dgmItem.dgiVhostName
+                                <> " because Cloudflare upsert failed ("
+                                <> reason
+                                <> ")"
+                            )
+                    UpsertSucceeded ->
+                        printProviderErrLine
+                            ( "hostenv-provider: warning: disabling ACME/forceSSL for "
+                                <> mismatch.dgmItem.dgiVhostName
+                                <> " because DNS propagation did not complete in time"
+                            )
+                    UpsertPlanned -> pure ()
+
+            let applyDisable planAcc mismatch =
+                    let item = mismatch.dgmItem
+                        plan1 = disableAcmePaths item.dgiEnvName item.dgiVhostName planAcc
+                     in disableAcmeOnNode item.dgiNodeName item.dgiVhostName plan1
+
+            let plan' = foldl applyDisable plan disableTargets
             planPretty <- prettyJson (A.encode plan')
             if dryRun
                 then do
@@ -603,42 +823,46 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
     readFileTrim p = T.unpack . T.strip . T.pack <$> readFile p
     foldlM f z [] = pure z
     foldlM f z (x : xs) = f z x >>= \z' -> foldlM f z' xs
-    processEnv hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate dryRun acc (kEnv, vEnv) =
-        case vEnv of
-            A.Object envObj -> do
-                let vhosts = fromMaybe KM.empty (lookupObj (K.fromString "virtualHosts") envObj)
-                foldlM (processVhost hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate dryRun (K.toText kEnv)) acc (KM.toList vhosts)
-            _ -> pure acc
-    processVhost hostenvHostname nodes hasCF cfTok cfZone cfZoneName' withDnsUpdate dryRun name (planAcc, cfOps) (vhKey, _vhObj) = do
-        let vhName = K.toText vhKey
-        let node = case lookupObj (K.fromString "environments") planAcc >>= KM.lookup (K.fromText name) of
-                Just (A.Object o) -> lookupText (K.fromString "node") o
-                _ -> Nothing
-        let expectedHost = maybe vhName (<> "." <> hostenvHostname) node
-        ok <- dnsPointsTo vhName expectedHost
-        (planAcc', cfOps') <-
-            if ok
-                then pure (planAcc, cfOps)
-                else do
-                    cfOps' <-
-                        if hasCF && withDnsUpdate
-                            then case (cfTok, cfZone) of
-                                (Just t, Just z) ->
-                                    case cfZoneName' of
-                                        Just zoneName ->
-                                            if isSubdomainOf vhName zoneName
-                                                then
-                                                    if dryRun
-                                                        then pure (cfOps <> ["upsert CNAME " <> vhName <> " -> " <> expectedHost <> " in zone " <> T.pack z])
-                                                        else cfUpsertCname (T.pack t) (T.pack z) vhName expectedHost >> pure cfOps
-                                                else printProviderLine ("Skipping Cloudflare upsert for " <> vhName <> " (outside zone " <> zoneName <> ")") >> pure cfOps
-                                        Nothing -> printProviderLine "DNS setup ('dnsGate') failed: could not resolve Cloudflare zone name" >> pure cfOps
-                                _ -> pure cfOps
-                            else pure cfOps
-                    let plan1 = disableAcmePaths name vhName planAcc
-                    let plan2 = disableAcmeOnNode node vhName plan1
-                    pure (plan2, cfOps')
-        pure (planAcc', cfOps')
+    processMismatch mCfToken mCfZone mCfZoneName withDnsUpdate dryRun (outcomes, cfOps) item =
+        case classifyUpsertEligibility withDnsUpdate mCfToken mCfZone mCfZoneName item.dgiVhostName of
+            UpsertIneligible reason ->
+                pure
+                    ( DnsGateMismatch item (UpsertUnavailable reason) : outcomes
+                    , cfOps
+                    )
+            UpsertEligible ->
+                case (mCfToken, mCfZone) of
+                    (Just token, Just zoneId) ->
+                        if dryRun
+                            then
+                                pure
+                                    ( DnsGateMismatch item UpsertPlanned : outcomes
+                                    , ("upsert CNAME " <> item.dgiVhostName <> " -> " <> item.dgiExpectedHost <> " in zone " <> zoneId) : cfOps
+                                    )
+                            else do
+                                printProviderLine
+                                    ( "hostenv-provider: upserting Cloudflare CNAME "
+                                        <> item.dgiVhostName
+                                        <> " -> "
+                                        <> item.dgiExpectedHost
+                                    )
+                                upsertResult <- cfUpsertCname token zoneId item.dgiVhostName item.dgiExpectedHost
+                                case upsertResult of
+                                    Right () ->
+                                        pure
+                                            ( DnsGateMismatch item UpsertSucceeded : outcomes
+                                            , cfOps
+                                            )
+                                    Left err ->
+                                        pure
+                                            ( DnsGateMismatch item (UpsertFailed err) : outcomes
+                                            , cfOps
+                                            )
+                    _ ->
+                        pure
+                            ( DnsGateMismatch item (UpsertUnavailable "Cloudflare credentials are missing") : outcomes
+                            , cfOps
+                            )
 
 runPlan :: Bool -> IO ()
 runPlan dryRun = do

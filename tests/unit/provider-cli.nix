@@ -27,4 +27,9 @@ in
     done
     echo ok > "$out"
   '';
+  provider-cli-dns-backoff = pkgs.runCommand "provider-cli-dns-backoff" { } ''
+    set -euo pipefail
+    ${ghc}/bin/runghc -i${src} ${src}/TestDnsBackoff.hs
+    echo ok > "$out"
+  '';
 }
