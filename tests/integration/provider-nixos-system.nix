@@ -162,11 +162,13 @@ let
   deploySystemSshUserOk = (deployProfiles.system.sshUser or null) == deployUser;
   deployEnvSshUserOk = (deployProfiles.${envName}.sshUser or null) == envName;
   deployEnvProfileUserOk = (deployProfiles.${envName}.user or null) == envName;
+  firewallPorts = systemEval.config.networking.firewall.allowedTCPPorts or [ ];
+  firewallPortsOk = lib.all (port: lib.elem port firewallPorts) [ 22 80 443 ];
 in
 {
   provider-nixos-system-eval =
     asserts.assertTrue "provider-nixos-system-eval"
-      (nginxOk && vhostOk && deployKeysOk && trustedPublicKeysOk && secretsOk && deploySystemSshUserOk && deployEnvSshUserOk && deployEnvProfileUserOk && ! systemMismatch.success)
+      (nginxOk && vhostOk && deployKeysOk && trustedPublicKeysOk && secretsOk && deploySystemSshUserOk && deployEnvSshUserOk && deployEnvProfileUserOk && firewallPortsOk && ! systemMismatch.success)
       "provider nixosSystem should enforce env key/userName alignment";
   provider-nixos-system-wheel-sudo =
     asserts.assertTrue "provider-nixos-system-wheel-sudo"

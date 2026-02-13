@@ -134,7 +134,9 @@
           ])
           envs);
 
-        networking.firewall.allowedTCPPorts = lib.mkDefault [ 80 443 22 ];
+        # Keep these ports in the merged result even when other modules
+        # (for example sshd openFirewall) contribute non-default values.
+        networking.firewall.allowedTCPPorts = [ 80 443 22 ];
 
         services.nginx = {
           enable = true;

@@ -85,7 +85,10 @@
         };
 
         networking.firewall.enable = lib.mkDefault true;
-        networking.firewall.allowedTCPPorts = lib.mkDefault [ 80 443 22 ];
+        # Do not use mkDefault here: list options only merge within the
+        # strongest priority class, and sshd's non-default openFirewall rule
+        # would otherwise collapse this list down to [ 22 ].
+        networking.firewall.allowedTCPPorts = [ 80 443 22 ];
 
         environment.sessionVariables = {
           XDG_CACHE_HOME = lib.mkDefault "$HOME/.cache";
