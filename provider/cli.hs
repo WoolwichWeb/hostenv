@@ -449,10 +449,39 @@ instance A.FromJSON CFList where
             <$> v .: "success"
             <*> v .: "result"
 
-newtype CFWrite = CFWrite {wSuccess :: Bool}
+data CFError = CFError
+    { cfErrorCode :: Maybe Int
+    , cfErrorMessage :: Text
+    }
+
+instance A.FromJSON CFError where
+    parseJSON = A.withObject "CFError" $ \v ->
+        CFError
+            <$> v .:? "code"
+            <*> v .:? "message" .!= "unknown error"
+
+data CFWrite = CFWrite
+    { wSuccess :: Bool
+    , wErrors :: [CFError]
+    }
+
 instance A.FromJSON CFWrite where
     parseJSON = A.withObject "CFWrite" $ \v ->
-        CFWrite <$> v .: "success"
+        CFWrite
+            <$> v .: "success"
+            <*> v .:? "errors" .!= []
+
+formatCFError :: CFError -> Text
+formatCFError cfErr =
+    case cfErr.cfErrorCode of
+        Just code -> "[" <> T.pack (show code) <> "] " <> cfErr.cfErrorMessage
+        Nothing -> cfErr.cfErrorMessage
+
+cfWriteFailureReason :: CFWrite -> Text
+cfWriteFailureReason resp =
+    if null resp.wErrors
+        then "Cloudflare API reported success=false with no error details"
+        else "Cloudflare API reported success=false: " <> T.intercalate "; " (map formatCFError resp.wErrors)
 
 data CFZoneInfo = CFZoneInfo {zName :: Text}
 instance A.FromJSON CFZoneInfo where
@@ -546,7 +575,7 @@ cfUpsertCname token zoneId name target = do
                             Right (resp :: CFWrite) ->
                                 if resp.wSuccess
                                     then pure (Right ())
-                                    else pure (Left "Cloudflare API reported success=false")
+                                    else pure (Left (cfWriteFailureReason resp))
 
 cfZoneName :: Text -> Text -> IO (Maybe Text)
 cfZoneName token zoneId = do
