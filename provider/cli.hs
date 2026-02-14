@@ -1473,6 +1473,23 @@ runMigrationBackup deployUser nodeConnection envInfo prevNode backupName = do
                 Just snap -> pure snap
                 Nothing -> error ("could not parse snapshot id from journal for " <> T.unpack envInfo.userName <> ":" <> T.unpack backupName)
 
+clearRestorePlan :: Text -> (Text -> NodeConnection) -> EnvInfo -> IO ()
+clearRestorePlan deployUser nodeConnection envInfo = do
+    let target = mkSshTarget deployUser (nodeConnection envInfo.node)
+    let restorePath = envInfo.runtimeDir <> "/restore/plan.json"
+    let clearCmd =
+            "if sudo test -f "
+                <> shellEscape restorePath
+                <> "; then sudo rm -f "
+                <> shellEscape restorePath
+                <> "; echo removed; else echo absent; fi"
+    status <- T.strip <$> runRemoteStrict target ["bash", "-lc", clearCmd]
+    case status of
+        "removed" ->
+            printProviderLine ("hostenv-provider: removed pending restore plan for skipped environment " <> envInfo.userName)
+        _ ->
+            printProviderLine ("hostenv-provider: no pending restore plan for skipped environment " <> envInfo.userName)
+
 resolvePrevNode :: (Text -> Maybe Text) -> Text -> EnvInfo -> IO (Maybe Text)
 resolvePrevNode explicitSourceFor hostenvHostname envInfo =
     case explicitSourceFor envInfo.userName of
@@ -1728,6 +1745,11 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                     printRemediationBlock remediationLines
                 printProviderLine "hostenv-provider: aborting deployment because one or more preflight checks failed"
                 Sh.exitWith (ExitFailure 1)
+
+            let skippedEnvInfos =
+                    filter (\envInfo -> envInfo.userName `elem` skipHits) envInfosFiltered
+            forM_ skippedEnvInfos $
+                clearRestorePlan deployUser resolveNodeConnection
 
             migrations <- fmap catMaybes $
                 forM envInfosFiltered $ \envInfo -> do
