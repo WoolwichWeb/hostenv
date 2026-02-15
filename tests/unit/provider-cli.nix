@@ -32,4 +32,9 @@ in
     ${ghc}/bin/runghc -i${src} ${src}/TestDnsBackoff.hs
     echo ok > "$out"
   '';
+  provider-cli-prev-node-discovery = pkgs.runCommand "provider-cli-prev-node-discovery" { } ''
+    set -euo pipefail
+    ${ghc}/bin/runghc -i${src} ${src}/TestPrevNodeDiscovery.hs
+    echo ok > "$out"
+  '';
 }

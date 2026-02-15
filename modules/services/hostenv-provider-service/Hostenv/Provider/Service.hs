@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -40,7 +41,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (toLower)
-import Data.List (find, foldl', nub, sort, sortOn)
+import Data.List (foldl', intersect, nub, sort, sortOn)
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
@@ -51,6 +52,7 @@ import System.Process (readProcessWithExitCode)
 
 import "cryptonite" Crypto.Hash (SHA256)
 import "cryptonite" Crypto.MAC.HMAC (HMAC (..), hmac)
+import Hostenv.Provider.PrevNodeDiscovery qualified as PrevNode
 
 
 constantTimeEq :: BS.ByteString -> BS.ByteString -> Bool
@@ -122,10 +124,6 @@ nodesForProjectWithDns org project raw = do
                 hostenvObj <- pure (lookupObj (K.fromString "hostenv") envObj)
                 let envName = K.toText kEnv
                 let envUserName = fromMaybe envName (hostenvObj >>= lookupText (K.fromString "userName"))
-                let vhosts =
-                      case lookupObj (K.fromString "virtualHosts") envObj of
-                        Just vhostsObj -> map (K.toText . fst) (KM.toList vhostsObj)
-                        Nothing -> []
                 case hostenvObj of
                   Just hostenvObj' -> do
                     case (lookupText (K.fromString "organisation") hostenvObj', lookupText (K.fromString "project") hostenvObj') of
@@ -133,20 +131,35 @@ nodesForProjectWithDns org project raw = do
                         case lookupText (K.fromString "node") envObj of
                           Just node -> do
                             let prevNode = lookupText (K.fromString "previousNode") envObj
-                            resolvedPrev <- resolvePrevNodeFromDns hostenvHostname envUserName vhosts prevNode
-                            pure (Just (EnvNodeInfo node resolvedPrev))
+                            pure (Just (envUserName, node, prevNode))
                           Nothing -> pure Nothing
                       _ -> pure Nothing
                   Nothing -> pure Nothing
               _ -> pure Nothing
-          let nodes = sort (nub (map envNode matches))
-          let deps =
-                [ (envNode info, prev)
-                | info <- matches
-                , Just prev <- [info.envPrevNode]
-                , prev /= info.envNode
-                ]
-          pure (Right (orderNodes nodes deps))
+          let rootNodeNames =
+                case lookupObj (K.fromString "nodes") root of
+                  Nothing -> []
+                  Just nodesObj -> map (K.toText . fst) (KM.toList nodesObj)
+          let discoveryNodes =
+                S.toList $
+                  S.fromList $
+                    filter (not . T.null) (rootNodeNames <> map (\(_, node, _) -> node) matches)
+
+          resolvedMatches <- forM matches $ \(envUserName, node, prevNode) -> do
+            resolvedPrev <- resolvePrevNodeFromDns hostenvHostname discoveryNodes envUserName node prevNode
+            pure ((\prev -> EnvNodeInfo node prev) <$> resolvedPrev)
+
+          case sequence resolvedMatches of
+            Left err -> pure (Left err)
+            Right resolvedInfos -> do
+              let nodes = sort (nub (map envNode resolvedInfos))
+              let deps =
+                    [ (envNode info, prev)
+                    | info <- resolvedInfos
+                    , Just prev <- [info.envPrevNode]
+                    , prev /= info.envNode
+                    ]
+              pure (Right (orderNodes nodes deps))
 
 data EnvNodeInfo = EnvNodeInfo
   { envNode :: Text
@@ -289,37 +302,51 @@ digRR name rr = do
        in pure (filter (not . T.null) (map toLine (lines out)))
     Right _ -> pure []
 
-digCNAMEs :: Text -> IO [Text]
-digCNAMEs name = digRR name "CNAME"
+digAddrs :: Text -> IO [Text]
+digAddrs name = do
+  a4 <- digRR name "A"
+  a6 <- digRR name "AAAA"
+  pure (a4 <> a6)
 
-discoverPrevNodeFromDns :: Text -> Text -> [Text] -> IO (Maybe Text)
-discoverPrevNodeFromDns hostenvHostname envName vhosts =
-  let hostenvHost = T.toLower hostenvHostname
-      suffix = "." <> hostenvHost
-      envNameNorm = T.toLower envName
-      envHost =
-        if T.isSuffixOf suffix envNameNorm
-          then envNameNorm
-          else envNameNorm <> suffix
-      go [] = pure Nothing
-      go (vh:rest) = do
-        cn <- digCNAMEs vh
-        case find (T.isSuffixOf suffix) cn of
-          Just cname ->
-            case T.stripSuffix suffix cname of
-              Just node | node /= "" -> pure (Just node)
-              _ -> pure Nothing
-          Nothing -> go rest
-   in go (envHost : vhosts)
+dnsPointsTo :: Text -> Text -> IO Bool
+dnsPointsTo vhost expectedHost = do
+  let expectHostNorm = T.toLower expectedHost
+  cn <- digRR vhost "CNAME"
+  if expectHostNorm `elem` cn
+    then pure True
+    else do
+      expIPs <- digAddrs expectedHost
+      vhIPs <- digAddrs vhost
+      pure (not (null (expIPs `intersect` vhIPs)))
 
-resolvePrevNodeFromDns :: Maybe Text -> Text -> [Text] -> Maybe Text -> IO (Maybe Text)
-resolvePrevNodeFromDns hostenvHostname envName vhosts prevNode =
+resolvePrevNodeFromDns :: Maybe Text -> [Text] -> Text -> Text -> Maybe Text -> IO (Either Text (Maybe Text))
+resolvePrevNodeFromDns hostenvHostname discoveryNodes envName currentNode prevNode =
   case prevNode of
-    Just prev -> pure (Just prev)
+    Just prev -> pure (Right (Just prev))
     Nothing ->
       case hostenvHostname of
-        Nothing -> pure Nothing
-        Just host -> discoverPrevNodeFromDns host envName vhosts
+        Nothing -> pure (Right Nothing)
+        Just host -> do
+          matchedNodes <- PrevNode.discoverMatchingNodes dnsPointsTo host envName discoveryNodes
+          let resolution = PrevNode.resolvePrevNodeFromMatches currentNode matchedNodes
+          let envHost = PrevNode.canonicalHostInDomain envName host
+          case resolution of
+            PrevNode.PrevNodeResolved node -> pure (Right (Just node))
+            PrevNode.PrevNodeSkip -> pure (Right Nothing)
+            PrevNode.PrevNodeAmbiguousFatal nodes ->
+              pure
+                ( Left
+                    ( "previous-node discovery for "
+                        <> envName
+                        <> " via "
+                        <> envHost
+                        <> " is ambiguous: matched nodes "
+                        <> T.intercalate ", " nodes
+                        <> " (current node: "
+                        <> currentNode
+                        <> "). Set previousNode explicitly."
+                    )
+                )
 
 renderProjectInputs :: [(Text, Text)] -> Text
 renderProjectInputs inputs =

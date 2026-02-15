@@ -16,6 +16,7 @@ import System.Directory (getTemporaryDirectory, removeFile)
 import System.Exit (exitFailure)
 import System.IO (hClose, openTempFile)
 
+import Hostenv.Provider.PrevNodeDiscovery
 import Hostenv.Provider.Service
 
 assert :: Bool -> String -> IO ()
@@ -30,6 +31,7 @@ main = do
   testPlanParsing
   testNodeOrderWithMigrations
   testProjectHashSelection
+  testPrevNodeDiscoveryResolution
   testCommandSequence
   testTemplateRender
   testGitCredentials
@@ -124,6 +126,33 @@ testProjectHashSelection = do
   case projectHashFor "acme" "site" planJson2 of
     Left err -> assert False ("projectHashFor failed: " <> show err)
     Right hash -> assert (hash == "hash-main") "projectHashFor should prefer main when no production"
+
+testPrevNodeDiscoveryResolution :: IO ()
+testPrevNodeDiscoveryResolution = do
+  assert
+    (canonicalHostInDomain "env-main-a1b2c3" "hosting.test" == "env-main-a1b2c3.hosting.test")
+    "canonical host should append hostenv domain"
+  assert
+    (canonicalHostInDomain "env-main-a1b2c3.hosting.test" "hosting.test" == "env-main-a1b2c3.hosting.test")
+    "canonical host should not duplicate suffix"
+
+  assert
+    (resolvePrevNodeFromMatches "node-b" [] == PrevNodeSkip)
+    "empty matches should skip discovery"
+  assert
+    (resolvePrevNodeFromMatches "node-b" ["node-a"] == PrevNodeResolved "node-a")
+    "single non-current match should resolve previous node"
+  assert
+    (resolvePrevNodeFromMatches "node-b" ["node-b"] == PrevNodeSkip)
+    "single current-node match should skip discovery"
+  assert
+    (resolvePrevNodeFromMatches "node-b" ["node-a", "node-b"] == PrevNodeSkip)
+    "ambiguous matches including current node should skip discovery"
+  assert
+    ( resolvePrevNodeFromMatches "node-c" ["node-a", "node-b"]
+        == PrevNodeAmbiguousFatal ["node-a", "node-b"]
+    )
+    "ambiguous matches excluding current node should be fatal"
 
 
 testTemplateRender :: IO ()

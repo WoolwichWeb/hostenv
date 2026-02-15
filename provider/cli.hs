@@ -16,7 +16,7 @@ import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BLC
 import Data.Char (isAlphaNum, isHexDigit)
 import Data.Foldable (toList)
-import Data.List (find, intersect, (\\))
+import Data.List (intersect, (\\))
 import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe, mapMaybe)
 import Data.Scientific (floatingOrInteger)
 import Data.Set qualified as S
@@ -30,6 +30,7 @@ import Hostenv.Provider.DeployGuidance (FlakeKeyStatus (..), localTrustSetupLine
 import Hostenv.Provider.DnsBackoff (backoffDelays)
 import Hostenv.Provider.DnsGateFilter (filterEnvironmentsByNode)
 import Hostenv.Provider.DeployPreflight qualified as Preflight
+import Hostenv.Provider.PrevNodeDiscovery qualified as PrevNode
 import Hostenv.Provider.SigningTarget (deployProfilePathInstallable)
 import Options.Applicative qualified as OA
 import System.Directory qualified as Dir
@@ -215,21 +216,6 @@ dnsPointsTo vhost expectedHost = do
             vhIPs <- digAddrs vhost
             pure $ not (null (expIPs `intersect` vhIPs))
 
-discoverPrevNodeFromDns :: Text -> Text -> [Text] -> IO (Maybe Text)
-discoverPrevNodeFromDns hostenvHostname envName vhosts =
-    let suffix = "." <> T.toLower hostenvHostname
-        envHost = envName <> "." <> hostenvHostname
-        go [] = pure Nothing
-        go (vh : rest) = do
-            cn <- digCNAMEs vh
-            case find (T.isSuffixOf suffix) cn of
-                Just cname ->
-                    case T.stripSuffix suffix cname of
-                        Just node | node /= "" -> pure (Just node)
-                        _ -> pure Nothing
-                Nothing -> go rest
-     in go (envHost : vhosts)
-
 -- -------- JSON helpers --------
 lookupText :: KM.Key -> KM.KeyMap A.Value -> Maybe Text
 lookupText k o = case KM.lookup k o of
@@ -260,6 +246,12 @@ lookupBool :: KM.Key -> KM.KeyMap A.Value -> Maybe Bool
 lookupBool k o = case KM.lookup k o of
     Just (A.Bool b) -> Just b
     _ -> Nothing
+
+planNodeNames :: KM.KeyMap A.Value -> [Text]
+planNodeNames plan =
+    case lookupObj (K.fromString "nodes") plan of
+        Nothing -> []
+        Just nodesObj -> map (K.toText . fst) (KM.toList nodesObj)
 
 modifyAt :: [KM.Key] -> (A.Value -> A.Value) -> KM.KeyMap A.Value -> KM.KeyMap A.Value
 modifyAt [] _ obj = obj
@@ -1490,19 +1482,53 @@ clearRestorePlan deployUser nodeConnection envInfo = do
         _ ->
             printProviderLine ("hostenv-provider: no pending restore plan for skipped environment " <> envInfo.userName)
 
-resolvePrevNode :: (Text -> Maybe Text) -> Text -> EnvInfo -> IO (Maybe Text)
-resolvePrevNode explicitSourceFor hostenvHostname envInfo =
+resolvePrevNode :: (Text -> Maybe Text) -> Text -> [Text] -> EnvInfo -> IO (Either Text (Maybe Text))
+resolvePrevNode explicitSourceFor hostenvHostname discoveryNodes envInfo =
     case explicitSourceFor envInfo.userName of
         Just sourceNode -> do
             printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " forced via --migration-source: " <> sourceNode)
-            pure (Just sourceNode)
+            pure (Right (Just sourceNode))
         Nothing -> do
-            discovered <- discoverPrevNodeFromDns hostenvHostname envInfo.userName (envInfo.vhosts)
-            case discovered of
-                Just node -> do
-                    printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " discovered via DNS: " <> node)
-                    pure (Just node)
-                Nothing -> pure Nothing
+            matchedNodes <- PrevNode.discoverMatchingNodes dnsPointsTo hostenvHostname envInfo.userName discoveryNodes
+            let resolution = PrevNode.resolvePrevNodeFromMatches envInfo.node matchedNodes
+            let envHost = PrevNode.canonicalHostInDomain envInfo.userName hostenvHostname
+            case resolution of
+                PrevNode.PrevNodeResolved node -> do
+                    printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " discovered via DNS " <> envHost <> ": " <> node)
+                    pure (Right (Just node))
+                PrevNode.PrevNodeSkip ->
+                    if null matchedNodes
+                        then pure (Right Nothing)
+                        else do
+                            when (envInfo.node `elem` matchedNodes) $
+                                printProviderErrLine
+                                    ( "hostenv-provider: warning: previous-node discovery for "
+                                        <> envInfo.userName
+                                        <> " via "
+                                        <> envHost
+                                        <> " matched current node "
+                                        <> envInfo.node
+                                        <> " among: "
+                                        <> T.intercalate ", " matchedNodes
+                                        <> "; skipping migration discovery"
+                                    )
+                            pure (Right Nothing)
+                PrevNode.PrevNodeAmbiguousFatal nodes ->
+                    pure
+                        ( Left
+                            ( "previous-node discovery for "
+                                <> envInfo.userName
+                                <> " via "
+                                <> envHost
+                                <> " is ambiguous: matched nodes "
+                                <> T.intercalate ", " nodes
+                                <> " (current node: "
+                                <> envInfo.node
+                                <> "). Set --migration-source "
+                                <> envInfo.userName
+                                <> "=<node> or set previousNode explicitly."
+                            )
+                        )
 
 writeRestorePlan :: Text -> (Text -> NodeConnection) -> EnvInfo -> Text -> [(Text, Text)] -> IO ()
 writeRestorePlan deployUser nodeConnection envInfo prevNode snapshots = do
@@ -1611,6 +1637,10 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
             let sourceHits = filter (\(envName, _) -> any (\e -> e.userName == envName) envInfosFiltered) migrationSources
             let sourceMisses = map fst migrationSources \\ map fst sourceHits
             let sourceFor envName = lookup envName migrationSources
+            let discoveryNodes =
+                    S.toList $
+                        S.fromList $
+                            filter (not . T.null) (planNodeNames plan <> uniqueNodeNames (concat envInfosSub))
 
             -- Perform data migrations if the environment has moved node.
             case mNode of
@@ -1751,15 +1781,30 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
             forM_ skippedEnvInfos $
                 clearRestorePlan deployUser resolveNodeConnection
 
-            migrations <- fmap catMaybes $
-                forM envInfosFiltered $ \envInfo -> do
+            migrationResolutions <-
+                forM envInfosFiltered $ \envInfo ->
                     if envInfo.userName `elem` skipMigrations || envInfo.migrateBackups == []
-                        then pure Nothing
+                        then pure (Right Nothing)
                         else do
-                            prevNode <- resolvePrevNode sourceFor hostenvHostname envInfo
+                            prevNode <- resolvePrevNode sourceFor hostenvHostname discoveryNodes envInfo
                             pure $ case prevNode of
-                                Just prev | prev /= envInfo.node -> Just (envInfo, prev)
-                                _ -> Nothing
+                                Left err -> Left err
+                                Right (Just prev) | prev /= envInfo.node -> Right (Just (envInfo, prev))
+                                _ -> Right Nothing
+
+            let migrationFatalErrors =
+                    [ err
+                    | Left err <- migrationResolutions
+                    ]
+            when (not (null migrationFatalErrors)) $ do
+                forM_ migrationFatalErrors $
+                    printProviderErrLine . ("hostenv-provider: error: " <>)
+                Sh.exitWith (ExitFailure 1)
+
+            let migrations =
+                    [ migration
+                    | Right (Just migration) <- migrationResolutions
+                    ]
 
             if null migrations
                 then printProviderLine "hostenv-provider: no migrations required"

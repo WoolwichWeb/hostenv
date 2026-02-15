@@ -13,6 +13,7 @@ executable hostenv-provider
     Hostenv.Provider.DeployGuidance
     Hostenv.Provider.DnsGateFilter
     Hostenv.Provider.DeployPreflight
+    Hostenv.Provider.PrevNodeDiscovery
     Hostenv.Provider.SigningTarget
   build-depends:
     base >=4.14 && <5,
