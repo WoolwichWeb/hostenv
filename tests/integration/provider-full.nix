@@ -169,6 +169,7 @@ in
         && (drupalMainCheck.type or null) == "httpHostHeaderCurl"
         && (request.virtualHost or null) == drupalMainHost
         && (request.followRedirects or false)
+        && (request.tlsMode or null) == "insecure"
         && hasConstraintRule "allowNonZeroExitStatus" false
         && hasConstraintRule "minHttpStatus" 200
         && hasConstraintRule "maxHttpStatus" 299

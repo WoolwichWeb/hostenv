@@ -60,14 +60,14 @@
                 path = "/";
                 method = "GET";
                 targetHostSource = "nodeConnectionHost";
-                followRedirects = true;
-                maxRedirects = 5;
-                timeoutSeconds = 15;
-                tlsMode = "strict";
-              };
-              constraints = drupalVerificationConstraints;
-            }
-          ];
+              followRedirects = true;
+              maxRedirects = 5;
+              timeoutSeconds = 15;
+              tlsMode = if canonicalVHostConfig.enableLetsEncrypt then "insecure" else "strict";
+            };
+            constraints = drupalVerificationConstraints;
+          }
+        ];
         };
       canonicalVHost = canonicalVHostFor env;
       canonicalVHostConfig = env.virtualHosts.${canonicalVHost};
