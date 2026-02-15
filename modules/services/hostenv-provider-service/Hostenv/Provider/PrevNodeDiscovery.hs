@@ -27,9 +27,12 @@ canonicalHostInDomain label hostenvHostname =
    in if T.null labelNorm
         then labelNorm
         else
-          if T.isSuffixOf suffix labelNorm
+          if T.null domain
             then labelNorm
-            else labelNorm <> suffix
+            else
+              if T.isSuffixOf suffix labelNorm
+                then labelNorm
+                else labelNorm <> suffix
 
 discoverMatchingNodes :: (Text -> Text -> IO Bool) -> Text -> Text -> [Text] -> IO [Text]
 discoverMatchingNodes pointsTo hostenvHostname envName candidateNodes = do

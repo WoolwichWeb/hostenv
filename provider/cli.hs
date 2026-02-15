@@ -684,6 +684,7 @@ data DnsGateItem = DnsGateItem
     { dgiEnvName :: Text
     , dgiNodeName :: Maybe Text
     , dgiVhostName :: Text
+    , dgiDiscoveryHost :: Text
     , dgiExpectedHost :: Text
     }
 
@@ -711,8 +712,11 @@ collectDnsGateItems hostenvHostname envs =
         case vEnv of
             A.Object envObj ->
                 let envName = K.toText kEnv
+                    hostenvObj = fromMaybe KM.empty (lookupObj (K.fromString "hostenv") envObj)
+                    envUserName = fromMaybe envName (lookupText (K.fromString "userName") hostenvObj)
                     nodeName = lookupText (K.fromString "node") envObj
-                    expectedHostFor vh = maybe vh (<> "." <> hostenvHostname) nodeName
+                    discoveryHost = PrevNode.canonicalHostInDomain envUserName hostenvHostname
+                    expectedHostFor vh = maybe vh (`PrevNode.canonicalHostInDomain` hostenvHostname) nodeName
                     vhosts = fromMaybe KM.empty (lookupObj (K.fromString "virtualHosts") envObj)
                  in map
                         (\(vhKey, _) ->
@@ -721,6 +725,7 @@ collectDnsGateItems hostenvHostname envs =
                                     { dgiEnvName = envName
                                     , dgiNodeName = nodeName
                                     , dgiVhostName = vhName
+                                    , dgiDiscoveryHost = discoveryHost
                                     , dgiExpectedHost = expectedHostFor vhName
                                     }
                         )
@@ -748,7 +753,7 @@ waitForDnsPropagation items = do
   where
     partitionByDns recs = do
         checks <- forM recs $ \item -> do
-            ok <- dnsPointsTo item.dgiVhostName item.dgiExpectedHost
+            ok <- dnsPointsTo item.dgiDiscoveryHost item.dgiExpectedHost
             pure (item, ok)
         pure
             ( [ item
@@ -810,7 +815,7 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
 
             let items = collectDnsGateItems hostenvHostname envs
             checked <- forM items $ \item -> do
-                ok <- dnsPointsTo item.dgiVhostName item.dgiExpectedHost
+                ok <- dnsPointsTo item.dgiDiscoveryHost item.dgiExpectedHost
                 pure (item, ok)
 
             let mismatched =
@@ -850,9 +855,12 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
             forM_ timedOutItems $ \item ->
                 printProviderErrLine
                     ( "hostenv-provider: warning: DNS did not propagate within 10 minutes for "
-                        <> item.dgiVhostName
+                        <> item.dgiDiscoveryHost
                         <> " -> "
                         <> item.dgiExpectedHost
+                        <> " (while gating "
+                        <> item.dgiVhostName
+                        <> ")"
                     )
 
             let shouldDisable mismatch =
@@ -874,7 +882,9 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
                         printProviderErrLine
                             ( "hostenv-provider: warning: disabling ACME/forceSSL for "
                                 <> mismatch.dgmItem.dgiVhostName
-                                <> " because DNS does not point to "
+                                <> " because canonical host "
+                                <> mismatch.dgmItem.dgiDiscoveryHost
+                                <> " does not point to "
                                 <> mismatch.dgmItem.dgiExpectedHost
                                 <> " and remediation is unavailable ("
                                 <> reason
@@ -892,7 +902,9 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
                         printProviderErrLine
                             ( "hostenv-provider: warning: disabling ACME/forceSSL for "
                                 <> mismatch.dgmItem.dgiVhostName
-                                <> " because DNS propagation did not complete in time"
+                                <> " because DNS propagation for canonical host "
+                                <> mismatch.dgmItem.dgiDiscoveryHost
+                                <> " did not complete in time"
                             )
                     UpsertPlanned -> pure ()
 
@@ -929,7 +941,7 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
     foldlM f z [] = pure z
     foldlM f z (x : xs) = f z x >>= \z' -> foldlM f z' xs
     processMismatch mCfToken mCfZone mCfZoneName withDnsUpdate dryRun (outcomes, cfOps) item =
-        case classifyUpsertEligibility withDnsUpdate mCfToken mCfZone mCfZoneName item.dgiVhostName of
+        case classifyUpsertEligibility withDnsUpdate mCfToken mCfZone mCfZoneName item.dgiDiscoveryHost of
             UpsertIneligible reason ->
                 pure
                     ( DnsGateMismatch item (UpsertUnavailable reason) : outcomes
@@ -942,16 +954,16 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
                             then
                                 pure
                                     ( DnsGateMismatch item UpsertPlanned : outcomes
-                                    , ("upsert CNAME " <> item.dgiVhostName <> " -> " <> item.dgiExpectedHost <> " in zone " <> zoneId) : cfOps
+                                    , ("upsert CNAME " <> item.dgiDiscoveryHost <> " -> " <> item.dgiExpectedHost <> " in zone " <> zoneId) : cfOps
                                     )
                             else do
                                 printProviderLine
                                     ( "hostenv-provider: upserting Cloudflare CNAME "
-                                        <> item.dgiVhostName
+                                        <> item.dgiDiscoveryHost
                                         <> " -> "
                                         <> item.dgiExpectedHost
                                     )
-                                upsertResult <- cfUpsertCname token zoneId item.dgiVhostName item.dgiExpectedHost
+                                upsertResult <- cfUpsertCname token zoneId item.dgiDiscoveryHost item.dgiExpectedHost
                                 case upsertResult of
                                     Right () ->
                                         pure
