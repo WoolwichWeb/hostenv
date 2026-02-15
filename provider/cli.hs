@@ -1513,8 +1513,8 @@ resolvePrevNode explicitSourceFor hostenvHostname discoveryNodes envInfo =
                         then pure (Right Nothing)
                         else do
                             when (envInfo.node `elem` matchedNodes) $
-                                printProviderErrLine
-                                    ( "hostenv-provider: warning: previous-node discovery for "
+                                printProviderLine
+                                    ( "hostenv-provider: info: previous-node discovery for "
                                         <> envInfo.userName
                                         <> " via "
                                         <> envHost
