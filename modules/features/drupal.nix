@@ -43,13 +43,10 @@
             [
               { rule = "allowNonZeroExitStatus"; value = false; }
               { rule = "minHttpStatus"; value = 200; }
-              { rule = "maxHttpStatus"; value = if canonicalVHostConfig.enableLetsEncrypt then 399 else 299; }
+              { rule = "maxHttpStatus"; value = 299; }
               { rule = "stdoutRegexMustMatch"; value = drupalGeneratorRegex; }
             ]
-            ++ (lib.optional canonicalVHostConfig.enableLetsEncrypt {
-              rule = "skipStdoutRegexOnRedirect";
-              value = true;
-            });
+            ;
         in
         {
           enable = true;
@@ -63,7 +60,7 @@
                 path = "/";
                 method = "GET";
                 targetHostSource = "nodeConnectionHost";
-                followRedirects = false;
+                followRedirects = true;
                 maxRedirects = 5;
                 timeoutSeconds = 15;
                 tlsMode = "strict";

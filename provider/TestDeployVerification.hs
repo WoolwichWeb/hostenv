@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import Control.Monad (unless)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Aeson.KeyMap qualified as KM
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -42,6 +43,21 @@ mkSpec constraints =
         ]
     }
 
+mkSpecWithRequest :: VerificationRequest -> [VerificationConstraint] -> EnvVerificationSpec
+mkSpecWithRequest request constraints =
+  EnvVerificationSpec
+    { evEnable = True
+    , evEnforce = True
+    , evChecks =
+        [ VerificationCheck
+            { vcName = "drupal-homepage"
+            , vcType = "httpHostHeaderCurl"
+            , vcRequest = request
+            , vcConstraints = constraints
+            }
+        ]
+    }
+
 mkCurlOutput :: Text -> Int -> Text
 mkCurlOutput body status =
   body
@@ -65,6 +81,27 @@ main = do
   let passResult = case firstResult resultsPass of
         VerificationCheckResult {vcrPassed = passed} -> passed
   assert passResult "200 response with generator should pass"
+
+  capturedArgs <- newIORef ([] :: [String])
+  _followResults <-
+    runEnvVerificationWith
+      (\args -> do
+        writeIORef capturedArgs args
+        pure (Exit.ExitSuccess, showText (mkCurlOutput "<meta name=\"Generator\" content=\"Drupal 11\" />" 200), "")
+      )
+      "backend04.hostenv.sh"
+      ( mkSpecWithRequest
+          (mkRequest {vrFollowRedirects = True})
+          [AllowNonZeroExitStatus False, MinHttpStatus 200, MaxHttpStatus 299, StdoutRegexMustMatch "Generator"]
+      )
+  followArgs <- readIORef capturedArgs
+  assert ("--location" `elem` followArgs) "followRedirects should add --location to curl args"
+  assert
+    ("www.example.test:80:backend04.hostenv.sh:80" `elem` followArgs)
+    "curl args should pin HTTP target host to deployment node"
+  assert
+    ("www.example.test:443:backend04.hostenv.sh:443" `elem` followArgs)
+    "curl args should pin HTTPS redirect target host to deployment node"
 
   resultsFail <-
     runEnvVerificationWith

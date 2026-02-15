@@ -168,10 +168,10 @@ in
         && (drupalMainVerification.enforce or false)
         && (drupalMainCheck.type or null) == "httpHostHeaderCurl"
         && (request.virtualHost or null) == drupalMainHost
+        && (request.followRedirects or false)
         && hasConstraintRule "allowNonZeroExitStatus" false
         && hasConstraintRule "minHttpStatus" 200
-        && hasConstraintRule "maxHttpStatus" 399
-        && hasConstraintRule "skipStdoutRegexOnRedirect" true
+        && hasConstraintRule "maxHttpStatus" 299
         && hasDrupalGeneratorConstraint;
     in
     asserts.assertTrue "provider-full-drupal-deploy-verification" verificationOk
