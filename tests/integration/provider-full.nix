@@ -168,6 +168,7 @@ in
         && (drupalMainVerification.enforce or false)
         && (drupalMainCheck.type or null) == "httpHostHeaderCurl"
         && (request.virtualHost or null) == drupalMainHost
+        && (request.path or null) == "/user/login"
         && (request.followRedirects or false)
         && (request.tlsMode or null) == "insecure"
         && hasConstraintRule "allowNonZeroExitStatus" false

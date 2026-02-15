@@ -57,10 +57,10 @@
               type = "httpHostHeaderCurl";
               request = {
                 virtualHost = canonicalVHost;
-                path = "/";
+                path = "/user/login";
                 method = "GET";
                 targetHostSource = "nodeConnectionHost";
-              followRedirects = true;
+                followRedirects = true;
               maxRedirects = 5;
               timeoutSeconds = 15;
               tlsMode = if canonicalVHostConfig.enableLetsEncrypt then "insecure" else "strict";
