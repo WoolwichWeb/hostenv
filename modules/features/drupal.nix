@@ -18,6 +18,67 @@
       # the same version of PHP is used everywhere.
       drupalPhpPool = config.services.phpfpm.pools."${cfg.codebase.name}";
       migrateBackupName = "drupal-migrate";
+      canonicalVHostFor = envCfg:
+        let
+          envHostName = envCfg.hostenv.hostname;
+          hasDefaultHost = builtins.hasAttr envHostName envCfg.virtualHosts;
+          defaultVHost =
+            if hasDefaultHost then envCfg.virtualHosts.${envHostName} else
+            builtins.throw ''
+              ${envHostName} was not in the environment's hosts.
+              Available virtualHosts: ${builtins.toJSON (builtins.attrNames envCfg.virtualHosts)}
+            '';
+          redirectedToCanonical =
+            defaultVHost ? globalRedirect
+            && defaultVHost.globalRedirect != null
+            && builtins.hasAttr defaultVHost.globalRedirect envCfg.virtualHosts;
+        in
+        if redirectedToCanonical then defaultVHost.globalRedirect else envHostName;
+      drupalGeneratorRegex = ''<meta[[:space:]]+name="Generator"[[:space:]]+content="Drupal [0-9]'';
+      mkDrupalDeploymentVerification = envCfg:
+        let
+          canonicalVHost = canonicalVHostFor envCfg;
+          canonicalVHostConfig = envCfg.virtualHosts.${canonicalVHost};
+          drupalVerificationConstraints =
+            [
+              { rule = "allowNonZeroExitStatus"; value = false; }
+              { rule = "minHttpStatus"; value = 200; }
+              { rule = "maxHttpStatus"; value = if canonicalVHostConfig.enableLetsEncrypt then 399 else 299; }
+              { rule = "stdoutRegexMustMatch"; value = drupalGeneratorRegex; }
+            ]
+            ++ (lib.optional canonicalVHostConfig.enableLetsEncrypt {
+              rule = "skipStdoutRegexOnRedirect";
+              value = true;
+            });
+        in
+        {
+          enable = true;
+          enforce = true;
+          checks = [
+            {
+              name = "drupal-homepage";
+              type = "httpHostHeaderCurl";
+              request = {
+                virtualHost = canonicalVHost;
+                path = "/";
+                method = "GET";
+                targetHostSource = "nodeConnectionHost";
+                followRedirects = false;
+                maxRedirects = 5;
+                timeoutSeconds = 15;
+                tlsMode = "strict";
+              };
+              constraints = drupalVerificationConstraints;
+            }
+          ];
+        };
+      canonicalVHost = canonicalVHostFor env;
+      canonicalVHostConfig = env.virtualHosts.${canonicalVHost};
+      canonicalProtocol =
+        if canonicalVHostConfig.enableLetsEncrypt
+        then "https://"
+        else "http://";
+      canonicalUri = canonicalProtocol + canonicalVHost;
 
       utils = import (pkgs.path + "/nixos/lib/utils.nix") { inherit pkgs lib config; };
       # Type for a valid systemd unit option. Needed for correctly passing "timerConfig" to "systemd.timers"
@@ -163,31 +224,7 @@
 
       drush =
         let
-          hasHost = builtins.hasAttr config.hostenv.hostname env.virtualHosts;
-
-          vHost =
-            if hasHost then env.virtualHosts.${config.hostenv.hostname} else
-            builtins.throw ''
-              ${config.hostenv.hostname} was not in the environment's hosts.
-              Available virtualHosts: ${builtins.toJSON (builtins.attrNames env.virtualHosts)}
-            '';
-
-          redirected =
-            vHost ? globalRedirect
-            && vHost.globalRedirect != null
-            && builtins.hasAttr vHost.globalRedirect env.virtualHosts;
-
-          canonicalVHost = if redirected then vHost.globalRedirect else config.hostenv.hostname;
-
-          protocol =
-            if env.virtualHosts.${canonicalVHost}.enableLetsEncrypt
-            then "https://"
-            else "http://";
-
-          uri = protocol + canonicalVHost;
-
           rootDir = "${toString project}/share/php/${cfg.codebase.name}";
-
           webRoot = "${rootDir}/web";
         in
         pkgs.writeShellScriptBin "drush" ''
@@ -203,7 +240,7 @@
     
           args=("--root=${webRoot}")
           if $add_uri; then
-            args+=("--uri=${uri}")
+            args+=("--uri=${canonicalUri}")
           fi
     
           exec -a drush ${rootDir}/vendor/bin/drush "''${args[@]}" "$@"
@@ -479,6 +516,9 @@
             assertion = lib.elem migrateBackupName (config.services.restic.backups.${migrateBackupName}.tags or [ ]);
             message = "services.restic.backups.drupal-migrate.tags must include \"drupal-migrate\" so migrations can locate snapshots";
           });
+
+        environments.${config.hostenv.environmentName}.deploymentVerification =
+          lib.mkDefault (mkDrupalDeploymentVerification env);
 
         services.drupal.settings.databases = lib.mkMerge [
 

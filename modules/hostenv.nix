@@ -456,6 +456,134 @@ let
             '';
           };
 
+        deploymentVerification = lib.mkOption {
+          type = types.submodule ({ ... }: {
+            options = {
+              enable = lib.mkOption {
+                type = types.bool;
+                default = true;
+                description = ''
+                  Whether deployment verification checks are enabled for this environment.
+                '';
+              };
+
+              enforce = lib.mkOption {
+                type = types.bool;
+                default = true;
+                description = ''
+                  Whether failed deployment verification checks fail the deployment.
+                '';
+              };
+
+              checks = lib.mkOption {
+                type = types.listOf (types.submodule ({ ... }: {
+                  options = {
+                    name = lib.mkOption {
+                      type = types.str;
+                      default = "verification-check";
+                      description = "Human-readable name for this check.";
+                    };
+
+                    type = lib.mkOption {
+                      type = types.enum [ "httpHostHeaderCurl" ];
+                      default = "httpHostHeaderCurl";
+                      description = "Verification check implementation to run.";
+                    };
+
+                    request = lib.mkOption {
+                      type = types.submodule ({ ... }: {
+                        options = {
+                          virtualHost = lib.mkOption {
+                            type = types.str;
+                            description = "Virtual host sent in the HTTP Host header.";
+                          };
+
+                          path = lib.mkOption {
+                            type = types.str;
+                            default = "/";
+                            description = "Request path used during verification.";
+                          };
+
+                          method = lib.mkOption {
+                            type = types.str;
+                            default = "GET";
+                            description = "HTTP method used during verification.";
+                          };
+
+                          targetHostSource = lib.mkOption {
+                            type = types.enum [ "nodeConnectionHost" ];
+                            default = "nodeConnectionHost";
+                            description = "Source of the node host used for direct connection.";
+                          };
+
+                          followRedirects = lib.mkOption {
+                            type = types.bool;
+                            default = false;
+                            description = "Whether redirects are followed by curl.";
+                          };
+
+                          maxRedirects = lib.mkOption {
+                            type = types.int;
+                            default = 5;
+                            description = "Maximum redirects to follow when followRedirects is enabled.";
+                          };
+
+                          timeoutSeconds = lib.mkOption {
+                            type = types.int;
+                            default = 15;
+                            description = "Maximum request duration in seconds.";
+                          };
+
+                          tlsMode = lib.mkOption {
+                            type = types.enum [ "strict" "insecure" ];
+                            default = "strict";
+                            description = "TLS verification mode for HTTPS requests.";
+                          };
+                        };
+                      });
+                      default = { };
+                      description = "Request definition for this check.";
+                    };
+
+                    constraints = lib.mkOption {
+                      type = types.listOf (types.submodule ({ ... }: {
+                        options = {
+                          rule = lib.mkOption {
+                            type = types.enum [
+                              "allowNonZeroExitStatus"
+                              "skipStdoutRegexOnRedirect"
+                              "stdoutRegexMustMatch"
+                              "stderrRegexMustNotMatch"
+                              "minHttpStatus"
+                              "maxHttpStatus"
+                            ];
+                            description = "Constraint rule to evaluate for the check.";
+                          };
+
+                          value = lib.mkOption {
+                            type = types.oneOf [ types.bool types.int types.str ];
+                            description = "Constraint value for the selected rule.";
+                          };
+                        };
+                      }));
+                      default = [ ];
+                      description = "Constraint list evaluated against the check output.";
+                    };
+                  };
+                }));
+                default = [ ];
+                description = ''
+                  Checks run after successful environment deployments.
+                '';
+              };
+            };
+          });
+          default = { };
+          description = ''
+            Per-environment deployment verification configuration.
+          '';
+        };
+
         hostenv = lib.mkOption {
           type = types.submoduleWith {
             modules = [

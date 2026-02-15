@@ -30,6 +30,7 @@ import Hostenv.Provider.DeployGuidance (FlakeKeyStatus (..), localTrustSetupLine
 import Hostenv.Provider.DnsBackoff (backoffDelays)
 import Hostenv.Provider.DnsGateFilter (filterEnvironmentsByNode)
 import Hostenv.Provider.DeployPreflight qualified as Preflight
+import Hostenv.Provider.DeployVerification qualified as Verify
 import Hostenv.Provider.PrevNodeDiscovery qualified as PrevNode
 import Hostenv.Provider.SigningTarget (deployProfilePathInstallable)
 import Options.Applicative qualified as OA
@@ -51,6 +52,7 @@ data Command
         { node :: Maybe Text
         , signingKeyFile :: Maybe Text
         , remoteBuild :: Bool
+        , skipVerification :: Bool
         , skipMigrations :: [Text]
         , migrationSources :: [Text]
         , ignoreMigrationErrors :: Bool
@@ -114,6 +116,13 @@ remoteBuildOpt =
             <> OA.help "Force deploy-rs remote builds for all targets in this run"
         )
 
+skipVerificationOpt :: OA.Parser Bool
+skipVerificationOpt =
+    OA.switch
+        ( OA.long "skip-verification"
+            <> OA.help "Skip post-deploy verification checks"
+        )
+
 ignoreMigrationErrorsOpt :: OA.Parser Bool
 ignoreMigrationErrorsOpt =
     OA.switch
@@ -136,7 +145,7 @@ cliParser =
         <$> OA.hsubparser
             ( OA.command "plan" (OA.info (CmdPlan <$> dryRunOpt) (OA.progDesc "Generate plan.json, state.json, and flake.nix"))
                 <> OA.command "dns-gate" (OA.info (CmdDnsGate <$> nodeOpt <*> tokenOpt <*> zoneOpt <*> withDnsUpdateOpt <*> dryRunOpt) (OA.progDesc "Disable ACME/forceSSL for vhosts not pointing at node; add --with-dns-update to upsert Cloudflare records"))
-                <> OA.command "deploy" (OA.info (CmdDeploy <$> nodeOpt <*> signingKeyFileOpt <*> remoteBuildOpt <*> skipMigrationsOpt <*> migrationSourceOpt <*> ignoreMigrationErrorsOpt <*> dryRunOpt) (OA.progDesc "Deploy via deploy-rs"))
+                <> OA.command "deploy" (OA.info (CmdDeploy <$> nodeOpt <*> signingKeyFileOpt <*> remoteBuildOpt <*> skipVerificationOpt <*> skipMigrationsOpt <*> migrationSourceOpt <*> ignoreMigrationErrorsOpt <*> dryRunOpt) (OA.progDesc "Deploy via deploy-rs"))
             )
 
 cliOpts :: OA.ParserInfo CLI
@@ -1602,8 +1611,8 @@ writeRestorePlan deployUser nodeConnection envInfo prevNode snapshots = do
         ExitSuccess -> pure ()
         ExitFailure code -> error ("failed to write restore plan for " <> T.unpack envInfo.userName <> " (exit " <> show code <> ")")
 
-runDeploy :: Maybe Text -> Maybe Text -> Bool -> [Text] -> [Text] -> Bool -> Bool -> IO ()
-runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceSpecs ignoreMigrationErrors dryRun = do
+runDeploy :: Maybe Text -> Maybe Text -> Bool -> Bool -> [Text] -> [Text] -> Bool -> Bool -> IO ()
+runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations migrationSourceSpecs ignoreMigrationErrors dryRun = do
     let planPath = "generated/plan.json"
     planExists <- Sh.testfile (fromString (T.unpack planPath))
     when (not planExists) $ do
@@ -1628,18 +1637,32 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
             unless (null duplicateOverrides) $
                 error ("duplicate --migration-source overrides for: " <> T.unpack (T.intercalate ", " duplicateOverrides))
 
-            -- Gets the @EnvInfo@s from JSON (taken from plan.json).
-            envInfosSub <- forM (KM.elems envs) $ \env -> case iparseEither parseJSON env of
-                -- Using lists here (so the type becomes @[[EnvInfo]]@) as
+            -- Gets the @EnvInfo@s and deployment verification specs from JSON.
+            envRowsSub <- forM (KM.elems envs) $ \env -> case iparseEither parseJSON env of
+                -- Using lists here (so the type becomes @[[(EnvInfo, Verify.EnvVerificationSpec)]]@) as
                 -- they're easy to @concat@ later.
                 Left err -> printProviderLine ("hostenv-provider: error reading from plan JSON at '" <> T.pack (show $ fst err) <> " - '" <> T.pack (snd err) <> "'") >> pure []
-                Right env_ -> pure [env_]
+                Right envInfo -> do
+                    verificationSpec <- case env of
+                        A.Object envObj ->
+                            case Verify.parseEnvVerificationSpec envObj of
+                                Left parseErr -> do
+                                    printProviderLine ("hostenv-provider: warning: invalid deploymentVerification for " <> envInfo.userName <> "; using defaults (" <> parseErr <> ")")
+                                    pure Verify.defaultEnvVerificationSpec
+                                Right spec -> pure spec
+                        _ -> pure Verify.defaultEnvVerificationSpec
+                    pure [(envInfo, verificationSpec)]
+
+            let envRows = concat envRowsSub
 
             -- Filter environments to node requested by the user.
-            let envInfosFiltered =
+            let envRowsFiltered =
                     case mNode of
-                        Nothing -> concat envInfosSub
-                        Just n -> filter (\e -> e.node == n) (concat envInfosSub)
+                        Nothing -> envRows
+                        Just n -> filter (\(e, _) -> e.node == n) envRows
+            let envInfosFiltered = map fst envRowsFiltered
+            let envVerificationSpecs = map (\(e, spec) -> (e.userName, spec)) envRowsFiltered
+            let verificationSpecFor envName = fromMaybe Verify.defaultEnvVerificationSpec (lookup envName envVerificationSpecs)
 
             let skipHits =
                     filter
@@ -1652,7 +1675,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
             let discoveryNodes =
                     S.toList $
                         S.fromList $
-                            filter (not . T.null) (planNodeNames plan <> uniqueNodeNames (concat envInfosSub))
+                            filter (not . T.null) (planNodeNames plan <> uniqueNodeNames (map fst envRows))
 
             -- Perform data migrations if the environment has moved node.
             case mNode of
@@ -1918,8 +1941,81 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                                 deployGuard res args
                                 pure (envName, res)
 
-            let failures = any (\(_, code) -> code /= ExitSuccess) envDeployRes
-            when failures $ printProviderLine "hostenv-provider: deployment completed with errors"
+            verificationFatalFailures <-
+                if skipVerification
+                    then do
+                        printProviderLine "hostenv-provider: --skip-verification enabled; skipping post-deploy verification checks"
+                        pure []
+                    else do
+                        let envInfoByName = toNamed envInfosFiltered
+                        let statusSuffix mStatus =
+                                case mStatus of
+                                    Nothing -> ""
+                                    Just status -> " (HTTP " <> T.pack (show status) <> ")"
+                        fmap catMaybes $
+                            forM envDeployRes $ \(envName, deployCode) ->
+                                case deployCode of
+                                    ExitFailure _ -> pure Nothing
+                                    ExitSuccess ->
+                                        case lookup envName envInfoByName of
+                                            Nothing -> do
+                                                printProviderLine ("hostenv-provider: warning: environment metadata missing for " <> envName <> "; skipping verification")
+                                                pure Nothing
+                                            Just envInfo -> do
+                                                let verificationSpec = verificationSpecFor envName
+                                                if not verificationSpec.evEnable
+                                                    then pure Nothing
+                                                    else
+                                                        if null verificationSpec.evChecks
+                                                            then pure Nothing
+                                                            else do
+                                                                let targetHost = (resolveNodeConnection envInfo.node).connHostname
+                                                                printProviderLine ("hostenv-provider: running deployment verification for " <> envName <> " via " <> targetHost)
+                                                                verificationRes <- try (Verify.runEnvVerification targetHost verificationSpec) :: IO (Either SomeException [Verify.VerificationCheckResult])
+                                                                case verificationRes of
+                                                                    Left err -> do
+                                                                        let message = "verification failed for " <> envName <> ": " <> T.pack (displayException err)
+                                                                        if verificationSpec.evEnforce
+                                                                            then printProviderErrLine ("hostenv-provider: error: " <> message) >> pure (Just envName)
+                                                                            else printProviderLine ("hostenv-provider: warning: " <> message) >> pure Nothing
+                                                                    Right checkResults -> do
+                                                                        let failedChecks = filter (not . (.vcrPassed)) checkResults
+                                                                        forM_ checkResults $ \checkResult ->
+                                                                            if checkResult.vcrPassed
+                                                                                then
+                                                                                    printProviderLine
+                                                                                        ( "hostenv-provider: verification check "
+                                                                                            <> checkResult.vcrName
+                                                                                            <> " passed for "
+                                                                                            <> envName
+                                                                                            <> statusSuffix checkResult.vcrHttpStatus
+                                                                                        )
+                                                                                else
+                                                                                    printProviderLine
+                                                                                        ( "hostenv-provider: warning: verification check "
+                                                                                            <> checkResult.vcrName
+                                                                                            <> " failed for "
+                                                                                            <> envName
+                                                                                            <> statusSuffix checkResult.vcrHttpStatus
+                                                                                            <> " ("
+                                                                                            <> T.intercalate "; " checkResult.vcrFailures
+                                                                                            <> ")"
+                                                                                        )
+                                                                        if null failedChecks
+                                                                            then pure Nothing
+                                                                            else
+                                                                                if verificationSpec.evEnforce
+                                                                                    then pure (Just envName)
+                                                                                    else do
+                                                                                        printProviderLine ("hostenv-provider: warning: verification failures ignored for " <> envName <> " (deploymentVerification.enforce=false)")
+                                                                                        pure Nothing
+
+            let deploymentFailures = any (\(_, code) -> code /= ExitSuccess) envDeployRes
+            let verificationFailures = not (null verificationFatalFailures)
+            when deploymentFailures $ printProviderLine "hostenv-provider: deployment completed with errors"
+            when verificationFailures $
+                printProviderErrLine ("hostenv-provider: error: deployment verification failed for: " <> T.intercalate ", " verificationFatalFailures)
+            let failures = deploymentFailures || verificationFailures
             Sh.exitWith $ if failures then ExitFailure 1 else ExitSuccess
 
 quoteDeployTarget :: Text -> Text
@@ -1941,5 +2037,5 @@ main = do
     case cmd of
         CmdPlan dryRun -> runPlan dryRun
         CmdDnsGate mNode mTok mZone withDnsUpdate dryRun -> runDnsGate mNode mTok mZone withDnsUpdate dryRun
-        CmdDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSources ignoreMigrationErrors dryRun ->
-            runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSources ignoreMigrationErrors dryRun
+        CmdDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations migrationSources ignoreMigrationErrors dryRun ->
+            runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations migrationSources ignoreMigrationErrors dryRun

@@ -5,6 +5,8 @@ let
   ghc = pkgs.haskellPackages.ghcWithPackages (p: [
     p.aeson
     p.containers
+    p.process
+    p.scientific
     p.text
   ]);
 in
@@ -35,6 +37,11 @@ in
   provider-cli-prev-node-discovery = pkgs.runCommand "provider-cli-prev-node-discovery" { } ''
     set -euo pipefail
     ${ghc}/bin/runghc -i${src} ${src}/TestPrevNodeDiscovery.hs
+    echo ok > "$out"
+  '';
+  provider-cli-deploy-verification = pkgs.runCommand "provider-cli-deploy-verification" { } ''
+    set -euo pipefail
+    ${ghc}/bin/runghc -i${src} ${src}/TestDeployVerification.hs
     echo ok > "$out"
   '';
 }

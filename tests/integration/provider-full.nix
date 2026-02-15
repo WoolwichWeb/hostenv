@@ -97,6 +97,23 @@ let
   drupalEnvUsers = builtins.attrValues (lib.mapAttrs (_: v: v.hostenv.userName) drupal.eval.config.environments);
   drupal7EnvUsers = builtins.attrValues (lib.mapAttrs (_: v: v.hostenv.userName) drupal7.eval.config.environments);
   expectedUsers = drupalEnvUsers ++ drupal7EnvUsers;
+  drupalMainUser = drupal.eval.config.environments.main.hostenv.userName;
+  drupalMainVerification = planData.environments.${drupalMainUser}.deploymentVerification or { };
+  drupalMainHost = planData.environments.${drupalMainUser}.hostenv.hostname;
+  drupalMainChecks = drupalMainVerification.checks or [ ];
+  drupalMainCheck = if drupalMainChecks == [ ] then { } else builtins.head drupalMainChecks;
+  drupalMainConstraints = drupalMainCheck.constraints or [ ];
+  hasConstraintRule = rule: value:
+    lib.any (constraint: (constraint.rule or null) == rule && (constraint.value or null) == value) drupalMainConstraints;
+  hasDrupalGeneratorConstraint = lib.any
+    (constraint:
+      let value = constraint.value or null;
+      in
+      (constraint.rule or null) == "stdoutRegexMustMatch"
+      && builtins.isString value
+      && lib.strings.hasInfix "Generator" value
+    )
+    drupalMainConstraints;
 
   envsPresent = lib.all (u: planData.environments ? ${builtins.toString u}) expectedUsers;
   nodeUsersPresent = lib.all (u: planData.nodes."node-a".users.users ? ${builtins.toString u}) expectedUsers;
@@ -142,4 +159,21 @@ in
   provider_full_flake_inputs =
     asserts.assertTrue "provider-full-flake-inputs" flakeInputsPresent
       "generated flake should expose hostenv and per-environment inputs";
+
+  provider_full_drupal_deploy_verification =
+    let
+      request = drupalMainCheck.request or { };
+      verificationOk =
+        (drupalMainVerification.enable or false)
+        && (drupalMainVerification.enforce or false)
+        && (drupalMainCheck.type or null) == "httpHostHeaderCurl"
+        && (request.virtualHost or null) == drupalMainHost
+        && hasConstraintRule "allowNonZeroExitStatus" false
+        && hasConstraintRule "minHttpStatus" 200
+        && hasConstraintRule "maxHttpStatus" 399
+        && hasConstraintRule "skipStdoutRegexOnRedirect" true
+        && hasDrupalGeneratorConstraint;
+    in
+    asserts.assertTrue "provider-full-drupal-deploy-verification" verificationOk
+      "Drupal environments should emit default deployment verification with redirect-tolerant constraints";
 }

@@ -354,13 +354,29 @@ let
                   (
                     envName: envCfg:
                       let
-                        hostenv = envCfg.hostenv;
+                        evaluatedHostenv =
+                          hostenvMakeHostenv [
+                            (inputs.${name} + /hostenv.nix)
+                            ({ config, ... }: {
+                              hostenv.organisation = lib.mkForce orgAndProject.organisation;
+                              hostenv.project = lib.mkForce orgAndProject.project;
+                              hostenv.environmentName = lib.mkForce envName;
+                              hostenv.root = lib.mkForce envRoot;
+                              hostenv.hostenvHostname = lib.mkForce cfgHostenvHostname;
+                            })
+                          ]
+                            null;
+                        effectiveEnvCfg =
+                          if builtins.hasAttr envName evaluatedHostenv.config.environments
+                          then evaluatedHostenv.config.environments.${envName}
+                          else envCfg;
+                        hostenv = effectiveEnvCfg.hostenv;
 
-                        node = nodeFor.${envCfg.type} or nodeFor.default;
+                        node = nodeFor.${effectiveEnvCfg.type} or nodeFor.default;
 
                         authorizedKeys =
                           let
-                            allUsers = builtins.attrValues envCfg.users;
+                            allUsers = builtins.attrValues effectiveEnvCfg.users;
                           in
                           builtins.concatLists (map (u: u.publicKeys or [ ]) allUsers);
 
@@ -373,7 +389,7 @@ let
                           );
                         # All virtualHosts already reserved by other environments.
                         unreservableVHosts = stateVHosts;
-                        conflictsWithState = lib.intersectLists (builtins.attrNames envCfg.virtualHosts) unreservableVHosts;
+                        conflictsWithState = lib.intersectLists (builtins.attrNames effectiveEnvCfg.virtualHosts) unreservableVHosts;
                       in
                       if conflictsWithState != [ ] then
                         builtins.throw ''
@@ -387,9 +403,9 @@ let
                                 (reservedName: vhostName == reservedName)
                                 unreservableVHosts
                             )
-                            envCfg.virtualHosts;
+                            effectiveEnvCfg.virtualHosts;
                           conflicts = lib.subtractLists
-                            (builtins.attrNames envCfg.virtualHosts)
+                            (builtins.attrNames effectiveEnvCfg.virtualHosts)
                             (builtins.attrNames filteredEnvVHosts);
 
                           virtualHosts =
@@ -402,7 +418,7 @@ let
                                 (
                                   n: vhost:
                                     let
-                                      extraConfig = mkSecurityHeaders { vhost = vhost; envType = envCfg.type; };
+                                      extraConfig = mkSecurityHeaders { vhost = vhost; envType = effectiveEnvCfg.type; };
                                     in
                                     (builtins.removeAttrs vhost [ "enableLetsEncrypt" "allowIndexing" "security" "hsts" ]) // {
                                       enableACME = vhost.enableLetsEncrypt;
@@ -415,7 +431,7 @@ let
                                               {
                                                 "/" = {
                                                   recommendedProxySettings = true;
-                                                  proxyPass = "http://${envCfg.hostenv.userName}_upstream";
+                                                  proxyPass = "http://${effectiveEnvCfg.hostenv.userName}_upstream";
                                                 };
                                               }
                                             else
@@ -427,11 +443,11 @@ let
                                 filteredEnvVHosts;
                         in
                         let
-                          envWithMigrations = lib.recursiveUpdate envCfg migrateEnvExtras;
+                          envWithMigrations = lib.recursiveUpdate effectiveEnvCfg migrateEnvExtras;
                           projectEnvCfg =
                             if builtins.hasAttr envName projectEnvironments
                             then projectEnvironments.${envName}
-                            else envCfg;
+                            else effectiveEnvCfg;
                           hostenv' = hostenv // {
                             hostenvHostname = cfgHostenvHostname;
                             backupsRepoHost =
