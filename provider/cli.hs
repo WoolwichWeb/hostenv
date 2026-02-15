@@ -17,6 +17,7 @@ import Data.ByteString.Lazy.Char8 qualified as BLC
 import Data.Char (isAlphaNum, isHexDigit)
 import Data.Foldable (toList)
 import Data.List (intersect, (\\))
+import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe, mapMaybe)
 import Data.Scientific (floatingOrInteger)
 import Data.Set qualified as S
@@ -711,7 +712,7 @@ data DnsGateMismatch = DnsGateMismatch
     }
 
 dnsGateKey :: DnsGateItem -> DnsGateKey
-dnsGateKey item = (item.dgiEnvName, item.dgiVhostName)
+dnsGateKey item = (item.dgiDiscoveryHost, item.dgiExpectedHost)
 
 collectDnsGateItems :: Text -> KM.KeyMap A.Value -> [DnsGateItem]
 collectDnsGateItems hostenvHostname envs =
@@ -724,7 +725,11 @@ collectDnsGateItems hostenvHostname envs =
                     hostenvObj = fromMaybe KM.empty (lookupObj (K.fromString "hostenv") envObj)
                     envUserName = fromMaybe envName (lookupText (K.fromString "userName") hostenvObj)
                     nodeName = lookupText (K.fromString "node") envObj
-                    discoveryHost = PrevNode.canonicalHostInDomain envUserName hostenvHostname
+                    canonicalDiscoveryHost = PrevNode.canonicalHostInDomain envUserName hostenvHostname
+                    dnsHostFor vh =
+                        if isSubdomainOf vh hostenvHostname
+                            then vh
+                            else canonicalDiscoveryHost
                     expectedHostFor vh = maybe vh (`PrevNode.canonicalHostInDomain` hostenvHostname) nodeName
                     vhosts = fromMaybe KM.empty (lookupObj (K.fromString "virtualHosts") envObj)
                  in map
@@ -734,12 +739,22 @@ collectDnsGateItems hostenvHostname envs =
                                     { dgiEnvName = envName
                                     , dgiNodeName = nodeName
                                     , dgiVhostName = vhName
-                                    , dgiDiscoveryHost = discoveryHost
+                                    , dgiDiscoveryHost = dnsHostFor vhName
                                     , dgiExpectedHost = expectedHostFor vhName
                                     }
                         )
                         (KM.toList vhosts)
             _ -> []
+
+uniqueDnsGateItems :: [DnsGateItem] -> [DnsGateItem]
+uniqueDnsGateItems =
+    reverse . fst . foldl step ([], S.empty)
+  where
+    step (acc, seen) item =
+        let key = dnsGateKey item
+         in if S.member key seen
+                then (acc, seen)
+                else (item : acc, S.insert key seen)
 
 classifyUpsertEligibility :: Bool -> Maybe Text -> Maybe Text -> Maybe Text -> Text -> DnsUpsertEligibility
 classifyUpsertEligibility withDnsUpdate mToken mZoneId mZoneName vhName
@@ -832,17 +847,18 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
                     | (item, False) <- checked
                     ]
 
-            (mismatchOutcomesRev, cfDryRunCallsRev) <- foldlM (processMismatch mCfToken mCfZone mCfZoneName withDnsUpdate dryRun) ([], []) mismatched
+            (mismatchOutcomesRev, cfDryRunCallsRev, _seenUpserts) <- foldlM (processMismatch mCfToken mCfZone mCfZoneName withDnsUpdate dryRun) ([], [], M.empty) mismatched
             let mismatchOutcomes = reverse mismatchOutcomesRev
             let cfDryRunCalls = reverse cfDryRunCallsRev
 
             let upsertedItems =
-                    [ mismatch.dgmItem
-                    | mismatch <- mismatchOutcomes
-                    , case mismatch.dgmOutcome of
-                        UpsertSucceeded -> True
-                        _ -> False
-                    ]
+                    uniqueDnsGateItems
+                        [ mismatch.dgmItem
+                        | mismatch <- mismatchOutcomes
+                        , case mismatch.dgmOutcome of
+                            UpsertSucceeded -> True
+                            _ -> False
+                        ]
 
             when (not dryRun && not (null upsertedItems)) $
                 printProviderLine
@@ -891,7 +907,7 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
                         printProviderErrLine
                             ( "hostenv-provider: warning: disabling ACME/forceSSL for "
                                 <> mismatch.dgmItem.dgiVhostName
-                                <> " because canonical host "
+                                <> " because DNS host "
                                 <> mismatch.dgmItem.dgiDiscoveryHost
                                 <> " does not point to "
                                 <> mismatch.dgmItem.dgiExpectedHost
@@ -911,7 +927,7 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
                         printProviderErrLine
                             ( "hostenv-provider: warning: disabling ACME/forceSSL for "
                                 <> mismatch.dgmItem.dgiVhostName
-                                <> " because DNS propagation for canonical host "
+                                <> " because DNS propagation for host "
                                 <> mismatch.dgmItem.dgiDiscoveryHost
                                 <> " did not complete in time"
                             )
@@ -949,46 +965,65 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
     readFileTrim p = T.unpack . T.strip . T.pack <$> readFile p
     foldlM f z [] = pure z
     foldlM f z (x : xs) = f z x >>= \z' -> foldlM f z' xs
-    processMismatch mCfToken mCfZone mCfZoneName withDnsUpdate dryRun (outcomes, cfOps) item =
-        case classifyUpsertEligibility withDnsUpdate mCfToken mCfZone mCfZoneName item.dgiDiscoveryHost of
-            UpsertIneligible reason ->
-                pure
-                    ( DnsGateMismatch item (UpsertUnavailable reason) : outcomes
-                    , cfOps
-                    )
-            UpsertEligible ->
-                case (mCfToken, mCfZone) of
-                    (Just token, Just zoneId) ->
-                        if dryRun
-                            then
-                                pure
-                                    ( DnsGateMismatch item UpsertPlanned : outcomes
-                                    , ("upsert CNAME " <> item.dgiDiscoveryHost <> " -> " <> item.dgiExpectedHost <> " in zone " <> zoneId) : cfOps
+    processMismatch mCfToken mCfZone mCfZoneName withDnsUpdate dryRun (outcomes, cfOps, seenUpserts) item =
+        let key = dnsGateKey item
+         in case M.lookup key seenUpserts of
+                Just cachedOutcome ->
+                    pure
+                        ( DnsGateMismatch item cachedOutcome : outcomes
+                        , cfOps
+                        , seenUpserts
+                        )
+                Nothing ->
+                    case classifyUpsertEligibility withDnsUpdate mCfToken mCfZone mCfZoneName item.dgiDiscoveryHost of
+                        UpsertIneligible reason ->
+                            let outcome = UpsertUnavailable reason
+                             in pure
+                                    ( DnsGateMismatch item outcome : outcomes
+                                    , cfOps
+                                    , M.insert key outcome seenUpserts
                                     )
-                            else do
-                                printProviderLine
-                                    ( "hostenv-provider: upserting Cloudflare CNAME "
-                                        <> item.dgiDiscoveryHost
-                                        <> " -> "
-                                        <> item.dgiExpectedHost
-                                    )
-                                upsertResult <- cfUpsertCname token zoneId item.dgiDiscoveryHost item.dgiExpectedHost
-                                case upsertResult of
-                                    Right () ->
-                                        pure
-                                            ( DnsGateMismatch item UpsertSucceeded : outcomes
+                        UpsertEligible ->
+                            case (mCfToken, mCfZone) of
+                                (Just token, Just zoneId) ->
+                                    if dryRun
+                                        then
+                                            let outcome = UpsertPlanned
+                                             in pure
+                                                    ( DnsGateMismatch item outcome : outcomes
+                                                    , ("upsert CNAME " <> item.dgiDiscoveryHost <> " -> " <> item.dgiExpectedHost <> " in zone " <> zoneId) : cfOps
+                                                    , M.insert key outcome seenUpserts
+                                                    )
+                                        else do
+                                            printProviderLine
+                                                ( "hostenv-provider: upserting Cloudflare CNAME "
+                                                    <> item.dgiDiscoveryHost
+                                                    <> " -> "
+                                                    <> item.dgiExpectedHost
+                                                )
+                                            upsertResult <- cfUpsertCname token zoneId item.dgiDiscoveryHost item.dgiExpectedHost
+                                            case upsertResult of
+                                                Right () ->
+                                                    let outcome = UpsertSucceeded
+                                                     in pure
+                                                            ( DnsGateMismatch item outcome : outcomes
+                                                            , cfOps
+                                                            , M.insert key outcome seenUpserts
+                                                            )
+                                                Left err ->
+                                                    let outcome = UpsertFailed err
+                                                     in pure
+                                                            ( DnsGateMismatch item outcome : outcomes
+                                                            , cfOps
+                                                            , M.insert key outcome seenUpserts
+                                                            )
+                                _ ->
+                                    let outcome = UpsertUnavailable "Cloudflare credentials are missing"
+                                     in pure
+                                            ( DnsGateMismatch item outcome : outcomes
                                             , cfOps
+                                            , M.insert key outcome seenUpserts
                                             )
-                                    Left err ->
-                                        pure
-                                            ( DnsGateMismatch item (UpsertFailed err) : outcomes
-                                            , cfOps
-                                            )
-                    _ ->
-                        pure
-                            ( DnsGateMismatch item (UpsertUnavailable "Cloudflare credentials are missing") : outcomes
-                            , cfOps
-                            )
 
 runPlan :: Bool -> IO ()
 runPlan dryRun = do
