@@ -1,10 +1,13 @@
-{ ... }:
+{ config, ... }:
+let
+  cfgTop = config;
+in
 {
   flake.modules.hostenv.hostenv-provider-service =
     { lib, config, pkgs, ... }:
     let
       cfg = config.services.hostenv-provider;
-      providerService = config.flake.lib.provider.service;
+      providerService = cfgTop.flake.lib.provider.service;
       serviceSrc = cfg.source;
       haskellDeps = cfg.haskellDeps;
       ghc = pkgs.haskellPackages.ghcWithPackages (p: map (name: p.${name}) haskellDeps);
@@ -202,7 +205,6 @@
             RestartSec = "5s";
           };
         };
-        hostenv.haskell.devPackages = haskellDeps;
         profile = [ cfg.package ];
       };
     }
