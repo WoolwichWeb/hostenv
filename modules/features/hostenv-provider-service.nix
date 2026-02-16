@@ -143,21 +143,25 @@ in
 
       config = lib.mkIf cfg.enable {
         services.nginx.enable = lib.mkDefault true;
-        services.nginx.virtualHosts."${cfg.webhookHost}".locations = lib.mkMerge [
-          {
-            "~ ^/webhook/" = {
-              recommendedProxySettings = true;
-              proxyPass = proxySocket;
-            };
-          }
-          {
-            "${cfg.uiBasePath}" = {
-              recommendedProxySettings = true;
-              proxyPass = proxySocket;
-            };
-          }
-        ];
-        services.nginx.virtualHosts."${cfg.webhookHost}".serverName = lib.mkDefault cfg.webhookHost;
+        services.nginx.virtualHosts = {
+          "${cfg.webhookHost}" = {
+            locations = lib.mkMerge [
+              {
+                "~ ^/webhook/" = {
+                  recommendedProxySettings = true;
+                  proxyPass = proxySocket;
+                };
+              }
+              {
+                "${cfg.uiBasePath}" = {
+                  recommendedProxySettings = true;
+                  proxyPass = proxySocket;
+                };
+              }
+            ];
+            serverName = lib.mkDefault cfg.webhookHost;
+          };
+        };
 
         systemd.services.hostenv-provider = {
           description = "Hostenv provider webhook service";
