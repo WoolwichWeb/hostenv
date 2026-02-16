@@ -7,6 +7,7 @@ module Hostenv.Provider.Server
   , app
   ) where
 
+import Control.Concurrent.MVar (MVar, newMVar)
 import qualified Data.ByteString.Lazy as BL
 import Data.Tagged (Tagged (..))
 import Data.Text (Text)
@@ -36,12 +37,13 @@ api = Proxy
 runServer :: AppConfig -> IO ()
 runServer cfg = do
   let AppConfig { appListenSocket = listenSocket } = cfg
+  webhookLock <- newMVar ()
   sock <- openUnixSocket listenSocket
   let settings = setBeforeMainLoop (putStrLn "hostenv-provider-service: listening") defaultSettings
-  runSettingsSocket settings sock (app cfg)
+  runSettingsSocket settings sock (app webhookLock cfg)
 
-app :: AppConfig -> Application
-app cfg = serve api (server cfg)
+app :: MVar () -> AppConfig -> Application
+app webhookLock cfg = serve api (server webhookLock cfg)
 
-server :: AppConfig -> Server API
-server cfg = webhookHandler cfg :<|> Tagged (uiApp cfg)
+server :: MVar () -> AppConfig -> Server API
+server webhookLock cfg = webhookHandler webhookLock cfg :<|> Tagged (uiApp cfg)

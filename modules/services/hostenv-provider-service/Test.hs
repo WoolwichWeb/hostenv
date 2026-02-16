@@ -30,6 +30,7 @@ main = do
   testGitLabToken
   testPlanParsing
   testNodeOrderWithMigrations
+  testNodeOrderWithDnsSkipsNonMigratingEnvDiscovery
   testProjectHashSelection
   testPrevNodeDiscoveryResolution
   testCommandSequence
@@ -78,6 +79,27 @@ testNodeOrderWithMigrations = do
     Left err -> assert False ("nodesForProject failed: " <> show err)
     Right nodes ->
       assert (nodes == ["node-b", "node-a"]) "migration ordering should deploy destination before source"
+
+testNodeOrderWithDnsSkipsNonMigratingEnvDiscovery :: IO ()
+testNodeOrderWithDnsSkipsNonMigratingEnvDiscovery = do
+  let planJson =
+        BLC.pack
+          "{\"hostenvHostname\":\"hosting.test\",\"nodes\":{\"node-a\":{},\"node-b\":{},\"node-c\":{}},\"environments\":{\"env-a\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"projectNameHash\":\"hash-main\"},\"node\":\"node-c\"},\"env-b\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"projectNameHash\":\"hash-dev\"},\"node\":\"node-b\",\"migrations\":[\"db\"]}}}"
+  callsRef <- newIORef ([] :: [(T.Text, T.Text)])
+  let pointsTo vhost expectedHost = do
+        modifyIORef' callsRef (<> [(vhost, expectedHost)])
+        if vhost == "env-a.hosting.test"
+          then pure (expectedHost == "node-a.hosting.test" || expectedHost == "node-b.hosting.test")
+          else pure False
+  result <- nodesForProjectWithDnsWith pointsTo "acme" "site" planJson
+  case result of
+    Left err -> assert False ("nodesForProjectWithDnsWith failed unexpectedly: " <> show err)
+    Right nodes -> do
+      assert (nodes == ["node-b", "node-c"]) "dns node ordering should still include matching nodes"
+      calls <- readIORef callsRef
+      assert
+        (not (any (\(vhost, _) -> vhost == "env-a.hosting.test") calls))
+        "non-migrating env should skip DNS previous-node discovery"
 
 
 testCommandSequence :: IO ()

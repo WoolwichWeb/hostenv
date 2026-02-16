@@ -11,6 +11,7 @@ module Hostenv.Provider.Service
   , nodesForProject
   , projectForHash
   , projectHashFor
+  , nodesForProjectWithDnsWith
   , renderProjectInputs
   , renderFlakeTemplate
   , renderGitCredentials
@@ -41,6 +42,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (toLower)
+import Data.Foldable (toList)
 import Data.List (foldl', intersect, nub, sort, sortOn)
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
 import qualified Data.Map.Strict as M
@@ -82,6 +84,14 @@ lookupObj key obj = case KM.lookup key obj of
   Just (Object o) -> Just o
   _ -> Nothing
 
+lookupTextList :: KM.Key -> KM.KeyMap Value -> [Text]
+lookupTextList key obj = case KM.lookup key obj of
+  Just (Array arr) -> mapMaybe asText (toList arr)
+  _ -> []
+  where
+    asText (String t) = Just t
+    asText _ = Nothing
+
 nodesForProject :: Text -> Text -> BL.ByteString -> Either Text [Text]
 nodesForProject org project raw = do
   envs <- decodeEnvironments raw
@@ -110,7 +120,10 @@ nodesForProject org project raw = do
       _ -> Nothing
 
 nodesForProjectWithDns :: Text -> Text -> BL.ByteString -> IO (Either Text [Text])
-nodesForProjectWithDns org project raw = do
+nodesForProjectWithDns = nodesForProjectWithDnsWith dnsPointsTo
+
+nodesForProjectWithDnsWith :: (Text -> Text -> IO Bool) -> Text -> Text -> BL.ByteString -> IO (Either Text [Text])
+nodesForProjectWithDnsWith pointsTo org project raw = do
   case decodePlanRoot raw of
     Left err -> pure (Left err)
     Right root ->
@@ -131,7 +144,8 @@ nodesForProjectWithDns org project raw = do
                         case lookupText (K.fromString "node") envObj of
                           Just node -> do
                             let prevNode = lookupText (K.fromString "previousNode") envObj
-                            pure (Just (envUserName, node, prevNode))
+                            let migrateBackups = lookupTextList (K.fromString "migrations") envObj
+                            pure (Just (envUserName, node, prevNode, migrateBackups))
                           Nothing -> pure Nothing
                       _ -> pure Nothing
                   Nothing -> pure Nothing
@@ -143,10 +157,13 @@ nodesForProjectWithDns org project raw = do
           let discoveryNodes =
                 S.toList $
                   S.fromList $
-                    filter (not . T.null) (rootNodeNames <> map (\(_, node, _) -> node) matches)
+                    filter (not . T.null) (rootNodeNames <> map (\(_, node, _, _) -> node) matches)
 
-          resolvedMatches <- forM matches $ \(envUserName, node, prevNode) -> do
-            resolvedPrev <- resolvePrevNodeFromDns hostenvHostname discoveryNodes envUserName node prevNode
+          resolvedMatches <- forM matches $ \(envUserName, node, prevNode, migrateBackups) -> do
+            resolvedPrev <-
+              if null migrateBackups
+                then pure (Right prevNode)
+                else resolvePrevNodeFromDnsWith pointsTo hostenvHostname discoveryNodes envUserName node prevNode
             pure ((\prev -> EnvNodeInfo node prev) <$> resolvedPrev)
 
           case sequence resolvedMatches of
@@ -291,9 +308,10 @@ decodeEnvironmentsFromRoot root =
 stripDot :: Text -> Text
 stripDot = T.dropWhileEnd (== '.')
 
-digRR :: Text -> Text -> IO [Text]
-digRR name rr = do
-  let args = ["+short", T.unpack name, T.unpack rr]
+digRRRaw :: Maybe Text -> Text -> Text -> IO [Text]
+digRRRaw mNameserver name rr = do
+  let serverArgs = maybe [] (\nameserver -> ["@" <> T.unpack nameserver]) mNameserver
+  let args = serverArgs <> ["+short", T.unpack name, T.unpack rr]
   res <- try (readProcessWithExitCode "dig" args "") :: IO (Either IOException (ExitCode, String, String))
   case res of
     Left _ -> pure []
@@ -301,6 +319,38 @@ digRR name rr = do
       let toLine = stripDot . T.toLower . T.strip . T.pack
        in pure (filter (not . T.null) (map toLine (lines out)))
     Right _ -> pure []
+
+zoneCandidates :: Text -> [Text]
+zoneCandidates name =
+  let labels = filter (not . T.null) (T.splitOn "." (T.toLower (stripDot name)))
+      labelCount = length labels
+      indices =
+        if labelCount < 2
+          then []
+          else [0 .. labelCount - 2]
+   in map (\idx -> T.intercalate "." (drop idx labels)) indices
+
+findAuthoritativeNameservers :: Text -> IO [Text]
+findAuthoritativeNameservers name = go (zoneCandidates name)
+  where
+    go [] = pure []
+    go (candidate:rest) = do
+      nameservers <- digRRRaw Nothing candidate "NS"
+      if null nameservers
+        then go rest
+        else pure nameservers
+
+digRR :: Text -> Text -> IO [Text]
+digRR name rr = do
+  authoritativeNameservers <- findAuthoritativeNameservers name
+  case authoritativeNameservers of
+    [] -> digRRRaw Nothing name rr
+    nameservers -> do
+      answersByNameserver <- forM nameservers (\nameserver -> digRRRaw (Just nameserver) name rr)
+      let nonEmptyAnswers = filter (not . null) answersByNameserver
+      if null nonEmptyAnswers
+        then digRRRaw Nothing name rr
+        else pure (S.toList (S.fromList (concat nonEmptyAnswers)))
 
 digAddrs :: Text -> IO [Text]
 digAddrs name = do
@@ -320,14 +370,17 @@ dnsPointsTo vhost expectedHost = do
       pure (not (null (expIPs `intersect` vhIPs)))
 
 resolvePrevNodeFromDns :: Maybe Text -> [Text] -> Text -> Text -> Maybe Text -> IO (Either Text (Maybe Text))
-resolvePrevNodeFromDns hostenvHostname discoveryNodes envName currentNode prevNode =
+resolvePrevNodeFromDns = resolvePrevNodeFromDnsWith dnsPointsTo
+
+resolvePrevNodeFromDnsWith :: (Text -> Text -> IO Bool) -> Maybe Text -> [Text] -> Text -> Text -> Maybe Text -> IO (Either Text (Maybe Text))
+resolvePrevNodeFromDnsWith pointsTo hostenvHostname discoveryNodes envName currentNode prevNode =
   case prevNode of
     Just prev -> pure (Right (Just prev))
     Nothing ->
       case hostenvHostname of
         Nothing -> pure (Right Nothing)
         Just host -> do
-          matchedNodes <- PrevNode.discoverMatchingNodes dnsPointsTo host envName discoveryNodes
+          matchedNodes <- PrevNode.discoverMatchingNodes pointsTo host envName discoveryNodes
           let resolution = PrevNode.resolvePrevNodeFromMatches currentNode matchedNodes
           let envHost = PrevNode.canonicalHostInDomain envName host
           case resolution of
