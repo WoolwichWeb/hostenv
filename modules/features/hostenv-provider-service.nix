@@ -14,7 +14,9 @@ in
       serviceBin = pkgs.writeShellScriptBin "hostenv-provider-service" ''
         exec ${ghc}/bin/runghc -i${serviceSrc} ${serviceSrc}/Main.hs "$@"
       '';
-      proxySocket = "http://unix:${cfg.listenSocket}:/";
+      # Keep proxy_pass target without a URI part so it is valid in regex
+      # locations (e.g. ~ ^/webhook/) and preserves the incoming request path.
+      proxySocket = "http://unix:${cfg.listenSocket}:";
       configFile = pkgs.writeText "hostenv-provider-config.json" (builtins.toJSON {
         dataDir = cfg.dataDir;
         repoSource = toString cfg.repoSource;
