@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE NoFieldSelectors #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -10,15 +12,16 @@ module Hostenv.Provider.Config
   , normalizeBasePath
   ) where
 
+import qualified Data.Aeson as A
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
-import Data.Maybe (fromMaybe)
+import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
 import qualified Data.Text as T
+import GHC.Generics (Generic)
 import Network.HTTP.Client (Manager, newManager)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
-import System.Directory (XdgDirectory (XdgData), getXdgDirectory)
-import System.Environment (lookupEnv)
+import System.Directory (doesFileExist)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 import System.FilePath ((</>), isAbsolute)
@@ -47,6 +50,26 @@ data AppConfig = AppConfig
   , appHttpManager :: Maybe Manager
   }
 
+data ProviderConfigFile = ProviderConfigFile
+  { dataDir :: FilePath
+  , repoSource :: FilePath
+  , flakeRoot :: FilePath
+  , listenSocket :: FilePath
+  , webhookSecretFile :: Maybe FilePath
+  , webhookSecretsDir :: Maybe FilePath
+  , webhookHost :: Text
+  , uiBasePath :: Text
+  , uiBaseUrl :: Text
+  , dbUri :: String
+  , gitlabOAuthSecretsFile :: Maybe FilePath
+  , gitlabHosts :: [Text]
+  , gitConfigFile :: FilePath
+  , gitCredentialsFile :: FilePath
+  , flakeTemplate :: FilePath
+  } deriving (Eq, Show, Generic)
+
+instance A.FromJSON ProviderConfigFile
+
 appWorkDir :: AppConfig -> FilePath
 appWorkDir cfg = cfg.appDataDir </> cfg.appFlakeRoot
 
@@ -69,73 +92,50 @@ normalizeBasePath t =
       trimmed = T.dropWhileEnd (== '/') withSlash
    in if trimmed == "" then "/" else trimmed
 
-loadConfig :: IO AppConfig
-loadConfig = do
-  dataDir <- do
-    override <- lookupEnv "HOSTENV_PROVIDER_DATA_DIR"
-    case override of
-      Just v -> pure v
-      Nothing -> getXdgDirectory XdgData "hostenv-provider"
-
-  repoSource <- requireEnv "HOSTENV_PROVIDER_REPO_SOURCE"
-  flakeRoot <- fromMaybe "." <$> lookupEnv "HOSTENV_PROVIDER_FLAKE_ROOT"
-  listenSocket <- requireEnv "HOSTENV_PROVIDER_LISTEN_SOCKET"
-  secretFile <- lookupEnv "HOSTENV_PROVIDER_WEBHOOK_SECRET_FILE"
-  secretsDir <- lookupEnv "HOSTENV_PROVIDER_WEBHOOK_SECRETS_DIR"
-  webhookHost <- T.pack <$> requireEnv "HOSTENV_PROVIDER_WEBHOOK_HOST"
-
-  uiBasePath <- T.pack <$> (fromMaybe "/ui" <$> lookupEnv "HOSTENV_PROVIDER_UI_BASE_PATH")
-  uiBaseUrl <- T.pack <$> (fromMaybe "https://example.invalid" <$> lookupEnv "HOSTENV_PROVIDER_UI_BASE_URL")
-
-  dbUri <- Just <$> requireEnv "HOSTENV_PROVIDER_DB_URI"
-  gitlabHosts <- fmap parseList (lookupEnv "HOSTENV_PROVIDER_GITLAB_HOSTS")
-  gitConfigPath <- fromMaybe (dataDir </> "gitconfig") <$> lookupEnv "HOSTENV_PROVIDER_GIT_CONFIG_FILE"
-  gitCredentialsPath <- fromMaybe (dataDir </> "git-credentials") <$> lookupEnv "HOSTENV_PROVIDER_GIT_CREDENTIALS_FILE"
-  flakeTemplate <- fromMaybe "flake.template.nix" <$> lookupEnv "HOSTENV_PROVIDER_FLAKE_TEMPLATE"
-
-  mSecretsPath <- lookupEnv "HOSTENV_PROVIDER_GITLAB_SECRETS_FILE"
-  secrets <- case mSecretsPath of
-    Nothing -> dieWith "GitLab OAuth secrets file missing"
+loadConfig :: FilePath -> IO AppConfig
+loadConfig configPath = do
+  providerCfg <- readProviderConfig configPath
+  secrets <- case providerCfg.gitlabOAuthSecretsFile of
+    Nothing -> pure Nothing
     Just path -> Just <$> readGitlabSecrets path
 
   manager <- Just <$> newManager tlsManagerSettings
 
-  let workDir = dataDir </> flakeRoot
+  let workDir = providerCfg.dataDir </> providerCfg.flakeRoot
   let planPath = workDir </> "generated" </> "plan.json"
   let webhookCfg = WebhookConfig workDir planPath
 
   pure
     AppConfig
-      { appDataDir = dataDir
-      , appRepoSource = repoSource
-      , appFlakeRoot = flakeRoot
-      , appListenSocket = listenSocket
-      , appWebhookSecretFile = secretFile
-      , appWebhookSecretsDir = secretsDir
+      { appDataDir = providerCfg.dataDir
+      , appRepoSource = providerCfg.repoSource
+      , appFlakeRoot = providerCfg.flakeRoot
+      , appListenSocket = providerCfg.listenSocket
+      , appWebhookSecretFile = providerCfg.webhookSecretFile
+      , appWebhookSecretsDir = providerCfg.webhookSecretsDir
       , appWebhookConfig = webhookCfg
-      , appUiBasePath = normalizeBasePath uiBasePath
-      , appUiBaseUrl = T.dropWhileEnd (== '/') uiBaseUrl
-      , appWebhookHost = webhookHost
-      , appDbConnString = BSC.pack <$> dbUri
+      , appUiBasePath = normalizeBasePath providerCfg.uiBasePath
+      , appUiBaseUrl = T.dropWhileEnd (== '/') providerCfg.uiBaseUrl
+      , appWebhookHost = providerCfg.webhookHost
+      , appDbConnString = Just (BSC.pack providerCfg.dbUri)
       , appGitlabSecrets = secrets
-      , appGitlabHosts = if null gitlabHosts then ["gitlab.com"] else gitlabHosts
-      , appGitConfigPath = gitConfigPath
-      , appGitCredentialsPath = gitCredentialsPath
-      , appFlakeTemplate = flakeTemplate
+      , appGitlabHosts = if null providerCfg.gitlabHosts then ["gitlab.com"] else providerCfg.gitlabHosts
+      , appGitConfigPath = providerCfg.gitConfigFile
+      , appGitCredentialsPath = providerCfg.gitCredentialsFile
+      , appFlakeTemplate = providerCfg.flakeTemplate
       , appHttpManager = manager
       }
 
-parseList :: Maybe String -> [Text]
-parseList Nothing = []
-parseList (Just raw) =
-  filter (/= "") (map T.strip (T.splitOn "," (T.pack raw)))
-
-requireEnv :: String -> IO String
-requireEnv key = do
-  val <- lookupEnv key
-  case val of
-    Just v -> pure v
-    Nothing -> dieWith ("missing required env var: " <> key)
+readProviderConfig :: FilePath -> IO ProviderConfigFile
+readProviderConfig path = do
+  exists <- doesFileExist path
+  if not exists
+    then dieWith ("provider config file not found: " <> path)
+    else do
+      bytes <- BL.readFile path
+      case A.eitherDecode' bytes of
+        Left err -> dieWith ("failed to parse provider config file " <> path <> ": " <> err)
+        Right cfg -> pure cfg
 
 
 dieWith :: String -> IO a

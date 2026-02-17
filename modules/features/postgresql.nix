@@ -139,14 +139,9 @@
       };
     
       config = lib.mkIf cfg.enable {
-        services.postgresql.settings = lib.mkMerge [
-          {
-            listen_addresses = "";
-            unix_socket_directories = cfg.runtimeDir;
-            unix_socket_permissions = 770;
-          }
-          cfg.settings
-        ];
+        services.postgresql.settings.listen_addresses = lib.mkDefault "";
+        services.postgresql.settings.unix_socket_directories = lib.mkDefault cfg.runtimeDir;
+        services.postgresql.settings.unix_socket_permissions = lib.mkDefault 770;
     
         systemd.services.postgresql = {
           description = "PostgreSQL Server";
