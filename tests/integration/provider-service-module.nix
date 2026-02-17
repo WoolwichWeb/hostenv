@@ -48,10 +48,12 @@ else
       mkdir -p "$tmpdir"/{logs,run}
       output=$("$profile"/bin/nginx -e "$tmpdir/error.log" -t -c "$nginxConf" -p "$tmpdir" 2>&1 || true)
       echo "$output" | grep -q "syntax is ok" || { echo "$output"; exit 1; }
-      grep -q -- '^ExecStart=.*hostenv-provider-service --config ' "$profile/systemd/user/hostenv-provider.service" \
-        || { echo "hostenv-provider.service must use file-based config"; exit 1; }
-      if grep -q -- '^Environment="HOSTENV_PROVIDER_' "$profile/systemd/user/hostenv-provider.service"; then
-        echo "hostenv-provider.service should not carry HOSTENV_PROVIDER_* env config"
+      execStart=$(sed -n 's/^ExecStart=//p' "$profile/systemd/user/hostenv-provider.service")
+      test -n "$execStart" || { echo "hostenv-provider.service missing ExecStart"; exit 1; }
+      test -x "$execStart" || { echo "hostenv-provider ExecStart target is not executable"; exit 1; }
+      grep -q -- 'mkdir -p ' "$execStart" || { echo "hostenv-provider start wrapper must create data directory"; exit 1; }
+      if grep -q -- '^WorkingDirectory=' "$profile/systemd/user/hostenv-provider.service"; then
+        echo "hostenv-provider.service must not depend on a pre-existing WorkingDirectory"
         exit 1
       fi
     '';

@@ -14,6 +14,11 @@ in
       serviceBin = pkgs.writeShellScriptBin "hostenv-provider-service" ''
         exec ${ghc}/bin/runghc -i${serviceSrc} ${serviceSrc}/Main.hs "$@"
       '';
+      serviceStart = pkgs.writeShellScript "hostenv-provider-service-start" ''
+        set -euo pipefail
+        mkdir -p "${cfg.dataDir}"
+        exec ${cfg.package}/bin/hostenv-provider-service --config ${configFile}
+      '';
       # Keep proxy_pass target without a URI part so it is valid in regex
       # locations (e.g. ~ ^/webhook/) and preserves the incoming request path.
       proxySocket = "http://unix:${cfg.listenSocket}:";
@@ -228,8 +233,7 @@ in
             ghc
           ];
           serviceConfig = {
-            ExecStart = "${cfg.package}/bin/hostenv-provider-service --config ${configFile}";
-            WorkingDirectory = cfg.dataDir;
+            ExecStart = "${serviceStart}";
             Restart = "on-failure";
             RestartSec = "5s";
           };
