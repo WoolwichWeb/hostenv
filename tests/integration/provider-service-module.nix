@@ -42,6 +42,12 @@ else
     script = ''
       test -f "$profile/systemd/user/hostenv-provider.service" || { echo "missing hostenv-provider.service"; exit 1; }
       test -f "$profile/systemd/user/postgresql.service" || { echo "missing postgresql.service"; exit 1; }
+      nginxConf="$profile/etc/nginx/nginx.conf"
+      test -f "$nginxConf" || { echo "missing nginx.conf"; exit 1; }
+      tmpdir=$(mktemp -d)
+      mkdir -p "$tmpdir"/{logs,run}
+      output=$("$profile"/bin/nginx -e "$tmpdir/error.log" -t -c "$nginxConf" -p "$tmpdir" 2>&1 || true)
+      echo "$output" | grep -q "syntax is ok" || { echo "$output"; exit 1; }
       grep -q -- '^ExecStart=.*hostenv-provider-service --config ' "$profile/systemd/user/hostenv-provider.service" \
         || { echo "hostenv-provider.service must use file-based config"; exit 1; }
       if grep -q -- '^Environment="HOSTENV_PROVIDER_' "$profile/systemd/user/hostenv-provider.service"; then
