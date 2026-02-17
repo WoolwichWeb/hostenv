@@ -102,27 +102,29 @@ handleAddProjectPost cfg req respond = do
 
 handleOauthStart :: AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
 handleOauthStart cfg req respond = do
-  let host = selectGitlabHost cfg req
-  case host of
-    Nothing -> respondHtml respond status400 (errorPage cfg "No GitLab host configured")
-    Just glHost -> do
-      state <- createOauthState cfg glHost
-      let redirectUri = oauthRedirectUri cfg
-      let GitlabSecrets { gitlabClientId = clientId } = requireSecrets cfg
-      let params =
-            [ ("client_id", TE.encodeUtf8 clientId)
-            , ("redirect_uri", TE.encodeUtf8 redirectUri)
-            , ("response_type", "code")
-            , ("scope", "api read_repository")
-            , ("state", TE.encodeUtf8 state)
-            ]
-      let url = T.concat
-            [ "https://"
-            , glHost
-            , "/oauth/authorize?"
-            , TE.decodeUtf8 (renderSimpleQuery False params)
-            ]
-      respondHtmlWithHeaders respond status302 [(hLocation, TE.encodeUtf8 url)] mempty
+  case requireSecrets cfg of
+    Left err -> respondHtml respond status400 (errorPage cfg err)
+    Right GitlabSecrets { gitlabClientId = clientId } -> do
+      let host = selectGitlabHost cfg req
+      case host of
+        Nothing -> respondHtml respond status400 (errorPage cfg "No GitLab host configured")
+        Just glHost -> do
+          state <- createOauthState cfg glHost
+          let redirectUri = oauthRedirectUri cfg
+          let params =
+                [ ("client_id", TE.encodeUtf8 clientId)
+                , ("redirect_uri", TE.encodeUtf8 redirectUri)
+                , ("response_type", "code")
+                , ("scope", "api read_repository")
+                , ("state", TE.encodeUtf8 state)
+                ]
+          let url = T.concat
+                [ "https://"
+                , glHost
+                , "/oauth/authorize?"
+                , TE.decodeUtf8 (renderSimpleQuery False params)
+                ]
+          respondHtmlWithHeaders respond status302 [(hLocation, TE.encodeUtf8 url)] mempty
 
 handleOauthCallback :: AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
 handleOauthCallback cfg req respond = do

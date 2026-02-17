@@ -68,6 +68,20 @@ CF_API_TOKEN=... CF_ZONE_ID=... nix run .#hostenv-provider -- dns-gate [--with-d
 nix run .#hostenv-provider -- deploy [-n node]
 ```
 
+End-to-end local VM demo (interactive wizard):
+
+```
+./examples/local-provider-migration/run-demo.sh
+```
+
+Automated end-to-end demo:
+
+```
+./examples/local-provider-migration/run-demo.sh --automated --cleanup
+```
+
+The local demo uses `hostctl` to install temporary hostname mappings for the demo VMs and removes them during teardown/abort.
+
 Outputs:
 
 - `packages.deploy-nodes` / `packages.deploy-envs` per system when a plan exists.
@@ -155,7 +169,7 @@ Example (in a provider hostenv environment config):
     enable = true;
     gitlabOAuthSecretsFile = "/run/secrets/hostenv/gitlab_oauth";
     webhookSecretsDir = "/run/secrets/hostenv/webhooks";
-    # uiHost defaults to webhookHost; uiBasePath defaults to /ui
+    # uiHost defaults to webhookHost; uiBasePath defaults to /dashboard
   };
 }
 ```
@@ -169,7 +183,7 @@ client_secret=...
 
 Notes:
 
-- The UI is available at `https://<uiHost>/ui` by default.
+- The UI is available at `https://<uiHost>/dashboard` by default.
 - OAuth scopes requested: `api`, `read_repository`.
 - `gitlabHosts` defaults to `["gitlab.com"]`; set it to allow additional GitLab hosts.
 - Add your admin user by setting their `users.role` in the database (defaults to `user`).
