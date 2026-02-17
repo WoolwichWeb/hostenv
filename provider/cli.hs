@@ -1194,6 +1194,30 @@ runRemoteOutput :: SshTarget -> [Text] -> IO (ExitCode, Text, Text)
 runRemoteOutput target args =
     runRemoteScriptOutput target (scriptForArgs args)
 
+archiveFlakeInputsForRemoteBuild :: (Text -> NodeConnection) -> Text -> Text -> IO ExitCode
+archiveFlakeInputsForRemoteBuild resolveNodeConnection deployUser nodeName = do
+    let conn = resolveNodeConnection nodeName
+    let remoteStore = "ssh-ng://" <> deployUser <> "@" <> conn.connHostname
+    let args = ["flake", "archive", "--to", remoteStore, "generated"]
+    let sshOpts = T.unwords conn.connSshOpts
+    printProviderLine ("hostenv-provider: materializing flake inputs on remote store for node " <> nodeName <> " via " <> remoteStore)
+    if T.null sshOpts
+        then Sh.proc "nix" args Sh.empty
+        else do
+            original <- Env.lookupEnv "NIX_SSHOPTS"
+            let merged =
+                    case original of
+                        Nothing -> T.unpack sshOpts
+                        Just old ->
+                            if null old
+                                then T.unpack sshOpts
+                                else old <> " " <> T.unpack sshOpts
+            Env.setEnv "NIX_SSHOPTS" merged
+            Sh.proc "nix" args Sh.empty
+                `finally` case original of
+                    Nothing -> Env.unsetEnv "NIX_SSHOPTS"
+                    Just old -> Env.setEnv "NIX_SSHOPTS" old
+
 data SigningKeyInfo = SigningKeyInfo
     { secretKeyPath :: Text
     , publicKeyPath :: Text
@@ -1904,6 +1928,20 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                                 printProviderLine ("hostenv-provider: warning: ignored migration failures for " <> T.intercalate ", " failures)
                         else
                             forM_ migrations runMigration
+
+            let remoteArchiveNodes = filter usesRemoteBuild targetNodes
+            when (not (null remoteArchiveNodes)) $ do
+                printProviderLine ("hostenv-provider: remote builds enabled for nodes: " <> T.intercalate ", " remoteArchiveNodes)
+                archiveResults <-
+                    forM remoteArchiveNodes $ \nodeName -> do
+                        archiveCode <- archiveFlakeInputsForRemoteBuild resolveNodeConnection deployUser nodeName
+                        when (archiveCode /= ExitSuccess) $
+                            printProviderLine ("hostenv-provider: failed to archive flake inputs for node " <> nodeName)
+                        pure (nodeName, archiveCode)
+                let archiveFailures = [nodeName | (nodeName, code) <- archiveResults, code /= ExitSuccess]
+                when (not (null archiveFailures)) $ do
+                    printProviderLine ("hostenv-provider: aborting deployment because flake archive failed for: " <> T.intercalate ", " archiveFailures)
+                    Sh.exitWith (ExitFailure 1)
 
             -- Perform deployment
             --

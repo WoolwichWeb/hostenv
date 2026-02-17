@@ -47,12 +47,18 @@ in
         git_credentials_file="''${HOSTENV_PROVIDER_GIT_CREDENTIALS_FILE:-$data_dir/git-credentials}"
         git_config_file="''${HOSTENV_PROVIDER_GIT_CONFIG_FILE:-$data_dir/gitconfig}"
         flake_template="''${HOSTENV_PROVIDER_FLAKE_TEMPLATE:-flake.template.nix}"
+        deploy_token_ttl_minutes="''${HOSTENV_PROVIDER_GITLAB_DEPLOY_TOKEN_TTL_MINUTES:-15}"
         gitlab_hosts_raw="''${HOSTENV_PROVIDER_GITLAB_HOSTS:-gitlab.com}"
         gitlab_hosts_json=$(printf '%s' "$gitlab_hosts_raw" | ${pkgs.gawk}/bin/awk -v RS=',' 'BEGIN { printf "[" } { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0); if (length($0) > 0) { if (n++) printf ","; gsub(/"/, "\\\"", $0); printf "\"%s\"", $0 } } END { printf "]" }')
+        token_key_file="''${HOSTENV_PROVIDER_GITLAB_TOKEN_KEY_FILE:-$base/gitlab_token_key}"
 
         secrets="''${HOSTENV_PROVIDER_GITLAB_SECRETS_FILE:-$base/gitlab_oauth}"
         if [ ! -f "$secrets" ]; then
           printf "client_id=dev\nclient_secret=dev\n" > "$secrets"
+        fi
+        if [ ! -f "$token_key_file" ]; then
+          printf "key=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n" > "$token_key_file"
+          chmod 600 "$token_key_file"
         fi
 
         config_file="$base/provider-config.json"
@@ -70,6 +76,8 @@ in
           "dbUri": "$db_uri",
           "gitlabOAuthSecretsFile": "$secrets",
           "gitlabHosts": $gitlab_hosts_json,
+          "gitlabTokenEncryptionKeyFile": "$token_key_file",
+          "gitlabDeployTokenTtlMinutes": $deploy_token_ttl_minutes,
           "gitCredentialsFile": "$git_credentials_file",
           "gitConfigFile": "$git_config_file",
           "flakeTemplate": "$flake_template"
