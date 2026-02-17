@@ -6,6 +6,7 @@ module Hostenv.Provider.Gitlab
   , GitlabUser(..)
   , GitlabProject(..)
   , GitlabHook(..)
+  , GitlabDeployToken(..)
   , requireSecrets
   , selectGitlabHost
   , createOauthState
@@ -18,10 +19,13 @@ module Hostenv.Provider.Gitlab
   , fetchGitlabProject
   , createGitlabWebhook
   , updateGitlabWebhook
+  , createProjectDeployToken
+  , revokeProjectDeployToken
+  , appendNixAccessTokenConfig
   , upsertUserSession
   ) where
 
-import Data.Aeson (FromJSON (..), (.:))
+import Data.Aeson (FromJSON (..), (.:), (.:?))
 import qualified Data.Aeson as A
 import qualified Data.ByteString.Lazy as BL
 import Data.Int (Int64)
@@ -29,7 +33,8 @@ import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Data.Time (addUTCTime, getCurrentTime)
+import Data.Time (addUTCTime, getCurrentTime, utctDay)
+import Data.Time.Format (defaultTimeLocale, formatTime)
 import Database.PostgreSQL.Simple (Only (..), execute, query)
 import Network.HTTP.Client (Manager, Request (..), RequestBody (..), httpLbs, parseRequest, responseBody, responseStatus)
 import Network.HTTP.Types (Status, methodPost, statusCode)
@@ -37,7 +42,15 @@ import Network.HTTP.Types.URI (renderSimpleQuery)
 import qualified Network.Wai as Wai
 
 import Hostenv.Provider.Config (AppConfig(..), uiPath)
-import Hostenv.Provider.DB (SessionInfo(..), User(..), createSession, withDb)
+import Hostenv.Provider.DB
+  ( GitlabAccessToken(..)
+  , SessionInfo(..)
+  , User(..)
+  , createSession
+  , loadLatestUserGitlabToken
+  , saveGitlabToken
+  , withDb
+  )
 import Hostenv.Provider.Service (GitlabSecrets(..))
 import Hostenv.Provider.Util (randomToken)
 
@@ -138,10 +151,11 @@ fetchGitlabUser cfg host token = do
 loadUserProjects :: AppConfig -> SessionInfo -> IO (Either Text [GitlabProject])
 loadUserProjects cfg sess = withDb cfg $ \conn -> do
   let SessionInfo { sessionUser = User { userId = userIdVal } } = sess
-  tokenRows <- query conn "SELECT git_host, token FROM gitlab_tokens WHERE user_id = ? AND project_id IS NULL ORDER BY created_at DESC LIMIT 1" (Only userIdVal)
-  case tokenRows of
-    [] -> pure (Left "No GitLab token available for this user")
-    ((host, token):_) -> fetchGitlabProjects cfg host token
+  tokenResult <- loadLatestUserGitlabToken cfg conn userIdVal
+  case tokenResult of
+    Left err -> pure (Left err)
+    Right Nothing -> pure (Left "No GitLab token available for this user")
+    Right (Just tokenInfo) -> fetchGitlabProjects cfg tokenInfo.gitlabTokenHost tokenInfo.gitlabTokenValue
 
 fetchGitlabProjects :: AppConfig -> Text -> Text -> IO (Either Text [GitlabProject])
 fetchGitlabProjects cfg host token = do
@@ -213,6 +227,55 @@ updateGitlabWebhook cfg host token repoId hookId url secret = do
       Right hook -> pure (Right hook)
     else pure (Left "GitLab webhook update failed")
 
+createProjectDeployToken :: AppConfig -> Text -> Text -> Int64 -> IO (Either Text GitlabDeployToken)
+createProjectDeployToken cfg host oauthToken repoId = do
+  manager <- requireManager cfg
+  now <- getCurrentTime
+  suffix <- randomToken 10
+  let expiryDay = utctDay (addUTCTime (fromIntegral (cfg.appGitlabDeployTokenTtlMinutes * 60)) now)
+      expiryDate = T.pack (formatTime defaultTimeLocale "%Y-%m-%d" expiryDay)
+      tokenName = "hostenv-deploy-" <> suffix
+  req <- parseRequest (T.unpack ("https://" <> host <> "/api/v4/projects/" <> T.pack (show repoId) <> "/access_tokens"))
+  let params =
+        [ ("name", TE.encodeUtf8 tokenName)
+        , ("scopes[]", "read_repository")
+        , ("access_level", "30")
+        , ("expires_at", TE.encodeUtf8 expiryDate)
+        ]
+      req' =
+        req
+          { method = methodPost
+          , requestHeaders = [("Authorization", TE.encodeUtf8 ("Bearer " <> oauthToken)), ("Content-Type", "application/x-www-form-urlencoded")]
+          , requestBody = RequestBodyLBS (BL.fromStrict (renderSimpleQuery False params))
+          }
+  resp <- httpLbs req' manager
+  if isSuccessStatus (responseStatus resp)
+    then case A.eitherDecode' (responseBody resp) of
+      Left err -> pure (Left (T.pack err))
+      Right deployToken -> pure (Right deployToken)
+    else pure (Left "GitLab project deploy token creation failed")
+
+revokeProjectDeployToken :: AppConfig -> Text -> Text -> Int64 -> Int64 -> IO (Either Text ())
+revokeProjectDeployToken cfg host oauthToken repoId deployTokenId = do
+  manager <- requireManager cfg
+  req <- parseRequest (T.unpack ("https://" <> host <> "/api/v4/projects/" <> T.pack (show repoId) <> "/access_tokens/" <> T.pack (show deployTokenId)))
+  let req' = req { method = "DELETE", requestHeaders = [("Authorization", TE.encodeUtf8 ("Bearer " <> oauthToken))] }
+  resp <- httpLbs req' manager
+  let code = statusCode (responseStatus resp)
+  if isSuccessStatus (responseStatus resp) || code == 404
+    then pure (Right ())
+    else pure (Left "GitLab project deploy token revocation failed")
+
+appendNixAccessTokenConfig :: Maybe Text -> Text -> Text -> Text
+appendNixAccessTokenConfig mExisting host token =
+  let line = "access-tokens = " <> host <> "=" <> token
+   in case mExisting of
+    Nothing -> line
+    Just existing ->
+      if T.strip existing == ""
+        then line
+        else existing <> "\n" <> line
+
 
 -- GitLab JSON types
 
@@ -271,8 +334,18 @@ instance FromJSON GitlabHook where
       <$> o .: "id"
       <*> o .: "url"
 
+data GitlabDeployToken = GitlabDeployToken
+  { deployTokenId :: Int64
+  , deployTokenValue :: Text
+  } deriving (Eq, Show)
 
-upsertUserSession :: AppConfig -> Text -> GitlabUser -> GitlabTokenResponse -> IO SessionInfo
+instance FromJSON GitlabDeployToken where
+  parseJSON = A.withObject "GitlabDeployToken" $ \o ->
+    GitlabDeployToken
+      <$> o .: "id"
+      <*> o .: "token"
+
+upsertUserSession :: AppConfig -> Text -> GitlabUser -> GitlabTokenResponse -> IO (Either Text SessionInfo)
 upsertUserSession cfg host glUser token = withDb cfg $ \conn -> do
   rows <- query conn "SELECT id FROM users WHERE gitlab_user_id = ?" (Only glUser.glUserId)
   userIdVal <- case rows of
@@ -282,9 +355,10 @@ upsertUserSession cfg host glUser token = withDb cfg $ \conn -> do
     [] -> do
       [Only uid] <- query conn "INSERT INTO users (gitlab_user_id, username, name) VALUES (?, ?, ?) RETURNING id" (glUser.glUserId, glUser.glUserUsername, glUser.glUserName)
       pure uid
-  _ <- execute conn "INSERT INTO gitlab_tokens (user_id, project_id, git_host, token, scopes) VALUES (?, NULL, ?, ?, ?)" (userIdVal, host, token.tokenAccessToken, token.tokenScope)
-  createSession conn userIdVal
-
+  saveResult <- saveGitlabToken cfg conn (Just userIdVal) Nothing host token.tokenAccessToken token.tokenScope
+  case saveResult of
+    Left err -> pure (Left err)
+    Right _ -> Right <$> createSession conn userIdVal
 
 isSuccessStatus :: Status -> Bool
 isSuccessStatus st = statusCode st >= 200 && statusCode st < 300

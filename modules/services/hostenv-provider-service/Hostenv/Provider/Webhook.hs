@@ -8,21 +8,25 @@ module Hostenv.Provider.Webhook
   ) where
 
 import Control.Concurrent.MVar (MVar, withMVar)
+import Control.Exception (finally)
 import Control.Monad (unless)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Database.PostgreSQL.Simple (Only (..), fromOnly, query)
+import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import Servant
 
-import Hostenv.Provider.Command (exitCodeToInt, renderCommand, runCommand)
+import Hostenv.Provider.Command (exitCodeToInt, renderCommand, runCommandWithEnv)
 import Hostenv.Provider.Config (AppConfig(..))
-import Hostenv.Provider.DB (withDb)
+import Hostenv.Provider.DB (ProjectDeployCredential(..), loadProjectDeployCredentialByHash, withDb)
+import Hostenv.Provider.Gitlab (GitlabDeployToken(..), appendNixAccessTokenConfig, createProjectDeployToken, revokeProjectDeployToken)
 import Hostenv.Provider.Http (ErrorResponse(..), errorWithBody)
 import Hostenv.Provider.Service
   ( CommandError(..)
@@ -56,8 +60,38 @@ webhookHandler webhookLock cfg hash mHubSig mGitlabToken rawBody = do
       Right ref -> pure ref
   secretInfo <- liftIO (resolveSecret cfg hash projectRef)
   verifyWebhook secretInfo mHubSig mGitlabToken rawBody
+  deployCredResult <- liftIO $ withDb cfg (\conn -> loadProjectDeployCredentialByHash cfg conn hash)
+  deployCred <-
+    case deployCredResult of
+      Left err -> throwError (errorWithBody err500 (ErrorResponse err Nothing Nothing Nothing Nothing))
+      Right Nothing -> throwError (errorWithBody err500 (ErrorResponse "Missing project OAuth token for deploy" Nothing Nothing Nothing Nothing))
+      Right (Just cred) -> pure cred
+  deployTokenResult <- liftIO (createProjectDeployToken cfg deployCred.deployCredHost deployCred.deployCredToken deployCred.deployCredRepoId)
+  deployToken <-
+    case deployTokenResult of
+      Left err -> throwError (errorWithBody err500 (ErrorResponse err Nothing Nothing Nothing Nothing))
+      Right token -> pure token
+  existingNixConfig <- liftIO (fmap (fmap T.pack) (lookupEnv "NIX_CONFIG"))
+  let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig deployCred.deployCredHost deployToken.deployTokenValue
   let AppConfig { appWebhookConfig = webhookCfg } = cfg
-  result <- liftIO $ withMVar webhookLock (\_ -> runWebhookWith (runCommand cfg) (loadPlan cfg) webhookCfg projectRef)
+  revokeErrRef <- liftIO (newIORef Nothing)
+  result <-
+    liftIO $
+      withMVar webhookLock $ \_ ->
+        runWebhookWith
+          (runCommandWithEnv cfg [("NIX_CONFIG", scopedNixConfig)])
+          (loadPlan cfg)
+          webhookCfg
+          projectRef
+          `finally` do
+            revokeResult <- revokeProjectDeployToken cfg deployCred.deployCredHost deployCred.deployCredToken deployCred.deployCredRepoId deployToken.deployTokenId
+            case revokeResult of
+              Left msg -> writeIORef revokeErrRef (Just msg)
+              Right _ -> pure ()
+  revokeErr <- liftIO (readIORef revokeErrRef)
+  case revokeErr of
+    Just err -> throwError (errorWithBody err500 (ErrorResponse err Nothing Nothing Nothing Nothing))
+    Nothing -> pure ()
   case result of
     Left err -> throwError (serverError err)
     Right okResult ->

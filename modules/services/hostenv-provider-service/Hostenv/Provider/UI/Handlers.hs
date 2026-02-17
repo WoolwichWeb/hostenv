@@ -148,7 +148,10 @@ handleOauthCallback cfg req respond = do
               case mUser of
                 Left msg -> respondHtml respond status500 (errorPage cfg msg)
                 Right glUser -> do
-                  session <- upsertUserSession cfg glHost glUser token
-                  let cookieHeader = ("Set-Cookie", renderSessionCookie session)
-                  respondHtmlWithHeaders respond status302 [(hLocation, TE.encodeUtf8 (uiPath cfg "/")), cookieHeader] mempty
+                  sessionResult <- upsertUserSession cfg glHost glUser token
+                  case sessionResult of
+                    Left msg -> respondHtml respond status500 (errorPage cfg msg)
+                    Right session -> do
+                      let cookieHeader = ("Set-Cookie", renderSessionCookie session)
+                      respondHtmlWithHeaders respond status302 [(hLocation, TE.encodeUtf8 (uiPath cfg "/")), cookieHeader] mempty
     _ -> respondHtml respond status400 (errorPage cfg "Missing OAuth callback parameters")

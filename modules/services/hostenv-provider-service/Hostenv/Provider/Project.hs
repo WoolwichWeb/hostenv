@@ -7,7 +7,6 @@ module Hostenv.Provider.Project
   , ensureWebhook
   , regenerateFlake
   , syncFlakeFromDb
-  , writeGitCredentials
   ) where
 
 import Data.Int (Int64)
@@ -16,16 +15,26 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.ByteString.Char8 as BSC
-import Database.PostgreSQL.Simple (Connection, Only (..), execute, query, query_)
+import Database.PostgreSQL.Simple (Connection, Only (..), execute, query)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
-import System.FilePath ((</>), takeDirectory)
+import System.Environment (lookupEnv)
+import System.FilePath ((</>))
 import System.Posix.Files (setFileMode)
 
-import Hostenv.Provider.Command (commandErrorText, runCommand)
+import Hostenv.Provider.Command (commandErrorText, runCommandWithEnv)
 import Hostenv.Provider.Config (AppConfig(..), appWorkDir, resolvePath)
-import Hostenv.Provider.DB (ProjectRow(..), SessionInfo(..), User(..), loadProjects, withDb)
-import Hostenv.Provider.Gitlab (GitlabHook(..), GitlabProject(..), createGitlabWebhook, fetchGitlabProject, updateGitlabWebhook)
-import Hostenv.Provider.Service (CommandSpec(..), projectHashFor, renderFlakeTemplate, renderGitCredentials, renderProjectInputs)
+import Hostenv.Provider.DB
+  ( GitlabAccessToken(..)
+  , ProjectRow(..)
+  , SessionInfo(..)
+  , User(..)
+  , loadLatestUserGitlabToken
+  , loadProjects
+  , saveGitlabToken
+  , withDb
+  )
+import Hostenv.Provider.Gitlab (GitlabHook(..), GitlabProject(..), appendNixAccessTokenConfig, createGitlabWebhook, fetchGitlabProject, updateGitlabWebhook)
+import Hostenv.Provider.Service (CommandSpec(..), projectHashFor, renderFlakeTemplate, renderProjectInputs)
 import Hostenv.Provider.Util (randomToken, sanitizeName, splitNamespace)
 import Hostenv.Provider.Webhook (loadPlan)
 
@@ -34,16 +43,18 @@ syncFlakeFromDb :: AppConfig -> IO ()
 syncFlakeFromDb cfg = do
   projects <- withDb cfg loadProjects
   _ <- regenerateFlake cfg projects
-  writeGitCredentials cfg
   pure ()
 
 addProjectFlow :: AppConfig -> SessionInfo -> Int64 -> Maybe Text -> Maybe Text -> IO (Either Text Text)
 addProjectFlow cfg sess repoId orgInput projectInput = withDb cfg $ \conn -> do
   let SessionInfo { sessionUser = User { userId = userIdVal } } = sess
-  tokenRows <- query conn "SELECT git_host, token FROM gitlab_tokens WHERE user_id = ? AND project_id IS NULL ORDER BY created_at DESC LIMIT 1" (Only userIdVal)
-  case tokenRows of
-    [] -> pure (Left "Missing GitLab token for user")
-    ((host, token):_) -> do
+  tokenResult <- loadLatestUserGitlabToken cfg conn userIdVal
+  case tokenResult of
+    Left err -> pure (Left err)
+    Right Nothing -> pure (Left "Missing GitLab token for user")
+    Right (Just tokenInfo) -> do
+      let host = tokenInfo.gitlabTokenHost
+          token = tokenInfo.gitlabTokenValue
       projectInfo <- fetchGitlabProject cfg host token repoId
       case projectInfo of
         Left msg -> pure (Left msg)
@@ -62,33 +73,38 @@ addProjectFlow cfg sess repoId orgInput projectInput = withDb cfg $ \conn -> do
                 (org, proj, host, repo.glProjectId, repo.glProjectHttpUrl, repo.glProjectPath, flakeInput)
               let ProjectRow { projectId = projectIdVal } = projectRow
               _ <- execute conn "DELETE FROM gitlab_tokens WHERE project_id = ?" (Only projectIdVal)
-              _ <- execute conn "INSERT INTO gitlab_tokens (user_id, project_id, git_host, token, scopes) VALUES (?, ?, ?, ?, ?)" (userIdVal, projectIdVal, host, token, ("api read_repository" :: Text))
-              writeGitCredentials cfg
-              regenResult <- regenerateFlake cfg =<< loadProjects conn
-              case regenResult of
-                Left msg -> pure (Left msg)
+              saveResult <- saveGitlabToken cfg conn (Just userIdVal) (Just projectIdVal) host token ("api read_repository" :: Text)
+              case saveResult of
+                Left err -> pure (Left err)
                 Right _ -> do
-                  cmdRes <- runCommand cfg (CommandSpec "nix" ["flake", "update", flakeInput] (appWorkDir cfg))
-                  case cmdRes of
-                    Left err -> pure (Left (commandErrorText err))
+                  regenResult <- regenerateFlake cfg =<< loadProjects conn
+                  case regenResult of
+                    Left msg -> pure (Left msg)
                     Right _ -> do
-                      planRes <- runCommand cfg (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] (appWorkDir cfg))
-                      case planRes of
+                      existingNixConfig <- fmap (fmap T.pack) (lookupEnv "NIX_CONFIG")
+                      let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig host token
+                          runScoped = runCommandWithEnv cfg [("NIX_CONFIG", scopedNixConfig)]
+                      cmdRes <- runScoped (CommandSpec "nix" ["flake", "update", flakeInput] (appWorkDir cfg))
+                      case cmdRes of
                         Left err -> pure (Left (commandErrorText err))
                         Right _ -> do
-                          planRaw <- loadPlan cfg
-                          case projectHashFor org proj planRaw of
-                            Left err -> pure (Left err)
-                            Right projHash -> do
-                              _ <- execute conn "UPDATE projects SET default_env_hash = ?, updated_at = now() WHERE id = ?" (projHash, projectIdVal)
-                              webhookResult <- ensureWebhook cfg conn host token repoId projectRow projHash
-                              case webhookResult of
-                                Left msg -> pure (Left msg)
-                                Right (secret, _) -> do
-                                  maybeWriteSecret cfg projHash org proj secret
-                                  let AppConfig { appWebhookHost = webhookHost } = cfg
-                                  let hookUrl = "https://" <> webhookHost <> "/webhook/" <> projHash
-                                  pure (Right ("Webhook configured at " <> hookUrl))
+                          planRes <- runScoped (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] (appWorkDir cfg))
+                          case planRes of
+                            Left err -> pure (Left (commandErrorText err))
+                            Right _ -> do
+                              planRaw <- loadPlan cfg
+                              case projectHashFor org proj planRaw of
+                                Left err -> pure (Left err)
+                                Right projHash -> do
+                                  _ <- execute conn "UPDATE projects SET default_env_hash = ?, updated_at = now() WHERE id = ?" (projHash, projectIdVal)
+                                  webhookResult <- ensureWebhook cfg conn host token repoId projectRow projHash
+                                  case webhookResult of
+                                    Left msg -> pure (Left msg)
+                                    Right (secret, _) -> do
+                                      maybeWriteSecret cfg projHash org proj secret
+                                      let AppConfig { appWebhookHost = webhookHost } = cfg
+                                      let hookUrl = "https://" <> webhookHost <> "/webhook/" <> projHash
+                                      pure (Right ("Webhook configured at " <> hookUrl))
 
 ensureWebhook :: AppConfig -> Connection -> Text -> Text -> Int64 -> ProjectRow -> Text -> IO (Either Text (Text, Maybe Int64))
 ensureWebhook cfg conn host token repoId projectRow projHash = do
@@ -131,21 +147,6 @@ regenerateFlake cfg projects = do
           let flakePath = appWorkDir cfg </> "flake.nix"
           writeFile flakePath (T.unpack flakeText)
           pure (Right ())
-
-writeGitCredentials :: AppConfig -> IO ()
-writeGitCredentials cfg =
-  let AppConfig { appDbConnString = dbConn } = cfg
-   in case dbConn of
-    Nothing -> pure ()
-    Just _ -> do
-      entries <- withDb cfg $ \conn -> do
-        rows <- query_ conn "SELECT projects.repo_url, gitlab_tokens.token FROM gitlab_tokens JOIN projects ON gitlab_tokens.project_id = projects.id WHERE gitlab_tokens.project_id IS NOT NULL ORDER BY projects.repo_url"
-        pure rows
-      let credsText = renderGitCredentials entries
-      let AppConfig { appGitCredentialsPath = credsPath } = cfg
-      createDirectoryIfMissing True (takeDirectory credsPath)
-      writeFile credsPath (T.unpack credsText)
-      setFileMode credsPath 0o640
 
 projectInputUrl :: ProjectRow -> Text
 projectInputUrl p =

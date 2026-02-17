@@ -46,7 +46,6 @@
 
           extraOptions = lib.mkDefault ''
             experimental-features = nix-command flakes
-            !include ${config.sops.secrets.access_tokens.path}
           '';
 
           # Allow deploy-rs uploads from the provider host without disabling
@@ -70,12 +69,6 @@
         }];
 
         users.groups.keys.name = lib.mkDefault "keys";
-
-        # Gitlab/Github access tokens for projects are kept in this key.
-        sops.secrets.access_tokens = lib.mkDefault {
-          mode = "0440";
-          group = config.users.groups.keys.name;
-        };
 
         users.mutableUsers = lib.mkDefault false;
         users.users.${deployUser} = {

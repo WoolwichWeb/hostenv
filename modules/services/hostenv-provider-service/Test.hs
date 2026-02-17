@@ -16,6 +16,7 @@ import System.Directory (getTemporaryDirectory, removeFile)
 import System.Exit (exitFailure)
 import System.IO (hClose, openTempFile)
 
+import Hostenv.Provider.Crypto
 import Hostenv.Provider.PrevNodeDiscovery
 import Hostenv.Provider.Service
 
@@ -37,6 +38,8 @@ main = do
   testTemplateRender
   testGitCredentials
   testReadGitlabSecrets
+  testTokenEncryptionRoundtrip
+  testTokenKeyLoading
   putStrLn "ok"
 
 
@@ -202,3 +205,27 @@ testReadGitlabSecrets = do
   removeFile path
   assert (secrets.gitlabClientId == "abc123") "readGitlabSecrets should parse client_id"
   assert (secrets.gitlabClientSecret == "def456") "readGitlabSecrets should parse client_secret"
+
+testTokenEncryptionRoundtrip :: IO ()
+testTokenEncryptionRoundtrip = do
+  let cipher = TokenCipher "test-key" ("0123456789abcdef0123456789abcdef" :: BS.ByteString)
+  encryptedResult <- encryptToken cipher "token-value"
+  case encryptedResult of
+    Left err -> assert False ("encryptToken failed: " <> T.unpack err)
+    Right encrypted ->
+      case decryptToken cipher encrypted.encryptedTokenNonce encrypted.encryptedTokenCiphertext encrypted.encryptedTokenKeyId of
+        Left err -> assert False ("decryptToken failed: " <> T.unpack err)
+        Right value -> assert (value == "token-value") "encrypt/decrypt should roundtrip"
+
+testTokenKeyLoading :: IO ()
+testTokenKeyLoading = do
+  tmpDir <- getTemporaryDirectory
+  (path, handle) <- openTempFile tmpDir "token-key"
+  hClose handle
+  writeFile path "key=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
+  cipherResult <- loadTokenCipher path
+  removeFile path
+  case cipherResult of
+    Left err -> assert False ("loadTokenCipher failed: " <> T.unpack err)
+    Right cipher ->
+      assert (BS.length cipher.tokenCipherKey == 32) "token key file should load 32-byte key"

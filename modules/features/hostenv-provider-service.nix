@@ -28,6 +28,8 @@ in
         dbUri = cfg.dbUri;
         gitlabOAuthSecretsFile = cfg.gitlabOAuthSecretsFile;
         gitlabHosts = cfg.gitlabHosts;
+        gitlabTokenEncryptionKeyFile = cfg.gitlabTokenEncryptionKeyFile;
+        gitlabDeployTokenTtlMinutes = cfg.gitlabDeployTokenTtlMinutes;
         gitCredentialsFile = cfg.gitCredentialsFile;
         gitConfigFile = cfg.gitConfigFile;
         flakeTemplate = cfg.flakeTemplate;
@@ -125,6 +127,18 @@ in
           type = lib.types.listOf lib.types.str;
           default = [ "gitlab.com" ];
           description = "Allowed GitLab hosts for OAuth.";
+        };
+
+        gitlabTokenEncryptionKeyFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = "Path to a key file used to encrypt persisted GitLab OAuth tokens.";
+        };
+
+        gitlabDeployTokenTtlMinutes = lib.mkOption {
+          type = lib.types.int;
+          default = 15;
+          description = "Requested lifetime (in minutes) for per-deploy GitLab project access tokens.";
         };
 
         gitCredentialsFile = lib.mkOption {

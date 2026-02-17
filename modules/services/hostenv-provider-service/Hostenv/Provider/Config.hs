@@ -26,6 +26,7 @@ import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 import System.FilePath ((</>), isAbsolute)
 
+import Hostenv.Provider.Crypto (TokenCipher, loadTokenCipher)
 import Hostenv.Provider.Service (GitlabSecrets, WebhookConfig(..), readGitlabSecrets)
 
 -- Configuration
@@ -44,6 +45,8 @@ data AppConfig = AppConfig
   , appDbConnString :: Maybe BS.ByteString
   , appGitlabSecrets :: Maybe GitlabSecrets
   , appGitlabHosts :: [Text]
+  , appGitlabTokenCipher :: Maybe TokenCipher
+  , appGitlabDeployTokenTtlMinutes :: Int
   , appGitConfigPath :: FilePath
   , appGitCredentialsPath :: FilePath
   , appFlakeTemplate :: FilePath
@@ -63,6 +66,8 @@ data ProviderConfigFile = ProviderConfigFile
   , dbUri :: String
   , gitlabOAuthSecretsFile :: Maybe FilePath
   , gitlabHosts :: [Text]
+  , gitlabTokenEncryptionKeyFile :: Maybe FilePath
+  , gitlabDeployTokenTtlMinutes :: Maybe Int
   , gitConfigFile :: FilePath
   , gitCredentialsFile :: FilePath
   , flakeTemplate :: FilePath
@@ -99,6 +104,19 @@ loadConfig configPath = do
     Nothing -> pure Nothing
     Just path -> Just <$> readGitlabSecrets path
 
+  tokenCipher <- case providerCfg.gitlabTokenEncryptionKeyFile of
+    Nothing -> pure Nothing
+    Just keyPath -> do
+      cipherResult <- loadTokenCipher keyPath
+      case cipherResult of
+        Left err -> dieWith ("failed to load token encryption key " <> keyPath <> ": " <> T.unpack err)
+        Right cipher -> pure (Just cipher)
+
+  case (providerCfg.gitlabOAuthSecretsFile, tokenCipher) of
+    (Just _, Nothing) ->
+      dieWith "gitlabTokenEncryptionKeyFile must be configured when GitLab OAuth is enabled"
+    _ -> pure ()
+
   manager <- Just <$> newManager tlsManagerSettings
 
   let workDir = providerCfg.dataDir </> providerCfg.flakeRoot
@@ -120,6 +138,8 @@ loadConfig configPath = do
       , appDbConnString = Just (BSC.pack providerCfg.dbUri)
       , appGitlabSecrets = secrets
       , appGitlabHosts = if null providerCfg.gitlabHosts then ["gitlab.com"] else providerCfg.gitlabHosts
+      , appGitlabTokenCipher = tokenCipher
+      , appGitlabDeployTokenTtlMinutes = max 1 (maybe 15 id providerCfg.gitlabDeployTokenTtlMinutes)
       , appGitConfigPath = providerCfg.gitConfigFile
       , appGitCredentialsPath = providerCfg.gitCredentialsFile
       , appFlakeTemplate = providerCfg.flakeTemplate
