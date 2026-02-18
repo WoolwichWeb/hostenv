@@ -38,12 +38,12 @@ Optional provider knobs:
 so the provider can discover environments. The shipped project template already does this.
 Client inputs should point at the `.hostenv` flake (e.g. `dir=.hostenv`) so `hostenv.nix` is at the flake root.
 
-2) Populate nodes and secrets:
+1) Populate nodes and secrets:
    - Copy `nodes/sample` to `nodes/<node>/` and edit `configuration.nix`/`hardware-configuration.nix`.
    - Create `secrets/secrets.yaml` with sops.
    - Create `generated/state.json` (can be `{}` initially).
 
-3) Generate plan/state (optional if using planSource=eval):
+2) Generate plan/state (optional if using planSource=eval):
 
 ```
 nix run .#hostenv-provider -- plan
@@ -56,13 +56,13 @@ so deploy-rs can build the exact activation packages and NixOS systems without
 re-evaluating the dynamic hostenv graph. The bundle `generated/{plan.json,
 state.json,flake.nix}` is the deployable, auditable snapshot.
 
-4) DNS/ACME safety + Cloudflare (optional):
+1) DNS/ACME safety + Cloudflare (optional):
 
 ```
 CF_API_TOKEN=... CF_ZONE_ID=... nix run .#hostenv-provider -- dns-gate [--with-dns-update] [-n node]
 ```
 
-5) Deploy:
+1) Deploy:
 
 ```
 nix run .#hostenv-provider -- deploy [-n node]
@@ -167,7 +167,13 @@ Example (in a provider hostenv environment config):
 
   services.hostenv-provider = {
     enable = true;
-    gitlabOAuthSecretsFile = "/run/secrets/hostenv/gitlab_oauth";
+    gitlab = {
+      enable = true;
+      oAuthSecretsFile = "/run/secrets/hostenv/gitlab_oauth";
+      tokenEncryptionKeyFile = "/run/secrets/hostenv/gitlab_token_key";
+      # hosts = [ "gitlab.com" ];
+      # deployTokenTtlMinutes = 60;
+    };
     webhookSecretsDir = "/run/secrets/hostenv/webhooks";
     # uiHost defaults to webhookHost; uiBasePath defaults to /dashboard
   };
@@ -185,11 +191,13 @@ Notes:
 
 - The UI is available at `https://<uiHost>/dashboard` by default.
 - OAuth scopes requested: `api`, `read_repository`.
-- `gitlabHosts` defaults to `["gitlab.com"]`; set it to allow additional GitLab hosts.
+- `gitlab.hosts` defaults to `["gitlab.com"]`; set it to allow additional GitLab hosts.
+- `gitlab.deployTokenTtlMinutes` defaults to `60`; deploy runs still revoke per-run tokens immediately on completion/failure.
 - Add your admin user by setting their `users.role` in the database (defaults to `user`).
 - The UI regenerates `flake.nix` from a template (`flake.template.nix`) using
   projects stored in PostgreSQL, and writes a git credential store file so
   `nix flake update <org>__<project>` can access private GitLab repositories.
   Keep structural edits in `flake.template.nix`, not `flake.nix`.
 - The template must include the `{{HOSTENV_PROJECT_INPUTS}}` marker.
-- Tokens are stored unencrypted at rest in the database and git credential file.
+- Persisted OAuth tokens are encrypted at rest in PostgreSQL using
+  `gitlab.tokenEncryptionKeyFile`.
