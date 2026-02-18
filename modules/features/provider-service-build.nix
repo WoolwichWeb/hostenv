@@ -74,10 +74,13 @@ in
           "uiBasePath": "/dashboard",
           "uiBaseUrl": "$ui_base_url",
           "dbUri": "$db_uri",
-          "gitlabOAuthSecretsFile": "$secrets",
-          "gitlabHosts": $gitlab_hosts_json,
-          "gitlabTokenEncryptionKeyFile": "$token_key_file",
-          "gitlabDeployTokenTtlMinutes": $deploy_token_ttl_minutes,
+          "gitlab": {
+            "enable": true,
+            "oAuthSecretsFile": "$secrets",
+            "hosts": $gitlab_hosts_json,
+            "tokenEncryptionKeyFile": "$token_key_file",
+            "deployTokenTtlMinutes": $deploy_token_ttl_minutes
+          },
           "gitCredentialsFile": "$git_credentials_file",
           "gitConfigFile": "$git_config_file",
           "flakeTemplate": "$flake_template"

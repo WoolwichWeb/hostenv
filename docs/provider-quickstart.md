@@ -167,8 +167,13 @@ Example (in a provider hostenv environment config):
 
   services.hostenv-provider = {
     enable = true;
-    gitlabOAuthSecretsFile = "/run/secrets/hostenv/gitlab_oauth";
-    gitlabTokenEncryptionKeyFile = "/run/secrets/hostenv/gitlab_token_key";
+    gitlab = {
+      enable = true;
+      oAuthSecretsFile = "/run/secrets/hostenv/gitlab_oauth";
+      tokenEncryptionKeyFile = "/run/secrets/hostenv/gitlab_token_key";
+      # hosts = [ "gitlab.com" ];
+      # deployTokenTtlMinutes = 60;
+    };
     webhookSecretsDir = "/run/secrets/hostenv/webhooks";
     # uiHost defaults to webhookHost; uiBasePath defaults to /dashboard
   };
@@ -186,8 +191,8 @@ Notes:
 
 - The UI is available at `https://<uiHost>/dashboard` by default.
 - OAuth scopes requested: `api`, `read_repository`.
-- `gitlabHosts` defaults to `["gitlab.com"]`; set it to allow additional GitLab hosts.
-- `gitlabDeployTokenTtlMinutes` defaults to `15`; deploy runs still revoke per-run tokens immediately on completion/failure.
+- `gitlab.hosts` defaults to `["gitlab.com"]`; set it to allow additional GitLab hosts.
+- `gitlab.deployTokenTtlMinutes` defaults to `60`; deploy runs still revoke per-run tokens immediately on completion/failure.
 - Add your admin user by setting their `users.role` in the database (defaults to `user`).
 - The UI regenerates `flake.nix` from a template (`flake.template.nix`) using
   projects stored in PostgreSQL. Keep structural edits in `flake.template.nix`,
@@ -196,4 +201,4 @@ Notes:
   token and inject it via per-run `NIX_CONFIG` (`access-tokens = ...`).
 - The template must include the `{{HOSTENV_PROJECT_INPUTS}}` marker.
 - Persisted OAuth tokens are encrypted at rest in PostgreSQL using
-  `gitlabTokenEncryptionKeyFile`.
+  `gitlab.tokenEncryptionKeyFile`.

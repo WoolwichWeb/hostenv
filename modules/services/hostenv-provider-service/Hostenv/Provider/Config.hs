@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NoFieldSelectors #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -18,6 +19,7 @@ import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Maybe (isJust)
 import GHC.Generics (Generic)
 import Network.HTTP.Client (Manager, newManager)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
@@ -64,16 +66,62 @@ data ProviderConfigFile = ProviderConfigFile
   , uiBasePath :: Text
   , uiBaseUrl :: Text
   , dbUri :: String
-  , gitlabOAuthSecretsFile :: Maybe FilePath
-  , gitlabHosts :: [Text]
-  , gitlabTokenEncryptionKeyFile :: Maybe FilePath
-  , gitlabDeployTokenTtlMinutes :: Maybe Int
+  , gitlab :: GitlabConfigFile
   , gitConfigFile :: FilePath
   , gitCredentialsFile :: FilePath
   , flakeTemplate :: FilePath
   } deriving (Eq, Show, Generic)
 
-instance A.FromJSON ProviderConfigFile
+data GitlabConfigFile = GitlabConfigFile
+  { enable :: Bool
+  , oAuthSecretsFile :: Maybe FilePath
+  , hosts :: [Text]
+  , tokenEncryptionKeyFile :: Maybe FilePath
+  , deployTokenTtlMinutes :: Maybe Int
+  } deriving (Eq, Show, Generic)
+
+instance A.FromJSON GitlabConfigFile where
+  parseJSON = A.withObject "GitlabConfigFile" $ \o ->
+    GitlabConfigFile
+      <$> o A..:? "enable" A..!= False
+      <*> o A..:? "oAuthSecretsFile"
+      <*> o A..:? "hosts" A..!= []
+      <*> o A..:? "tokenEncryptionKeyFile"
+      <*> o A..:? "deployTokenTtlMinutes"
+
+instance A.FromJSON ProviderConfigFile where
+  parseJSON = A.withObject "ProviderConfigFile" $ \o -> do
+    gitlabCfg <-
+      o A..:? "gitlab" >>= \case
+        Just cfg -> pure cfg
+        Nothing -> do
+          legacySecrets <- o A..:? "gitlabOAuthSecretsFile"
+          legacyHosts <- o A..:? "gitlabHosts" A..!= []
+          legacyTokenKey <- o A..:? "gitlabTokenEncryptionKeyFile"
+          legacyDeployTokenTtl <- o A..:? "gitlabDeployTokenTtlMinutes"
+          pure
+            GitlabConfigFile
+              { enable = isJust legacySecrets
+              , oAuthSecretsFile = legacySecrets
+              , hosts = legacyHosts
+              , tokenEncryptionKeyFile = legacyTokenKey
+              , deployTokenTtlMinutes = legacyDeployTokenTtl
+              }
+    ProviderConfigFile
+      <$> o A..: "dataDir"
+      <*> o A..: "repoSource"
+      <*> o A..: "flakeRoot"
+      <*> o A..: "listenSocket"
+      <*> o A..:? "webhookSecretFile"
+      <*> o A..:? "webhookSecretsDir"
+      <*> o A..: "webhookHost"
+      <*> o A..: "uiBasePath"
+      <*> o A..: "uiBaseUrl"
+      <*> o A..: "dbUri"
+      <*> pure gitlabCfg
+      <*> o A..: "gitConfigFile"
+      <*> o A..: "gitCredentialsFile"
+      <*> o A..: "flakeTemplate"
 
 appWorkDir :: AppConfig -> FilePath
 appWorkDir cfg = cfg.appDataDir </> cfg.appFlakeRoot
@@ -100,22 +148,26 @@ normalizeBasePath t =
 loadConfig :: FilePath -> IO AppConfig
 loadConfig configPath = do
   providerCfg <- readProviderConfig configPath
-  secrets <- case providerCfg.gitlabOAuthSecretsFile of
-    Nothing -> pure Nothing
-    Just path -> Just <$> readGitlabSecrets path
+  let gitlabCfg = providerCfg.gitlab
+  secrets <-
+    if gitlabCfg.enable
+      then case gitlabCfg.oAuthSecretsFile of
+        Nothing ->
+          dieWith "gitlab.oAuthSecretsFile must be configured when gitlab.enable is true"
+        Just path -> Just <$> readGitlabSecrets path
+      else pure Nothing
 
-  tokenCipher <- case providerCfg.gitlabTokenEncryptionKeyFile of
-    Nothing -> pure Nothing
-    Just keyPath -> do
-      cipherResult <- loadTokenCipher keyPath
-      case cipherResult of
-        Left err -> dieWith ("failed to load token encryption key " <> keyPath <> ": " <> T.unpack err)
-        Right cipher -> pure (Just cipher)
-
-  case (providerCfg.gitlabOAuthSecretsFile, tokenCipher) of
-    (Just _, Nothing) ->
-      dieWith "gitlabTokenEncryptionKeyFile must be configured when GitLab OAuth is enabled"
-    _ -> pure ()
+  tokenCipher <-
+    if gitlabCfg.enable
+      then case gitlabCfg.tokenEncryptionKeyFile of
+        Nothing ->
+          dieWith "gitlab.tokenEncryptionKeyFile must be configured when gitlab.enable is true"
+        Just keyPath -> do
+          cipherResult <- loadTokenCipher keyPath
+          case cipherResult of
+            Left err -> dieWith ("failed to load token encryption key " <> keyPath <> ": " <> T.unpack err)
+            Right cipher -> pure (Just cipher)
+      else pure Nothing
 
   manager <- Just <$> newManager tlsManagerSettings
 
@@ -137,9 +189,9 @@ loadConfig configPath = do
       , appWebhookHost = providerCfg.webhookHost
       , appDbConnString = Just (BSC.pack providerCfg.dbUri)
       , appGitlabSecrets = secrets
-      , appGitlabHosts = if null providerCfg.gitlabHosts then ["gitlab.com"] else providerCfg.gitlabHosts
+      , appGitlabHosts = if null gitlabCfg.hosts then ["gitlab.com"] else gitlabCfg.hosts
       , appGitlabTokenCipher = tokenCipher
-      , appGitlabDeployTokenTtlMinutes = max 1 (maybe 15 id providerCfg.gitlabDeployTokenTtlMinutes)
+      , appGitlabDeployTokenTtlMinutes = max 1 (maybe 15 id gitlabCfg.deployTokenTtlMinutes)
       , appGitConfigPath = providerCfg.gitConfigFile
       , appGitCredentialsPath = providerCfg.gitCredentialsFile
       , appFlakeTemplate = providerCfg.flakeTemplate
