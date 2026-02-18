@@ -26,7 +26,26 @@ in
       serviceBin = pkgs.writeShellScriptBin "hostenv-provider-service" ''
         exec ${ghc}/bin/runghc -i${serviceSrc} ${serviceSrc}/Main.hs "$@"
       '';
-      proxySocket = "http://unix:${cfg.listenSocket}:/";
+      repoSourceForConfig =
+        let
+          src = cfg.repoSource;
+          srcType = builtins.typeOf src;
+        in
+        if srcType == "path" then
+          src
+        else if srcType == "string" && lib.hasPrefix "/nix/store/" src then
+        # Preserve store-path context so repoSource is shipped in the closure.
+          builtins.storePath src
+        else
+          src;
+      serviceStart = pkgs.writeShellScript "hostenv-provider-service-start" ''
+        set -euo pipefail
+        mkdir -p "${cfg.dataDir}"
+        exec ${cfg.package}/bin/hostenv-provider-service --config ${configFile}
+      '';
+      # Keep proxy_pass target without a URI part so it is valid in regex
+      # locations (e.g. ~ ^/webhook/) and preserves the incoming request path.
+      proxySocket = "http://unix:${cfg.listenSocket}:";
       configFile = pkgs.writeText "hostenv-provider-config.json" (builtins.toJSON {
         dataDir = cfg.dataDir;
         repoSource = toString cfg.repoSource;
@@ -38,8 +57,7 @@ in
         uiBasePath = cfg.uiBasePath;
         uiBaseUrl = "${cfg.uiScheme}://${cfg.uiHost}";
         dbUri = cfg.dbUri;
-        gitlabOAuthSecretsFile = cfg.gitlabOAuthSecretsFile;
-        gitlabHosts = cfg.gitlabHosts;
+        gitlab = cfg.gitlab;
         gitCredentialsFile = cfg.gitCredentialsFile;
         gitConfigFile = cfg.gitConfigFile;
         flakeTemplate = cfg.flakeTemplate;
@@ -56,15 +74,8 @@ in
           description = "Path to the hostenv-provider-service source tree.";
         };
 
-        haskellDeps = lib.mkOption {
-          type = lib.types.listOf lib.types.str;
-          default = providerService.haskellDeps;
-          description = "Haskell package names required by hostenv-provider-service.";
-        };
-
         package = lib.mkOption {
           type = lib.types.package;
-          default = serviceBin;
           defaultText = lib.literalExpression ''
             pkgs.writeShellScriptBin "hostenv-provider-service" '''
               exec ''${pkgs.haskellPackages.ghcWithPackages [ ... ]}/bin/runghc -i''${config.services.hostenv-provider.source} ''${config.services.hostenv-provider.source}/Main.hs
@@ -127,16 +138,32 @@ in
           description = "PostgreSQL connection string for the provider UI.";
         };
 
-        gitlabOAuthSecretsFile = lib.mkOption {
-          type = lib.types.nullOr lib.types.str;
-          default = null;
-          description = "Path to a secrets file containing GitLab OAuth client_id/client_secret.";
-        };
+        gitlab = {
+          enable = lib.mkEnableOption "Gitlab OAuth support";
 
-        gitlabHosts = lib.mkOption {
-          type = lib.types.listOf lib.types.str;
-          default = [ "gitlab.com" ];
-          description = "Allowed GitLab hosts for OAuth.";
+          oAuthSecretsFile = lib.mkOption {
+            type = lib.types.str;
+            default = "/run/secrets/${config.hostenv.userName}/gitlab_oauth";
+            description = "Path to a secrets file containing GitLab OAuth client_id/client_secret.";
+          };
+
+          hosts = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ "gitlab.com" ];
+            description = "Allowed GitLab hosts for OAuth.";
+          };
+
+          tokenEncryptionKeyFile = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Path to a key file used to encrypt persisted GitLab OAuth tokens.";
+          };
+
+          deployTokenTtlMinutes = lib.mkOption {
+            type = lib.types.int;
+            default = 60;
+            description = "Requested lifetime (in minutes) for per-deploy GitLab project access tokens.";
+          };
         };
 
         gitCredentialsFile = lib.mkOption {
