@@ -14,6 +14,18 @@ in
       serviceBin = pkgs.writeShellScriptBin "hostenv-provider-service" ''
         exec ${ghc}/bin/runghc -i${serviceSrc} ${serviceSrc}/Main.hs "$@"
       '';
+      repoSourceForConfig =
+        let
+          src = cfg.repoSource;
+          srcType = builtins.typeOf src;
+        in
+        if srcType == "path" then
+          src
+        else if srcType == "string" && lib.hasPrefix "/nix/store/" src then
+          # Preserve store-path context so repoSource is shipped in the closure.
+          builtins.storePath src
+        else
+          src;
       serviceStart = pkgs.writeShellScript "hostenv-provider-service-start" ''
         set -euo pipefail
         mkdir -p "${cfg.dataDir}"
@@ -24,7 +36,7 @@ in
       proxySocket = "http://unix:${cfg.listenSocket}:";
       configFile = pkgs.writeText "hostenv-provider-config.json" (builtins.toJSON {
         dataDir = cfg.dataDir;
-        repoSource = toString cfg.repoSource;
+        repoSource = repoSourceForConfig;
         flakeRoot = cfg.flakeRoot;
         listenSocket = cfg.listenSocket;
         webhookSecretFile = cfg.webhookSecretFile;

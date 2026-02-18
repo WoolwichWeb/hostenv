@@ -52,6 +52,11 @@ else
       test -n "$execStart" || { echo "hostenv-provider.service missing ExecStart"; exit 1; }
       test -x "$execStart" || { echo "hostenv-provider ExecStart target is not executable"; exit 1; }
       grep -q -- 'mkdir -p ' "$execStart" || { echo "hostenv-provider start wrapper must create data directory"; exit 1; }
+      configPath=$(sed -n 's/^exec .* --config //p' "$execStart" | head -n1)
+      test -f "$configPath" || { echo "hostenv-provider config file missing"; exit 1; }
+      repoSource=$(sed -n 's/.*"repoSource":"\([^"]*\)".*/\1/p' "$configPath")
+      test -n "$repoSource" || { echo "hostenv-provider config missing repoSource"; exit 1; }
+      test -d "$repoSource" || { echo "hostenv-provider repoSource path does not exist in closure"; exit 1; }
       if grep -q -- '^WorkingDirectory=' "$profile/systemd/user/hostenv-provider.service"; then
         echo "hostenv-provider.service must not depend on a pre-existing WorkingDirectory"
         exit 1
