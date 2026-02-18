@@ -5,6 +5,7 @@
     { config, lib, pkgs, ... }:
     let
       cfg = config.services.postgresql;
+      unixSocketPermissions = cfg.settings.unix_socket_permissions or null;
     
       defaultDataDir = "/home/${cfg.user}/.local/share/postgresql";
     
@@ -139,10 +140,27 @@
       };
     
       config = lib.mkIf cfg.enable {
+        assertions = [
+          {
+            assertion =
+              unixSocketPermissions == null
+              || (
+                builtins.isInt unixSocketPermissions
+                && unixSocketPermissions >= 0
+                && unixSocketPermissions <= 511
+              );
+            message = ''
+              services.postgresql.settings.unix_socket_permissions must be an integer between 0 and 511.
+              PostgreSQL expects this setting in decimal file-mode form (e.g. use 504 for octal 0770).
+            '';
+          }
+        ];
+
         services.postgresql.settings.listen_addresses = lib.mkDefault "";
         services.postgresql.settings.unix_socket_directories = lib.mkDefault cfg.runtimeDir;
-        services.postgresql.settings.unix_socket_permissions = lib.mkDefault 770;
-    
+        # 0770 in octal, expressed as decimal as expected by PostgreSQL.
+        services.postgresql.settings.unix_socket_permissions = lib.mkDefault 504;
+
         systemd.services.postgresql = {
           description = "PostgreSQL Server";
           after = [ "network.target" ];
