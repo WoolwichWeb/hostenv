@@ -22,7 +22,7 @@ in
         if srcType == "path" then
           src
         else if srcType == "string" && lib.hasPrefix "/nix/store/" src then
-          # Preserve store-path context so repoSource is shipped in the closure.
+        # Preserve store-path context so repoSource is shipped in the closure.
           builtins.storePath src
         else
           src;
@@ -45,10 +45,7 @@ in
         uiBasePath = cfg.uiBasePath;
         uiBaseUrl = "${cfg.uiScheme}://${cfg.uiHost}";
         dbUri = cfg.dbUri;
-        gitlabOAuthSecretsFile = cfg.gitlabOAuthSecretsFile;
-        gitlabHosts = cfg.gitlabHosts;
-        gitlabTokenEncryptionKeyFile = cfg.gitlabTokenEncryptionKeyFile;
-        gitlabDeployTokenTtlMinutes = cfg.gitlabDeployTokenTtlMinutes;
+        gitlab = cfg.gitlab;
         gitCredentialsFile = cfg.gitCredentialsFile;
         gitConfigFile = cfg.gitConfigFile;
         flakeTemplate = cfg.flakeTemplate;
@@ -136,28 +133,32 @@ in
           description = "PostgreSQL connection string for the provider UI.";
         };
 
-        gitlabOAuthSecretsFile = lib.mkOption {
-          type = lib.types.nullOr lib.types.str;
-          default = null;
-          description = "Path to a secrets file containing GitLab OAuth client_id/client_secret.";
-        };
+        gitlab = {
+          enable = lib.mkEnableOption "Gitlab OAuth support";
 
-        gitlabHosts = lib.mkOption {
-          type = lib.types.listOf lib.types.str;
-          default = [ "gitlab.com" ];
-          description = "Allowed GitLab hosts for OAuth.";
-        };
+          oAuthSecretsFile = lib.mkOption {
+            type = lib.types.str;
+            default = "/run/secrets/${config.hostenv.userName}/gitlab_oauth";
+            description = "Path to a secrets file containing GitLab OAuth client_id/client_secret.";
+          };
 
-        gitlabTokenEncryptionKeyFile = lib.mkOption {
-          type = lib.types.nullOr lib.types.str;
-          default = null;
-          description = "Path to a key file used to encrypt persisted GitLab OAuth tokens.";
-        };
+          hosts = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ "gitlab.com" ];
+            description = "Allowed GitLab hosts for OAuth.";
+          };
 
-        gitlabDeployTokenTtlMinutes = lib.mkOption {
-          type = lib.types.int;
-          default = 15;
-          description = "Requested lifetime (in minutes) for per-deploy GitLab project access tokens.";
+          tokenEncryptionKeyFile = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Path to a key file used to encrypt persisted GitLab OAuth tokens.";
+          };
+
+          deployTokenTtlMinutes = lib.mkOption {
+            type = lib.types.int;
+            default = 60;
+            description = "Requested lifetime (in minutes) for per-deploy GitLab project access tokens.";
+          };
         };
 
         gitCredentialsFile = lib.mkOption {
