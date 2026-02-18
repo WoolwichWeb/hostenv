@@ -57,6 +57,40 @@ let
           if slug != "" then slug else lib.concatStringsSep "-" (lib.take 1 words)
         );
 
+      secretsScopeType = types.submodule ({ ... }: {
+        options = {
+          enable = lib.mkEnableOption "hostenv-managed secrets for this scope";
+
+          file = lib.mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = ''
+              Path to this scope's SOPS secrets file.
+              If relative, interpreted from the `.hostenv` project root.
+              If null, hostenv chooses a default per scope.
+            '';
+          };
+
+          keys = lib.mkOption {
+            type = types.listOf types.str;
+            default = [ ];
+            description = ''
+              Secret keys to expose under `/run/secrets/<hostenv.userName>/`.
+              Each key maps to `/run/secrets/<hostenv.userName>/<key>`.
+            '';
+          };
+
+          providerPublicKeys = lib.mkOption {
+            type = types.listOf types.str;
+            default = [ ];
+            description = ''
+              Age public key recipients for the provider bridge.
+              Hostenv scaffolding uses these when generating `.sops.yaml` rules.
+            '';
+          };
+        };
+      });
+
     in
     {
       options = {
@@ -170,6 +204,22 @@ let
           example = "s3:https://s3.amazonaws.com";
           apply = v: if v == null then null else lib.removeSuffix "/" v;
           default = null;
+        };
+        secrets = lib.mkOption {
+          type = secretsScopeType;
+          default = { };
+          description = ''
+            Secret scope configuration.
+
+            At top-level (`hostenv.secrets`): project-wide secrets.
+            At per-environment level (`environments.<name>.hostenv.secrets`): environment-specific secrets.
+          '';
+        };
+        projectSecrets = lib.mkOption {
+          type = secretsScopeType;
+          default = { };
+          internal = true;
+          description = "Internal: project-level secret scope copied into each environment for provider planning.";
         };
         projectNameHash = lib.mkOption {
           type = types.str;
@@ -598,6 +648,7 @@ let
                 config.environmentName = name;
                 config.root = lib.mkDefault (tl.root or ".");
                 config.environments = { };
+                config.projectSecrets = lib.mkDefault (tl.secrets or { });
               }
             ];
           };

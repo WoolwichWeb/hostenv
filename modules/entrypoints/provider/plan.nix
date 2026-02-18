@@ -709,7 +709,7 @@ let
                       inputs.parent.lib.provider.deployOutputs {
                         inherit config nixpkgs deploy-rs systems inputs localSystem;
                         nodesPath = ../nodes;
-                        secretsPath = ../secrets/secrets.yaml;
+                        secretsPath = ./secrets.merged.yaml;
                         nodeSystems = ${lib.generators.toPretty {} nodeSystems};
                         nodeAddresses = ${lib.generators.toPretty {} nodeAddresses};
                         nodeSshPorts = ${lib.generators.toPretty {} nodeSshPorts};

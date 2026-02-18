@@ -717,6 +717,7 @@ in
         && lib.strings.hasInfix "url = \"path:..\"" flakeText
         && lib.strings.hasInfix "hostenv = {" flakeText
         && lib.strings.hasInfix "follows = \"parent/hostenv\"" flakeText
+        && lib.strings.hasInfix "secretsPath = ./secrets.merged.yaml;" flakeText
         && lib.strings.hasInfix "inputs.parent.lib.provider.deployOutputs" flakeText
         && (lib.strings.hasInfix "${user1} =" flakeText || lib.strings.hasInfix "\"${user1}\" =" flakeText)
         && (lib.strings.hasInfix "${user2} =" flakeText || lib.strings.hasInfix "\"${user2}\" =" flakeText);

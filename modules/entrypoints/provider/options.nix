@@ -87,42 +87,58 @@ let
             (environmentWith name).hostenv.organisation
             + "_" + (environmentWith name).hostenv.project;
           envOnly = packages.lib.filterAttrs (name: _: builtins.elem name envUsers) userInfo.users.users;
+
+          scopeKeys = scope:
+            if (scope.enable or false) then (scope.keys or [ ]) else [ ];
+
+          hasSecretKey = bucket: key:
+            builtins.hasAttr bucket sopsKeys
+            && builtins.isAttrs sopsKeys.${bucket}
+            && builtins.hasAttr key sopsKeys.${bucket};
+
+          resolveSecretSource = name: key:
+            let
+              projectBucket = orgProjectFromName name;
+              orgBucket = orgFromName name;
+            in
+            if hasSecretKey name key then
+              name
+            else if hasSecretKey projectBucket key then
+              projectBucket
+            else if hasSecretKey orgBucket key then
+              orgBucket
+            else
+              throw ''
+                The secrets file does not contain '${key}' for '${name}'.
+
+                From the hosting root directory, run `sops secrets/secrets.yaml` and add:
+
+                - '${name}/${key}' (this environment) or
+                - '${projectBucket}/${key}' (this project) or
+                - '${orgBucket}/${key}' (this organisation).
+              '';
         in
         {
           sops.secrets = packages.lib.concatMapAttrs
             (
               name: _user:
                 let
-                  name' =
-                    if builtins.hasAttr name sopsKeys
-                    then name
-                    else if builtins.hasAttr (orgProjectFromName name) sopsKeys
-                    then orgProjectFromName name
-                    else if builtins.hasAttr (orgFromName name) sopsKeys
-                    then orgFromName name
-                    else
-                      throw ''
-                        The secrets file does not contain any secrets for '${name}'
-
-                        From the hosting root directory, run `sops secrets/secrets.yaml` and add an entry for:
-
-                        - '${name}' (this environment) or
-                        - '${orgProjectFromName name}' (this project) or
-                        - '${orgFromName name}' (this organisation).
-                      '';
+                  envCfg = environmentWith name;
+                  hostenvCfg = envCfg.hostenv or { };
+                  projectSecretKeys = scopeKeys (hostenvCfg.projectSecrets or { });
+                  envSecretKeys = scopeKeys (hostenvCfg.secrets or { });
+                  secretKeys = lib.unique ([ "backups_secret" "backups_env" ] ++ projectSecretKeys ++ envSecretKeys);
                 in
-                {
-                  "${name}/backups_secret" = {
-                    owner = name;
-                    group = name;
-                    key = "${name'}/backups_secret";
-                  };
-                  "${name}/backups_env" = {
-                    owner = name;
-                    group = name;
-                    key = "${name'}/backups_env";
-                  };
-                }
+                builtins.listToAttrs (map
+                  (secretKey: {
+                    name = "${name}/${secretKey}";
+                    value = {
+                      owner = name;
+                      group = name;
+                      key = "${resolveSecretSource name secretKey}/${secretKey}";
+                    };
+                  })
+                  secretKeys)
             )
             envOnly;
         };

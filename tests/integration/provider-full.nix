@@ -137,6 +137,7 @@ let
     && lib.strings.hasInfix "url = \"path:..\"" flakeText
       && lib.strings.hasInfix "hostenv = {" flakeText
       && lib.strings.hasInfix "follows = \"parent/hostenv\"" flakeText
+      && lib.strings.hasInfix "secretsPath = ./secrets.merged.yaml;" flakeText
       && lib.strings.hasInfix "inputs.parent.lib.provider.deployOutputs" flakeText;
 in
 {

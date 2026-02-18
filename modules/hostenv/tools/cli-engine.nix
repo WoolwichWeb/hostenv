@@ -27,6 +27,7 @@
 
       subCommandList = lib.attrsToList config.hostenv.subCommands;
       userFacingSubCommands = builtins.filter (cmd: !cmd.value.internal) subCommandList;
+      hasSyncSecretsSubCommand = config.hostenv.subCommands ? "__sync-secrets";
 
       # User-facing list of names (internal filtered out)
       subCommandNames = builtins.map (cmd: cmd.name) userFacingSubCommands;
@@ -171,6 +172,12 @@
           }
 
           sub="''${1:-help}"; shift || true
+
+          ${lib.optionalString hasSyncSecretsSubCommand ''
+            if [ "''${HOSTENV_SYNC_SECRETS_DONE:-0}" != "1" ] && [ "$sub" != "__sync-secrets" ] && [ "$sub" != "__complete-subcommands" ]; then
+              HOSTENV_SYNC_SECRETS_DONE=1 "$0" --env "$env_name" __sync-secrets
+            fi
+          ''}
 
           case "$sub" in
 

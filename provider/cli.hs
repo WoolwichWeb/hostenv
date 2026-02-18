@@ -16,7 +16,7 @@ import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BLC
 import Data.Char (isAlphaNum, isHexDigit)
 import Data.Foldable (toList)
-import Data.List (intersect, (\\))
+import Data.List (intersect, nub, (\\))
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe, mapMaybe)
 import Data.Scientific (floatingOrInteger)
@@ -391,6 +391,55 @@ instance A.FromJSON EnvInfo where
                 , vhosts = vhosts
                 , uid = uid
                 , deploymentStatus = NotAttempted
+                }
+
+data SecretsScope = SecretsScope
+    { secretsEnabled :: Bool
+    , secretsFilePath :: Maybe Text
+    , secretsKeys :: [Text]
+    }
+
+instance A.FromJSON SecretsScope where
+    parseJSON = A.withObject "SecretsScope" $ \o ->
+        SecretsScope
+            <$> o .:? "enable" .!= False
+            <*> o .:? "file"
+            <*> o .:? "keys" .!= []
+
+defaultSecretsScope :: SecretsScope
+defaultSecretsScope = SecretsScope False Nothing []
+
+data EnvSecretsConfig = EnvSecretsConfig
+    { escUserName :: Text
+    , escOrganisation :: Text
+    , escProject :: Text
+    , escRoot :: Text
+    , escSafeEnvironmentName :: Text
+    , escProjectScope :: SecretsScope
+    , escEnvironmentScope :: SecretsScope
+    }
+
+instance A.FromJSON EnvSecretsConfig where
+    parseJSON = A.withObject "EnvSecretsConfig" $ \o -> do
+        hostenvObj <- o .: "hostenv"
+        userName <- hostenvObj .: "userName"
+        organisation <- hostenvObj .: "organisation"
+        project <- hostenvObj .: "project"
+        root <- hostenvObj .: "root"
+        environmentName <- hostenvObj .:? "environmentName" .!= userName
+        safeEnvironmentName <- hostenvObj .:? "safeEnvironmentName"
+        projectScope <- hostenvObj .:? "projectSecrets" .!= defaultSecretsScope
+        environmentScope <- hostenvObj .:? "secrets" .!= defaultSecretsScope
+        let safeName = fromMaybe environmentName safeEnvironmentName
+        pure
+            EnvSecretsConfig
+                { escUserName = userName
+                , escOrganisation = organisation
+                , escProject = project
+                , escRoot = root
+                , escSafeEnvironmentName = safeName
+                , escProjectScope = projectScope
+                , escEnvironmentScope = environmentScope
                 }
 
 data NodeConnection = NodeConnection
@@ -1670,6 +1719,303 @@ writeRestorePlan deployUser nodeConnection envInfo prevNode snapshots = do
         ExitSuccess -> pure ()
         ExitFailure code -> error ("failed to write restore plan for " <> T.unpack envInfo.userName <> " (exit " <> show code <> ")")
 
+data SecretAssignment = SecretAssignment
+    { saBucket :: Text
+    , saKey :: Text
+    , saValue :: A.Value
+    , saSource :: Text
+    }
+
+scopeFileOrDefault :: SecretsScope -> Text -> Text
+scopeFileOrDefault scope defaultRel =
+    case scope.secretsFilePath of
+        Just path ->
+            let stripped = T.strip path
+             in if T.null stripped then defaultRel else stripped
+        Nothing -> defaultRel
+
+resolveHostenvConfigRoot :: Text -> IO Text
+resolveHostenvConfigRoot root = do
+    let rootPath = T.unpack root
+    let directHostenvNix = rootPath FP.</> "hostenv.nix"
+    directExists <- Dir.doesFileExist directHostenvNix
+    if directExists
+        then pure root
+        else pure (T.pack (rootPath FP.</> ".hostenv"))
+
+resolveScopePath :: Text -> SecretsScope -> Text -> Text
+resolveScopePath hostenvConfigRoot scope defaultRel =
+    let relOrAbs = scopeFileOrDefault scope defaultRel
+        relOrAbsString = T.unpack relOrAbs
+        hostenvConfigRootString = T.unpack hostenvConfigRoot
+     in
+        if FP.isAbsolute relOrAbsString
+            then relOrAbs
+            else T.pack (hostenvConfigRootString FP.</> relOrAbsString)
+
+decodeJsonObject :: Text -> Text -> KM.KeyMap A.Value
+decodeJsonObject context raw =
+    case A.eitherDecode' (BL.fromStrict (TE.encodeUtf8 raw)) of
+        Right (A.Object obj) -> obj
+        Right _ -> error ("hostenv-provider: expected JSON object for " <> T.unpack context)
+        Left decodeErr ->
+            error
+                ( "hostenv-provider: failed to parse JSON for "
+                    <> T.unpack context
+                    <> ": "
+                    <> decodeErr
+                )
+
+readSecretsObject :: Text -> IO (KM.KeyMap A.Value)
+readSecretsObject path = do
+    let pathString = T.unpack path
+    exists <- Dir.doesFileExist pathString
+    unless exists $
+        error ("hostenv-provider: secrets file not found: " <> pathString)
+
+    (decryptCode, decryptOut, decryptErr) <-
+        readProcessWithExitCode
+            "sops"
+            ["--decrypt", "--output-type", "json", pathString]
+            ""
+    case decryptCode of
+        ExitSuccess ->
+            pure (decodeJsonObject path (T.pack decryptOut))
+        ExitFailure _ -> do
+            (yamlCode, yamlOut, yamlErr) <-
+                readProcessWithExitCode
+                    "yq"
+                    ["-o=json", ".", pathString]
+                    ""
+            case yamlCode of
+                ExitSuccess -> do
+                    let parsed = decodeJsonObject path (T.pack yamlOut)
+                    if KM.member (K.fromString "sops") parsed
+                        then
+                            error
+                                ( "hostenv-provider: could not decrypt SOPS file "
+                                    <> pathString
+                                    <> " ("
+                                    <> decryptErr
+                                    <> ")"
+                                )
+                        else pure parsed
+                ExitFailure _ ->
+                    error
+                        ( "hostenv-provider: failed to read secrets file "
+                            <> pathString
+                            <> " as encrypted or plaintext YAML (sops: "
+                            <> decryptErr
+                            <> "; yq: "
+                            <> yamlErr
+                            <> ")"
+                        )
+
+collectScopeAssignments :: Text -> Text -> Text -> Text -> SecretsScope -> Text -> IO [SecretAssignment]
+collectScopeAssignments scopeLabel envUser bucket hostenvConfigRoot scope defaultRel =
+    if not scope.secretsEnabled || null scope.secretsKeys
+        then pure []
+        else do
+            let scopePath = resolveScopePath hostenvConfigRoot scope defaultRel
+            scopeObject <- readSecretsObject scopePath
+            forM scope.secretsKeys $ \secretKey ->
+                case KM.lookup (K.fromText secretKey) scopeObject of
+                    Just secretValue ->
+                        pure
+                            SecretAssignment
+                                { saBucket = bucket
+                                , saKey = secretKey
+                                , saValue = secretValue
+                                , saSource = scopePath
+                                }
+                    Nothing ->
+                        error
+                            ( "hostenv-provider: declared "
+                                <> T.unpack scopeLabel
+                                <> " secret key '"
+                                <> T.unpack secretKey
+                                <> "' for environment '"
+                                <> T.unpack envUser
+                                <> "' is missing from "
+                                <> T.unpack scopePath
+                                <> ". Run 'hostenv secrets' to scaffold keys."
+                            )
+
+consolidateAssignments :: [SecretAssignment] -> [(Text, Text, A.Value)]
+consolidateAssignments assignments =
+    let
+        go acc [] = acc
+        go acc (assignment : rest) =
+            let key = (assignment.saBucket, assignment.saKey)
+             in case M.lookup key acc of
+                    Nothing ->
+                        go (M.insert key (assignment.saValue, assignment.saSource) acc) rest
+                    Just (existingValue, existingSource) ->
+                        if existingValue == assignment.saValue
+                            then go acc rest
+                            else
+                                error
+                                    ( "hostenv-provider: conflicting values for secret "
+                                        <> T.unpack assignment.saBucket
+                                        <> "/"
+                                        <> T.unpack assignment.saKey
+                                        <> " from "
+                                        <> T.unpack existingSource
+                                        <> " and "
+                                        <> T.unpack assignment.saSource
+                                    )
+     in
+        map (\((bucket, secretKey), (secretValue, _)) -> (bucket, secretKey, secretValue))
+            (M.toList (go M.empty assignments))
+
+applySecretAssignment :: KM.KeyMap A.Value -> (Text, Text, A.Value) -> KM.KeyMap A.Value
+applySecretAssignment secretsRoot (bucket, secretKey, secretValue) =
+    let bucketKey = K.fromText bucket
+        secretKey' = K.fromText secretKey
+        newBucketValue = A.Object (KM.singleton secretKey' secretValue)
+     in case KM.lookup bucketKey secretsRoot of
+            Nothing ->
+                KM.insert bucketKey newBucketValue secretsRoot
+            Just (A.Object bucketObject) ->
+                KM.insert bucketKey (A.Object (KM.insert secretKey' secretValue bucketObject)) secretsRoot
+            Just _ ->
+                error
+                    ( "hostenv-provider: cannot write secret "
+                        <> T.unpack bucket
+                        <> "/"
+                        <> T.unpack secretKey
+                        <> " because bucket '"
+                        <> T.unpack bucket
+                        <> "' is not an object in provider secrets"
+                    )
+
+applySecretAssignments :: KM.KeyMap A.Value -> [(Text, Text, A.Value)] -> KM.KeyMap A.Value
+applySecretAssignments =
+    foldl applySecretAssignment
+
+readProviderAgeRecipients :: Text -> IO [Text]
+readProviderAgeRecipients providerSecretsPath = do
+    (code, out, err) <-
+        readProcessWithExitCode
+            "yq"
+            ["-r", ".sops.age[]?.recipient // empty", T.unpack providerSecretsPath]
+            ""
+    case code of
+        ExitFailure _ ->
+            error
+                ( "hostenv-provider: failed to read age recipients from "
+                    <> T.unpack providerSecretsPath
+                    <> ": "
+                    <> err
+                )
+        ExitSuccess ->
+            pure
+                ( nub
+                    ( filter
+                        (not . T.null)
+                        (map T.strip (T.lines (T.pack out)))
+                    )
+                )
+
+writeMergedSecretsFile :: [Text] -> KM.KeyMap A.Value -> IO ()
+writeMergedSecretsFile recipients mergedSecrets = do
+    let mergedPath = "generated/secrets.merged.yaml"
+    let mergedPathString = T.unpack mergedPath
+    let recipientsCsv = T.intercalate "," recipients
+    Dir.createDirectoryIfMissing True "generated"
+
+    tmpDir <- Dir.getTemporaryDirectory
+    (tmpPath, handle) <- openTempFile tmpDir "hostenv-provider-secrets-XXXXXX.json"
+    BL.hPut handle (A.encode (A.Object mergedSecrets))
+    hClose handle
+
+    (encryptCode, encryptOut, encryptErr) <-
+        readProcessWithExitCode
+            "sops"
+            [ "--encrypt"
+            , "--input-type"
+            , "json"
+            , "--output-type"
+            , "yaml"
+            , "--age"
+            , T.unpack recipientsCsv
+            , tmpPath
+            ]
+            ""
+    _ <- try (Dir.removeFile tmpPath) :: IO (Either SomeException ())
+
+    case encryptCode of
+        ExitSuccess ->
+            writeFile mergedPathString encryptOut
+        ExitFailure _ ->
+            error
+                ( "hostenv-provider: failed to encrypt "
+                    <> mergedPathString
+                    <> ": "
+                    <> encryptErr
+                )
+
+prepareMergedSecrets :: [EnvSecretsConfig] -> IO ()
+prepareMergedSecrets envSecretsConfigs = do
+    let providerSecretsPath = "secrets/secrets.yaml"
+    let mergedPath = "generated/secrets.merged.yaml"
+
+    providerSecretsExists <- Dir.doesFileExist (T.unpack providerSecretsPath)
+    unless providerSecretsExists $
+        error ("hostenv-provider: provider secrets file not found: " <> T.unpack providerSecretsPath)
+
+    assignmentsRaw <-
+        fmap concat $
+            forM envSecretsConfigs $ \envSecretsConfig -> do
+                hostenvConfigRoot <- resolveHostenvConfigRoot envSecretsConfig.escRoot
+                let projectBucket = envSecretsConfig.escOrganisation <> "_" <> envSecretsConfig.escProject
+                let defaultProjectScopeFile = "secrets/project.yaml"
+                projectAssignments <-
+                    collectScopeAssignments
+                        "project"
+                        envSecretsConfig.escUserName
+                        projectBucket
+                        hostenvConfigRoot
+                        envSecretsConfig.escProjectScope
+                        defaultProjectScopeFile
+
+                let defaultEnvScopeFile = "secrets/" <> envSecretsConfig.escSafeEnvironmentName <> ".yaml"
+                environmentAssignments <-
+                    collectScopeAssignments
+                        "environment"
+                        envSecretsConfig.escUserName
+                        envSecretsConfig.escUserName
+                        hostenvConfigRoot
+                        envSecretsConfig.escEnvironmentScope
+                        defaultEnvScopeFile
+
+                pure (projectAssignments <> environmentAssignments)
+
+    let assignments = consolidateAssignments assignmentsRaw
+
+    Dir.createDirectoryIfMissing True "generated"
+    if null assignments
+        then do
+            Dir.copyFile (T.unpack providerSecretsPath) (T.unpack mergedPath)
+            printProviderLine ("hostenv-provider: wrote " <> mergedPath <> " from provider secrets (no project/env secret overrides)")
+        else do
+            baseSecrets <- readSecretsObject providerSecretsPath
+            let mergedSecrets = applySecretAssignments baseSecrets assignments
+            recipients <- readProviderAgeRecipients providerSecretsPath
+            when (null recipients) $
+                error
+                    ( "hostenv-provider: no age recipients found in "
+                        <> T.unpack providerSecretsPath
+                        <> ". Add recipients under sops.age[].recipient."
+                    )
+            writeMergedSecretsFile recipients mergedSecrets
+            printProviderLine
+                ( "hostenv-provider: merged "
+                    <> T.pack (show (length assignments))
+                    <> " project/environment secret key(s) into "
+                    <> mergedPath
+                )
+
 runDeploy :: Maybe Text -> Maybe Text -> Bool -> Bool -> [Text] -> [Text] -> Bool -> Bool -> IO ()
 runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations migrationSourceSpecs ignoreMigrationErrors dryRun = do
     let planPath = "generated/plan.json"
@@ -1687,6 +2033,19 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                     Just hostname -> hostname
             let resolveNodeConnection = nodeConnectionFor plan hostenvHostname
             let envs = fromMaybe KM.empty (lookupObj (K.fromString "environments") plan)
+            envSecretsConfigs <-
+                forM (KM.toList envs) $ \(envNameKey, envValue) ->
+                    case iparseEither parseJSON envValue of
+                        Left err ->
+                            error
+                                ( "hostenv-provider: failed to parse secrets metadata for environment '"
+                                    <> T.unpack (K.toText envNameKey)
+                                    <> "': "
+                                    <> snd err
+                                )
+                        Right envSecretsConfig ->
+                            pure envSecretsConfig
+            prepareMergedSecrets envSecretsConfigs
             migrationSources <-
                 forM migrationSourceSpecs $ \raw ->
                     case parseMigrationSource raw of

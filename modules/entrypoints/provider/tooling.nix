@@ -45,7 +45,7 @@ in
         cliPkg = pkgs.haskellPackages.callCabal2nix "hostenv-provider-cli" providerRoot { };
         hostenvProviderCLI = pkgs.writeShellApplication {
           name = "hostenv-provider";
-          runtimeInputs = [ pkgs.jq ];
+          runtimeInputs = [ pkgs.jq pkgs.sops pkgs.yq-go ];
           text = ''
             set -euo pipefail
             exec ${cliPkg}/bin/hostenv-provider "$@"
@@ -102,6 +102,7 @@ in
             pkgs.sops
             pkgs.age
             pkgs.jq
+            pkgs.yq-go
             pkgs.bind
             pkgs.deploy-rs
             pkgs.postgresql
