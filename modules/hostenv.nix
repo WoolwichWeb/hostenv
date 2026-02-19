@@ -11,15 +11,16 @@ let
     in
     types.submodule ({ ... }: {
       options = {
-        enable = lib.mkEnableOption "hostenv-managed secrets for this scope";
+        enable = lib.mkEnableOption "secrets management using SOPS";
 
         file = lib.mkOption {
           type = types.nullOr types.str;
           default = null;
           description = ''
-            Path to this scope's SOPS secrets file.
-            If relative, interpreted from the `.hostenv` project root.
-            If null, hostenv chooses a default per scope.
+            Path to the SOPS secrets file.
+
+            - Relative paths will be interpreted from the project root.
+            - When null hostenv will choose a default path depending on the scope.
           '';
         };
 
@@ -281,7 +282,6 @@ let
     { lib, config, name, options, ... }:
     let
       types = lib.types;
-      tl = topLevel;
       secretsScopeType = mkSecretsScopeType lib;
       envCfg = config;
 
@@ -635,7 +635,7 @@ let
           type = secretsScopeType;
           default = { };
           description = ''
-            Per-environment secret scope configuration.
+            Per-environment secrets using SOPS.
           '';
         };
 
@@ -646,17 +646,17 @@ let
               {
                 # Provide only the per-env bits; keep environments empty to avoid
                 # embedding the whole tree here.
-                config.organisation = lib.mkDefault (tl.organisation or "");
-                config.project = lib.mkDefault (tl.project or "");
-                config.hostenvHostname = lib.mkDefault (tl.hostenvHostname or "example.invalid");
-                config.backupsRepoHost = lib.mkDefault (tl.backupsRepoHost or null);
+                config.organisation = lib.mkDefault (topLevel.organisation or "");
+                config.project = lib.mkDefault (topLevel.project or "");
+                config.hostenvHostname = lib.mkDefault (topLevel.hostenvHostname or "example.invalid");
+                config.backupsRepoHost = lib.mkDefault (topLevel.backupsRepoHost or null);
                 config.environmentName = name;
-                config.root = lib.mkDefault (tl.root or ".");
+                config.root = lib.mkDefault (topLevel.root or ".");
                 config.environments = { };
                 config.projectSecrets = lib.mkDefault (
-                  if (tl.secrets or { }) != { }
-                  then tl.secrets
-                  else (tl.hostenv.secrets or { })
+                  if (topLevel.secrets or { }) != { }
+                  then topLevel.secrets
+                  else (topLevel.hostenv.secrets or { })
                 );
                 config.secrets = lib.mkDefault (envCfg.secrets or { });
               }
@@ -701,7 +701,7 @@ let
       in
       if (!hasPogOverlay) then
         builtins.throw ''
-          The hostenv CLI requires the Pog library but is not available for ${system}.
+          The hostenv CLI requires the Pog library but it is not available for ${system}.
 
           Supported systems: ${supportedSystemsMsg}
 
@@ -754,7 +754,7 @@ in
           type = mkSecretsScopeType lib;
           default = { };
           description = ''
-            Project-wide secret scope configuration.
+            Project-wide secrets using SOPS.
           '';
         };
 
