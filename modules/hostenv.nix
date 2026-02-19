@@ -5,10 +5,49 @@ let
 
   systems = config.systems;
 
+  mkSecretsScopeType = lib:
+    let
+      types = lib.types;
+    in
+    types.submodule ({ ... }: {
+      options = {
+        enable = lib.mkEnableOption "hostenv-managed secrets for this scope";
+
+        file = lib.mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = ''
+            Path to this scope's SOPS secrets file.
+            If relative, interpreted from the `.hostenv` project root.
+            If null, hostenv chooses a default per scope.
+          '';
+        };
+
+        keys = lib.mkOption {
+          type = types.listOf types.str;
+          default = [ ];
+          description = ''
+            Secret keys to expose under `/run/secrets/<hostenv.userName>/`.
+            Each key maps to `/run/secrets/<hostenv.userName>/<key>`.
+          '';
+        };
+
+        providerPublicKeys = lib.mkOption {
+          type = types.listOf types.str;
+          default = [ ];
+          description = ''
+            Age public key recipients for the provider bridge.
+            Hostenv scaffolding uses these when generating `.sops.yaml` rules.
+          '';
+        };
+      };
+    });
+
   # Basic Hostenv configuration: paths, project hash.
   hostenvModule = { lib, config, ... }:
     let
       types = lib.types;
+      secretsScopeType = mkSecretsScopeType lib;
 
       # Replace non-alpha characters with a hyphen
       sanitise = str:
@@ -56,40 +95,6 @@ let
         lib.toLower (
           if slug != "" then slug else lib.concatStringsSep "-" (lib.take 1 words)
         );
-
-      secretsScopeType = types.submodule ({ ... }: {
-        options = {
-          enable = lib.mkEnableOption "hostenv-managed secrets for this scope";
-
-          file = lib.mkOption {
-            type = types.nullOr types.str;
-            default = null;
-            description = ''
-              Path to this scope's SOPS secrets file.
-              If relative, interpreted from the `.hostenv` project root.
-              If null, hostenv chooses a default per scope.
-            '';
-          };
-
-          keys = lib.mkOption {
-            type = types.listOf types.str;
-            default = [ ];
-            description = ''
-              Secret keys to expose under `/run/secrets/<hostenv.userName>/`.
-              Each key maps to `/run/secrets/<hostenv.userName>/<key>`.
-            '';
-          };
-
-          providerPublicKeys = lib.mkOption {
-            type = types.listOf types.str;
-            default = [ ];
-            description = ''
-              Age public key recipients for the provider bridge.
-              Hostenv scaffolding uses these when generating `.sops.yaml` rules.
-            '';
-          };
-        };
-      });
 
     in
     {
@@ -205,16 +210,6 @@ let
           apply = v: if v == null then null else lib.removeSuffix "/" v;
           default = null;
         };
-        secrets = lib.mkOption {
-          type = secretsScopeType;
-          default = { };
-          description = ''
-            Secret scope configuration.
-
-            At top-level (`hostenv.secrets`): project-wide secrets.
-            At per-environment level (`environments.<name>.hostenv.secrets`): environment-specific secrets.
-          '';
-        };
         projectSecrets = lib.mkOption {
           type = secretsScopeType;
           default = { };
@@ -287,6 +282,8 @@ let
     let
       types = lib.types;
       tl = topLevel;
+      secretsScopeType = mkSecretsScopeType lib;
+      envCfg = config;
 
       user = {
         options = {
@@ -634,6 +631,14 @@ let
           '';
         };
 
+        secrets = lib.mkOption {
+          type = secretsScopeType;
+          default = { };
+          description = ''
+            Per-environment secret scope configuration.
+          '';
+        };
+
         hostenv = lib.mkOption {
           type = types.submoduleWith {
             modules = [
@@ -648,7 +653,12 @@ let
                 config.environmentName = name;
                 config.root = lib.mkDefault (tl.root or ".");
                 config.environments = { };
-                config.projectSecrets = lib.mkDefault (tl.secrets or { });
+                config.projectSecrets = lib.mkDefault (
+                  if (tl.secrets or { }) != { }
+                  then tl.secrets
+                  else (tl.hostenv.secrets or { })
+                );
+                config.secrets = lib.mkDefault (envCfg.secrets or { });
               }
             ];
           };
@@ -738,11 +748,23 @@ in
     flake.lib.hostenv.module = hostenvModule;
     flake.lib.hostenv.environmentModule = environmentModule;
 
-    flake.modules.hostenv.core = { ... }: {
-      options.hostenv = lib.mkOption {
-        type = types.submodule hostenvModule;
-        description = "Hostenv configuration for the current environment.";
+    flake.modules.hostenv.core = { lib, config, ... }: {
+      options = {
+        secrets = lib.mkOption {
+          type = mkSecretsScopeType lib;
+          default = { };
+          description = ''
+            Project-wide secret scope configuration.
+          '';
+        };
+
+        hostenv = lib.mkOption {
+          type = types.submodule hostenvModule;
+          description = "Hostenv configuration for the current environment.";
+        };
       };
+
+      config.hostenv.secrets = lib.mkDefault config.secrets;
     };
 
     flake.makeHostenv = lib.genAttrs systems mkMakeHostenv;

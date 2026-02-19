@@ -429,7 +429,9 @@ instance A.FromJSON EnvSecretsConfig where
         environmentName <- hostenvObj .:? "environmentName" .!= userName
         safeEnvironmentName <- hostenvObj .:? "safeEnvironmentName"
         projectScope <- hostenvObj .:? "projectSecrets" .!= defaultSecretsScope
-        environmentScope <- hostenvObj .:? "secrets" .!= defaultSecretsScope
+        environmentScopeTop <- o .:? "secrets"
+        environmentScopeLegacy <- hostenvObj .:? "secrets"
+        let environmentScope = fromMaybe defaultSecretsScope (environmentScopeTop <|> environmentScopeLegacy)
         let safeName = fromMaybe environmentName safeEnvironmentName
         pure
             EnvSecretsConfig
@@ -1898,7 +1900,7 @@ readProviderAgeRecipients providerSecretsPath = do
     (code, out, err) <-
         readProcessWithExitCode
             "yq"
-            ["-r", ".sops.age[]?.recipient // empty", T.unpack providerSecretsPath]
+            ["-r", ".sops.age | .[] | .recipient", T.unpack providerSecretsPath]
             ""
     case code of
         ExitFailure _ ->

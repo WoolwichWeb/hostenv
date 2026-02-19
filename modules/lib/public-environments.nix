@@ -13,7 +13,11 @@ let
           gitRef = h.gitRef or null;
           userName = h.userName or null;
           hostname = h.hostname or null;
-          secrets = h.secrets or { };
+          secrets =
+            if env ? secrets then
+              env.secrets
+            else
+              h.secrets or { };
         };
 
       envPublic = env: {

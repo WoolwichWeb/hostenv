@@ -4,6 +4,7 @@
 (import ./drupal/tests.nix { inherit pkgs envs; })
   // (import ./drupal7/tests.nix { inherit pkgs envs; })
   // { hostenv-cli-list = import ./cli-list.nix { inherit pkgs makeHostenv; }; }
+  // { hostenv-cli-secrets-sync = import ./cli-secrets-sync.nix { inherit pkgs makeHostenv; }; }
   // { hostenv-outputs-eval = import ./hostenv-outputs.nix { inherit pkgs makeHostenv inputs; }; }
   // (import ./provider-plan.nix { inherit pkgs makeHostenv inputs; })
   // (import ./provider-full.nix { inherit pkgs makeHostenv inputs; })
