@@ -12,12 +12,7 @@
           Non-JSON data should be stored elsewhere (e.g. config.hostenv.*).
         '';
         envJsonEval.value;
-      projectSecrets =
-        let
-          rootSecrets = config.secrets or { };
-          legacyHostenvSecrets = config.hostenv.secrets or { };
-        in
-        if rootSecrets != { } then rootSecrets else legacyHostenvSecrets;
+      projectSecrets = config.secrets or { };
       projectSecretsJsonEval = builtins.tryEval (builtins.toJSON projectSecrets);
       projectSecretsJson =
         assert projectSecretsJsonEval.success
@@ -166,7 +161,7 @@
             [ -n "$iter_env_name" ] || continue
             iter_env_cfg="$(jq -c --arg e "$iter_env_name" '.[$e] // null' <<<"$all_envs_json")"
             [ "$iter_env_cfg" != "null" ] || continue
-            iter_scope="$(jq -c '.secrets // .hostenv.secrets // {}' <<<"$iter_env_cfg")"
+            iter_scope="$(jq -c '.secrets // {}' <<<"$iter_env_cfg")"
             iter_enabled="$(scope_enabled "$iter_scope")"
             if [ "$iter_enabled" = "true" ]; then
               any_enabled=true
@@ -197,7 +192,7 @@
             [ -n "$iter_env_name" ] || continue
             iter_env_cfg="$(jq -c --arg e "$iter_env_name" '.[$e] // null' <<<"$all_envs_json")"
             [ "$iter_env_cfg" != "null" ] || continue
-            iter_scope="$(jq -c '.secrets // .hostenv.secrets // {}' <<<"$iter_env_cfg")"
+            iter_scope="$(jq -c '.secrets // {}' <<<"$iter_env_cfg")"
             if [ "$(scope_enabled "$iter_scope")" = "true" ]; then
               iter_safe="$(jq -r '.hostenv.safeEnvironmentName // .hostenv.environmentName // empty' <<<"$iter_env_cfg")"
               [ -n "$iter_safe" ] || iter_safe="$iter_env_name"
@@ -452,7 +447,7 @@
             env_cfg_local="$env_cfg"
             all_envs_json='${envJson}'
             project_scope='${projectSecretsJson}'
-            env_scope="$(jq -c '.secrets // .hostenv.secrets // {}' <<<"$env_cfg_local")"
+            env_scope="$(jq -c '.secrets // {}' <<<"$env_cfg_local")"
             project_enabled="$(scope_enabled "$project_scope")"
             env_enabled="$(scope_enabled "$env_scope")"
 
@@ -476,7 +471,7 @@
             elif [ -n "$target" ]; then
               target_env_cfg="$(jq -c --arg e "$target" '.[$e] // null' <<<"$all_envs_json")"
               [ "$target_env_cfg" != "null" ] || die "hostenv secrets: unknown environment '$target'" 2
-              target_scope="$(jq -c '.secrets // .hostenv.secrets // {}' <<<"$target_env_cfg")"
+              target_scope="$(jq -c '.secrets // {}' <<<"$target_env_cfg")"
               target_enabled="$(scope_enabled "$target_scope")"
               [ "$target_enabled" = "true" ] || die "hostenv secrets: environment '$target' secrets are not enabled" 2
               target_safe="$(jq -r '.hostenv.safeEnvironmentName // .hostenv.environmentName // empty' <<<"$target_env_cfg")"

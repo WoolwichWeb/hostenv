@@ -126,7 +126,7 @@ let
                   envCfg = environmentWith name;
                   hostenvCfg = envCfg.hostenv or { };
                   projectSecretKeys = scopeKeys (hostenvCfg.projectSecrets or { });
-                  envSecretKeys = scopeKeys ((envCfg.secrets or { }) // (hostenvCfg.secrets or { }));
+                  envSecretKeys = scopeKeys (envCfg.secrets or { });
                   secretKeys = lib.unique ([ "backups_secret" "backups_env" ] ++ projectSecretKeys ++ envSecretKeys);
                 in
                 builtins.listToAttrs (map

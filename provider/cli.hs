@@ -429,9 +429,7 @@ instance A.FromJSON EnvSecretsConfig where
         environmentName <- hostenvObj .:? "environmentName" .!= userName
         safeEnvironmentName <- hostenvObj .:? "safeEnvironmentName"
         projectScope <- hostenvObj .:? "projectSecrets" .!= defaultSecretsScope
-        environmentScopeTop <- o .:? "secrets"
-        environmentScopeLegacy <- hostenvObj .:? "secrets"
-        let environmentScope = fromMaybe defaultSecretsScope (environmentScopeTop <|> environmentScopeLegacy)
+        environmentScope <- o .:? "secrets" .!= defaultSecretsScope
         let safeName = fromMaybe environmentName safeEnvironmentName
         pure
             EnvSecretsConfig

@@ -244,7 +244,8 @@ let
           envs = config.environments or { };
           productionEnvs = lib.filterAttrs (_: v: (v.enable or false) && v.type == "production") envs;
           productionNames = builtins.attrNames productionEnvs;
-        in {
+        in
+        {
           defaultEnvironment = lib.mkDefault (if productionNames != [ ] then builtins.head productionNames else "main");
 
           assertions = [
@@ -283,7 +284,6 @@ let
     let
       types = lib.types;
       secretsScopeType = mkSecretsScopeType lib;
-      envCfg = config;
 
       user = {
         options = {
@@ -378,7 +378,6 @@ let
                       let
                         hostName = envConfig.hostenv.hostname or "";
                         thisHost = config._module.args.name;
-                        thisPrio = options.globalRedirect.highestPrio;
                       in
                       if thisHost == hostName
                       then value: if value == forceNull then null else value
@@ -653,12 +652,7 @@ let
                 config.environmentName = name;
                 config.root = lib.mkDefault (topLevel.root or ".");
                 config.environments = { };
-                config.projectSecrets = lib.mkDefault (
-                  if (topLevel.secrets or { }) != { }
-                  then topLevel.secrets
-                  else (topLevel.hostenv.secrets or { })
-                );
-                config.secrets = lib.mkDefault (envCfg.secrets or { });
+                config.projectSecrets = lib.mkDefault (topLevel.secrets or {});
               }
             ];
           };
@@ -763,8 +757,6 @@ in
           description = "Hostenv configuration for the current environment.";
         };
       };
-
-      config.hostenv.secrets = lib.mkDefault config.secrets;
     };
 
     flake.makeHostenv = lib.genAttrs systems mkMakeHostenv;
