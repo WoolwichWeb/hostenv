@@ -1074,20 +1074,50 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
                                             , M.insert key outcome seenUpserts
                                             )
 
+isInsideGitWorkTree :: IO Bool
+isInsideGitWorkTree = do
+    probeResult <- try (readProcessWithExitCode "git" ["rev-parse", "--is-inside-work-tree"] "") :: IO (Either SomeException (ExitCode, String, String))
+    case probeResult of
+        Left _ -> pure False
+        Right (code, out, _err) -> pure (code == ExitSuccess && T.strip (T.pack out) == "true")
+
+isTrackedByGit :: Text -> IO Bool
+isTrackedByGit path = do
+    (code, _out, _err) <-
+        readProcessWithExitCode
+            "git"
+            ["ls-files", "--error-unmatch", "--", T.unpack path]
+            ""
+    pure (code == ExitSuccess)
+
+ensureTrackedInGit :: [Text] -> IO ()
+ensureTrackedInGit paths = do
+    insideGit <- isInsideGitWorkTree
+    when insideGit $
+        forM_ (nub paths) $ \path -> do
+            exists <- Dir.doesFileExist (T.unpack path)
+            when exists $ do
+                tracked <- isTrackedByGit path
+                unless tracked $ do
+                    printProviderLine ("hostenv-provider: tracking new generated file " <> path)
+                    addRes <- Sh.proc "git" ["add", path] Sh.empty
+                    when (addRes /= ExitSuccess) $
+                        error ("hostenv-provider: failed to add " <> T.unpack path <> " to git index")
+
 runPlan :: Bool -> IO ()
 runPlan dryRun = do
     let dest = "generated" :: Text
     let planDest = dest <> "/plan.json"
     let stateDest = dest <> "/state.json"
     let flakeDest = dest <> "/flake.nix"
+    let flakeLockDest = dest <> "/flake.lock"
 
     unless dryRun $ do
         Sh.mktree (fromString (T.unpack dest))
         stateExists <- Sh.testfile (fromString (T.unpack stateDest))
         unless stateExists $ do
             BLC.writeFile (T.unpack stateDest) "{}\n"
-            _ <- Sh.procs "git" ["add", stateDest] Sh.empty
-            pure ()
+            ensureTrackedInGit [stateDest]
 
     system <- nixEvalRaw ["eval", "--impure", "--raw", "--expr", "builtins.currentSystem"]
     let planAttrBase = ".#lib.provider.planPaths." <> T.strip system
@@ -1111,9 +1141,9 @@ runPlan dryRun = do
             flakeRaw <- BL.readFile (T.unpack flakeSource)
             BL.writeFile (T.unpack flakeDest) flakeRaw
 
-            _ <- Sh.procs "git" ["add", dest] Sh.empty
+            ensureTrackedInGit [planDest, stateDest, flakeDest]
             _ <- Sh.procs "nix" (nixCommonArgs ++ ["flake", "update", "--flake", "./" <> dest]) Sh.empty
-            _ <- Sh.procs "git" ["add", dest] Sh.empty
+            ensureTrackedInGit [flakeLockDest]
             BLC.putStrLn ("✅ Infrastructure configuration written to " <> BLC.pack (T.unpack dest))
   where
     nixCommonArgs :: [Text]
@@ -2015,6 +2045,7 @@ prepareMergedSecrets envSecretsConfigs = do
                     <> " project/environment secret key(s) into "
                     <> mergedPath
                 )
+    ensureTrackedInGit [mergedPath]
 
 runDeploy :: Maybe Text -> Maybe Text -> Bool -> Bool -> [Text] -> [Text] -> Bool -> Bool -> IO ()
 runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations migrationSourceSpecs ignoreMigrationErrors dryRun = do
