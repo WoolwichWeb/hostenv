@@ -26,10 +26,18 @@ let
       backups_secret: "dummy"
       backups_env: "dummy"
       env_only: "env"
+      env_provider_only: "provider-env-only"
     acme_demo:
       project_only: "project"
+      project_provider_only: "provider-project-only"
     acme:
       org_only: "org"
+    __hostenv_selected_keys:
+      ${envName}:
+        project:
+          - "project_only"
+        environment:
+          - "env_only"
   '';
 
   envInput = {
@@ -61,7 +69,7 @@ let
         node = nodeName;
         secrets = {
           enable = true;
-          keys = [ "env_only" "org_only" ];
+          keys = [ ];
         };
         hostenv = {
           organisation = "acme";
@@ -74,7 +82,7 @@ let
           root = "/src/demo";
           projectSecrets = {
             enable = true;
-            keys = [ "project_only" ];
+            keys = [ ];
           };
         };
       };
@@ -156,10 +164,11 @@ let
     && builtins.hasAttr "${envName}/backups_env" systemEval.config.sops.secrets
     && builtins.hasAttr "${envName}/env_only" systemEval.config.sops.secrets
     && builtins.hasAttr "${envName}/project_only" systemEval.config.sops.secrets
-    && builtins.hasAttr "${envName}/org_only" systemEval.config.sops.secrets
     && systemEval.config.sops.secrets."${envName}/env_only".key == "${envName}/env_only"
     && systemEval.config.sops.secrets."${envName}/project_only".key == "acme_demo/project_only"
-    && systemEval.config.sops.secrets."${envName}/org_only".key == "acme/org_only"
+    && !(builtins.hasAttr "${envName}/org_only" systemEval.config.sops.secrets)
+    && !(builtins.hasAttr "${envName}/env_provider_only" systemEval.config.sops.secrets)
+    && !(builtins.hasAttr "${envName}/project_provider_only" systemEval.config.sops.secrets)
     && !(builtins.hasAttr "deploy/backups_secret" systemEval.config.sops.secrets)
     && !(builtins.hasAttr "deploy/backups_env" systemEval.config.sops.secrets);
   wheelGroupExists = systemEval.config.users.groups ? wheel;

@@ -105,6 +105,88 @@ in
     jq -e '.["acme_demo"].existing_project == "keep-me"' "$root/merged.json" >/dev/null
     echo ok > "$out"
   '';
+  provider-cli-secrets-merge-all-keys = pkgs.runCommand "provider-cli-secrets-merge-all-keys" { } ''
+    set -euo pipefail
+    export PATH="${lib.makeBinPath [ pkgs.age pkgs.sops pkgs.yq-go pkgs.jq pkgs.gnugrep pkgs.gawk pkgs.coreutils pkgs.bash ]}:$PATH"
+
+    root="$TMPDIR/repo"
+    projectRoot="$root/project"
+    mkdir -p "$root/generated" "$root/secrets" "$projectRoot/.hostenv/secrets"
+
+    cat > "$projectRoot/.hostenv/hostenv.nix" <<'EOF'
+    { ... }: { }
+    EOF
+
+    cat > "$projectRoot/.hostenv/secrets/project.yaml" <<'EOF'
+    api_token: "project-token"
+    api_secret: "project-secret"
+    EOF
+
+    cat > "$projectRoot/.hostenv/secrets/main.yaml" <<'EOF'
+    oauth_client: "env-client"
+    env_extra: "env-extra"
+    EOF
+
+    age-keygen -o "$root/age.key" >/dev/null
+    recipient="$(grep '^# public key:' "$root/age.key" | awk '{print $4}')"
+
+    cat > "$root/provider-plain.yaml" <<'EOF'
+    acme__demo-main:
+      backups_secret: "base-secret"
+      backups_env: "RESTIC_PASSWORD=base-env"
+      provider_only: "keep-private"
+    acme_demo:
+      provider_project_only: "keep-private-project"
+    EOF
+    sops --encrypt --input-type yaml --output-type yaml --age "$recipient" "$root/provider-plain.yaml" > "$root/secrets/secrets.yaml"
+
+    cat > "$root/generated/plan.json" <<EOF
+    {
+      "hostenvHostname": "hosting.test",
+      "environments": {
+        "acme__demo-main": {
+          "node": "node-a",
+          "type": "development",
+          "users": {},
+          "virtualHosts": {},
+          "secrets": {
+            "enable": true
+          },
+          "hostenv": {
+            "userName": "acme__demo-main",
+            "organisation": "acme",
+            "project": "demo",
+            "root": "$projectRoot",
+            "environmentName": "main",
+            "safeEnvironmentName": "main",
+            "runtimeDir": "/run/hostenv/nginx/acme__demo-main",
+            "projectSecrets": {
+              "enable": true
+            }
+          }
+        }
+      }
+    }
+    EOF
+
+    cd "$root"
+    export SOPS_AGE_KEY_FILE="$root/age.key"
+    ${cliPkg}/bin/hostenv-provider deploy --dry-run --node no-such >/dev/null
+
+    test -f "$root/generated/secrets.merged.yaml"
+    sops --decrypt --output-type json "$root/generated/secrets.merged.yaml" > "$root/merged.json"
+
+    jq -e '.["acme_demo"].api_token == "project-token"' "$root/merged.json" >/dev/null
+    jq -e '.["acme_demo"].api_secret == "project-secret"' "$root/merged.json" >/dev/null
+    jq -e '.["acme__demo-main"].oauth_client == "env-client"' "$root/merged.json" >/dev/null
+    jq -e '.["acme__demo-main"].env_extra == "env-extra"' "$root/merged.json" >/dev/null
+    jq -e '.["acme__demo-main"].provider_only == "keep-private"' "$root/merged.json" >/dev/null
+    jq -e '.["acme_demo"].provider_project_only == "keep-private-project"' "$root/merged.json" >/dev/null
+
+    jq -e '(.["__hostenv_selected_keys"]["acme__demo-main"].project | sort) == ["api_secret", "api_token"]' "$root/merged.json" >/dev/null
+    jq -e '(.["__hostenv_selected_keys"]["acme__demo-main"].environment | sort) == ["env_extra", "oauth_client"]' "$root/merged.json" >/dev/null
+    echo ok > "$out"
+  '';
   provider-cli-secrets-merge-tracks-file = pkgs.runCommand "provider-cli-secrets-merge-tracks-file" { } ''
     set -euo pipefail
     export PATH="${lib.makeBinPath [ pkgs.age pkgs.git pkgs.sops pkgs.yq-go pkgs.jq pkgs.gnugrep pkgs.gawk pkgs.coreutils pkgs.bash ]}:$PATH"

@@ -10,7 +10,7 @@ in
     let
       cfg = config.environments;
       forceNull = "__HOSTENV_INTERNAL_DO_NOT_CHANGE_SEMAPHORE__";
-      topLevel = config.hostenv or { };
+      topLevel = (config.hostenv or { }) // { secrets = config.secrets or { }; };
       types = lib.types;
       envModule = environmentModule {
         allUsers = config.allEnvironments.users;

@@ -4,9 +4,9 @@
 -- hostenv-provider CLI: plan | dns-gate | deploy
 -- dns-gate ports the legacy scripts/postgen.hs DNS/ACME gate and Cloudflare upsert logic.
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, displayException, finally, try)
 import Control.Monad (forM, forM_, unless, when)
-import Control.Concurrent (threadDelay)
 import Data.Aeson ((.!=), (.:), (.:?), (.=))
 import Data.Aeson qualified as A
 import Data.Aeson.Key qualified as K
@@ -28,10 +28,10 @@ import Data.Text.Conversions (convertText)
 import Data.Text.Encoding qualified as TE
 import Distribution.Compat.Prelude qualified as Sh
 import Hostenv.Provider.DeployGuidance (FlakeKeyStatus (..), localTrustSetupLines, remoteNodeTrustLines)
-import Hostenv.Provider.DnsBackoff (backoffDelays)
-import Hostenv.Provider.DnsGateFilter (filterEnvironmentsByNode)
 import Hostenv.Provider.DeployPreflight qualified as Preflight
 import Hostenv.Provider.DeployVerification qualified as Verify
+import Hostenv.Provider.DnsBackoff (backoffDelays)
+import Hostenv.Provider.DnsGateFilter (filterEnvironmentsByNode)
 import Hostenv.Provider.PrevNodeDiscovery qualified as PrevNode
 import Hostenv.Provider.SigningTarget (deployProfilePathInstallable)
 import Options.Applicative qualified as OA
@@ -319,9 +319,9 @@ printUnifiedDiff path oldContent newContent =
                     BLC.putStr (BLC.pack out)
                     pure True
                 ExitFailure c -> do
-                    printProviderErrLine ("hostenv-provider: warning: failed to render diff for " <> path <> " (exit " <> T.pack (show c) <> ")")
+                    printProviderErr ("hostenv-provider: warning: failed to render diff for " <> path <> " (exit " <> T.pack (show c) <> ")")
                     when (not (null err)) $
-                        printProviderErrLine ("hostenv-provider: diff stderr: " <> T.pack err)
+                        printProviderErr ("hostenv-provider: diff stderr: " <> T.pack err)
                     pure True
 
 printDiffAgainstFile :: Text -> BL.ByteString -> IO Bool
@@ -329,7 +329,7 @@ printDiffAgainstFile path proposedPretty = do
     pathExists <- Dir.doesFileExist (T.unpack path)
     if not pathExists
         then do
-            printProviderLine ("hostenv-provider: dry-run: " <> path <> " does not exist; generated content would be:")
+            printProvider ("hostenv-provider: dry-run: " <> path <> " does not exist; generated content would be:")
             BLC.putStr proposedPretty
             pure True
         else do
@@ -337,7 +337,7 @@ printDiffAgainstFile path proposedPretty = do
             currentPretty <- prettyJson currentRaw
             if currentPretty == proposedPretty
                 then do
-                    printProviderLine ("hostenv-provider: dry-run: no changes for " <> path)
+                    printProvider ("hostenv-provider: dry-run: no changes for " <> path)
                     pure False
                 else printUnifiedDiff path currentPretty proposedPretty
 
@@ -383,40 +383,40 @@ instance A.FromJSON EnvInfo where
         uid <- o .:? "uid"
         pure $
             EnvInfo
-                { userName = userName
-                , node = node
-                , prevNode = prevNode
-                , migrateBackups = migrateBackups
-                , runtimeDir = runtimeDir
-                , vhosts = vhosts
-                , uid = uid
+                { userName
+                , node
+                , prevNode
+                , migrateBackups
+                , runtimeDir
+                , vhosts
+                , uid
                 , deploymentStatus = NotAttempted
                 }
 
-data SecretsScope = SecretsScope
+data SecretsConfig = SecretsConfig
     { secretsEnabled :: Bool
     , secretsFilePath :: Maybe Text
     , secretsKeys :: [Text]
     }
 
-instance A.FromJSON SecretsScope where
-    parseJSON = A.withObject "SecretsScope" $ \o ->
-        SecretsScope
+instance A.FromJSON SecretsConfig where
+    parseJSON = A.withObject "SecretsConfig" $ \o ->
+        SecretsConfig
             <$> o .:? "enable" .!= False
             <*> o .:? "file"
             <*> o .:? "keys" .!= []
 
-defaultSecretsScope :: SecretsScope
-defaultSecretsScope = SecretsScope False Nothing []
+defaultSecretsConfig :: SecretsConfig
+defaultSecretsConfig = SecretsConfig False Nothing []
 
 data EnvSecretsConfig = EnvSecretsConfig
-    { escUserName :: Text
-    , escOrganisation :: Text
-    , escProject :: Text
-    , escRoot :: Text
-    , escSafeEnvironmentName :: Text
-    , escProjectScope :: SecretsScope
-    , escEnvironmentScope :: SecretsScope
+    { userName :: Text
+    , organisation :: Text
+    , project :: Text
+    , root :: Text
+    , safeEnvironmentName :: Text
+    , projectSecretsCfg :: SecretsConfig
+    , environmentSecretsCfg :: SecretsConfig
     }
 
 instance A.FromJSON EnvSecretsConfig where
@@ -428,23 +428,23 @@ instance A.FromJSON EnvSecretsConfig where
         root <- hostenvObj .: "root"
         environmentName <- hostenvObj .:? "environmentName" .!= userName
         safeEnvironmentName <- hostenvObj .:? "safeEnvironmentName"
-        projectScope <- hostenvObj .:? "projectSecrets" .!= defaultSecretsScope
-        environmentScope <- o .:? "secrets" .!= defaultSecretsScope
+        projectScope <- hostenvObj .:? "projectSecrets" .!= defaultSecretsConfig
+        environmentScope <- o .:? "secrets" .!= defaultSecretsConfig
         let safeName = fromMaybe environmentName safeEnvironmentName
         pure
             EnvSecretsConfig
-                { escUserName = userName
-                , escOrganisation = organisation
-                , escProject = project
-                , escRoot = root
-                , escSafeEnvironmentName = safeName
-                , escProjectScope = projectScope
-                , escEnvironmentScope = environmentScope
+                { userName = userName
+                , organisation = organisation
+                , project = project
+                , root = root
+                , safeEnvironmentName = safeName
+                , projectSecretsCfg = projectScope
+                , environmentSecretsCfg = environmentScope
                 }
 
 data NodeConnection = NodeConnection
-    { connHostname :: Text
-    , connSshOpts :: [Text]
+    { hostname :: Text
+    , sshOptions :: [Text]
     }
 
 instance A.FromJSON NodeConnection where
@@ -456,8 +456,8 @@ instance A.FromJSON NodeConnection where
 defaultNodeConnection :: Text -> Text -> NodeConnection
 defaultNodeConnection hostenvHostname nodeName =
     NodeConnection
-        { connHostname = nodeName <> "." <> hostenvHostname
-        , connSshOpts = []
+        { hostname = nodeName <> "." <> hostenvHostname
+        , sshOptions = []
         }
 
 lookupNodeConnection :: KM.KeyMap A.Value -> Text -> Maybe NodeConnection
@@ -782,7 +782,7 @@ collectDnsGateItems hostenvHostname envs =
                     expectedHostFor vh = maybe vh (`PrevNode.canonicalHostInDomain` hostenvHostname) nodeName
                     vhosts = fromMaybe KM.empty (lookupObj (K.fromString "virtualHosts") envObj)
                  in map
-                        (\(vhKey, _) ->
+                        ( \(vhKey, _) ->
                             let vhName = K.toText vhKey
                              in DnsGateItem
                                     { dgiEnvName = envName
@@ -839,7 +839,7 @@ waitForDnsPropagation items = do
     go resolved unresolved _ | null unresolved = pure (S.fromList (map dnsGateKey resolved), [])
     go resolved unresolved [] = pure (S.fromList (map dnsGateKey resolved), unresolved)
     go resolved unresolved (delaySec : restDelays) = do
-        printProviderLine
+        printProvider
             ( "hostenv-provider: waiting "
                 <> T.pack (show delaySec)
                 <> "s before rechecking DNS propagation for "
@@ -882,7 +882,7 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
                 _ -> pure Nothing
             let hasCF = isJustPair mCfToken mCfZone
             when (withDnsUpdate && not hasCF) $
-                printProviderErrLine $
+                printProviderErr $
                     "hostenv-provider: warning: --with-dns-update requested but Cloudflare credentials are missing (set both --cf-token/CF_API_TOKEN and --cf-zone/CF_ZONE_ID). "
                         <> "Continuing in check-only mode without DNS updates."
 
@@ -910,7 +910,7 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
                         ]
 
             when (not dryRun && not (null upsertedItems)) $
-                printProviderLine
+                printProvider
                     ( "hostenv-provider: waiting for DNS propagation for "
                         <> T.pack (show (length upsertedItems))
                         <> " vhost(s) with exponential backoff (max 30s, total 10m)"
@@ -923,11 +923,11 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
 
             when dryRun $
                 when withDnsUpdate $
-                    printProviderLine
+                    printProvider
                         "hostenv-provider: dry-run: propagation waiting is skipped; real runs wait up to 10 minutes before deciding ACME/SSL changes"
 
             forM_ timedOutItems $ \item ->
-                printProviderErrLine
+                printProviderErr
                     ( "hostenv-provider: warning: DNS did not propagate within 10 minutes for "
                         <> item.dgiDiscoveryHost
                         <> " -> "
@@ -953,7 +953,7 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
             forM_ disableTargets $ \mismatch ->
                 case mismatch.dgmOutcome of
                     UpsertUnavailable reason ->
-                        printProviderErrLine
+                        printProviderErr
                             ( "hostenv-provider: warning: disabling ACME/forceSSL for "
                                 <> mismatch.dgmItem.dgiVhostName
                                 <> " because DNS host "
@@ -965,7 +965,7 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
                                 <> ")"
                             )
                     UpsertFailed reason ->
-                        printProviderErrLine
+                        printProviderErr
                             ( "hostenv-provider: warning: disabling ACME/forceSSL for "
                                 <> mismatch.dgmItem.dgiVhostName
                                 <> " because Cloudflare upsert failed ("
@@ -973,7 +973,7 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
                                 <> ")"
                             )
                     UpsertSucceeded ->
-                        printProviderErrLine
+                        printProviderErr
                             ( "hostenv-provider: warning: disabling ACME/forceSSL for "
                                 <> mismatch.dgmItem.dgiVhostName
                                 <> " because DNS propagation for host "
@@ -994,15 +994,15 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
                     _ <- printDiffAgainstFile planPath planPretty
                     when withDnsUpdate $
                         if null cfDryRunCalls
-                            then printProviderLine "hostenv-provider: dry-run: no Cloudflare DNS API calls would be made"
+                            then printProvider "hostenv-provider: dry-run: no Cloudflare DNS API calls would be made"
                             else do
-                                printProviderLine "hostenv-provider: dry-run: Cloudflare DNS API calls that would be made:"
-                                mapM_ (printProviderLine . ("hostenv-provider:   " <>)) cfDryRunCalls
-                    printProviderLine "hostenv-provider: dry-run: generated/plan.json was not modified"
+                                printProvider "hostenv-provider: dry-run: Cloudflare DNS API calls that would be made:"
+                                mapM_ (printProvider . ("hostenv-provider:   " <>)) cfDryRunCalls
+                    printProvider "hostenv-provider: dry-run: generated/plan.json was not modified"
                 else do
                     existingPretty <- prettyJson raw
                     if existingPretty == planPretty
-                        then printProviderLine "hostenv-provider: dns-gate made no plan changes"
+                        then printProvider "hostenv-provider: dns-gate made no plan changes"
                         else do
                             let tmpPath = dest <> "/plan.json.tmp"
                             BL.writeFile (T.unpack tmpPath) planPretty
@@ -1044,7 +1044,7 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
                                                     , M.insert key outcome seenUpserts
                                                     )
                                         else do
-                                            printProviderLine
+                                            printProvider
                                                 ( "hostenv-provider: upserting Cloudflare CNAME "
                                                     <> item.dgiDiscoveryHost
                                                     <> " -> "
@@ -1099,7 +1099,7 @@ ensureTrackedInGit paths = do
             when exists $ do
                 tracked <- isTrackedByGit path
                 unless tracked $ do
-                    printProviderLine ("hostenv-provider: tracking new generated file " <> path)
+                    printProvider ("hostenv-provider: tracking new generated file " <> path)
                     addRes <- Sh.proc "git" ["add", path] Sh.empty
                     when (addRes /= ExitSuccess) $
                         error ("hostenv-provider: failed to add " <> T.unpack path <> " to git index")
@@ -1128,7 +1128,7 @@ runPlan dryRun = do
     if dryRun
         then do
             _ <- printDiffAgainstFile planDest planPretty
-            printProviderLine "hostenv-provider: dry-run: generated/plan.json was not modified"
+            printProvider "hostenv-provider: dry-run: generated/plan.json was not modified"
         else do
             stateSource <- nixBuildPath (planAttrBase <> ".state")
             flakeSource <- nixBuildPath (planAttrBase <> ".flake")
@@ -1207,9 +1207,9 @@ data SshTarget = SshTarget
 mkSshTarget :: Text -> NodeConnection -> SshTarget
 mkSshTarget user conn =
     SshTarget
-        { targetUserHost = user <> "@" <> conn.connHostname
-        , targetHost = conn.connHostname
-        , targetSshOpts = conn.connSshOpts
+        { targetUserHost = user <> "@" <> conn.hostname
+        , targetHost = conn.hostname
+        , targetSshOpts = conn.sshOptions
         }
 
 runRemoteScript :: SshTarget -> Text -> IO ExitCode
@@ -1276,10 +1276,10 @@ runRemoteOutput target args =
 archiveFlakeInputsForRemoteBuild :: (Text -> NodeConnection) -> Text -> Text -> IO ExitCode
 archiveFlakeInputsForRemoteBuild resolveNodeConnection deployUser nodeName = do
     let conn = resolveNodeConnection nodeName
-    let remoteStore = "ssh-ng://" <> deployUser <> "@" <> conn.connHostname
+    let remoteStore = "ssh-ng://" <> deployUser <> "@" <> conn.hostname
     let args = ["flake", "archive", "--to", remoteStore, "generated"]
-    let sshOpts = T.unwords conn.connSshOpts
-    printProviderLine ("hostenv-provider: materializing flake inputs on remote store for node " <> nodeName <> " via " <> remoteStore)
+    let sshOpts = T.unwords conn.sshOptions
+    printProvider ("hostenv-provider: materializing flake inputs on remote store for node " <> nodeName <> " via " <> remoteStore)
     if T.null sshOpts
         then Sh.proc "nix" args Sh.empty
         else do
@@ -1380,7 +1380,7 @@ ensureSigningKeyInfo hostenvHostname mKeyPath = do
             sidecarRes <- try (writeFile pubPathS (T.unpack pub <> "\n") >> chmodPath "0644" pubPath) :: IO (Either SomeException ())
             case sidecarRes of
                 Left err ->
-                    printProviderLine ("hostenv-provider: warning: could not update public key sidecar at " <> pubPath <> ": " <> T.pack (displayException err))
+                    printProvider ("hostenv-provider: warning: could not update public key sidecar at " <> pubPath <> ": " <> T.pack (displayException err))
                 Right _ -> pure ()
             pure
                 SigningKeyInfo
@@ -1426,13 +1426,13 @@ signInstallable keyInfo installable target = do
     (evalCode, evalOut, evalErr) <- readProcessWithExitCode "nix" (map T.unpack evalArgs) ""
     case evalCode of
         ExitFailure _ -> do
-            printProviderLine (localCommandFailure "hostenv-provider: failed to evaluate deployment target for signing" ("nix" : evalArgs) evalCode (T.pack evalOut) (T.pack evalErr))
+            printProvider (localCommandFailure "hostenv-provider: failed to evaluate deployment target for signing" ("nix" : evalArgs) evalCode (T.pack evalOut) (T.pack evalErr))
             pure (ExitFailure 1)
         ExitSuccess -> do
             let outputPath = T.strip (T.pack evalOut)
             if T.null outputPath
                 then do
-                    printProviderLine ("hostenv-provider: no output path produced while evaluating " <> target)
+                    printProvider ("hostenv-provider: no output path produced while evaluating " <> target)
                     pure (ExitFailure 1)
                 else do
                     let buildArgs =
@@ -1442,11 +1442,11 @@ signInstallable keyInfo installable target = do
                             , "--print-out-paths"
                             , installable
                             ]
-                    printProviderLine ("hostenv-provider: running nix " <> T.unwords buildArgs)
+                    printProvider ("hostenv-provider: running nix " <> T.unwords buildArgs)
                     buildCode <- Sh.proc "nix" buildArgs Sh.empty
                     case buildCode of
                         ExitFailure code -> do
-                            printProviderLine ("hostenv-provider: failed to realise deployment target for signing " <> target <> " (exit " <> T.pack (show code) <> ")")
+                            printProvider ("hostenv-provider: failed to realise deployment target for signing " <> target <> " (exit " <> T.pack (show code) <> ")")
                             pure (ExitFailure 1)
                         ExitSuccess -> do
                             let args =
@@ -1457,24 +1457,24 @@ signInstallable keyInfo installable target = do
                                     , keyInfo.secretKeyPath
                                     , outputPath
                                     ]
-                            printProviderLine ("hostenv-provider: signing " <> target)
+                            printProvider ("hostenv-provider: signing " <> target)
                             Sh.proc "nix" args Sh.empty
 
-printProviderLine :: Text -> IO ()
-printProviderLine line =
+printProvider :: Text -> IO ()
+printProvider line =
     BLC.putStrLn (BLC.pack (T.unpack line))
 
-printProviderErrLine :: Text -> IO ()
-printProviderErrLine line =
+printProviderErr :: Text -> IO ()
+printProviderErr line =
     BLC.hPutStrLn stderr (BLC.pack (T.unpack line))
 
 printProviderLines :: [Text] -> IO ()
 printProviderLines =
-    mapM_ (printProviderLine . ("hostenv-provider: " <>))
+    mapM_ (printProvider . ("hostenv-provider: " <>))
 
 printRemediationBlock :: [Text] -> IO ()
 printRemediationBlock =
-    mapM_ (printProviderLine . ("hostenv-provider:   " <>))
+    mapM_ (printProvider . ("hostenv-provider:   " <>))
 
 detectFlakeKeyStatus :: Text -> IO FlakeKeyStatus
 detectFlakeKeyStatus key = do
@@ -1555,7 +1555,7 @@ runMigrationBackup deployUser nodeConnection envInfo prevNode backupName = do
                         baseState <- fmap parseState (runRemoteStrict sourceTarget (sudoArgs (loadStateCmd (unitFor baseName))))
                         if baseState == "loaded"
                             then do
-                                printProviderLine
+                                printProvider
                                     ( "hostenv: migrate backup unit "
                                         <> unitFor backupName
                                         <> " not found on "
@@ -1600,7 +1600,7 @@ runMigrationBackup deployUser nodeConnection envInfo prevNode backupName = do
                     snapOutUntagged <- runRemoteStrict sourceTarget (sudoArgs snapshotCmdUntagged)
                     case parseSnapshotId snapOutUntagged of
                         Just snap -> do
-                            printProviderLine
+                            printProvider
                                 ( "hostenv: warning: no tagged restic snapshot found for "
                                     <> effectiveName
                                     <> " on "
@@ -1610,7 +1610,7 @@ runMigrationBackup deployUser nodeConnection envInfo prevNode backupName = do
                             pure snap
                         Nothing -> error ("could not parse snapshot id for " <> T.unpack envInfo.userName <> ":" <> T.unpack backupName <> " (tagged or untagged)")
         else do
-            printProviderLine ("hostenv: restic wrapper missing for " <> effectiveName <> " on " <> sourceHost <> "; reading snapshot id from journal")
+            printProvider ("hostenv: restic wrapper missing for " <> effectiveName <> " on " <> sourceHost <> "; reading snapshot id from journal")
             let invocationCmd = userBusPrefix <> "systemctl --user show -p InvocationID --value " <> unit
             invOut <- runRemoteStrict sourceTarget (sudoArgs invocationCmd)
             let invocation = T.strip invOut
@@ -1637,15 +1637,15 @@ clearRestorePlan deployUser nodeConnection envInfo = do
     status <- T.strip <$> runRemoteStrict target ["bash", "-lc", clearCmd]
     case status of
         "removed" ->
-            printProviderLine ("hostenv-provider: removed pending restore plan for skipped environment " <> envInfo.userName)
+            printProvider ("hostenv-provider: removed pending restore plan for skipped environment " <> envInfo.userName)
         _ ->
-            printProviderLine ("hostenv-provider: no pending restore plan for skipped environment " <> envInfo.userName)
+            printProvider ("hostenv-provider: no pending restore plan for skipped environment " <> envInfo.userName)
 
 resolvePrevNode :: (Text -> Maybe Text) -> Text -> [Text] -> EnvInfo -> IO (Either Text (Maybe Text))
 resolvePrevNode explicitSourceFor hostenvHostname discoveryNodes envInfo =
     case explicitSourceFor envInfo.userName of
         Just sourceNode -> do
-            printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " forced via --migration-source: " <> sourceNode)
+            printProvider ("hostenv: previous node for " <> envInfo.userName <> " forced via --migration-source: " <> sourceNode)
             pure (Right (Just sourceNode))
         Nothing -> do
             matchedNodes <- PrevNode.discoverMatchingNodes dnsPointsTo hostenvHostname envInfo.userName discoveryNodes
@@ -1653,14 +1653,14 @@ resolvePrevNode explicitSourceFor hostenvHostname discoveryNodes envInfo =
             let envHost = PrevNode.canonicalHostInDomain envInfo.userName hostenvHostname
             case resolution of
                 PrevNode.PrevNodeResolved node -> do
-                    printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " discovered via DNS " <> envHost <> ": " <> node)
+                    printProvider ("hostenv: previous node for " <> envInfo.userName <> " discovered via DNS " <> envHost <> ": " <> node)
                     pure (Right (Just node))
                 PrevNode.PrevNodeSkip ->
                     if null matchedNodes
                         then pure (Right Nothing)
                         else do
                             when (envInfo.node `elem` matchedNodes) $
-                                printProviderLine
+                                printProvider
                                     ( "hostenv-provider: info: previous-node discovery for "
                                         <> envInfo.userName
                                         <> " via "
@@ -1750,13 +1750,18 @@ writeRestorePlan deployUser nodeConnection envInfo prevNode snapshots = do
         ExitFailure code -> error ("failed to write restore plan for " <> T.unpack envInfo.userName <> " (exit " <> show code <> ")")
 
 data SecretAssignment = SecretAssignment
-    { saBucket :: Text
-    , saKey :: Text
-    , saValue :: A.Value
-    , saSource :: Text
+    { bucket :: Text
+    , key :: Text
+    , value :: A.Value
+    , source :: Text
     }
 
-scopeFileOrDefault :: SecretsScope -> Text -> Text
+data CollectedSecrets = CollectedSecrets
+    { assignments :: [SecretAssignment]
+    , manifestKeys :: [Text]
+    }
+
+scopeFileOrDefault :: SecretsConfig -> Text -> Text
 scopeFileOrDefault scope defaultRel =
     case scope.secretsFilePath of
         Just path ->
@@ -1773,13 +1778,12 @@ resolveHostenvConfigRoot root = do
         then pure root
         else pure (T.pack (rootPath FP.</> ".hostenv"))
 
-resolveScopePath :: Text -> SecretsScope -> Text -> Text
+resolveScopePath :: Text -> SecretsConfig -> Text -> Text
 resolveScopePath hostenvConfigRoot scope defaultRel =
     let relOrAbs = scopeFileOrDefault scope defaultRel
         relOrAbsString = T.unpack relOrAbs
         hostenvConfigRootString = T.unpack hostenvConfigRoot
-     in
-        if FP.isAbsolute relOrAbsString
+     in if FP.isAbsolute relOrAbsString
             then relOrAbs
             else T.pack (hostenvConfigRootString FP.</> relOrAbsString)
 
@@ -1841,22 +1845,26 @@ readSecretsObject path = do
                             <> ")"
                         )
 
-collectScopeAssignments :: Text -> Text -> Text -> Text -> SecretsScope -> Text -> IO [SecretAssignment]
-collectScopeAssignments scopeLabel envUser bucket hostenvConfigRoot scope defaultRel =
-    if not scope.secretsEnabled || null scope.secretsKeys
-        then pure []
+collectAssignments :: Text -> Text -> Text -> Text -> SecretsConfig -> Text -> IO CollectedSecrets
+collectAssignments scopeLabel envUser bucket hostenvConfigRoot scope defaultRel =
+    if not scope.secretsEnabled
+        then pure (CollectedSecrets [] [])
         else do
-            let scopePath = resolveScopePath hostenvConfigRoot scope defaultRel
-            scopeObject <- readSecretsObject scopePath
-            forM scope.secretsKeys $ \secretKey ->
-                case KM.lookup (K.fromText secretKey) scopeObject of
+            let path = resolveScopePath hostenvConfigRoot scope defaultRel
+            obj <- readSecretsObject path
+            let selectedKeys =
+                    if null scope.secretsKeys
+                        then map K.toText (KM.keys obj)
+                        else scope.secretsKeys
+            assignments <- forM selectedKeys $ \secretKey ->
+                case KM.lookup (K.fromText secretKey) obj of
                     Just secretValue ->
                         pure
                             SecretAssignment
-                                { saBucket = bucket
-                                , saKey = secretKey
-                                , saValue = secretValue
-                                , saSource = scopePath
+                                { bucket
+                                , key = secretKey
+                                , value = secretValue
+                                , source = path
                                 }
                     Nothing ->
                         error
@@ -1867,64 +1875,85 @@ collectScopeAssignments scopeLabel envUser bucket hostenvConfigRoot scope defaul
                                 <> "' for environment '"
                                 <> T.unpack envUser
                                 <> "' is missing from "
-                                <> T.unpack scopePath
+                                <> T.unpack path
                                 <> ". Run 'hostenv secrets' to scaffold keys."
                             )
+            pure
+                CollectedSecrets
+                    { assignments
+                    , manifestKeys = nub selectedKeys
+                    }
 
 consolidateAssignments :: [SecretAssignment] -> [(Text, Text, A.Value)]
 consolidateAssignments assignments =
     let
         go acc [] = acc
         go acc (assignment : rest) =
-            let key = (assignment.saBucket, assignment.saKey)
+            let key = (assignment.bucket, assignment.key)
              in case M.lookup key acc of
                     Nothing ->
-                        go (M.insert key (assignment.saValue, assignment.saSource) acc) rest
+                        go (M.insert key (assignment.value, assignment.source) acc) rest
                     Just (existingValue, existingSource) ->
-                        if existingValue == assignment.saValue
+                        if existingValue == assignment.value
                             then go acc rest
                             else
                                 error
                                     ( "hostenv-provider: conflicting values for secret "
-                                        <> T.unpack assignment.saBucket
+                                        <> T.unpack assignment.bucket
                                         <> "/"
-                                        <> T.unpack assignment.saKey
+                                        <> T.unpack assignment.key
                                         <> " from "
                                         <> T.unpack existingSource
                                         <> " and "
-                                        <> T.unpack assignment.saSource
+                                        <> T.unpack assignment.source
                                     )
      in
-        map (\((bucket, secretKey), (secretValue, _)) -> (bucket, secretKey, secretValue))
+        map
+            (\((bucket, secretKey), (secretValue, _)) -> (bucket, secretKey, secretValue))
             (M.toList (go M.empty assignments))
 
-applySecretAssignment :: KM.KeyMap A.Value -> (Text, Text, A.Value) -> KM.KeyMap A.Value
-applySecretAssignment secretsRoot (bucket, secretKey, secretValue) =
-    let bucketKey = K.fromText bucket
-        secretKey' = K.fromText secretKey
-        newBucketValue = A.Object (KM.singleton secretKey' secretValue)
-     in case KM.lookup bucketKey secretsRoot of
-            Nothing ->
-                KM.insert bucketKey newBucketValue secretsRoot
-            Just (A.Object bucketObject) ->
-                KM.insert bucketKey (A.Object (KM.insert secretKey' secretValue bucketObject)) secretsRoot
-            Just _ ->
-                error
-                    ( "hostenv-provider: cannot write secret "
-                        <> T.unpack bucket
-                        <> "/"
-                        <> T.unpack secretKey
-                        <> " because bucket '"
-                        <> T.unpack bucket
-                        <> "' is not an object in provider secrets"
-                    )
-
 applySecretAssignments :: KM.KeyMap A.Value -> [(Text, Text, A.Value)] -> KM.KeyMap A.Value
-applySecretAssignments =
-    foldl applySecretAssignment
+applySecretAssignments = foldl applySecret
+  where
+    applySecret secretsRoot (bucket, secretKey, secretValue) =
+        let bucketKey = K.fromText bucket
+            secretKey' = K.fromText secretKey
+            newBucketValue = A.Object (KM.singleton secretKey' secretValue)
+         in case KM.lookup bucketKey secretsRoot of
+                Nothing ->
+                    KM.insert bucketKey newBucketValue secretsRoot
+                Just (A.Object bucketObject) ->
+                    KM.insert bucketKey (A.Object (KM.insert secretKey' secretValue bucketObject)) secretsRoot
+                Just _ ->
+                    error
+                        ( "hostenv-provider: cannot write secret "
+                            <> T.unpack bucket
+                            <> "/"
+                            <> T.unpack secretKey
+                            <> " because bucket '"
+                            <> T.unpack bucket
+                            <> "' is not an object in provider secrets"
+                        )
 
-readProviderAgeRecipients :: Text -> IO [Text]
-readProviderAgeRecipients providerSecretsPath = do
+manifestKey :: K.Key
+manifestKey = K.fromString "__hostenv_selected_keys"
+
+applyManifestKey :: [(Text, [Text], [Text])] -> KM.KeyMap A.Value -> KM.KeyMap A.Value
+applyManifestKey scopeSelections mergedSecrets =
+    let
+        toScopeObject (envUser, projectKeys, environmentKeys) =
+            ( K.fromText envUser
+            , A.object
+                [ "project" .= projectKeys
+                , "environment" .= environmentKeys
+                ]
+            )
+        scopeObj = A.Object (KM.fromList (map toScopeObject scopeSelections))
+     in
+        KM.insert manifestKey scopeObj mergedSecrets
+
+ageRecipients :: Text -> IO [Text]
+ageRecipients providerSecretsPath = do
     (code, out, err) <-
         readProcessWithExitCode
             "yq"
@@ -1947,10 +1976,15 @@ readProviderAgeRecipients providerSecretsPath = do
                     )
                 )
 
-writeMergedSecretsFile :: [Text] -> KM.KeyMap A.Value -> IO ()
-writeMergedSecretsFile recipients mergedSecrets = do
-    let mergedPath = "generated/secrets.merged.yaml"
-    let mergedPathString = T.unpack mergedPath
+mergedSecretsPath :: Text
+mergedSecretsPath = "generated/secrets.merged.yaml"
+
+providerSecretsPath :: Text
+providerSecretsPath = "secrets/secrets.yaml"
+
+writeMergedSecrets :: [Text] -> KM.KeyMap A.Value -> IO ()
+writeMergedSecrets recipients mergedSecrets = do
+    let mergedPathString = T.unpack mergedSecretsPath
     let recipientsCsv = T.intercalate "," recipients
     Dir.createDirectoryIfMissing True "generated"
 
@@ -1987,65 +2021,69 @@ writeMergedSecretsFile recipients mergedSecrets = do
 
 prepareMergedSecrets :: [EnvSecretsConfig] -> IO ()
 prepareMergedSecrets envSecretsConfigs = do
-    let providerSecretsPath = "secrets/secrets.yaml"
-    let mergedPath = "generated/secrets.merged.yaml"
-
     providerSecretsExists <- Dir.doesFileExist (T.unpack providerSecretsPath)
     unless providerSecretsExists $
         error ("hostenv-provider: provider secrets file not found: " <> T.unpack providerSecretsPath)
 
-    assignmentsRaw <-
-        fmap concat $
-            forM envSecretsConfigs $ \envSecretsConfig -> do
-                hostenvConfigRoot <- resolveHostenvConfigRoot envSecretsConfig.escRoot
-                let projectBucket = envSecretsConfig.escOrganisation <> "_" <> envSecretsConfig.escProject
-                let defaultProjectScopeFile = "secrets/project.yaml"
-                projectAssignments <-
-                    collectScopeAssignments
-                        "project"
-                        envSecretsConfig.escUserName
-                        projectBucket
-                        hostenvConfigRoot
-                        envSecretsConfig.escProjectScope
-                        defaultProjectScopeFile
+    selectionsAndAssignments <-
+        forM envSecretsConfigs $ \envCfg -> do
+            hostenvConfigRoot <- resolveHostenvConfigRoot envCfg.root
+            projectSecrets <-
+                collectAssignments
+                    "project"
+                    envCfg.userName
+                    (envCfg.organisation <> "_" <> envCfg.project)
+                    hostenvConfigRoot
+                    envCfg.projectSecretsCfg
+                    "secrets/project.yaml"
 
-                let defaultEnvScopeFile = "secrets/" <> envSecretsConfig.escSafeEnvironmentName <> ".yaml"
-                environmentAssignments <-
-                    collectScopeAssignments
-                        "environment"
-                        envSecretsConfig.escUserName
-                        envSecretsConfig.escUserName
-                        hostenvConfigRoot
-                        envSecretsConfig.escEnvironmentScope
-                        defaultEnvScopeFile
+            envSecrets <-
+                collectAssignments
+                    "environment"
+                    envCfg.userName
+                    envCfg.userName
+                    hostenvConfigRoot
+                    envCfg.environmentSecretsCfg
+                    ("secrets/" <> envCfg.safeEnvironmentName <> ".yaml")
 
-                pure (projectAssignments <> environmentAssignments)
+            pure
+                ( envCfg.userName
+                , projectSecrets.manifestKeys
+                , envSecrets.manifestKeys
+                , projectSecrets.assignments <> envSecrets.assignments
+                )
 
-    let assignments = consolidateAssignments assignmentsRaw
+    let scopeSelections =
+            map
+                (\(envUser, projectKeys, environmentKeys, _assignmentsRaw) -> (envUser, projectKeys, environmentKeys))
+                selectionsAndAssignments
+    let assignments =
+            consolidateAssignments
+                (concatMap (\(_envUser, _projectKeys, _environmentKeys, assignmentsRaw) -> assignmentsRaw) selectionsAndAssignments)
 
     Dir.createDirectoryIfMissing True "generated"
     if null assignments
         then do
-            Dir.copyFile (T.unpack providerSecretsPath) (T.unpack mergedPath)
-            printProviderLine ("hostenv-provider: wrote " <> mergedPath <> " from provider secrets (no project/env secret overrides)")
+            Dir.copyFile (T.unpack providerSecretsPath) (T.unpack mergedSecretsPath)
+            printProvider ("hostenv-provider: wrote " <> mergedSecretsPath <> " from provider secrets (no project/env secret overrides)")
         else do
             baseSecrets <- readSecretsObject providerSecretsPath
-            let mergedSecrets = applySecretAssignments baseSecrets assignments
-            recipients <- readProviderAgeRecipients providerSecretsPath
+            let mergedSecrets = applyManifestKey scopeSelections (applySecretAssignments baseSecrets assignments)
+            recipients <- ageRecipients providerSecretsPath
             when (null recipients) $
                 error
                     ( "hostenv-provider: no age recipients found in "
                         <> T.unpack providerSecretsPath
                         <> ". Add recipients under sops.age[].recipient."
                     )
-            writeMergedSecretsFile recipients mergedSecrets
-            printProviderLine
+            writeMergedSecrets recipients mergedSecrets
+            printProvider
                 ( "hostenv-provider: merged "
                     <> T.pack (show (length assignments))
                     <> " project/environment secret key(s) into "
-                    <> mergedPath
+                    <> mergedSecretsPath
                 )
-    ensureTrackedInGit [mergedPath]
+    ensureTrackedInGit [mergedSecretsPath]
 
 runDeploy :: Maybe Text -> Maybe Text -> Bool -> Bool -> [Text] -> [Text] -> Bool -> Bool -> IO ()
 runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations migrationSourceSpecs ignoreMigrationErrors dryRun = do
@@ -2074,8 +2112,8 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                                     <> "': "
                                     <> snd err
                                 )
-                        Right envSecretsConfig ->
-                            pure envSecretsConfig
+                        Right envCfg ->
+                            pure envCfg
             prepareMergedSecrets envSecretsConfigs
             migrationSources <-
                 forM migrationSourceSpecs $ \raw ->
@@ -2090,13 +2128,13 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
             envRowsSub <- forM (KM.elems envs) $ \env -> case iparseEither parseJSON env of
                 -- Using lists here (so the type becomes @[[(EnvInfo, Verify.EnvVerificationSpec)]]@) as
                 -- they're easy to @concat@ later.
-                Left err -> printProviderLine ("hostenv-provider: error reading from plan JSON at '" <> T.pack (show $ fst err) <> " - '" <> T.pack (snd err) <> "'") >> pure []
+                Left err -> printProvider ("hostenv-provider: error reading from plan JSON at '" <> T.pack (show $ fst err) <> " - '" <> T.pack (snd err) <> "'") >> pure []
                 Right envInfo -> do
                     verificationSpec <- case env of
                         A.Object envObj ->
                             case Verify.parseEnvVerificationSpec envObj of
                                 Left parseErr -> do
-                                    printProviderLine ("hostenv-provider: warning: invalid deploymentVerification for " <> envInfo.userName <> "; using defaults (" <> parseErr <> ")")
+                                    printProvider ("hostenv-provider: warning: invalid deploymentVerification for " <> envInfo.userName <> "; using defaults (" <> parseErr <> ")")
                                     pure Verify.defaultEnvVerificationSpec
                                 Right spec -> pure spec
                         _ -> pure Verify.defaultEnvVerificationSpec
@@ -2129,18 +2167,18 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
             -- Perform data migrations if the environment has moved node.
             case mNode of
                 Nothing -> pure ()
-                Just n -> printProviderLine ("hostenv-provider: deploy filtered to node " <> n)
-            printProviderLine ("hostenv-provider: " <> T.pack (show (length envInfosFiltered)) <> " environment(s) considered")
+                Just n -> printProvider ("hostenv-provider: deploy filtered to node " <> n)
+            printProvider ("hostenv-provider: " <> T.pack (show (length envInfosFiltered)) <> " environment(s) considered")
             when (not (null skipHits)) $
-                printProviderLine ("hostenv-provider: skipping migrations for: " <> T.intercalate ", " skipHits)
+                printProvider ("hostenv-provider: skipping migrations for: " <> T.intercalate ", " skipHits)
             when (not (null skipMisses)) $
-                printProviderLine ("hostenv-provider: warning: skip-migrations targets not found: " <> T.intercalate ", " skipMisses)
+                printProvider ("hostenv-provider: warning: skip-migrations targets not found: " <> T.intercalate ", " skipMisses)
             forM_ sourceHits $ \(envName, sourceNode) ->
-                printProviderLine ("hostenv-provider: migration source override " <> envName <> " -> " <> sourceNode)
+                printProvider ("hostenv-provider: migration source override " <> envName <> " -> " <> sourceNode)
             when (not (null sourceMisses)) $
-                printProviderLine ("hostenv-provider: warning: migration-source targets not found: " <> T.intercalate ", " sourceMisses)
+                printProvider ("hostenv-provider: warning: migration-source targets not found: " <> T.intercalate ", " sourceMisses)
             when ignoreMigrationErrors $
-                printProviderLine "hostenv-provider: warning: migration errors will be ignored; deployments may proceed with stale data"
+                printProvider "hostenv-provider: warning: migration errors will be ignored; deployments may proceed with stale data"
 
             let targetNodes = uniqueNodeNames envInfosFiltered
             let deployArgs useCheckSigs useDryActivate deployArgM =
@@ -2151,26 +2189,25 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                             Nothing -> ["generated/"]
                         sigArgs = if useCheckSigs then ["--checksigs"] else []
                         dryActivateArgs = if useDryActivate then ["--dry-activate"] else []
-                     in
-                    [ "run"
-                    , "nixpkgs#deploy-rs"
-                    , "--"
-                    , "--skip-checks"
-                    ]
-                        <> sigArgs
-                        <> dryActivateArgs
-                        <> remoteBuildArgs
-                        <> targetArgs
-            let deployGuard res args = when (res /= ExitSuccess) $ printProviderLine ("hostenv-provider: deploying " <> T.unwords args <> " failed")
+                     in [ "run"
+                        , "nixpkgs#deploy-rs"
+                        , "--"
+                        , "--skip-checks"
+                        ]
+                            <> sigArgs
+                            <> dryActivateArgs
+                            <> remoteBuildArgs
+                            <> targetArgs
+            let deployGuard res args = when (res /= ExitSuccess) $ printProvider ("hostenv-provider: deploying " <> T.unwords args <> " failed")
 
             when dryRun $ do
-                printProviderLine "hostenv-provider: --dry-run enabled; skipping migrations, signing, and deploy preflight checks"
+                printProvider "hostenv-provider: --dry-run enabled; skipping migrations, signing, and deploy preflight checks"
                 let dryArgs = deployArgs False True
                 systemDeployRes <-
                     forM targetNodes $ \nodeName -> do
                         let target = nodeName <> ".system"
                         let args = dryArgs (Just target)
-                        printProviderLine ("hostenv-provider: running nix " <> T.unwords args)
+                        printProvider ("hostenv-provider: running nix " <> T.unwords args)
                         res <- Sh.proc "nix" args Sh.empty
                         deployGuard res args
                         pure (nodeName, res)
@@ -2184,16 +2221,16 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                             (_, code) : [] -> Left ("system deployment failed for node " <> envInfo.node <> " (exit " <> T.pack (show code) <> ")")
                             _moreThanOneNode -> Left "multiple matching nodes found in system deployment list"
 
-                    printProviderLine ("hostenv-provider: running nix " <> T.unwords args)
+                    printProvider ("hostenv-provider: running nix " <> T.unwords args)
                     case systemStatus of
-                        Left err -> printProviderLine ("hostenv-provider: " <> err) >> pure (envName, ExitFailure 1)
+                        Left err -> printProvider ("hostenv-provider: " <> err) >> pure (envName, ExitFailure 1)
                         Right ExitSuccess -> do
                             res <- Sh.proc "nix" args Sh.empty
                             deployGuard res args
                             pure (envName, res)
 
                 let failures = any (\(_, code) -> code /= ExitSuccess) envDeployRes
-                when failures $ printProviderLine "hostenv-provider: dry-run deployment completed with errors"
+                when failures $ printProvider "hostenv-provider: dry-run deployment completed with errors"
                 Sh.exitWith $ if failures then ExitFailure 1 else ExitSuccess
 
             let deployUser = planDeployUser plan
@@ -2210,8 +2247,8 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                     else do
                         keyInfo <- ensureSigningKeyInfo hostenvHostname mSigningKeyPath
                         when keyInfo.wasGenerated $ do
-                            printProviderLine ("hostenv-provider: generated signing key at " <> keyInfo.secretKeyPath)
-                            printProviderLine ("hostenv-provider: wrote corresponding public key to " <> keyInfo.publicKeyPath)
+                            printProvider ("hostenv-provider: generated signing key at " <> keyInfo.secretKeyPath)
+                            printProvider ("hostenv-provider: wrote corresponding public key to " <> keyInfo.publicKeyPath)
                         pure (Just keyInfo)
 
             flakeKeyStatus <- forM signingKeyInfo (detectFlakeKeyStatus . (.publicKey))
@@ -2219,21 +2256,21 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
             forM_ signingKeyInfo $ \keyInfo -> do
                 let keyStatus = fromMaybe (FlakeKeyUnknown "signing key flake status unavailable") flakeKeyStatus
                 when (null trustedPublicKeys) $ do
-                    printProviderLine "hostenv-provider: deployment aborted; provider.nixSigning.trustedPublicKeys is empty in generated/plan.json"
+                    printProvider "hostenv-provider: deployment aborted; provider.nixSigning.trustedPublicKeys is empty in generated/plan.json"
                     printProviderLines (localTrustSetupLines keyStatus keyInfo.publicKey)
                     Sh.exitWith (ExitFailure 1)
                 when (keyInfo.publicKey `notElem` trustedPublicKeys) $ do
-                    printProviderLine "hostenv-provider: deployment aborted; local signing key is not present in provider.nixSigning.trustedPublicKeys"
-                    printProviderLine ("hostenv-provider: signing key public value: " <> keyInfo.publicKey)
+                    printProvider "hostenv-provider: deployment aborted; local signing key is not present in provider.nixSigning.trustedPublicKeys"
+                    printProvider ("hostenv-provider: signing key public value: " <> keyInfo.publicKey)
                     printProviderLines (localTrustSetupLines keyStatus keyInfo.publicKey)
-                    printProviderLine "hostenv-provider: alternatively, pass --signing-key-file with a key that already matches trustedPublicKeys."
+                    printProvider "hostenv-provider: alternatively, pass --signing-key-file with a key that already matches trustedPublicKeys."
                     Sh.exitWith (ExitFailure 1)
 
             when forceRemoteBuild $
-                printProviderLine "hostenv-provider: --remote-build enabled; skipping local signing trust checks for all nodes"
+                printProvider "hostenv-provider: --remote-build enabled; skipping local signing trust checks for all nodes"
             forM_ targetNodes $ \nodeName ->
                 when (not forceRemoteBuild && not (S.member nodeName localPushSet)) $
-                    printProviderLine ("hostenv-provider: node " <> nodeName <> " uses remoteBuild=true; skipping local signing trust check")
+                    printProvider ("hostenv-provider: node " <> nodeName <> " uses remoteBuild=true; skipping local signing trust check")
 
             preflightFailures <- fmap catMaybes $
                 forM targetNodes $ \nodeName -> do
@@ -2247,7 +2284,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
 
             when (not (null preflightFailures)) $ do
                 forM_ preflightFailures $ \failure -> do
-                    printProviderLine ("hostenv-provider: deploy preflight failed on node " <> failure.failureNode <> ": " <> failure.failureReason)
+                    printProvider ("hostenv-provider: deploy preflight failed on node " <> failure.failureNode <> ": " <> failure.failureReason)
                     let remediationLines =
                             if failure.failureReason == Preflight.signingKeyNotTrustedReason
                                 then case (signingKeyInfo, flakeKeyStatus) of
@@ -2255,9 +2292,9 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                                     (Just keyInfo, Nothing) -> remoteNodeTrustLines (FlakeKeyUnknown "signing key flake status unavailable") keyInfo.publicKey
                                     _ -> failure.failureRemediation
                                 else failure.failureRemediation
-                    printProviderLine ("hostenv-provider: remediation for " <> failure.failureNode <> ":")
+                    printProvider ("hostenv-provider: remediation for " <> failure.failureNode <> ":")
                     printRemediationBlock remediationLines
-                printProviderLine "hostenv-provider: aborting deployment because one or more preflight checks failed"
+                printProvider "hostenv-provider: aborting deployment because one or more preflight checks failed"
                 Sh.exitWith (ExitFailure 1)
 
             let skippedEnvInfos =
@@ -2282,7 +2319,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                     ]
             when (not (null migrationFatalErrors)) $ do
                 forM_ migrationFatalErrors $
-                    printProviderErrLine . ("hostenv-provider: error: " <>)
+                    printProviderErr . ("hostenv-provider: error: " <>)
                 Sh.exitWith (ExitFailure 1)
 
             let migrations =
@@ -2291,19 +2328,19 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                     ]
 
             if null migrations
-                then printProviderLine "hostenv-provider: no migrations required"
+                then printProvider "hostenv-provider: no migrations required"
                 else do
-                    printProviderLine ("hostenv-provider: migrations required for " <> T.pack (show (length migrations)) <> " environment(s)")
+                    printProvider ("hostenv-provider: migrations required for " <> T.pack (show (length migrations)) <> " environment(s)")
                     forM_ migrations $ \(envInfo, prevNode) -> do
                         let backups = T.intercalate ", " envInfo.migrateBackups
-                        printProviderLine ("hostenv-provider: migrate backups for " <> envInfo.userName <> " from " <> prevNode <> " -> " <> envInfo.node <> " (" <> backups <> ")")
+                        printProvider ("hostenv-provider: migrate backups for " <> envInfo.userName <> " from " <> prevNode <> " -> " <> envInfo.node <> " (" <> backups <> ")")
                     let runMigration (envInfo, prevNode) = do
                             snapshots <- forM envInfo.migrateBackups $ \backupName -> do
                                 snap <- runMigrationBackup deployUser resolveNodeConnection envInfo prevNode backupName
                                 pure (backupName, snap)
                             writeRestorePlan deployUser resolveNodeConnection envInfo prevNode snapshots
                             let snapshotPairs = map (\(name, sid) -> name <> "=" <> sid) snapshots
-                            printProviderLine ("hostenv-provider: restore plan written for " <> envInfo.userName <> " (snapshots: " <> T.intercalate ", " snapshotPairs <> ")")
+                            printProvider ("hostenv-provider: restore plan written for " <> envInfo.userName <> " (snapshots: " <> T.intercalate ", " snapshotPairs <> ")")
                     if ignoreMigrationErrors
                         then do
                             failures <- fmap catMaybes $
@@ -2312,25 +2349,25 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                                     case res of
                                         Right _ -> pure Nothing
                                         Left err -> do
-                                            printProviderLine ("hostenv-provider: warning: migration failed for " <> envInfo.userName <> ": " <> T.pack (displayException err))
+                                            printProvider ("hostenv-provider: warning: migration failed for " <> envInfo.userName <> ": " <> T.pack (displayException err))
                                             pure (Just envInfo.userName)
                             when (not (null failures)) $
-                                printProviderLine ("hostenv-provider: warning: ignored migration failures for " <> T.intercalate ", " failures)
+                                printProvider ("hostenv-provider: warning: ignored migration failures for " <> T.intercalate ", " failures)
                         else
                             forM_ migrations runMigration
 
             let remoteArchiveNodes = filter usesRemoteBuild targetNodes
             when (not (null remoteArchiveNodes)) $ do
-                printProviderLine ("hostenv-provider: remote builds enabled for nodes: " <> T.intercalate ", " remoteArchiveNodes)
+                printProvider ("hostenv-provider: remote builds enabled for nodes: " <> T.intercalate ", " remoteArchiveNodes)
                 archiveResults <-
                     forM remoteArchiveNodes $ \nodeName -> do
                         archiveCode <- archiveFlakeInputsForRemoteBuild resolveNodeConnection deployUser nodeName
                         when (archiveCode /= ExitSuccess) $
-                            printProviderLine ("hostenv-provider: failed to archive flake inputs for node " <> nodeName)
+                            printProvider ("hostenv-provider: failed to archive flake inputs for node " <> nodeName)
                         pure (nodeName, archiveCode)
                 let archiveFailures = [nodeName | (nodeName, code) <- archiveResults, code /= ExitSuccess]
                 when (not (null archiveFailures)) $ do
-                    printProviderLine ("hostenv-provider: aborting deployment because flake archive failed for: " <> T.intercalate ", " archiveFailures)
+                    printProvider ("hostenv-provider: aborting deployment because flake archive failed for: " <> T.intercalate ", " archiveFailures)
                     Sh.exitWith (ExitFailure 1)
 
             -- Perform deployment
@@ -2358,16 +2395,16 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                             then case signingKeyInfo of
                                 Just keyInfo -> signInstallable keyInfo targetInstallable target
                                 Nothing -> do
-                                    printProviderLine ("hostenv-provider: signing configuration missing for node " <> nodeName)
+                                    printProvider ("hostenv-provider: signing configuration missing for node " <> nodeName)
                                     pure (ExitFailure 1)
                             else pure ExitSuccess
                     if signRes /= ExitSuccess
                         then do
-                            printProviderLine ("hostenv-provider: failed to sign deployment target " <> target)
+                            printProvider ("hostenv-provider: failed to sign deployment target " <> target)
                             pure (nodeName, signRes)
                         else do
                             let args = deployArgs' (Just target)
-                            printProviderLine ("hostenv-provider: running nix " <> T.unwords args)
+                            printProvider ("hostenv-provider: running nix " <> T.unwords args)
                             res <- Sh.proc "nix" args Sh.empty
                             deployGuard res args
                             pure (nodeName, res)
@@ -2383,21 +2420,21 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                         (_, code) : [] -> Left ("system deployment failed for node " <> envInfo.node <> " (exit " <> T.pack (show code) <> ")")
                         _moreThanOneNode -> Left "multiple matching nodes found in system deployment list"
 
-                printProviderLine ("hostenv-provider: running nix " <> T.unwords args)
+                printProvider ("hostenv-provider: running nix " <> T.unwords args)
                 case systemStatus of
-                    Left err -> printProviderLine ("hostenv-provider: " <> err) >> pure (envName, ExitFailure 1)
+                    Left err -> printProvider ("hostenv-provider: " <> err) >> pure (envName, ExitFailure 1)
                     Right ExitSuccess -> do
                         signRes <-
                             if S.member envInfo.node localPushSet
                                 then case signingKeyInfo of
                                     Just keyInfo -> signInstallable keyInfo targetInstallable target
                                     Nothing -> do
-                                        printProviderLine ("hostenv-provider: signing configuration missing for node " <> envInfo.node)
+                                        printProvider ("hostenv-provider: signing configuration missing for node " <> envInfo.node)
                                         pure (ExitFailure 1)
                                 else pure ExitSuccess
                         if signRes /= ExitSuccess
                             then do
-                                printProviderLine ("hostenv-provider: failed to sign deployment target " <> target)
+                                printProvider ("hostenv-provider: failed to sign deployment target " <> target)
                                 pure (envName, signRes)
                             else do
                                 res <- Sh.proc "nix" args Sh.empty
@@ -2407,7 +2444,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
             verificationFatalFailures <-
                 if skipVerification
                     then do
-                        printProviderLine "hostenv-provider: --skip-verification enabled; skipping post-deploy verification checks"
+                        printProvider "hostenv-provider: --skip-verification enabled; skipping post-deploy verification checks"
                         pure []
                     else do
                         let envInfoByName = toNamed envInfosFiltered
@@ -2422,7 +2459,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                                     ExitSuccess ->
                                         case lookup envName envInfoByName of
                                             Nothing -> do
-                                                printProviderLine ("hostenv-provider: warning: environment metadata missing for " <> envName <> "; skipping verification")
+                                                printProvider ("hostenv-provider: warning: environment metadata missing for " <> envName <> "; skipping verification")
                                                 pure Nothing
                                             Just envInfo -> do
                                                 let verificationSpec = verificationSpecFor envName
@@ -2432,21 +2469,21 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                                                         if null verificationSpec.evChecks
                                                             then pure Nothing
                                                             else do
-                                                                let targetHost = (resolveNodeConnection envInfo.node).connHostname
-                                                                printProviderLine ("hostenv-provider: running deployment verification for " <> envName <> " via " <> targetHost)
+                                                                let targetHost = (resolveNodeConnection envInfo.node).hostname
+                                                                printProvider ("hostenv-provider: running deployment verification for " <> envName <> " via " <> targetHost)
                                                                 verificationRes <- try (Verify.runEnvVerification targetHost verificationSpec) :: IO (Either SomeException [Verify.VerificationCheckResult])
                                                                 case verificationRes of
                                                                     Left err -> do
                                                                         let message = "verification failed for " <> envName <> ": " <> T.pack (displayException err)
                                                                         if verificationSpec.evEnforce
-                                                                            then printProviderErrLine ("hostenv-provider: error: " <> message) >> pure (Just envName)
-                                                                            else printProviderLine ("hostenv-provider: warning: " <> message) >> pure Nothing
+                                                                            then printProviderErr ("hostenv-provider: error: " <> message) >> pure (Just envName)
+                                                                            else printProvider ("hostenv-provider: warning: " <> message) >> pure Nothing
                                                                     Right checkResults -> do
                                                                         let failedChecks = filter (not . (.vcrPassed)) checkResults
                                                                         forM_ checkResults $ \checkResult ->
                                                                             if checkResult.vcrPassed
                                                                                 then
-                                                                                    printProviderLine
+                                                                                    printProvider
                                                                                         ( "hostenv-provider: verification check "
                                                                                             <> checkResult.vcrName
                                                                                             <> " passed for "
@@ -2454,7 +2491,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                                                                                             <> statusSuffix checkResult.vcrHttpStatus
                                                                                         )
                                                                                 else
-                                                                                    printProviderLine
+                                                                                    printProvider
                                                                                         ( "hostenv-provider: warning: verification check "
                                                                                             <> checkResult.vcrName
                                                                                             <> " failed for "
@@ -2470,14 +2507,14 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                                                                                 if verificationSpec.evEnforce
                                                                                     then pure (Just envName)
                                                                                     else do
-                                                                                        printProviderLine ("hostenv-provider: warning: verification failures ignored for " <> envName <> " (deploymentVerification.enforce=false)")
+                                                                                        printProvider ("hostenv-provider: warning: verification failures ignored for " <> envName <> " (deploymentVerification.enforce=false)")
                                                                                         pure Nothing
 
             let deploymentFailures = any (\(_, code) -> code /= ExitSuccess) envDeployRes
             let verificationFailures = not (null verificationFatalFailures)
-            when deploymentFailures $ printProviderLine "hostenv-provider: deployment completed with errors"
+            when deploymentFailures $ printProvider "hostenv-provider: deployment completed with errors"
             when verificationFailures $
-                printProviderErrLine ("hostenv-provider: error: deployment verification failed for: " <> T.intercalate ", " verificationFatalFailures)
+                printProviderErr ("hostenv-provider: error: deployment verification failed for: " <> T.intercalate ", " verificationFatalFailures)
             let failures = deploymentFailures || verificationFailures
             Sh.exitWith $ if failures then ExitFailure 1 else ExitSuccess
 

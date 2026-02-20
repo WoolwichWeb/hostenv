@@ -82,14 +82,46 @@ let
           hostPkgs = pkgs.${localSystem};
           readYaml = hostenvLib.readYaml;
           sopsKeys = readYaml hostPkgs secretsPath;
+          keysByEnv =
+            if builtins.hasAttr "__hostenv_selected_keys" sopsKeys
+              && builtins.isAttrs sopsKeys.__hostenv_selected_keys
+            then
+              sopsKeys.__hostenv_selected_keys
+            else
+              { };
           orgFromName = name: (environmentWith name).hostenv.organisation;
           orgProjectFromName = name:
             (environmentWith name).hostenv.organisation
             + "_" + (environmentWith name).hostenv.project;
           envOnly = packages.lib.filterAttrs (name: _: builtins.elem name envUsers) userInfo.users.users;
 
-          scopeKeys = scope:
-            if (scope.enable or false) then (scope.keys or [ ]) else [ ];
+          keysForEnv = name:
+            if builtins.hasAttr name keysByEnv
+              && builtins.isAttrs keysByEnv.${name}
+            then
+              keysByEnv.${name}
+            else
+              { };
+
+          keysFromManifest = name: keyGroup:
+            let
+              envSelection = keysForEnv name;
+              raw =
+                if builtins.hasAttr keyGroup envSelection
+                then envSelection.${keyGroup}
+                else [ ];
+            in
+            if builtins.isList raw
+            then builtins.filter builtins.isString raw
+            else [ ];
+
+          effectiveKeys = name: keyGroup: secretCfg:
+            if !(secretCfg.enable or false)
+            then
+              [ ]
+            else
+              let declared = secretCfg.keys or [ ];
+              in if declared == [ ] then keysFromManifest name keyGroup else declared;
 
           hasSecretKey = bucket: key:
             builtins.hasAttr bucket sopsKeys
@@ -125,8 +157,8 @@ let
                 let
                   envCfg = environmentWith name;
                   hostenvCfg = envCfg.hostenv or { };
-                  projectSecretKeys = scopeKeys (hostenvCfg.projectSecrets or { });
-                  envSecretKeys = scopeKeys (envCfg.secrets or { });
+                  projectSecretKeys = effectiveKeys name "project" (hostenvCfg.projectSecrets or { });
+                  envSecretKeys = effectiveKeys name "environment" (envCfg.secrets or { });
                   secretKeys = lib.unique ([ "backups_secret" "backups_env" ] ++ projectSecretKeys ++ envSecretKeys);
                 in
                 builtins.listToAttrs (map

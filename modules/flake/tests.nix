@@ -25,5 +25,8 @@
         };
 
         checks = import ../../tests { inherit pkgs envs makeHostenv inputs; };
+        packages = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
+          provider-secrets-runtime-test = import ../../tests/integration/provider-secrets-runtime.nix { inherit pkgs inputs; };
+        };
       });
 }

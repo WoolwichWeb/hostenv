@@ -5,7 +5,7 @@ let
 
   systems = config.systems;
 
-  mkSecretsScopeType = lib:
+  mkSecretsType = lib:
     let
       types = lib.types;
     in
@@ -30,6 +30,9 @@ let
           description = ''
             Secret keys to expose under `/run/secrets/<hostenv.userName>/`.
             Each key maps to `/run/secrets/<hostenv.userName>/<key>`.
+
+            When `enable = true` and this list is empty, hostenv exposes all keys
+            found in the scope file.
           '';
         };
 
@@ -48,7 +51,7 @@ let
   hostenvModule = { lib, config, ... }:
     let
       types = lib.types;
-      secretsScopeType = mkSecretsScopeType lib;
+      secretsType = mkSecretsType lib;
 
       # Replace non-alpha characters with a hyphen
       sanitise = str:
@@ -212,7 +215,7 @@ let
           default = null;
         };
         projectSecrets = lib.mkOption {
-          type = secretsScopeType;
+          type = secretsType;
           default = { };
           internal = true;
           description = "Internal: project-level secret scope copied into each environment for provider planning.";
@@ -283,7 +286,7 @@ let
     { lib, config, name, options, ... }:
     let
       types = lib.types;
-      secretsScopeType = mkSecretsScopeType lib;
+      secretsType = mkSecretsType lib;
 
       user = {
         options = {
@@ -631,7 +634,7 @@ let
         };
 
         secrets = lib.mkOption {
-          type = secretsScopeType;
+          type = secretsType;
           default = { };
           description = ''
             Per-environment secrets using SOPS.
@@ -745,7 +748,7 @@ in
     flake.modules.hostenv.core = { lib, config, ... }: {
       options = {
         secrets = lib.mkOption {
-          type = mkSecretsScopeType lib;
+          type = mkSecretsType lib;
           default = { };
           description = ''
             Project-wide secrets using SOPS.
