@@ -3,7 +3,7 @@ let
   lib = pkgs.lib;
   src = ../../provider;
   cliPkg = pkgs.haskellPackages.callCabal2nix "hostenv-provider-cli" src { };
-  ghc = pkgs.haskellPackages.ghcWithPackages (p: [
+  ghc = pkgs.haskell.packages.ghc912.ghcWithPackages (p: [
     p.aeson
     p.containers
     p.process

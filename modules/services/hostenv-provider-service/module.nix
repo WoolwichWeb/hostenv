@@ -9,7 +9,7 @@ let
     "bytestring"
     "containers"
     "cookie"
-    "cryptonite"
+    "crypton"
     "http-client"
     "http-client-tls"
     "http-types"

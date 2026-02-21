@@ -10,8 +10,8 @@ module Hostenv.Provider.Crypto
   , decryptToken
   ) where
 
-import "cryptonite" Crypto.Cipher.AES (AES256)
-import "cryptonite" Crypto.Cipher.Types
+import "crypton" Crypto.Cipher.AES (AES256)
+import "crypton" Crypto.Cipher.Types
   ( AEADMode (..)
   , AuthTag (..)
   , aeadInit
@@ -19,9 +19,9 @@ import "cryptonite" Crypto.Cipher.Types
   , aeadSimpleEncrypt
   , cipherInit
   )
-import "cryptonite" Crypto.Error (CryptoFailable (..))
-import "cryptonite" Crypto.Hash (Digest, SHA256, hash)
-import "cryptonite" Crypto.Random (getRandomBytes)
+import "crypton" Crypto.Error (CryptoFailable (..))
+import "crypton" Crypto.Hash (Digest, SHA256, hash)
+import "crypton" Crypto.Random (getRandomBytes)
 import qualified Data.ByteArray as BA
 import qualified Data.ByteArray.Encoding as BAE
 import qualified Data.ByteString as BS

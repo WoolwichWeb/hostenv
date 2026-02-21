@@ -10,7 +10,7 @@ in
       providerService = cfgTop.flake.lib.provider.service;
       serviceSrc = cfg.source;
       haskellDeps = cfg.haskellDeps;
-      ghc = pkgs.haskellPackages.ghcWithPackages (p: map (name: p.${name}) haskellDeps);
+      ghc = pkgs.haskell.packages.ghc912.ghcWithPackages (p: map (name: p.${name}) haskellDeps);
       serviceBin = pkgs.writeShellScriptBin "hostenv-provider-service" ''
         exec ${ghc}/bin/runghc -i${serviceSrc} ${serviceSrc}/Main.hs "$@"
       '';
@@ -73,7 +73,7 @@ in
           default = serviceBin;
           defaultText = lib.literalExpression ''
             pkgs.writeShellScriptBin "hostenv-provider-service" '''
-              exec ''${pkgs.haskellPackages.ghcWithPackages [ ... ]}/bin/runghc -i''${config.services.hostenv-provider.source} ''${config.services.hostenv-provider.source}/Main.hs
+              exec ''${pkgs.haskell.packages.ghc912.ghcWithPackages [ ... ]}/bin/runghc -i''${config.services.hostenv-provider.source} ''${config.services.hostenv-provider.source}/Main.hs
             ''';
           '';
           description = "Package providing the hostenv-provider-service executable.";

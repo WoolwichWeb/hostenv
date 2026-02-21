@@ -3,8 +3,8 @@
 {-# LANGUAGE PackageImports #-}
 
 import Control.Monad (unless)
-import "cryptonite" Crypto.Hash (SHA256)
-import "cryptonite" Crypto.MAC.HMAC (HMAC (..), hmac)
+import "crypton" Crypto.Hash (SHA256)
+import "crypton" Crypto.MAC.HMAC (HMAC (..), hmac)
 import qualified Data.ByteArray as BA
 import qualified Data.ByteArray.Encoding as BAE
 import qualified Data.ByteString as BS

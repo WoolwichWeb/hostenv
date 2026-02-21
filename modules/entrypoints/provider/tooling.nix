@@ -41,7 +41,7 @@ in
     perSystem = { system, pkgs, config, ... }:
       let
         providerHsDeps = p: map (name: p.${name}) config.provider.haskellDevPackages;
-        providerGhc = pkgs.haskellPackages.ghcWithPackages providerHsDeps;
+        providerGhc = pkgs.haskell.packages.ghc912.ghcWithPackages providerHsDeps;
         cliPkg = pkgs.haskellPackages.callCabal2nix "hostenv-provider-cli" providerRoot { };
         hostenvProviderCLI = pkgs.writeShellApplication {
           name = "hostenv-provider";

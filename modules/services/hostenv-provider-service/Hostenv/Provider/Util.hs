@@ -14,7 +14,7 @@ module Hostenv.Provider.Util
   , pickFirstExisting
   ) where
 
-import "cryptonite" Crypto.Random (getRandomBytes)
+import "crypton" Crypto.Random (getRandomBytes)
 import qualified Data.ByteArray.Encoding as BAE
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC

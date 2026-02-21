@@ -2,10 +2,10 @@
 let
   src = ../../modules/services/hostenv-provider-service;
   servicePkg = pkgs.haskellPackages.callCabal2nix "hostenv-provider-service" src { };
-  ghc = pkgs.haskellPackages.ghcWithPackages (p: [
+  ghc = pkgs.haskell.packages.ghc912.ghcWithPackages (p: [
     p.aeson
     p.bytestring
-    p.cryptonite
+    p.crypton
     p.memory
     p.text
   ]);
