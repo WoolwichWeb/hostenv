@@ -53,6 +53,13 @@ in
     age-keygen -o "$root/age.key" >/dev/null
     recipient="$(grep '^# public key:' "$root/age.key" | awk '{print $4}')"
 
+    cat > "$root/.sops.yaml" <<EOF
+    creation_rules:
+      - path_regex: secrets/\\w+\\.yaml$
+        age:
+          - "$recipient"
+    EOF
+
     cat > "$root/provider-plain.yaml" <<'EOF'
     acme__demo-main:
       backups_secret: "base-secret"
@@ -185,6 +192,12 @@ in
 
     jq -e '(.["__hostenv_selected_keys"]["acme__demo-main"].project | sort) == ["api_secret", "api_token"]' "$root/merged.json" >/dev/null
     jq -e '(.["__hostenv_selected_keys"]["acme__demo-main"].environment | sort) == ["env_extra", "oauth_client"]' "$root/merged.json" >/dev/null
+
+    yq -o=json '.__hostenv_selected_keys["acme__demo-main"].project' "$root/generated/secrets.merged.yaml" \
+      | jq -e 'sort == ["api_secret", "api_token"]' >/dev/null
+    yq -o=json '.__hostenv_selected_keys["acme__demo-main"].environment' "$root/generated/secrets.merged.yaml" \
+      | jq -e 'sort == ["env_extra", "oauth_client"]' >/dev/null
+    yq -r '.acme_demo.provider_project_only' "$root/generated/secrets.merged.yaml" | grep -E '^ENC\[' >/dev/null
     echo ok > "$out"
   '';
   provider-cli-secrets-merge-tracks-file = pkgs.runCommand "provider-cli-secrets-merge-tracks-file" { } ''

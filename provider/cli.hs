@@ -1938,19 +1938,25 @@ applySecretAssignments = foldl applySecret
 manifestKey :: K.Key
 manifestKey = K.fromString "__hostenv_selected_keys"
 
+manifestKeyRegex :: Text
+manifestKeyRegex = "^" <> K.toText manifestKey <> "$"
+
+-- Adds environment and project secrets to a KeyMap under key @manifestKey@.
+--
+-- Stores hostenv project secrets in JSON objects.
 applyManifestKey :: [(Text, [Text], [Text])] -> KM.KeyMap A.Value -> KM.KeyMap A.Value
 applyManifestKey scopeSelections mergedSecrets =
     let
-        toScopeObject (envUser, projectKeys, environmentKeys) =
+        keysToObj (envUser, projectKeys, environmentKeys) =
             ( K.fromText envUser
             , A.object
                 [ "project" .= projectKeys
                 , "environment" .= environmentKeys
                 ]
             )
-        scopeObj = A.Object (KM.fromList (map toScopeObject scopeSelections))
+        scopedObj = A.Object (KM.fromList (map keysToObj scopeSelections))
      in
-        KM.insert manifestKey scopeObj mergedSecrets
+        KM.insert manifestKey scopedObj mergedSecrets
 
 ageRecipients :: Text -> IO [Text]
 ageRecipients providerSecretsPath = do
@@ -1997,10 +2003,20 @@ writeMergedSecrets recipients mergedSecrets = do
         readProcessWithExitCode
             "sops"
             [ "--encrypt"
+            , -- Passing `--config /dev/null` to sops prevents provider config
+              -- restricting its `creation_rules` in ways that exclude
+              "--config"
+            , "/dev/null"
             , "--input-type"
             , "json"
             , "--output-type"
             , "yaml"
+            , -- `--unencrypted-regex` tells SOPS to not encrypt anything under
+              -- `__hostenv_selected_keys`. This isn't a security risk, as this
+              -- key only contains metadata of which keys are selected per
+              -- environment / project.
+              "--unencrypted-regex"
+            , T.unpack manifestKeyRegex
             , "--age"
             , T.unpack recipientsCsv
             , tmpPath
