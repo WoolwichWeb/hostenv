@@ -219,6 +219,36 @@
             rm -f "${cfg.dataDir}/postgresql_init"
           '';
         };
+
+        profile =
+          let
+            defaultDb = if lib.length cfg.ensureDatabases == 1 then builtins.head cfg.ensureDatabases else "postgres";
+
+            psqlScript = pkgs.writeShellScriptBin "psql" ''
+              export PGHOST="${cfg.runtimeDir}"
+              export PGUSER="${cfg.user}"
+              export PGDATABASE="${defaultDb}"
+              exec ${cfg.package}/bin/psql "$@"
+            '';
+
+            pgDumpScript = pkgs.writeShellScriptBin "pg_dump" ''
+              export PGHOST="${cfg.runtimeDir}"
+              export PGUSER="${cfg.user}"
+              export PGDATABASE="${defaultDb}"
+              exec ${cfg.package}/bin/pg_dump "$@"
+            '';
+
+            pgDumpAllScript = pkgs.writeShellScriptBin "pg_dumpall" ''
+              export PGHOST="${cfg.runtimeDir}"
+              export PGUSER="${cfg.user}"
+              exec ${cfg.package}/bin/pg_dumpall "$@"
+            '';
+          in
+          [
+            psqlScript
+            pgDumpScript
+            pgDumpAllScript
+          ];
       };
     }
   ;

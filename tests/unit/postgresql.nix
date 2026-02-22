@@ -43,6 +43,43 @@ let
   postStartScript = evalEnsureDatabases.config.systemd.services.postgresql.postStart or "";
   ensureDbUsesGexec = lib.hasInfix "\\gexec" postStartScript;
   ensureDbAvoidsDoBlock = !(lib.hasInfix "DO $$" postStartScript);
+  profilePaths = builtins.map toString (evalEnsureDatabases.config.profile or [ ]);
+
+  profileWrappersConfigured = pkgs.runCommand "postgresql-profile-wrappers-configured" { } ''
+    set -euo pipefail
+
+    found_psql=0
+    found_pg_dump=0
+    found_pg_dumpall=0
+
+    for p in ${lib.escapeShellArgs profilePaths}; do
+      if [ -x "$p/bin/psql" ]; then
+        found_psql=1
+        grep -q 'PGHOST="/run/hostenv/user/pgtest"' "$p/bin/psql"
+        grep -q 'PGUSER="pgtest"' "$p/bin/psql"
+        grep -q 'PGDATABASE="hostenv-provider"' "$p/bin/psql"
+      fi
+
+      if [ -x "$p/bin/pg_dump" ]; then
+        found_pg_dump=1
+        grep -q 'PGHOST="/run/hostenv/user/pgtest"' "$p/bin/pg_dump"
+        grep -q 'PGUSER="pgtest"' "$p/bin/pg_dump"
+        grep -q 'PGDATABASE="hostenv-provider"' "$p/bin/pg_dump"
+      fi
+
+      if [ -x "$p/bin/pg_dumpall" ]; then
+        found_pg_dumpall=1
+        grep -q 'PGHOST="/run/hostenv/user/pgtest"' "$p/bin/pg_dumpall"
+        grep -q 'PGUSER="pgtest"' "$p/bin/pg_dumpall"
+      fi
+    done
+
+    [ "$found_psql" -eq 1 ] || { echo "psql wrapper missing"; exit 1; }
+    [ "$found_pg_dump" -eq 1 ] || { echo "pg_dump wrapper missing"; exit 1; }
+    [ "$found_pg_dumpall" -eq 1 ] || { echo "pg_dumpall wrapper missing"; exit 1; }
+
+    echo ok > "$out"
+  '';
 
   evalInvalid = support.evalWithBase {
     modules = [
@@ -81,4 +118,6 @@ in
   postgresql-ensure-database-no-do =
     asserts.assertTrue "postgresql-ensure-database-no-do" ensureDbAvoidsDoBlock
       "postgresql ensureDatabases should not emit DO $$ blocks for CREATE DATABASE";
+
+  postgresql-profile-wrappers-configured = profileWrappersConfigured;
 }
