@@ -217,7 +217,7 @@
             target_rel="$current_env_rel"
             target_recipients="$current_env_recipients_csv"
           else
-            debug "gitlab token key generation skipped: no enabled project/current-environment secrets scope"
+            debug "gitlab token key generation skipped: no enabled project/current-environment secrets"
             return 0
           fi
 
@@ -227,7 +227,7 @@
               --default=true \
               --affirmative="Generate" \
               --negative="Skip" \
-              "Generate missing GitLab token encryption key '$gitlab_token_key_name' in $target_scope secrets ($target_rel)?" \
+              "Hostenv needs to generate an encryption key ('$gitlab_token_key_name') in $target_rel to keep GitLab tokens safe. Generate the encryption key? Alternatively you may choose 'Skip' and generate the key manually" \
               || generate_key=false
           fi
 
