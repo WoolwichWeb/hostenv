@@ -94,12 +94,14 @@ in
         webhookSecretFile = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
           default = null;
+          readOnly = true;
           description = "Path to a global webhook secret token (GitHub HMAC or GitLab token).";
         };
 
         webhookSecretsDir = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
           default = null;
+          readOnly = true;
           description = "Directory containing per-project webhook secrets, named by hash or org__project.";
         };
 
@@ -139,6 +141,7 @@ in
           oAuthSecretsFile = lib.mkOption {
             type = lib.types.str;
             default = "/run/secrets/${config.hostenv.userName}/gitlab_oauth";
+            readOnly = true;
             description = "Path to a secrets file containing GitLab OAuth client_id/client_secret.";
           };
 
@@ -149,8 +152,9 @@ in
           };
 
           tokenEncryptionKeyFile = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
+            type = lib.types.str;
+            default = "/run/secrets/${config.hostenv.userName}/gitlab_token_key";
+            readOnly = true;
             description = "Path to a key file used to encrypt persisted GitLab OAuth tokens.";
           };
 

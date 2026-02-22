@@ -108,8 +108,6 @@ Example (in a provider hostenv environment config):
 {
   services.hostenv-provider = {
     enable = true;
-    webhookSecretFile = "/run/secrets/hostenv/webhook_token"; # optional global secret
-    webhookSecretsDir = "/run/secrets/hostenv/webhooks"; # optional per-project secrets
     # webhookHost defaults to hostenv.hostname
   };
 }
@@ -138,7 +136,7 @@ Notes:
   configured secret (GitHub `X-Hub-Signature-256` or GitLab `X-Gitlab-Token`).
 - **Warning:** encrypted secrets (e.g., sops files) from the provider repo will still be stored in
   the Nix store on the deploy machine. They remain encrypted, but they will be present.
-- If `webhookSecretsDir` is set, the service looks for secret files named either
+- If a webhook secrets directory is configured, the service looks for secret files named either
   `<hash>` or `<org>__<project>` to verify signatures for each project.
 
 ## Provider admin UI (GitLab SSO) (optional)
@@ -169,12 +167,9 @@ Example (in a provider hostenv environment config):
     enable = true;
     gitlab = {
       enable = true;
-      oAuthSecretsFile = "/run/secrets/hostenv/gitlab_oauth";
-      tokenEncryptionKeyFile = "/run/secrets/hostenv/gitlab_token_key";
       # hosts = [ "gitlab.com" ];
       # deployTokenTtlMinutes = 60;
     };
-    webhookSecretsDir = "/run/secrets/hostenv/webhooks";
     # uiHost defaults to webhookHost; uiBasePath defaults to /dashboard
   };
 }
@@ -193,6 +188,10 @@ Notes:
 - OAuth scopes requested: `api`, `read_repository`.
 - `gitlab.hosts` defaults to `["gitlab.com"]`; set it to allow additional GitLab hosts.
 - `gitlab.deployTokenTtlMinutes` defaults to `60`; deploy runs still revoke per-run tokens immediately on completion/failure.
+- `gitlab.oAuthSecretsFile` defaults to `/run/secrets/<hostenv.userName>/gitlab_oauth`.
+- `gitlab.tokenEncryptionKeyFile` defaults to `/run/secrets/<hostenv.userName>/gitlab_token_key`.
+- Provider service secret path options are read-only; hostenv controls where they are mounted on server.
+- `hostenv secrets` scaffolding auto-generates `gitlab_token_key` (after confirmation) when GitLab OAuth is enabled and the key is missing from both project/current-environment secrets.
 - Add your admin user by setting their `users.role` in the database (defaults to `user`).
 - The UI regenerates `flake.nix` from a template (`flake.template.nix`) using
   projects stored in PostgreSQL. Keep structural edits in `flake.template.nix`,

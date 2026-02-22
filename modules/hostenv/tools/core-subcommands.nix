@@ -3,23 +3,28 @@
   flake.modules.hostenv.tools-core-subcommands =
     { lib, config, pkgs, ... }:
     let
-      envJsonEval = builtins.tryEval (builtins.toJSON config.hostenv.publicEnvironments);
       envJson =
-        assert envJsonEval.success
+        let
+          env = builtins.tryEval (builtins.toJSON config.hostenv.publicEnvironments);
+        in
+        assert env.success
           || builtins.throw ''
           hostenv: config.hostenv.publicEnvironments must be JSON-serializable.
 
           Non-JSON data should be stored elsewhere (e.g. config.hostenv.*).
         '';
-        envJsonEval.value;
-      projectSecrets = config.secrets or { };
-      projectSecretsJsonEval = builtins.tryEval (builtins.toJSON projectSecrets);
+        env.value;
       projectSecretsJson =
-        assert projectSecretsJsonEval.success
+        let
+          projectSecrets = config.secrets or { };
+          eval = builtins.tryEval (builtins.toJSON projectSecrets);
+        in
+        assert eval.success
           || builtins.throw ''
           hostenv: secrets configuration must be JSON-serializable.
         '';
-        projectSecretsJsonEval.value;
+        eval.value;
+      gitlabCfg = config.services.hostenv-provider.gitlab;
 
       secretsHelpers = ''
         scope_enabled() { jq -r '.enable // false' <<<"$1"; }
@@ -139,11 +144,129 @@
           sops --encrypt --age "$recipients_csv" --in-place "$abs_path" >/dev/null
         }
 
+        read_scope_secret_value() {
+          rel_path="$1"
+          secret_key="$2"
+          abs_path="$project_root/$rel_path"
+
+          [ -f "$abs_path" ] || return 1
+
+          plain_tmp="$(mktemp)"
+          if ! sops --decrypt "$abs_path" >|"$plain_tmp" 2>/dev/null; then
+            cp "$abs_path" "$plain_tmp"
+          fi
+
+          secret_value="$(SECRET_KEY="$secret_key" yq -r '.[strenv(SECRET_KEY)] // ""' "$plain_tmp" 2>/dev/null || true)"
+          rm -f "$plain_tmp"
+
+          [ -n "$secret_value" ] || return 1
+          [ "$secret_value" != "null" ] || return 1
+
+          printf '%s\n' "$secret_value"
+        }
+
+        write_scope_secret_value() {
+          rel_path="$1"
+          secret_key="$2"
+          secret_value="$3"
+          recipients_csv="$4"
+          abs_path="$project_root/$rel_path"
+
+          [ -n "$recipients_csv" ] || return 1
+
+          mkdir -p "$(dirname "$abs_path")"
+
+          plain_tmp="$(mktemp)"
+          if [ -f "$abs_path" ]; then
+            if ! sops --decrypt "$abs_path" >|"$plain_tmp" 2>/dev/null; then
+              cp "$abs_path" "$plain_tmp"
+            fi
+          else
+            printf '{}\n' >|"$plain_tmp"
+          fi
+
+          SECRET_KEY="$secret_key" SECRET_VALUE="$secret_value" \
+            yq -i '.[strenv(SECRET_KEY)] = strenv(SECRET_VALUE)' "$plain_tmp"
+
+          cp "$plain_tmp" "$abs_path"
+          rm -f "$plain_tmp"
+          sops --encrypt --age "$recipients_csv" --in-place "$abs_path" >/dev/null
+        }
+
+        maybe_generate_gitlab_token_key() {
+          [ "$gitlab_enabled" = "true" ] || return 0
+          [ -n "$gitlab_token_key_name" ] || return 0
+
+          if [ "$project_enabled" = "true" ] && read_scope_secret_value "$project_rel" "$gitlab_token_key_name" >/dev/null 2>&1; then
+            return 0
+          fi
+          if [ "$current_env_enabled" = "true" ] && read_scope_secret_value "$current_env_rel" "$gitlab_token_key_name" >/dev/null 2>&1; then
+            return 0
+          fi
+
+          target_scope=""
+          target_rel=""
+          target_recipients=""
+
+          if [ "$project_enabled" = "true" ]; then
+            target_scope="project"
+            target_rel="$project_rel"
+            target_recipients="$project_recipients_csv"
+          elif [ "$current_env_enabled" = "true" ]; then
+            target_scope="environment '$env_name'"
+            target_rel="$current_env_rel"
+            target_recipients="$current_env_recipients_csv"
+          else
+            debug "gitlab token key generation skipped: no enabled project/current-environment secrets scope"
+            return 0
+          fi
+
+          generate_key=true
+          if [ -t 0 ] && [ -t 1 ]; then
+            gum confirm \
+              --default=true \
+              --affirmative="Generate" \
+              --negative="Skip" \
+              "Generate missing GitLab token encryption key '$gitlab_token_key_name' in $target_scope secrets ($target_rel)?" \
+              || generate_key=false
+          fi
+
+          if [ "$generate_key" != "true" ]; then
+            bold "Skipped generating '$gitlab_token_key_name'. GitLab OAuth tokens may fail to persist."
+            return 0
+          fi
+
+          new_key_value="key=$(openssl rand -hex 32)"
+          write_scope_secret_value "$target_rel" "$gitlab_token_key_name" "$new_key_value" "$target_recipients"
+          bold "Generated '$gitlab_token_key_name' in $target_scope secrets ($target_rel)."
+        }
+
         sync_hostenv_secrets() {
           project_root="$(detect_project_root)"
           all_envs_json='${envJson}'
           project_scope='${projectSecretsJson}'
+          gitlab_enabled='${if gitlabCfg.enable then "true" else "false"}'
+          gitlab_token_key_name='${builtins.baseNameOf gitlabCfg.tokenEncryptionKeyFile}'
           project_enabled="$(scope_enabled "$project_scope")"
+          project_rel=""
+          project_recipients_csv=""
+
+          current_env_cfg="$(jq -c --arg e "$env_name" '.[$e] // null' <<<"$all_envs_json")"
+          current_env_scope='{}'
+          current_env_enabled="false"
+          current_env_rel=""
+          current_env_recipients_csv=""
+          if [ "$current_env_cfg" != "null" ]; then
+            current_env_scope="$(jq -c '.secrets // {}' <<<"$current_env_cfg")"
+            current_env_enabled="$(scope_enabled "$current_env_scope")"
+            if [ "$current_env_enabled" = "true" ]; then
+              current_env_safe="$(jq -r '.hostenv.safeEnvironmentName // .hostenv.environmentName // empty' <<<"$current_env_cfg")"
+              [ -n "$current_env_safe" ] || current_env_safe="$env_name"
+              current_env_rel="$(scope_file_rel_or_default "$current_env_scope" "secrets/$current_env_safe.yaml")"
+              current_env_recipients_csv="$(collect_scope_recipients_csv "$current_env_scope" "env" "$project_scope" "$current_env_cfg")"
+            fi
+          fi
+
           any_enabled="$project_enabled"
 
           mkdir -p "$project_root/secrets"
@@ -201,6 +324,8 @@
               ensure_scope_file "$iter_scope" "$iter_rel" "$iter_recipients_csv"
             fi
           done < <(jq -r 'keys[]' <<<"$all_envs_json")
+
+          maybe_generate_gitlab_token_key
         }
       '';
 
@@ -435,7 +560,7 @@
             sync_hostenv_secrets
           '';
           internal = true;
-          runtimeInputs = [ pkgs.sops pkgs.yq-go pkgs.ssh-to-age ];
+          runtimeInputs = [ pkgs.openssl pkgs.sops pkgs.yq-go pkgs.ssh-to-age ];
         };
 
         secrets = {
@@ -500,7 +625,7 @@
             exec sops "$chosen_rel"
           '';
           description = "Open project or environment SOPS secrets file (defaults by current branch).";
-          runtimeInputs = [ pkgs.sops pkgs.yq-go pkgs.ssh-to-age ];
+          runtimeInputs = [ pkgs.openssl pkgs.sops pkgs.yq-go pkgs.ssh-to-age ];
         };
       };
     in
