@@ -29,7 +29,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Time (UTCTime, addUTCTime, getCurrentTime)
-import Database.PostgreSQL.Simple (Connection, Only (..), Query, close, connectPostgreSQL, execute, execute_, query, query_)
+import Database.PostgreSQL.Simple (Binary (..), Connection, Only (..), Query, close, connectPostgreSQL, execute, execute_, query, query_)
 import Database.PostgreSQL.Simple.FromRow (FromRow (..), field)
 import Network.Wai (Request)
 import qualified Network.Wai as Wai
@@ -158,7 +158,15 @@ saveGitlabToken cfg conn mUserId mProjectId host token scopes =
         Right enc -> do
           _ <- execute conn
             "INSERT INTO gitlab_tokens (user_id, project_id, git_host, token, token_encrypted, token_nonce, token_key_id, scopes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-            (mUserId, mProjectId, host, (Nothing :: Maybe Text), encryptedTokenCiphertext enc, encryptedTokenNonce enc, encryptedTokenKeyId enc, scopes)
+            ( mUserId
+            , mProjectId
+            , host
+            , (Nothing :: Maybe Text)
+            , Binary (encryptedTokenCiphertext enc)
+            , Binary (encryptedTokenNonce enc)
+            , encryptedTokenKeyId enc
+            , scopes
+            )
           pure (Right ())
 
 loadLatestUserGitlabToken :: AppConfig -> Connection -> Int -> IO (Either Text (Maybe GitlabAccessToken))
@@ -253,7 +261,7 @@ migratePlaintextRow cfg conn tokenRowId plain =
         Right enc -> do
           _ <- execute conn
             "UPDATE gitlab_tokens SET token = NULL, token_encrypted = ?, token_nonce = ?, token_key_id = ?, updated_at = now() WHERE id = ?"
-            (encryptedTokenCiphertext enc, encryptedTokenNonce enc, encryptedTokenKeyId enc, tokenRowId)
+            (Binary (encryptedTokenCiphertext enc), Binary (encryptedTokenNonce enc), encryptedTokenKeyId enc, tokenRowId)
           pure (Right ())
 
 migrateLegacyTokens :: AppConfig -> Connection -> IO ()
@@ -269,7 +277,7 @@ migrateLegacyTokens cfg conn =
           Right enc -> do
             _ <- execute conn
               "UPDATE gitlab_tokens SET token = NULL, token_encrypted = ?, token_nonce = ?, token_key_id = ?, updated_at = now() WHERE id = ?"
-              (encryptedTokenCiphertext enc, encryptedTokenNonce enc, encryptedTokenKeyId enc, tokenId :: Int)
+              (Binary (encryptedTokenCiphertext enc), Binary (encryptedTokenNonce enc), encryptedTokenKeyId enc, tokenId :: Int)
             pure ()
 
 getSessionInfo :: AppConfig -> Request -> IO (Maybe SessionInfo)
