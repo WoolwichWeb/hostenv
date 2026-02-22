@@ -291,7 +291,7 @@ getSessionInfo cfg req = do
       withDb cfg $ \conn -> do
         now <- getCurrentTime
         rows <- query conn
-          "SELECT sessions.id, sessions.csrf_token, sessions.expires_at, users.id, users.gitlab_user_id, users.username, users.name, users.role FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.id = ?"
+          "SELECT sessions.id, sessions.csrf_token, sessions.expires_at, users.id, users.gitlab_user_id, users.username, users.name, users.role::text FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.id = ?"
           (Only sid)
         case rows of
           [] -> pure Nothing
@@ -339,7 +339,7 @@ createSession conn userIdVal = do
   _ <- execute conn
     "INSERT INTO sessions (id, user_id, csrf_token, expires_at) VALUES (?, ?, ?, ?)"
     (sid, userIdVal, csrf, expires)
-  rows <- query conn "SELECT id, gitlab_user_id, username, name, role FROM users WHERE id = ?" (Only userIdVal)
+  rows <- query conn "SELECT id, gitlab_user_id, username, name, role::text FROM users WHERE id = ?" (Only userIdVal)
   case rows of
     (user:_) -> pure (SessionInfo sid csrf user)
     _ -> error "session user not found"
