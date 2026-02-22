@@ -303,6 +303,16 @@ let
               user's authorized keys.
             '';
           };
+
+          gitlabUsername = lib.mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = ''
+              GitLab username for the user. Optional.
+
+              Only relevant if `hostenv.provider-service.enable = true` and `hostenv.provider-service.gitlab.enable = true`
+            '';
+          };
         };
       };
     in
@@ -655,7 +665,7 @@ let
                 config.environmentName = name;
                 config.root = lib.mkDefault (topLevel.root or ".");
                 config.environments = { };
-                config.projectSecrets = lib.mkDefault (topLevel.secrets or {});
+                config.projectSecrets = lib.mkDefault (topLevel.secrets or { });
               }
             ];
           };

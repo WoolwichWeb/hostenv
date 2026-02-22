@@ -22,6 +22,7 @@ module Hostenv.Provider.Gitlab
   , createProjectDeployToken
   , revokeProjectDeployToken
   , appendNixAccessTokenConfig
+  , UpsertUserSessionError(..)
   , upsertUserSession
   ) where
 
@@ -44,11 +45,15 @@ import qualified Network.Wai as Wai
 import Hostenv.Provider.Config (AppConfig(..), uiPath)
 import Hostenv.Provider.DB
   ( GitlabAccessToken(..)
+  , ProviderAccountMatch(..)
   , SessionInfo(..)
   , User(..)
   , createSession
   , loadLatestUserGitlabToken
+  , lookupProviderAccount
   , saveGitlabToken
+  , setProviderUserId
+  , syncUsersConn
   , withDb
   )
 import Hostenv.Provider.Service (GitlabSecrets(..))
@@ -150,12 +155,12 @@ fetchGitlabUser cfg host token = do
 
 loadUserProjects :: AppConfig -> SessionInfo -> IO (Either Text [GitlabProject])
 loadUserProjects cfg sess = withDb cfg $ \conn -> do
-  let SessionInfo { sessionUser = User { userId = userIdVal } } = sess
+  let userIdVal = sess.user.id
   tokenResult <- loadLatestUserGitlabToken cfg conn userIdVal
   case tokenResult of
     Left err -> pure (Left err)
     Right Nothing -> pure (Left "No GitLab token available for this user")
-    Right (Just tokenInfo) -> fetchGitlabProjects cfg tokenInfo.gitlabTokenHost tokenInfo.gitlabTokenValue
+    Right (Just tokenInfo) -> fetchGitlabProjects cfg tokenInfo.host tokenInfo.value
 
 fetchGitlabProjects :: AppConfig -> Text -> Text -> IO (Either Text [GitlabProject])
 fetchGitlabProjects cfg host token = do
@@ -345,20 +350,36 @@ instance FromJSON GitlabDeployToken where
       <$> o .: "id"
       <*> o .: "token"
 
-upsertUserSession :: AppConfig -> Text -> GitlabUser -> GitlabTokenResponse -> IO (Either Text SessionInfo)
+data UpsertUserSessionError
+  = AccessDenied Text
+  | InternalError Text
+  deriving (Eq, Show)
+
+upsertUserSession :: AppConfig -> Text -> GitlabUser -> GitlabTokenResponse -> IO (Either UpsertUserSessionError SessionInfo)
 upsertUserSession cfg host glUser token = withDb cfg $ \conn -> do
-  rows <- query conn "SELECT id FROM users WHERE gitlab_user_id = ?" (Only glUser.glUserId)
-  userIdVal <- case rows of
-    (Only uid:_) -> do
-      _ <- execute conn "UPDATE users SET username = ?, name = ?, updated_at = now() WHERE id = ?" (glUser.glUserUsername, glUser.glUserName, uid)
-      pure uid
-    [] -> do
-      [Only uid] <- query conn "INSERT INTO users (gitlab_user_id, username, name) VALUES (?, ?, ?) RETURNING id" (glUser.glUserId, glUser.glUserUsername, glUser.glUserName)
-      pure uid
-  saveResult <- saveGitlabToken cfg conn (Just userIdVal) Nothing host token.tokenAccessToken token.tokenScope
-  case saveResult of
-    Left err -> pure (Left err)
-    Right _ -> Right <$> createSession conn userIdVal
+  syncUsersConn cfg conn
+  let normalizedHost = T.toLower host
+      normalizedUsername = T.toLower glUser.glUserUsername
+  mapped <- lookupProviderAccount conn "gitlab" normalizedHost normalizedUsername
+  case mapped of
+    Nothing ->
+      pure (Left (AccessDenied "GitLab account is not seeded in this hostenv project"))
+    Just providerMatch ->
+      case providerMatch.externalUserId of
+        Just existingId
+          | existingId /= glUser.glUserId ->
+              pure (Left (AccessDenied "Seeded GitLab account mapping does not match provider user id"))
+        _ -> do
+          case providerMatch.externalUserId of
+            Nothing ->
+              setProviderUserId conn providerMatch.rowId glUser.glUserId
+            _ ->
+              pure ()
+          let userIdVal = providerMatch.userId
+          saveResult <- saveGitlabToken cfg conn (Just userIdVal) Nothing host token.tokenAccessToken token.tokenScope
+          case saveResult of
+            Left err -> pure (Left (InternalError err))
+            Right _ -> Right <$> createSession conn userIdVal
 
 isSuccessStatus :: Status -> Bool
 isSuccessStatus st = statusCode st >= 200 && statusCode st < 300

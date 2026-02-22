@@ -66,13 +66,13 @@ webhookHandler webhookLock cfg hash mHubSig mGitlabToken rawBody = do
       Left err -> throwError (errorWithBody err500 (ErrorResponse err Nothing Nothing Nothing Nothing))
       Right Nothing -> throwError (errorWithBody err500 (ErrorResponse "Missing project OAuth token for deploy" Nothing Nothing Nothing Nothing))
       Right (Just cred) -> pure cred
-  deployTokenResult <- liftIO (createProjectDeployToken cfg deployCred.deployCredHost deployCred.deployCredToken deployCred.deployCredRepoId)
+  deployTokenResult <- liftIO (createProjectDeployToken cfg deployCred.host deployCred.token deployCred.repoId)
   deployToken <-
     case deployTokenResult of
       Left err -> throwError (errorWithBody err500 (ErrorResponse err Nothing Nothing Nothing Nothing))
       Right token -> pure token
   existingNixConfig <- liftIO (fmap (fmap T.pack) (lookupEnv "NIX_CONFIG"))
-  let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig deployCred.deployCredHost deployToken.deployTokenValue
+  let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig deployCred.host deployToken.deployTokenValue
   let AppConfig { appWebhookConfig = webhookCfg } = cfg
   revokeErrRef <- liftIO (newIORef Nothing)
   result <-
@@ -84,7 +84,7 @@ webhookHandler webhookLock cfg hash mHubSig mGitlabToken rawBody = do
           webhookCfg
           projectRef
           `finally` do
-            revokeResult <- revokeProjectDeployToken cfg deployCred.deployCredHost deployCred.deployCredToken deployCred.deployCredRepoId deployToken.deployTokenId
+            revokeResult <- revokeProjectDeployToken cfg deployCred.host deployCred.token deployCred.repoId deployToken.deployTokenId
             case revokeResult of
               Left msg -> writeIORef revokeErrRef (Just msg)
               Right _ -> pure ()

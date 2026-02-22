@@ -7,6 +7,77 @@ in
     { lib, config, pkgs, ... }:
     let
       cfg = config.services.hostenv-provider;
+      enabledEnvironments = lib.filterAttrs (_: env: env.enable or true) (config.hostenv.publicEnvironments or { });
+      enabledEnvironmentNames = lib.sort builtins.lessThan (builtins.attrNames enabledEnvironments);
+      uniqueSorted = xs: lib.sort builtins.lessThan (lib.unique xs);
+      normalizeGitlabUsername = username:
+        if username == null || username == ""
+        then null
+        else lib.strings.toLower username;
+      userEntriesFor = userName:
+        lib.filter
+          (entry: entry != null)
+          (map
+            (envName:
+              let
+                users = enabledEnvironments.${envName}.users or { };
+              in
+              if builtins.hasAttr userName users then
+                {
+                  inherit envName;
+                  user = users.${userName};
+                }
+              else
+                null)
+            enabledEnvironmentNames);
+      allUsernames =
+        uniqueSorted
+          (builtins.concatLists
+            (map (envName: builtins.attrNames (enabledEnvironments.${envName}.users or { })) enabledEnvironmentNames));
+      gitlabUsernamesFor = userName:
+        uniqueSorted
+          (lib.filter
+            (value: value != null)
+            (map
+              (entry: normalizeGitlabUsername (entry.user.gitlabUsername or null))
+              (userEntriesFor userName)));
+      providerHosts =
+        uniqueSorted
+          (lib.filter
+            (host: host != "")
+            (map lib.strings.toLower (if cfg.gitlab.hosts == [ ] then [ "gitlab.com" ] else cfg.gitlab.hosts)));
+      conflictingUsers = lib.filter (userName: (lib.length (gitlabUsernamesFor userName)) > 1) allUsernames;
+      seedUsers =
+        map
+          (userName:
+            let
+              entries = userEntriesFor userName;
+              emailValues =
+                lib.filter
+                  (value: value != null && value != "")
+                  (map (entry: entry.user.email or null) entries);
+              gitlabValues = gitlabUsernamesFor userName;
+              gitlabUsername = if gitlabValues == [ ] then null else builtins.head gitlabValues;
+              providerAccounts =
+                if gitlabUsername == null then
+                  [ ]
+                else
+                  map
+                    (host: {
+                      provider = "gitlab";
+                      host = host;
+                      username = gitlabUsername;
+                      userId = null;
+                    })
+                    providerHosts;
+            in
+            {
+              configUsername = userName;
+              email = if emailValues == [ ] then null else builtins.head emailValues;
+              role = "admin";
+              inherit providerAccounts;
+            })
+          allUsernames;
       providerService = cfgTop.flake.lib.provider.service;
       serviceSrc = cfg.source;
       haskellDeps = cfg.haskellDeps;
@@ -46,6 +117,7 @@ in
         uiBaseUrl = "${cfg.uiScheme}://${cfg.uiHost}";
         dbUri = cfg.dbUri;
         gitlab = cfg.gitlab;
+        seedUsers = seedUsers;
         gitCredentialsFile = cfg.gitCredentialsFile;
         gitConfigFile = cfg.gitConfigFile;
         flakeTemplate = cfg.flakeTemplate;
@@ -196,67 +268,104 @@ in
         };
       };
 
-      config = lib.mkIf cfg.enable {
-        services.postgresql = {
-          enable = lib.mkDefault true;
-          user = lib.mkDefault config.hostenv.userName;
-          dataDir = lib.mkDefault "${config.hostenv.dataDir}/postgresql";
-          runtimeDir = lib.mkDefault config.hostenv.runtimeDir;
-          ensureDatabases = lib.mkDefault [ "hostenv-provider" ];
-          ensureUsers = lib.mkDefault [
-            {
-              name = config.hostenv.userName;
-              ensurePermissions = {
-                "hostenv-provider" = "ALL PRIVILEGES";
-              };
-            }
-          ];
-        };
-
-        services.nginx.enable = lib.mkDefault true;
-        services.nginx.virtualHosts = {
-          "${cfg.webhookHost}" = {
-            locations = lib.mkMerge [
+      config = lib.mkMerge [
+        {
+          assertions =
+            let
+              anyUsers = builtins.any (userName: gitlabUsernamesFor userName != [ ]) allUsernames;
+            in
+            [
               {
-                "~ ^/webhook/" = {
-                  recommendedProxySettings = true;
-                  proxyPass = proxySocket;
-                };
+                assertion = !(anyUsers && (!cfg.enable || !cfg.gitlab.enable));
+                message = ''
+                  users.<name>.gitlabUsername is configured in enabled environments,
+                  but services.hostenv-provider.enable and services.hostenv-provider.gitlab.enable are not both true.
+                '';
               }
+            ]
+            ++ map
+              (userName:
+                let
+                  assignments =
+                    lib.concatStringsSep ", "
+                      (map
+                        (entry:
+                          let
+                            value = normalizeGitlabUsername (entry.user.gitlabUsername or null);
+                          in
+                          "${entry.envName}=${if value == null then "<unset>" else value}")
+                        (userEntriesFor userName));
+                in
+                {
+                  assertion = false;
+                  message = ''
+                    user '${userName}' has conflicting gitlabUsername values across enabled environments: ${assignments}
+                  '';
+                })
+              conflictingUsers;
+        }
+        (lib.mkIf cfg.enable {
+          services.postgresql = {
+            enable = lib.mkDefault true;
+            user = lib.mkDefault config.hostenv.userName;
+            dataDir = lib.mkDefault "${config.hostenv.dataDir}/postgresql";
+            runtimeDir = lib.mkDefault config.hostenv.runtimeDir;
+            ensureDatabases = lib.mkDefault [ "hostenv-provider" ];
+            ensureUsers = lib.mkDefault [
               {
-                "${cfg.uiBasePath}" = {
-                  recommendedProxySettings = true;
-                  proxyPass = proxySocket;
+                name = config.hostenv.userName;
+                ensurePermissions = {
+                  "hostenv-provider" = "ALL PRIVILEGES";
                 };
               }
             ];
-            serverName = lib.mkDefault cfg.webhookHost;
           };
-        };
 
-        systemd.services.hostenv-provider = {
-          description = "Hostenv provider webhook service";
-          wantedBy = [ "default.target" ];
-          wants = lib.optional config.services.postgresql.enable "postgresql.service";
-          after = [ "network.target" ] ++ lib.optional config.services.postgresql.enable "postgresql.service";
-          restartIfChanged = false;
-          path = [
-            pkgs.coreutils
-            pkgs.curl
-            pkgs.git
-            pkgs.bind
-            pkgs.nix
-            pkgs.openssh
-            ghc
-          ];
-          serviceConfig = {
-            ExecStart = "${serviceStart}";
-            Restart = "on-failure";
-            RestartSec = "5s";
+          services.nginx.enable = lib.mkDefault true;
+          services.nginx.virtualHosts = {
+            "${cfg.webhookHost}" = {
+              locations = lib.mkMerge [
+                {
+                  "~ ^/webhook/" = {
+                    recommendedProxySettings = true;
+                    proxyPass = proxySocket;
+                  };
+                }
+                {
+                  "${cfg.uiBasePath}" = {
+                    recommendedProxySettings = true;
+                    proxyPass = proxySocket;
+                  };
+                }
+              ];
+              serverName = lib.mkDefault cfg.webhookHost;
+            };
           };
-        };
-        profile = [ cfg.package ];
-      };
+
+          systemd.services.hostenv-provider = {
+            description = "Hostenv provider webhook service";
+            wantedBy = [ "default.target" ];
+            wants = lib.optional config.services.postgresql.enable "postgresql.service";
+            after = [ "network.target" ] ++ lib.optional config.services.postgresql.enable "postgresql.service";
+            restartIfChanged = false;
+            path = [
+              pkgs.coreutils
+              pkgs.curl
+              pkgs.git
+              pkgs.bind
+              pkgs.nix
+              pkgs.openssh
+              ghc
+            ];
+            serviceConfig = {
+              ExecStart = "${serviceStart}";
+              Restart = "on-failure";
+              RestartSec = "5s";
+            };
+          };
+          profile = [ cfg.package ];
+        })
+      ];
     }
   ;
 }

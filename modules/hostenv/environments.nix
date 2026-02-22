@@ -26,6 +26,15 @@ in
                 options = {
                   email = lib.mkOption { type = types.str; description = "A valid email address for the user."; };
                   publicKeys = lib.mkOption { type = types.listOf types.singleLineStr; description = "OpenSSH public keys for this user."; };
+                  gitlabUsername = lib.mkOption {
+                    type = types.nullOr types.str;
+                    default = null;
+                    description = ''
+                      GitLab username for the user. Optional.
+
+                      Only relevant if `hostenv.provider-service.enable = true` and `hostenv.provider-service.gitlab.enable = true`
+                    '';
+                  };
                 };
               });
               default = { };

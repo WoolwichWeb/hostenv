@@ -24,7 +24,7 @@ import Network.Wai (strictRequestBody)
 
 import Hostenv.Provider.Config (AppConfig(..), uiPath)
 import Hostenv.Provider.DB (SessionInfo(..), User(..), getSessionInfo, loadProjects, logoutCookie, renderSessionCookie, withDb)
-import Hostenv.Provider.Gitlab (GitlabTokenResponse(..), consumeOauthState, createOauthState, exchangeOAuthCode, fetchGitlabUser, loadUserProjects, oauthRedirectUri, requireSecrets, selectGitlabHost, upsertUserSession)
+import Hostenv.Provider.Gitlab (GitlabTokenResponse(..), UpsertUserSessionError(..), consumeOauthState, createOauthState, exchangeOAuthCode, fetchGitlabUser, loadUserProjects, oauthRedirectUri, requireSecrets, selectGitlabHost, upsertUserSession)
 import Hostenv.Provider.Project (addProjectFlow)
 import Hostenv.Provider.Service (GitlabSecrets(..))
 import Hostenv.Provider.UI.Helpers (respondHtml, respondHtmlWithHeaders, respondRedirect)
@@ -49,7 +49,7 @@ handleIndex cfg req respond = do
   case mSession of
     Nothing -> respondRedirect respond cfg "/login"
     Just sess ->
-      let SessionInfo { sessionUser = User { userRole = role } } = sess
+      let SessionInfo { user = User { role = role } } = sess
        in if role /= "admin"
         then respondHtml respond status403 (accessDeniedPage cfg)
         else do
@@ -62,7 +62,7 @@ handleAddProjectGet cfg req respond = do
   case mSession of
     Nothing -> respondRedirect respond cfg "/login"
     Just sess ->
-      let SessionInfo { sessionUser = User { userRole = role } } = sess
+      let SessionInfo { user = User { role = role } } = sess
        in if role /= "admin"
         then respondHtml respond status403 (accessDeniedPage cfg)
         else do
@@ -77,7 +77,7 @@ handleAddProjectPost cfg req respond = do
   case mSession of
     Nothing -> respondRedirect respond cfg "/login"
     Just sess ->
-      let SessionInfo { sessionUser = User { userRole = role }, sessionCsrf = csrf } = sess
+      let SessionInfo { user = User { role = role }, csrf = csrf } = sess
        in if role /= "admin"
         then respondHtml respond status403 (accessDeniedPage cfg)
         else do
@@ -150,7 +150,8 @@ handleOauthCallback cfg req respond = do
                 Right glUser -> do
                   sessionResult <- upsertUserSession cfg glHost glUser token
                   case sessionResult of
-                    Left msg -> respondHtml respond status500 (errorPage cfg msg)
+                    Left (AccessDenied msg) -> respondHtml respond status403 (errorPage cfg msg)
+                    Left (InternalError msg) -> respondHtml respond status500 (errorPage cfg msg)
                     Right session -> do
                       let cookieHeader = ("Set-Cookie", renderSessionCookie session)
                       respondHtmlWithHeaders respond status302 [(hLocation, TE.encodeUtf8 (uiPath cfg "/")), cookieHeader] mempty

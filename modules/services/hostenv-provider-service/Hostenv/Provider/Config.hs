@@ -6,6 +6,8 @@
 
 module Hostenv.Provider.Config
   ( AppConfig(..)
+  , ProviderAccountConfig(..)
+  , UserConfig(..)
   , loadConfig
   , appWorkDir
   , resolvePath
@@ -17,6 +19,7 @@ import qualified Data.Aeson as A
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BL
+import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Maybe (isJust)
@@ -52,6 +55,7 @@ data AppConfig = AppConfig
   , appGitConfigPath :: FilePath
   , appGitCredentialsPath :: FilePath
   , appFlakeTemplate :: FilePath
+  , appSeedUsers :: [UserConfig]
   , appHttpManager :: Maybe Manager
   }
 
@@ -67,6 +71,7 @@ data ProviderConfigFile = ProviderConfigFile
   , uiBaseUrl :: Text
   , dbUri :: String
   , gitlab :: GitlabConfigFile
+  , seedUsers :: [UserConfig]
   , gitConfigFile :: FilePath
   , gitCredentialsFile :: FilePath
   , flakeTemplate :: FilePath
@@ -80,6 +85,20 @@ data GitlabConfigFile = GitlabConfigFile
   , deployTokenTtlMinutes :: Maybe Int
   } deriving (Eq, Show, Generic)
 
+data ProviderAccountConfig = ProviderAccountConfig
+  { provider :: Text
+  , host :: Text
+  , username :: Text
+  , userId :: Maybe Int64
+  } deriving (Eq, Show, Generic)
+
+data UserConfig = UserConfig
+  { configUsername :: Text
+  , email :: Maybe Text
+  , role :: Text
+  , providerAccounts :: [ProviderAccountConfig]
+  } deriving (Eq, Show, Generic)
+
 instance A.FromJSON GitlabConfigFile where
   parseJSON = A.withObject "GitlabConfigFile" $ \o ->
     GitlabConfigFile
@@ -88,6 +107,10 @@ instance A.FromJSON GitlabConfigFile where
       <*> o A..:? "hosts" A..!= []
       <*> o A..:? "tokenEncryptionKeyFile"
       <*> o A..:? "deployTokenTtlMinutes"
+
+instance A.FromJSON ProviderAccountConfig
+
+instance A.FromJSON UserConfig
 
 instance A.FromJSON ProviderConfigFile where
   parseJSON = A.withObject "ProviderConfigFile" $ \o -> do
@@ -119,6 +142,7 @@ instance A.FromJSON ProviderConfigFile where
       <*> o A..: "uiBaseUrl"
       <*> o A..: "dbUri"
       <*> pure gitlabCfg
+      <*> o A..:? "seedUsers" A..!= []
       <*> o A..: "gitConfigFile"
       <*> o A..: "gitCredentialsFile"
       <*> o A..: "flakeTemplate"
@@ -195,6 +219,7 @@ loadConfig configPath = do
       , appGitConfigPath = providerCfg.gitConfigFile
       , appGitCredentialsPath = providerCfg.gitCredentialsFile
       , appFlakeTemplate = providerCfg.flakeTemplate
+      , appSeedUsers = providerCfg.seedUsers
       , appHttpManager = manager
       }
 

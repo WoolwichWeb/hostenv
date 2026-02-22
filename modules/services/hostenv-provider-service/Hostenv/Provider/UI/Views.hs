@@ -64,14 +64,14 @@ indexPage cfg sess projects =
     div_ [class_ "footer"] $
       a_ [class_ "btn", href_ (uiPath cfg "/add-project")] "Add project from GitLab"
   where
-    SessionInfo { sessionUser = User { userUsername = username } } = sess
+    SessionInfo { user = User { username = username } } = sess
 
 projectListHtml :: [ProjectRow] -> Html ()
 projectListHtml projects =
   if null projects
     then p_ "No projects added yet."
     else
-      let rows = mconcat (map renderProject (sortOn (\ProjectRow { projectFlakeInput = input } -> input) projects))
+      let rows = mconcat (map renderProject (sortOn (\ProjectRow { flakeInput = input } -> input) projects))
        in table_ $ do
             thead_ $
               tr_ $ do
@@ -84,10 +84,10 @@ projectListHtml projects =
     renderProject :: ProjectRow -> Html ()
     renderProject p =
       let ProjectRow
-            { projectFlakeInput = flakeInput
-            , projectRepoPath = repoPath
-            , projectGitHost = gitHost
-            , projectHash = mHash
+            { flakeInput = flakeInput
+            , repoPath = repoPath
+            , gitHost = gitHost
+            , hash = mHash
             } = p
        in tr_ $ do
             td_ $ code_ (toHtml flakeInput)
@@ -112,7 +112,7 @@ addProjectPage cfg sess repos =
       input_ [type_ "text", name_ "project", placeholder_ "project"]
       button_ [class_ "btn", type_ "submit"] "Add project"
   where
-    SessionInfo { sessionCsrf = csrfToken } = sess
+    SessionInfo { csrf = csrfToken } = sess
     renderRepoOption :: GitlabProject -> Html ()
     renderRepoOption repo =
       let GitlabProject { glProjectId = repoId, glProjectPath = repoPath } = repo

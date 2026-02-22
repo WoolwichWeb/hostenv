@@ -3,7 +3,7 @@
 module Main where
 
 import Hostenv.Provider.Config (loadConfig)
-import Hostenv.Provider.DB (ensureSchema)
+import Hostenv.Provider.DB (ensureSchema, syncUsers)
 import Hostenv.Provider.Project (syncFlakeFromDb)
 import Hostenv.Provider.Repo (ensureProviderRepo)
 import Hostenv.Provider.Server (runServer)
@@ -20,6 +20,7 @@ main = do
     cfg <- loadConfig configPath
     ensureProviderRepo cfg
     ensureSchema cfg
+    syncUsers cfg
     syncFlakeFromDb cfg
     runServer cfg
 

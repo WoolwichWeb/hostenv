@@ -12,7 +12,13 @@ let
         hostenvHostname = "hosting.test";
         root = ./.;
       };
+      allEnvironments.users.alice = {
+        email = "alice@example.com";
+        publicKeys = [ ];
+        gitlabUsername = "AliceUser";
+      };
       services.hostenv-provider.enable = true;
+      services.hostenv-provider.gitlab.enable = true;
       environments.main = {
         enable = true;
         type = "testing";
@@ -57,6 +63,9 @@ else
       repoSource=$(sed -n 's/.*"repoSource":"\([^"]*\)".*/\1/p' "$configPath")
       test -n "$repoSource" || { echo "hostenv-provider config missing repoSource"; exit 1; }
       test -d "$repoSource" || { echo "hostenv-provider repoSource path does not exist in closure"; exit 1; }
+      grep -q -- '"seedUsers":' "$configPath" || { echo "hostenv-provider config missing seedUsers"; exit 1; }
+      grep -q -- '"configUsername":"alice"' "$configPath" || { echo "hostenv-provider config missing alice seed"; exit 1; }
+      grep -q -- '"provider":"gitlab"' "$configPath" || { echo "hostenv-provider config missing gitlab provider account seed"; exit 1; }
       if grep -q -- '^WorkingDirectory=' "$profile/systemd/user/hostenv-provider.service"; then
         echo "hostenv-provider.service must not depend on a pre-existing WorkingDirectory"
         exit 1

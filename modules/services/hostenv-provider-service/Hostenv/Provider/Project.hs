@@ -47,14 +47,14 @@ syncFlakeFromDb cfg = do
 
 addProjectFlow :: AppConfig -> SessionInfo -> Int64 -> Maybe Text -> Maybe Text -> IO (Either Text Text)
 addProjectFlow cfg sess repoId orgInput projectInput = withDb cfg $ \conn -> do
-  let SessionInfo { sessionUser = User { userId = userIdVal } } = sess
+  let userIdVal = sess.user.id
   tokenResult <- loadLatestUserGitlabToken cfg conn userIdVal
   case tokenResult of
     Left err -> pure (Left err)
     Right Nothing -> pure (Left "Missing GitLab token for user")
     Right (Just tokenInfo) -> do
-      let host = tokenInfo.gitlabTokenHost
-          token = tokenInfo.gitlabTokenValue
+      let host = tokenInfo.host
+          token = tokenInfo.value
       projectInfo <- fetchGitlabProject cfg host token repoId
       case projectInfo of
         Left msg -> pure (Left msg)
@@ -71,7 +71,7 @@ addProjectFlow cfg sess repoId orgInput projectInput = withDb cfg $ \conn -> do
               [projectRow] <- query conn
                 "INSERT INTO projects (org, project, git_host, repo_id, repo_url, repo_path, flake_input) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (git_host, repo_id) DO UPDATE SET org = EXCLUDED.org, project = EXCLUDED.project, repo_url = EXCLUDED.repo_url, repo_path = EXCLUDED.repo_path, flake_input = EXCLUDED.flake_input, updated_at = now() RETURNING id, org, project, git_host, repo_id, repo_url, repo_path, flake_input, default_env_hash"
                 (org, proj, host, repo.glProjectId, repo.glProjectHttpUrl, repo.glProjectPath, flakeInput)
-              let ProjectRow { projectId = projectIdVal } = projectRow
+              let projectIdVal = projectRow.id
               _ <- execute conn "DELETE FROM gitlab_tokens WHERE project_id = ?" (Only projectIdVal)
               saveResult <- saveGitlabToken cfg conn (Just userIdVal) (Just projectIdVal) host token ("api read_repository" :: Text)
               case saveResult of
@@ -108,7 +108,7 @@ addProjectFlow cfg sess repoId orgInput projectInput = withDb cfg $ \conn -> do
 
 ensureWebhook :: AppConfig -> Connection -> Text -> Text -> Int64 -> ProjectRow -> Text -> IO (Either Text (Text, Maybe Int64))
 ensureWebhook cfg conn host token repoId projectRow projHash = do
-  let ProjectRow { projectId = projectIdVal } = projectRow
+  let projectIdVal = projectRow.id
   existing <- query conn "SELECT secret, webhook_id FROM webhooks WHERE project_id = ?" (Only projectIdVal)
   (secret, hookId) <- case existing of
     ((s, mId):_) -> pure (s, mId)
@@ -139,7 +139,7 @@ regenerateFlake cfg projects = do
     then pure (Left ("flake template not found: " <> T.pack templatePath))
     else do
       templateText <- T.pack <$> readFile templatePath
-      let inputs = [ (input, projectInputUrl p) | p@ProjectRow { projectFlakeInput = input } <- projects ]
+      let inputs = [ (input, projectInputUrl p) | p@ProjectRow { flakeInput = input } <- projects ]
       let inputBlock = renderProjectInputs inputs
       case renderFlakeTemplate templateText inputBlock of
         Left err -> pure (Left err)
@@ -150,7 +150,7 @@ regenerateFlake cfg projects = do
 
 projectInputUrl :: ProjectRow -> Text
 projectInputUrl p =
-  let ProjectRow { projectGitHost = gitHost, projectRepoPath = repoPath } = p
+  let ProjectRow { gitHost = gitHost, repoPath = repoPath } = p
       base = if gitHost == "gitlab.com" then "gitlab:" else "gitlab:" <> gitHost <> "/"
    in base <> repoPath <> "?dir=.hostenv"
 
