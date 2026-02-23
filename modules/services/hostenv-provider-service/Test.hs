@@ -26,7 +26,9 @@ import Hostenv.Provider.DB (OAuthCredential(..))
 import Hostenv.Provider.Gitlab
   ( GitlabCredentialContext(..)
   , GitlabError(..)
+  , NixGitlabTokenType(..)
   , GitlabTokenResponse(..)
+  , appendNixAccessTokenConfig
   , gitlabApiError
   , isReauthError
   , oauthCredentialFromTokenAt
@@ -56,6 +58,7 @@ main = do
   testCommandSequence
   testTemplateRender
   testGitCredentials
+  testNixAccessTokenConfig
   testReadGitlabSecrets
   testGitlabOAuthCredentialMerge
   testGitlabApiErrorFormatting
@@ -221,6 +224,17 @@ testGitCredentials :: IO ()
 testGitCredentials = do
   let rendered = renderGitCredentials [("https://gitlab.com/acme/site.git", "token123")]
   assert (T.isInfixOf "oauth2:token123@gitlab.com" rendered) "credentials should inject token"
+
+testNixAccessTokenConfig :: IO ()
+testNixAccessTokenConfig = do
+  let oauthLine = appendNixAccessTokenConfig Nothing "gitlab.com" NixGitlabOAuth2 "oauth-token"
+  assert
+    (oauthLine == "access-tokens = gitlab.com=OAuth2:oauth-token")
+    "nix access token config should encode OAuth2 token type"
+  let merged = appendNixAccessTokenConfig (Just "extra-experimental-features = nix-command flakes") "gitlab.com" NixGitlabPAT "pat-token"
+  assert
+    (merged == "extra-experimental-features = nix-command flakes\naccess-tokens = gitlab.com=PAT:pat-token")
+    "nix access token config should append PAT token line"
 
 
 testReadGitlabSecrets :: IO ()

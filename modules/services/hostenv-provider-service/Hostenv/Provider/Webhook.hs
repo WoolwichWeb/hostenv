@@ -27,7 +27,7 @@ import Servant
 import Hostenv.Provider.Command (exitCodeToInt, renderCommand, runCommandWithEnv)
 import Hostenv.Provider.Config (AppConfig(..))
 import Hostenv.Provider.DB (DeployCredential(..), loadDeployCredentialByHash, withDb)
-import Hostenv.Provider.Gitlab (GitlabDeployToken(..), appendNixAccessTokenConfig, createProjectDeployToken, ensureProjectCredential, renderGitlabError, revokeProjectToken)
+import Hostenv.Provider.Gitlab (GitlabDeployToken(..), NixGitlabTokenType(..), appendNixAccessTokenConfig, createProjectDeployToken, ensureProjectCredential, renderGitlabError, revokeProjectToken)
 import Hostenv.Provider.Http (ErrorResponse(..), errorWithBody)
 import Hostenv.Provider.Repo (RepoStatus(..))
 import Hostenv.Provider.Service
@@ -89,7 +89,7 @@ webhookHandler webhookLock repoStatusRef cfg hash mHubSig mGitlabToken rawBody =
       Left err -> throwError (errorWithBody err500 (ErrorResponse (renderGitlabError err) Nothing Nothing Nothing Nothing))
       Right token -> pure token
   existingNixConfig <- liftIO (fmap (fmap T.pack) (lookupEnv "NIX_CONFIG"))
-  let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig deployHost deployToken.value
+  let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig deployHost NixGitlabPAT deployToken.value
   let AppConfig { appWebhookConfig = webhookCfg } = cfg
   revokeErrRef <- liftIO (newIORef Nothing)
   result <-

@@ -9,6 +9,7 @@ module Hostenv.Provider.Gitlab
   , GitlabProject(..)
   , GitlabHook(..)
   , GitlabDeployToken(..)
+  , NixGitlabTokenType(..)
   , GitlabCredentialContext(..)
   , GitlabError(..)
   , renderGitlabError
@@ -79,6 +80,11 @@ import Hostenv.Provider.Util (randomToken)
 data GitlabCredentialContext
   = UserCredentialContext
   | ProjectCredentialContext
+  deriving (Eq, Show)
+
+data NixGitlabTokenType
+  = NixGitlabOAuth2
+  | NixGitlabPAT
   deriving (Eq, Show)
 
 data GitlabError
@@ -418,15 +424,20 @@ revokeProjectToken cfg host oauthToken repoId deployTokenId = do
         then pure (Right ())
         else pure (Left (gitlabApiError "GitLab project deploy token revocation failed" (responseStatus resp) (responseBody resp)))
 
-appendNixAccessTokenConfig :: Maybe Text -> Text -> Text -> Text
-appendNixAccessTokenConfig mExisting host token =
-  let line = "access-tokens = " <> host <> "=" <> token
+appendNixAccessTokenConfig :: Maybe Text -> Text -> NixGitlabTokenType -> Text -> Text
+appendNixAccessTokenConfig mExisting host tokenType token =
+  let line = "access-tokens = " <> host <> "=" <> renderTokenType tokenType <> ":" <> token
    in case mExisting of
     Nothing -> line
     Just existing ->
       if T.strip existing == ""
         then line
         else existing <> "\n" <> line
+  where
+    renderTokenType kind =
+      case kind of
+        NixGitlabOAuth2 -> "OAuth2"
+        NixGitlabPAT -> "PAT"
 
 ensureProjectCredential :: AppConfig -> DeployCredential -> IO (Either GitlabError DeployCredential)
 ensureProjectCredential cfg credential = do

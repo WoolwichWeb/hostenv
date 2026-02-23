@@ -39,6 +39,7 @@ import Hostenv.Provider.DB
 import Hostenv.Provider.Gitlab
   ( GitlabError
   , GitlabHook(..)
+  , NixGitlabTokenType(..)
   , GitlabProject(..)
   , appendNixAccessTokenConfig
   , createGitlabWebhook
@@ -115,7 +116,7 @@ addProjectFlow cfg sess repoId orgInput projectInput = do
                         Left msg -> pure (Left (ProjectFlowError msg))
                         Right _ -> do
                           existingNixConfig <- fmap (fmap T.pack) (lookupEnv "NIX_CONFIG")
-                          let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig host token
+                          let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig host NixGitlabOAuth2 token
                               runScoped = runCommandWithEnv cfg [("NIX_CONFIG", scopedNixConfig)]
                           cmdRes <- runScoped (CommandSpec "nix" ["flake", "update", flakeInput] (appWorkDir cfg))
                           case cmdRes of
