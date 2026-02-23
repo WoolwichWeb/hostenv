@@ -10,6 +10,7 @@ module Hostenv.Provider.Project
   , syncFlakeFromDb
   ) where
 
+import Control.Exception (IOException, catch)
 import Data.Int (Int64)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -17,7 +18,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.ByteString.Char8 as BSC
 import Database.PostgreSQL.Simple (Connection, Only (..), execute, query)
-import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile, renameFile)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import System.Posix.Files (setFileMode)
@@ -169,8 +170,16 @@ regenerateFlake cfg projects = do
         Left err -> pure (Left err)
         Right flakeText -> do
           let flakePath = appWorkDir cfg </> "flake.nix"
-          writeFile flakePath (T.unpack flakeText)
-          pure (Right ())
+          let tempFlakePath = flakePath <> ".tmp"
+          writeFile tempFlakePath (T.unpack flakeText)
+          validationResult <- validateFlake cfg templatePath tempFlakePath
+          case validationResult of
+            Left err -> do
+              removeFileIfExists tempFlakePath
+              pure (Left err)
+            Right _ -> do
+              renameFile tempFlakePath flakePath
+              pure (Right ())
 
 projectInputUrl :: ProjectRow -> Text
 projectInputUrl p =
@@ -194,3 +203,26 @@ writeSecretFile :: FilePath -> Text -> IO ()
 writeSecretFile path secret = do
   BSC.writeFile path (TE.encodeUtf8 secret)
   setFileMode path 0o640
+
+validateFlake :: AppConfig -> FilePath -> FilePath -> IO (Either Text ())
+validateFlake cfg templatePath flakePath = do
+  result <- runCommandWithEnv cfg [] (CommandSpec "nix-instantiate" ["--parse", T.pack flakePath] (appWorkDir cfg))
+  case result of
+    Left err ->
+      pure
+        ( Left
+            ( T.unlines
+                [ "Generated flake.nix failed Nix syntax validation."
+                , "Check template: " <> T.pack templatePath
+                , "Rendered file: " <> T.pack flakePath
+                , commandErrorText err
+                ]
+            )
+        )
+    Right _ -> pure (Right ())
+
+removeFileIfExists :: FilePath -> IO ()
+removeFileIfExists path = removeFile path `catch` ignoreMissing
+  where
+    ignoreMissing :: IOException -> IO ()
+    ignoreMissing _ = pure ()
