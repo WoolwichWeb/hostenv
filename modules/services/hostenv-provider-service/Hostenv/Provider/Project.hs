@@ -70,8 +70,12 @@ syncFlakeFromDb cfg = do
   case pullResult of
     Left pullErr -> pure (Left (repoPullErrorText pullErr))
     Right _ -> do
-      projects <- withDb cfg loadProjects
-      regenerateFlake cfg projects
+      syncFlakeFromLocalDb cfg
+
+syncFlakeFromLocalDb :: AppConfig -> IO (Either Text ())
+syncFlakeFromLocalDb cfg = do
+  projects <- withDb cfg loadProjects
+  regenerateFlake cfg projects
 
 addProjectFlow :: AppConfig -> SessionInfo -> Int64 -> Maybe Text -> Maybe Text -> IO (Either ProjectFlowError Text)
 addProjectFlow cfg sess repoId orgInput projectInput = do
@@ -150,7 +154,9 @@ bootstrapRepoFlow cfg sess repoId = do
           case bootstrapResult of
             Left msg -> pure (Left msg)
             Right _ -> do
-              syncResult <- syncFlakeFromDb cfg
+              -- The initial clone was authenticated with a one-shot OAuth context.
+              -- Do not immediately `git pull` again during bootstrap; just render from DB.
+              syncResult <- syncFlakeFromLocalDb cfg
               case syncResult of
                 Left msg -> pure (Left msg)
                 Right _ -> pure (Right ("Provider repository bootstrapped from " <> repo.path))
