@@ -10,6 +10,10 @@ import qualified Data.ByteArray.Encoding as BAE
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
+import Data.Time (UTCTime(..), addUTCTime)
+import Data.Time.Calendar (fromGregorian)
+import Data.Time.Clock (secondsToDiffTime)
+import Network.HTTP.Types.Status (mkStatus)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import qualified Data.Text as T
 import System.Directory (createDirectory, getTemporaryDirectory, removeFile, removePathForcibly)
@@ -18,9 +22,22 @@ import System.IO (hClose, openTempFile)
 
 import Hostenv.Provider.Config (AppConfig(..))
 import Hostenv.Provider.Crypto
+import Hostenv.Provider.DB (OAuthCredential(..))
+import Hostenv.Provider.Gitlab
+  ( GitlabCredentialContext(..)
+  , GitlabError(..)
+  , GitlabTokenResponse(..)
+  , gitlabApiError
+  , isReauthError
+  , oauthCredentialFromTokenAt
+  , renderAccessDeniedMessage
+  , renderGitlabError
+  , renderUserIdMismatchMessage
+  )
 import Hostenv.Provider.PrevNodeDiscovery
-import Hostenv.Provider.Repo (RepoStatus(..), ensureProviderRepo)
+import Hostenv.Provider.Repo (RepoStatus(..), ensureProviderRepo, isAuthFailure)
 import Hostenv.Provider.Service
+import Hostenv.Provider.Webhook (chooseFinalResult)
 
 assert :: Bool -> String -> IO ()
 assert cond msg = unless cond $ do
@@ -40,6 +57,12 @@ main = do
   testTemplateRender
   testGitCredentials
   testReadGitlabSecrets
+  testGitlabOAuthCredentialMerge
+  testGitlabApiErrorFormatting
+  testGitlabAccessMessages
+  testGitlabReauthClassification
+  testRepoAuthFailureClassifier
+  testWebhookResultPriority
   testTokenEncryptionRoundtrip
   testTokenKeyLoading
   testEnsureProviderRepoMissing
@@ -125,7 +148,8 @@ testCommandSequence = do
       assert (res.webhookOk) "webhook run should succeed"
       cmds <- readIORef ref
       let expected =
-            [ CommandSpec "nix" ["flake", "update", "acme__site"] "/tmp/provider"
+            [ CommandSpec "git" ["pull", "--ff-only"] "/tmp/provider"
+            , CommandSpec "nix" ["flake", "update", "acme__site"] "/tmp/provider"
             , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] "/tmp/provider"
             , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "dns-gate"] "/tmp/provider"
             , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "deploy", "--node", "node-a"] "/tmp/provider"
@@ -209,6 +233,116 @@ testReadGitlabSecrets = do
   removeFile path
   assert (secrets.gitlabClientId == "abc123") "readGitlabSecrets should parse client_id"
   assert (secrets.gitlabClientSecret == "def456") "readGitlabSecrets should parse client_secret"
+
+testGitlabOAuthCredentialMerge :: IO ()
+testGitlabOAuthCredentialMerge = do
+  let now = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime 0)
+      previous :: OAuthCredential
+      previous =
+        OAuthCredential
+          "gitlab.com"
+          "old-access-token"
+          (Just "old-refresh-token")
+          (Just "Bearer")
+          "api"
+          (Just (addUTCTime 120 now))
+      refreshedToken :: GitlabTokenResponse
+      refreshedToken =
+        GitlabTokenResponse
+          "new-access-token"
+          Nothing
+          Nothing
+          Nothing
+          (Just 120)
+      merged = oauthCredentialFromTokenAt now "GitLab.Com" (Just previous) refreshedToken
+  assert (merged.host == "gitlab.com") "oauth merge should normalize host to lowercase"
+  assert (merged.accessToken == "new-access-token") "oauth merge should replace access token"
+  assert (merged.refreshToken == Just "old-refresh-token") "oauth merge should preserve refresh token when omitted"
+  assert (merged.tokenType == Just "Bearer") "oauth merge should preserve token type when omitted"
+  assert (merged.scopes == "api") "oauth merge should preserve scopes when omitted"
+  assert (merged.expiresAt == Just (addUTCTime 60 now)) "oauth merge should apply 60 second skew to expiry"
+
+  let updatedToken :: GitlabTokenResponse
+      updatedToken =
+        GitlabTokenResponse
+          "newer-access-token"
+          (Just "new-refresh-token")
+          (Just "Token")
+          (Just "read_api")
+          (Just 30)
+      updated = oauthCredentialFromTokenAt now "gitlab.com" (Just previous) updatedToken
+  assert (updated.refreshToken == Just "new-refresh-token") "oauth merge should use new refresh token when provided"
+  assert (updated.tokenType == Just "Token") "oauth merge should use new token type when provided"
+  assert (updated.scopes == "read_api") "oauth merge should use new scopes when provided"
+  assert (updated.expiresAt == Just now) "oauth merge should clamp negative skewed expiry to now"
+
+testGitlabApiErrorFormatting :: IO ()
+testGitlabApiErrorFormatting = do
+  let longBody = BLC.replicate 800 'x'
+      err = gitlabApiError "GitLab project lookup failed" (mkStatus 422 "unprocessable") longBody
+  case err of
+    GitlabHttpError { operation = op, status = code, responseBody = mBody } -> do
+      assert (op == "GitLab project lookup failed") "gitlabApiError should preserve operation text"
+      assert (code == 422) "gitlabApiError should preserve status code"
+      case mBody of
+        Nothing -> assert False "gitlabApiError should include non-empty response body snippet"
+        Just snippet -> assert (T.length snippet == 500) "gitlabApiError should truncate response snippets to 500 chars"
+    _ -> assert False "gitlabApiError should construct GitlabHttpError"
+
+  let rendered = renderGitlabError err
+  assert ("HTTP 422" `T.isInfixOf` rendered) "renderGitlabError should include status code"
+  assert ("GitLab response:" `T.isInfixOf` rendered) "renderGitlabError should include response snippet marker"
+
+  let emptyBodyErr = gitlabApiError "GitLab project lookup failed" (mkStatus 500 "internal") BL.empty
+  case emptyBodyErr of
+    GitlabHttpError { responseBody = Nothing } -> pure ()
+    _ -> assert False "gitlabApiError should omit empty response body snippets"
+
+testGitlabAccessMessages :: IO ()
+testGitlabAccessMessages = do
+  let accessMsg = renderAccessDeniedMessage "liammcdermott"
+  assert ("has not been granted access to this Hostenv provider project." `T.isInfixOf` accessMsg) "access denied message should explain the cause"
+  assert ("allEnvironments.users.<name>.gitlabUsername" `T.isInfixOf` accessMsg) "access denied message should mention allEnvironments mapping"
+  assert ("environments.<name>.users.<name>.gitlabUsername" `T.isInfixOf` accessMsg) "access denied message should mention environment mapping"
+  let mismatchMsg = renderUserIdMismatchMessage "liammcdermott" 101 202
+  assert ("liammcdermott" `T.isInfixOf` mismatchMsg) "mismatch message should include username"
+  assert ("(101)" `T.isInfixOf` mismatchMsg) "mismatch message should include GitLab user id"
+  assert ("(202)" `T.isInfixOf` mismatchMsg) "mismatch message should include Hostenv user id"
+
+testGitlabReauthClassification :: IO ()
+testGitlabReauthClassification = do
+  assert (isReauthError (GitlabAuthMissingCredential UserCredentialContext)) "missing user credential should require reauth"
+  assert (isReauthError (GitlabAuthExpiredNoRefresh ProjectCredentialContext)) "expired project credential without refresh should require reauth"
+  assert (isReauthError (GitlabRefreshFailed UserCredentialContext "refresh failed")) "refresh failure should require reauth"
+  assert (isReauthError (GitlabHttpError "lookup" 401 Nothing)) "HTTP 401 should require reauth"
+  assert (isReauthError (GitlabHttpError "lookup" 403 Nothing)) "HTTP 403 should require reauth"
+  assert (not (isReauthError (GitlabHttpError "lookup" 500 Nothing))) "HTTP 500 should not be treated as reauth"
+  assert (not (isReauthError (GitlabInvariantError "db failure"))) "invariant failures should not be treated as reauth"
+  let projectRefreshMsg = renderGitlabError (GitlabRefreshFailed ProjectCredentialContext "refresh failed")
+  assert ("re-add the project" `T.isInfixOf` projectRefreshMsg) "project refresh failure message should include remediation guidance"
+
+testRepoAuthFailureClassifier :: IO ()
+testRepoAuthFailureClassifier = do
+  assert (isAuthFailure "HTTP Basic: Access denied") "auth classifier should catch HTTP basic denial"
+  assert (isAuthFailure "Authentication failed for repository") "auth classifier should catch authentication failure"
+  assert (isAuthFailure "could not read username for 'https://gitlab.com'") "auth classifier should catch missing username errors"
+  assert (not (isAuthFailure "fatal: unable to access: TLS timeout")) "auth classifier should ignore non-auth transport failures"
+
+testWebhookResultPriority :: IO ()
+testWebhookResultPriority = do
+  let primary = WebhookPlanError "primary failed"
+      okResult = WebhookResult [] [] True
+  case chooseFinalResult (Left primary) (Just "revoke failed") of
+    Left (Left err) -> assert (err == primary) "primary webhook failure should take precedence over revoke failures"
+    _ -> assert False "expected primary webhook failure to win"
+
+  case chooseFinalResult (Right okResult) (Just "revoke failed") of
+    Left (Right revokeErr) -> assert (revokeErr == "revoke failed") "revoke failure should surface when primary succeeds"
+    _ -> assert False "expected revoke error when primary succeeded"
+
+  case chooseFinalResult (Right okResult) Nothing of
+    Right finalResult -> assert (finalResult == okResult) "successful webhook result should pass through when revoke succeeds"
+    _ -> assert False "expected successful result when there is no revoke error"
 
 testTokenEncryptionRoundtrip :: IO ()
 testTokenEncryptionRoundtrip = do

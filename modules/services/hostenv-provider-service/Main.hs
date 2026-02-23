@@ -26,7 +26,11 @@ main = do
       Right status -> pure status
     ensureSchema cfg
     syncUsers cfg
-    when (repoStatus == RepoReady) (syncFlakeFromDb cfg)
+    when (repoStatus == RepoReady) $ do
+      syncResult <- syncFlakeFromDb cfg
+      case syncResult of
+        Left err -> dieWith (T.unpack err)
+        Right _ -> pure ()
     runServer cfg repoStatus
 
 dieWithUsage :: IO a

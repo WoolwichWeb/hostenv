@@ -5,6 +5,7 @@
 module Hostenv.Provider.Webhook
   ( webhookHandler
   , loadPlan
+  , chooseFinalResult
   ) where
 
 import Control.Concurrent.MVar (MVar, withMVar)
@@ -25,8 +26,8 @@ import Servant
 
 import Hostenv.Provider.Command (exitCodeToInt, renderCommand, runCommandWithEnv)
 import Hostenv.Provider.Config (AppConfig(..))
-import Hostenv.Provider.DB (ProjectDeployCredential(..), loadProjectDeployCredentialByHash, withDb)
-import Hostenv.Provider.Gitlab (GitlabDeployToken(..), appendNixAccessTokenConfig, createProjectDeployToken, revokeProjectDeployToken)
+import Hostenv.Provider.DB (DeployCredential(..), loadDeployCredentialByHash, withDb)
+import Hostenv.Provider.Gitlab (GitlabDeployToken(..), appendNixAccessTokenConfig, createProjectDeployToken, ensureProjectCredential, renderGitlabError, revokeProjectToken)
 import Hostenv.Provider.Http (ErrorResponse(..), errorWithBody)
 import Hostenv.Provider.Repo (RepoStatus(..))
 import Hostenv.Provider.Service
@@ -70,19 +71,25 @@ webhookHandler webhookLock repoStatusRef cfg hash mHubSig mGitlabToken rawBody =
       Right ref -> pure ref
   secretInfo <- liftIO (resolveSecret cfg hash projectRef)
   verifyWebhook secretInfo mHubSig mGitlabToken rawBody
-  deployCredResult <- liftIO $ withDb cfg (\conn -> loadProjectDeployCredentialByHash cfg conn hash)
+  deployCredResult <- liftIO $ withDb cfg (\conn -> loadDeployCredentialByHash cfg conn hash)
   deployCred <-
     case deployCredResult of
       Left err -> throwError (errorWithBody err500 (ErrorResponse err Nothing Nothing Nothing Nothing))
       Right Nothing -> throwError (errorWithBody err500 (ErrorResponse "Missing project OAuth token for deploy" Nothing Nothing Nothing Nothing))
       Right (Just cred) -> pure cred
-  deployTokenResult <- liftIO (createProjectDeployToken cfg deployCred.host deployCred.token deployCred.repoId)
+  refreshedCredResult <- liftIO (ensureProjectCredential cfg deployCred)
+  refreshedDeployCred <-
+    case refreshedCredResult of
+      Left err -> throwError (errorWithBody err500 (ErrorResponse (renderGitlabError err) Nothing Nothing Nothing Nothing))
+      Right cred -> pure cred
+  let DeployCredential { host = deployHost, accessToken = deployAccessToken, repoId = deployRepoId } = refreshedDeployCred
+  deployTokenResult <- liftIO (createProjectDeployToken cfg deployHost deployAccessToken deployRepoId)
   deployToken <-
     case deployTokenResult of
-      Left err -> throwError (errorWithBody err500 (ErrorResponse err Nothing Nothing Nothing Nothing))
+      Left err -> throwError (errorWithBody err500 (ErrorResponse (renderGitlabError err) Nothing Nothing Nothing Nothing))
       Right token -> pure token
   existingNixConfig <- liftIO (fmap (fmap T.pack) (lookupEnv "NIX_CONFIG"))
-  let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig deployCred.host deployToken.deployTokenValue
+  let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig deployHost deployToken.value
   let AppConfig { appWebhookConfig = webhookCfg } = cfg
   revokeErrRef <- liftIO (newIORef Nothing)
   result <-
@@ -94,16 +101,17 @@ webhookHandler webhookLock repoStatusRef cfg hash mHubSig mGitlabToken rawBody =
           webhookCfg
           projectRef
           `finally` do
-            revokeResult <- revokeProjectDeployToken cfg deployCred.host deployCred.token deployCred.repoId deployToken.deployTokenId
+            revokeResult <- revokeProjectToken cfg deployHost deployAccessToken deployRepoId deployToken.id
             case revokeResult of
               Left msg -> writeIORef revokeErrRef (Just msg)
               Right _ -> pure ()
   revokeErr <- liftIO (readIORef revokeErrRef)
-  case revokeErr of
-    Just err -> throwError (errorWithBody err500 (ErrorResponse err Nothing Nothing Nothing Nothing))
-    Nothing -> pure ()
-  case result of
-    Left err -> throwError (serverError err)
+  case chooseFinalResult result (fmap renderGitlabError revokeErr) of
+    Left (Left err) ->
+      -- Preserve the primary deployment error and do not mask it with token revoke failures.
+      throwError (serverError err)
+    Left (Right revokeMsg) ->
+      throwError (errorWithBody err500 (ErrorResponse revokeMsg Nothing Nothing Nothing Nothing))
     Right okResult ->
       let WebhookResult { webhookOk = ok } = okResult
        in if ok
@@ -184,3 +192,12 @@ serverError err =
           exitCode = exitCodeToInt exitCodeRaw
           response = ErrorResponse "command failed" (Just cmd) exitCode (Just stdoutText) (Just stderrText)
        in errorWithBody err500 response
+
+chooseFinalResult :: Either WebhookError WebhookResult -> Maybe Text -> Either (Either WebhookError Text) WebhookResult
+chooseFinalResult primaryResult mRevokeError =
+  case primaryResult of
+    Left primaryErr -> Left (Left primaryErr)
+    Right successResult ->
+      case mRevokeError of
+        Just revokeErr -> Left (Right revokeErr)
+        Nothing -> Right successResult

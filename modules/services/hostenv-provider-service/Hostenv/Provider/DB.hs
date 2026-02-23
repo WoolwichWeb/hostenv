@@ -8,19 +8,19 @@ module Hostenv.Provider.DB
   , SessionInfo(..)
   , ProviderAccountMatch(..)
   , ProjectRow(..)
-  , GitlabAccessToken(..)
-  , ProjectDeployCredential(..)
+  , OAuthCredential(..)
+  , DeployCredential(..)
   , withDb
   , ensureSchema
   , syncUsers
   , syncUsersConn
   , loadProjects
-  , saveGitlabToken
+  , upsertOAuthCredential
+  , loadLatestOAuthCredential
+  , upsertProjectOAuthCredential
   , lookupProviderAccount
   , setProviderUserId
-  , loadLatestUserGitlabToken
-  , loadLatestProjectGitlabToken
-  , loadProjectDeployCredentialByHash
+  , loadDeployCredentialByHash
   , getSessionInfo
   , createSession
   , renderSessionCookie
@@ -91,34 +91,44 @@ data ProjectRow = ProjectRow
 instance FromRow ProjectRow where
   fromRow = ProjectRow <$> field <*> field <*> field <*> field <*> field <*> field <*> field <*> field <*> field
 
-data GitlabAccessToken = GitlabAccessToken
+data OAuthCredential = OAuthCredential
   { host :: Text
-  , value :: Text
+  , accessToken :: Text
+  , refreshToken :: Maybe Text
+  , tokenType :: Maybe Text
   , scopes :: Text
+  , expiresAt :: Maybe UTCTime
   } deriving (Eq, Show)
 
-data ProjectDeployCredential = ProjectDeployCredential
+data DeployCredential = DeployCredential
   { projectId :: Int
   , repoId :: Int64
   , host :: Text
-  , token :: Text
+  , accessToken :: Text
+  , refreshToken :: Maybe Text
+  , tokenType :: Maybe Text
   , scopes :: Text
+  , expiresAt :: Maybe UTCTime
   } deriving (Eq, Show)
 
-data StoredTokenRow = StoredTokenRow
-  { id :: Int
-  , host :: Text
-  , plain :: Maybe Text
-  , encrypted :: Maybe BS.ByteString
-  , nonce :: Maybe BS.ByteString
-  , keyId :: Maybe Text
+data StoredOAuthCredentialRow = StoredOAuthCredentialRow
+  { host :: Text
+  , accessEncrypted :: BS.ByteString
+  , accessNonce :: BS.ByteString
+  , refreshEncrypted :: Maybe BS.ByteString
+  , refreshNonce :: Maybe BS.ByteString
+  , keyId :: Text
+  , tokenType :: Maybe Text
   , scopes :: Text
+  , expiresAt :: Maybe UTCTime
   }
 
-instance FromRow StoredTokenRow where
+instance FromRow StoredOAuthCredentialRow where
   fromRow =
-    StoredTokenRow
+    StoredOAuthCredentialRow
       <$> field
+      <*> field
+      <*> field
       <*> field
       <*> field
       <*> field
@@ -148,13 +158,22 @@ ensureSchema cfg = withDb cfg $ \conn -> do
     let resetQueries :: [Query]
         resetQueries =
           [ "DROP TABLE IF EXISTS gitlab_tokens;"
+          , "DROP TABLE IF EXISTS project_oauth_credentials;"
+          , "DROP TABLE IF EXISTS oauth_credentials;"
           , "DROP TABLE IF EXISTS sessions;"
           , "DROP TABLE IF EXISTS provider_users;"
           , "DROP TABLE IF EXISTS users;"
+          , "DROP TABLE IF EXISTS projects;"
+          , "DROP TABLE IF EXISTS oauth_states;"
+          , "DROP TABLE IF EXISTS webhooks;"
           , "DROP TYPE IF EXISTS provider_kind;"
           , "DROP TYPE IF EXISTS hostenv_role;"
           ]
     forM_ resetQueries (execute_ conn)
+
+  -- No backward compatibility for old token storage.
+  _ <- execute_ conn "DROP TABLE IF EXISTS gitlab_tokens;"
+  pure ()
 
   let migrations :: [Query]
       migrations =
@@ -166,15 +185,11 @@ ensureSchema cfg = withDb cfg $ \conn -> do
         , "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, csrf_token TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now());"
         , "CREATE TABLE IF NOT EXISTS oauth_states (state TEXT PRIMARY KEY, git_host TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now());"
         , "CREATE TABLE IF NOT EXISTS projects (id SERIAL PRIMARY KEY, org TEXT NOT NULL, project TEXT NOT NULL, git_host TEXT NOT NULL, repo_id BIGINT NOT NULL, repo_url TEXT NOT NULL, repo_path TEXT NOT NULL, flake_input TEXT NOT NULL, default_env_hash TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), UNIQUE (git_host, repo_id), UNIQUE (org, project));"
-        , "CREATE TABLE IF NOT EXISTS gitlab_tokens (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE, git_host TEXT NOT NULL, token TEXT NOT NULL, scopes TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now());"
-        , "ALTER TABLE gitlab_tokens ALTER COLUMN token DROP NOT NULL;"
-        , "ALTER TABLE gitlab_tokens ADD COLUMN IF NOT EXISTS token_encrypted BYTEA;"
-        , "ALTER TABLE gitlab_tokens ADD COLUMN IF NOT EXISTS token_nonce BYTEA;"
-        , "ALTER TABLE gitlab_tokens ADD COLUMN IF NOT EXISTS token_key_id TEXT;"
+        , "CREATE TABLE IF NOT EXISTS oauth_credentials (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, provider provider_kind NOT NULL, provider_host TEXT NOT NULL, access_token_encrypted BYTEA NOT NULL, access_token_nonce BYTEA NOT NULL, refresh_token_encrypted BYTEA, refresh_token_nonce BYTEA, token_key_id TEXT NOT NULL, token_type TEXT, scopes TEXT NOT NULL, expires_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), UNIQUE (user_id, provider, provider_host));"
+        , "CREATE TABLE IF NOT EXISTS project_oauth_credentials (id SERIAL PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, provider provider_kind NOT NULL, provider_host TEXT NOT NULL, access_token_encrypted BYTEA NOT NULL, access_token_nonce BYTEA NOT NULL, refresh_token_encrypted BYTEA, refresh_token_nonce BYTEA, token_key_id TEXT NOT NULL, token_type TEXT, scopes TEXT NOT NULL, expires_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), UNIQUE (project_id, provider, provider_host));"
         , "CREATE TABLE IF NOT EXISTS webhooks (id SERIAL PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, webhook_id BIGINT, webhook_url TEXT, secret TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), UNIQUE (project_id));"
         ]
   forM_ migrations (execute_ conn)
-  migrateLegacyTokens cfg conn
 
 normalizeIdentity :: Text -> Text
 normalizeIdentity = T.toLower . T.strip
@@ -244,27 +259,139 @@ loadProjects :: Connection -> IO [ProjectRow]
 loadProjects conn =
   query_ conn "SELECT id, org, project, git_host, repo_id, repo_url, repo_path, flake_input, default_env_hash FROM projects ORDER BY org, project"
 
-saveGitlabToken :: AppConfig -> Connection -> Maybe Int -> Maybe Int -> Text -> Text -> Text -> IO (Either Text ())
-saveGitlabToken cfg conn mUserId mProjectId host token scopes =
+upsertOAuthCredential :: AppConfig -> Connection -> Int -> OAuthCredential -> IO (Either Text ())
+upsertOAuthCredential cfg conn userIdVal cred =
+  upsertCredentialRow
+    cfg
+    conn
+    "INSERT INTO oauth_credentials (user_id, provider, provider_host, access_token_encrypted, access_token_nonce, refresh_token_encrypted, refresh_token_nonce, token_key_id, token_type, scopes, expires_at) VALUES (?, 'gitlab'::provider_kind, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (user_id, provider, provider_host) DO UPDATE SET access_token_encrypted = EXCLUDED.access_token_encrypted, access_token_nonce = EXCLUDED.access_token_nonce, refresh_token_encrypted = EXCLUDED.refresh_token_encrypted, refresh_token_nonce = EXCLUDED.refresh_token_nonce, token_key_id = EXCLUDED.token_key_id, token_type = EXCLUDED.token_type, scopes = EXCLUDED.scopes, expires_at = EXCLUDED.expires_at, updated_at = now()"
+    userIdVal
+    cred
+
+upsertProjectOAuthCredential :: AppConfig -> Connection -> Int -> OAuthCredential -> IO (Either Text ())
+upsertProjectOAuthCredential cfg conn projectIdVal cred =
+  upsertCredentialRow
+    cfg
+    conn
+    "INSERT INTO project_oauth_credentials (project_id, provider, provider_host, access_token_encrypted, access_token_nonce, refresh_token_encrypted, refresh_token_nonce, token_key_id, token_type, scopes, expires_at) VALUES (?, 'gitlab'::provider_kind, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (project_id, provider, provider_host) DO UPDATE SET access_token_encrypted = EXCLUDED.access_token_encrypted, access_token_nonce = EXCLUDED.access_token_nonce, refresh_token_encrypted = EXCLUDED.refresh_token_encrypted, refresh_token_nonce = EXCLUDED.refresh_token_nonce, token_key_id = EXCLUDED.token_key_id, token_type = EXCLUDED.token_type, scopes = EXCLUDED.scopes, expires_at = EXCLUDED.expires_at, updated_at = now()"
+    projectIdVal
+    cred
+
+upsertCredentialRow
+  :: AppConfig
+  -> Connection
+  -> Query
+  -> Int
+  -> OAuthCredential
+  -> IO (Either Text ())
+upsertCredentialRow cfg conn queryText key cred =
   case cfg.appGitlabTokenCipher of
     Nothing -> pure (Left "GitLab token encryption key not configured")
     Just cipher -> do
-      encrypted <- encryptToken cipher token
-      case encrypted of
+      accessResult <- encryptToken cipher cred.accessToken
+      case accessResult of
         Left err -> pure (Left err)
-        Right enc -> do
-          _ <- execute conn
-            "INSERT INTO gitlab_tokens (user_id, project_id, git_host, token, token_encrypted, token_nonce, token_key_id, scopes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-            ( mUserId
-            , mProjectId
-            , host
-            , (Nothing :: Maybe Text)
-            , Binary (encryptedTokenCiphertext enc)
-            , Binary (encryptedTokenNonce enc)
-            , encryptedTokenKeyId enc
-            , scopes
+        Right accessEnc -> do
+          refreshResult <- encryptOptionalToken cipher cred.refreshToken
+          case refreshResult of
+            Left err -> pure (Left err)
+            Right (refreshEncrypted, refreshNonce) -> do
+              _ <- execute conn
+                queryText
+                ( key
+                , normalizeIdentity cred.host
+                , Binary (encryptedTokenCiphertext accessEnc)
+                , Binary (encryptedTokenNonce accessEnc)
+                , fmap Binary refreshEncrypted
+                , fmap Binary refreshNonce
+                , encryptedTokenKeyId accessEnc
+                , cred.tokenType
+                , cred.scopes
+                , cred.expiresAt
+                )
+              pure (Right ())
+
+encryptOptionalToken :: TokenCipher -> Maybe Text -> IO (Either Text (Maybe BS.ByteString, Maybe BS.ByteString))
+encryptOptionalToken _ Nothing = pure (Right (Nothing, Nothing))
+encryptOptionalToken cipher (Just token) = do
+  encrypted <- encryptToken cipher token
+  case encrypted of
+    Left err -> pure (Left err)
+    Right enc -> pure (Right (Just (encryptedTokenCiphertext enc), Just (encryptedTokenNonce enc)))
+
+loadLatestOAuthCredential :: AppConfig -> Connection -> Int -> IO (Either Text (Maybe OAuthCredential))
+loadLatestOAuthCredential cfg conn userIdVal = do
+  rows <- query conn
+    "SELECT provider_host, access_token_encrypted, access_token_nonce, refresh_token_encrypted, refresh_token_nonce, token_key_id, token_type, scopes, expires_at FROM oauth_credentials WHERE user_id = ? AND provider = 'gitlab'::provider_kind ORDER BY updated_at DESC LIMIT 1"
+    (Only userIdVal)
+  pure (decodeOAuthRows cfg rows)
+
+loadDeployCredentialByHash :: AppConfig -> Connection -> Text -> IO (Either Text (Maybe DeployCredential))
+loadDeployCredentialByHash cfg conn hash = do
+  rows <- query conn
+    "SELECT projects.id, projects.repo_id, project_oauth_credentials.provider_host, project_oauth_credentials.access_token_encrypted, project_oauth_credentials.access_token_nonce, project_oauth_credentials.refresh_token_encrypted, project_oauth_credentials.refresh_token_nonce, project_oauth_credentials.token_key_id, project_oauth_credentials.token_type, project_oauth_credentials.scopes, project_oauth_credentials.expires_at FROM projects JOIN LATERAL (SELECT provider_host, access_token_encrypted, access_token_nonce, refresh_token_encrypted, refresh_token_nonce, token_key_id, token_type, scopes, expires_at FROM project_oauth_credentials WHERE project_id = projects.id AND provider = 'gitlab'::provider_kind ORDER BY updated_at DESC LIMIT 1) AS project_oauth_credentials ON TRUE WHERE projects.default_env_hash = ? LIMIT 1"
+    (Only hash)
+  case rows of
+    [] -> pure (Right Nothing)
+    ((projectIdVal, repoIdVal, providerHost, accessEncrypted, accessNonce, refreshEncrypted, refreshNonce, tokenKeyId, tokenType, scopes, expiresAt):_) -> do
+      let stored =
+            StoredOAuthCredentialRow
+              { host = providerHost
+              , accessEncrypted = accessEncrypted
+              , accessNonce = accessNonce
+              , refreshEncrypted = refreshEncrypted
+              , refreshNonce = refreshNonce
+              , keyId = tokenKeyId
+              , tokenType = tokenType
+              , scopes = scopes
+              , expiresAt = expiresAt
+              }
+      case decodeOAuthCredential cfg stored of
+        Left err -> pure (Left err)
+        Right cred ->
+          pure
+            ( Right
+                ( Just
+                    DeployCredential
+                      { projectId = projectIdVal
+                      , repoId = repoIdVal
+                      , host = cred.host
+                      , accessToken = cred.accessToken
+                      , refreshToken = cred.refreshToken
+                      , tokenType = cred.tokenType
+                      , scopes = cred.scopes
+                      , expiresAt = cred.expiresAt
+                      }
+                )
             )
-          pure (Right ())
+
+decodeOAuthRows :: AppConfig -> [StoredOAuthCredentialRow] -> Either Text (Maybe OAuthCredential)
+decodeOAuthRows _ [] = Right Nothing
+decodeOAuthRows cfg (row:_) = Just <$> decodeOAuthCredential cfg row
+
+decodeOAuthCredential :: AppConfig -> StoredOAuthCredentialRow -> Either Text OAuthCredential
+decodeOAuthCredential cfg row =
+  case cfg.appGitlabTokenCipher of
+    Nothing -> Left "GitLab token encryption key not configured"
+    Just cipher -> do
+      access <- decryptToken cipher row.accessNonce row.accessEncrypted row.keyId
+      refresh <- decodeOptionalRefresh cipher row
+      Right
+        OAuthCredential
+          { host = row.host
+          , accessToken = access
+          , refreshToken = refresh
+          , tokenType = row.tokenType
+          , scopes = row.scopes
+          , expiresAt = row.expiresAt
+          }
+
+decodeOptionalRefresh :: TokenCipher -> StoredOAuthCredentialRow -> Either Text (Maybe Text)
+decodeOptionalRefresh cipher row =
+  case (row.refreshEncrypted, row.refreshNonce) of
+    (Nothing, Nothing) -> Right Nothing
+    (Just encrypted, Just nonce) -> Just <$> decryptToken cipher nonce encrypted row.keyId
+    _ -> Left "OAuth refresh token row is malformed"
 
 lookupProviderAccount :: Connection -> Text -> Text -> Text -> IO (Maybe ProviderAccountMatch)
 lookupProviderAccount conn providerKind providerHost providerUsername = do
@@ -289,117 +416,6 @@ setProviderUserId conn providerRowId providerUserId = do
     "UPDATE provider_users SET provider_user_id = ?, updated_at = now() WHERE id = ?"
     (providerUserId, providerRowId)
   pure ()
-
-loadLatestUserGitlabToken :: AppConfig -> Connection -> Int -> IO (Either Text (Maybe GitlabAccessToken))
-loadLatestUserGitlabToken cfg conn userIdVal = do
-  rows <- query conn
-    "SELECT id, git_host, token, token_encrypted, token_nonce, token_key_id, scopes FROM gitlab_tokens WHERE user_id = ? AND project_id IS NULL ORDER BY created_at DESC LIMIT 1"
-    (Only userIdVal)
-  decodeTokenRows cfg conn rows
-
-loadLatestProjectGitlabToken :: AppConfig -> Connection -> Int -> IO (Either Text (Maybe GitlabAccessToken))
-loadLatestProjectGitlabToken cfg conn projectIdVal = do
-  rows <- query conn
-    "SELECT id, git_host, token, token_encrypted, token_nonce, token_key_id, scopes FROM gitlab_tokens WHERE project_id = ? ORDER BY created_at DESC LIMIT 1"
-    (Only projectIdVal)
-  decodeTokenRows cfg conn rows
-
-loadProjectDeployCredentialByHash :: AppConfig -> Connection -> Text -> IO (Either Text (Maybe ProjectDeployCredential))
-loadProjectDeployCredentialByHash cfg conn hash = do
-  rows <- query conn
-    "SELECT projects.id, projects.repo_id, gitlab_tokens.id, gitlab_tokens.git_host, gitlab_tokens.token, gitlab_tokens.token_encrypted, gitlab_tokens.token_nonce, gitlab_tokens.token_key_id, gitlab_tokens.scopes FROM projects JOIN LATERAL (SELECT id, git_host, token, token_encrypted, token_nonce, token_key_id, scopes FROM gitlab_tokens WHERE project_id = projects.id ORDER BY created_at DESC LIMIT 1) AS gitlab_tokens ON TRUE WHERE projects.default_env_hash = ? LIMIT 1"
-    (Only hash)
-  case rows of
-    [] -> pure (Right Nothing)
-    ((projectIdVal, repoIdVal, tokenRowId, host, plain, encrypted, nonce, keyId, scopes):_) -> do
-      tokenResult <- resolveTokenValue cfg conn tokenRowId plain encrypted nonce keyId
-      case tokenResult of
-        Left err -> pure (Left err)
-        Right token ->
-          pure
-            ( Right
-                ( Just
-                    ProjectDeployCredential
-                      { projectId = projectIdVal
-                      , repoId = repoIdVal
-                      , host = host
-                      , token = token
-                      , scopes = scopes
-                      }
-                )
-            )
-
-decodeTokenRows :: AppConfig -> Connection -> [StoredTokenRow] -> IO (Either Text (Maybe GitlabAccessToken))
-decodeTokenRows _cfg _conn [] = pure (Right Nothing)
-decodeTokenRows cfg conn (row:_) = do
-  tokenResult <- resolveTokenValue cfg conn row.id row.plain row.encrypted row.nonce row.keyId
-  case tokenResult of
-    Left err -> pure (Left err)
-    Right token ->
-      pure
-        ( Right
-            ( Just
-                GitlabAccessToken
-                  { host = row.host
-                  , value = token
-                  , scopes = row.scopes
-                  }
-            )
-        )
-
-resolveTokenValue
-  :: AppConfig
-  -> Connection
-  -> Int
-  -> Maybe Text
-  -> Maybe BS.ByteString
-  -> Maybe BS.ByteString
-  -> Maybe Text
-  -> IO (Either Text Text)
-resolveTokenValue cfg conn tokenRowId mPlain mEncrypted mNonce mKeyId =
-  case (mEncrypted, mNonce, mKeyId, mPlain) of
-    (Just encrypted, Just nonce, Just keyId, _) ->
-      case cfg.appGitlabTokenCipher of
-        Nothing -> pure (Left "GitLab token encryption key not configured")
-        Just cipher -> pure (decryptToken cipher nonce encrypted keyId)
-    (Nothing, Nothing, Nothing, Just plain) -> do
-      migrateResult <- migratePlaintextRow cfg conn tokenRowId plain
-      case migrateResult of
-        Left _ -> pure ()
-        Right _ -> pure ()
-      pure (Right plain)
-    (Nothing, Nothing, Nothing, Nothing) -> pure (Left "GitLab token is missing")
-    _ -> pure (Left "GitLab token row is malformed")
-
-migratePlaintextRow :: AppConfig -> Connection -> Int -> Text -> IO (Either Text ())
-migratePlaintextRow cfg conn tokenRowId plain =
-  case cfg.appGitlabTokenCipher of
-    Nothing -> pure (Left "GitLab token encryption key not configured")
-    Just cipher -> do
-      encrypted <- encryptToken cipher plain
-      case encrypted of
-        Left err -> pure (Left err)
-        Right enc -> do
-          _ <- execute conn
-            "UPDATE gitlab_tokens SET token = NULL, token_encrypted = ?, token_nonce = ?, token_key_id = ?, updated_at = now() WHERE id = ?"
-            (Binary (encryptedTokenCiphertext enc), Binary (encryptedTokenNonce enc), encryptedTokenKeyId enc, tokenRowId)
-          pure (Right ())
-
-migrateLegacyTokens :: AppConfig -> Connection -> IO ()
-migrateLegacyTokens cfg conn =
-  case cfg.appGitlabTokenCipher of
-    Nothing -> pure ()
-    Just cipher -> do
-      rows <- query_ conn "SELECT id, token FROM gitlab_tokens WHERE token IS NOT NULL AND token_encrypted IS NULL"
-      forM_ rows $ \(tokenId, tokenValue) -> do
-        encrypted <- encryptToken cipher tokenValue
-        case encrypted of
-          Left _ -> pure ()
-          Right enc -> do
-            _ <- execute conn
-              "UPDATE gitlab_tokens SET token = NULL, token_encrypted = ?, token_nonce = ?, token_key_id = ?, updated_at = now() WHERE id = ?"
-              (Binary (encryptedTokenCiphertext enc), Binary (encryptedTokenNonce enc), encryptedTokenKeyId enc, tokenId :: Int)
-            pure ()
 
 getSessionInfo :: AppConfig -> Request -> IO (Maybe SessionInfo)
 getSessionInfo cfg req = do

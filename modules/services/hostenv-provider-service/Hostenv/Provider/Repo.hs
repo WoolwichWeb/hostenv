@@ -4,10 +4,13 @@
 
 module Hostenv.Provider.Repo
   ( RepoStatus(..)
+  , RepoPullError(..)
   , ensureProviderRepo
   , bootstrapProviderRepo
+  , pullProviderRepo
   , ensureGitConfig
   , openUnixSocket
+  , isAuthFailure
   ) where
 
 import Control.Exception (SomeException, finally, try)
@@ -34,6 +37,11 @@ import Hostenv.Provider.Util (randomToken)
 data RepoStatus
   = RepoReady
   | RepoMissing
+  deriving (Eq, Show)
+
+data RepoPullError
+  = RepoPullAuthError T.Text
+  | RepoPullError T.Text
   deriving (Eq, Show)
 
 ensureProviderRepo :: AppConfig -> IO (Either T.Text RepoStatus)
@@ -66,6 +74,18 @@ bootstrapProviderRepo cfg repoUrl token = do
       case cloneResult of
         Left err -> pure (Left err)
         Right _ -> ensureProviderRepo cfg
+
+pullProviderRepo :: AppConfig -> IO (Either RepoPullError ())
+pullProviderRepo cfg = do
+  let AppConfig { appDataDir = dataDir } = cfg
+  pullResult <- runCommandWithEnv cfg [] (CommandSpec "git" ["pull", "--ff-only"] dataDir)
+  case pullResult of
+    Left err ->
+      let msg = "Failed to synchronize provider repository before operation.\n" <> commandErrorText err
+       in if isAuthFailure msg
+            then pure (Left (RepoPullAuthError msg))
+            else pure (Left (RepoPullError msg))
+    Right _ -> pure (Right ())
 
 ensureRepoWorktree :: AppConfig -> IO (Either T.Text ())
 ensureRepoWorktree cfg = do
@@ -147,3 +167,15 @@ openUnixSocket path = do
   listen sock 1024
   setFileMode path 0o660
   pure sock
+
+isAuthFailure :: T.Text -> Bool
+isAuthFailure msg =
+  let lower = T.toLower msg
+      patterns =
+        [ "access denied"
+        , "authentication failed"
+        , "http basic: access denied"
+        , "could not read username"
+        , "invalid credentials"
+        ]
+   in any (`T.isInfixOf` lower) patterns

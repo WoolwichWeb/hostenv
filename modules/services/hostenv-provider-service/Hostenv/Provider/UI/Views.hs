@@ -124,7 +124,8 @@ addProjectPage cfg sess repos =
     SessionInfo { csrf = csrfToken } = sess
     renderRepoOption :: GitlabProject -> Html ()
     renderRepoOption repo =
-      let GitlabProject { glProjectId = repoId, glProjectPath = repoPath } = repo
+      let repoId = repo.id
+          repoPath = repo.path
        in option_ [value_ (T.pack (show repoId))] (toHtml repoPath)
 
 bootstrapRepoPage :: AppConfig -> SessionInfo -> [GitlabProject] -> Html ()
@@ -144,7 +145,8 @@ bootstrapRepoPage cfg sess repos =
     SessionInfo { csrf = csrfToken } = sess
     renderRepoOption :: GitlabProject -> Html ()
     renderRepoOption repo =
-      let GitlabProject { glProjectId = repoId, glProjectPath = repoPath } = repo
+      let repoId = repo.id
+          repoPath = repo.path
        in option_ [value_ (T.pack (show repoId))] (toHtml repoPath)
 
 successPage :: AppConfig -> Text -> Html ()

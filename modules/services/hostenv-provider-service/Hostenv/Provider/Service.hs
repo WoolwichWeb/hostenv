@@ -533,22 +533,25 @@ type PlanLoader = IO BL.ByteString
 runWebhookWith :: CommandRunner -> PlanLoader -> WebhookConfig -> ProjectRef -> IO (Either WebhookError WebhookResult)
 runWebhookWith runner loadPlan cfg ref = do
   let inputName = ref.prOrg <> "__" <> ref.prProject
-  step runner (CommandSpec "nix" ["flake", "update", inputName] (cfg.whWorkDir)) >>= \case
+  step runner (CommandSpec "git" ["pull", "--ff-only"] (cfg.whWorkDir)) >>= \case
     Left err -> pure (Left err)
     Right _ ->
-      step runner (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] (cfg.whWorkDir)) >>= \case
+      step runner (CommandSpec "nix" ["flake", "update", inputName] (cfg.whWorkDir)) >>= \case
         Left err -> pure (Left err)
         Right _ ->
-          step runner (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "dns-gate"] (cfg.whWorkDir)) >>= \case
+          step runner (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] (cfg.whWorkDir)) >>= \case
             Left err -> pure (Left err)
-            Right _ -> do
-              planRaw <- loadPlan
-              nodesForProjectWithDns ref.prOrg ref.prProject planRaw >>= \case
-                Left err -> pure (Left (WebhookPlanError err))
-                Right nodes -> do
-                  deploys <- foldM (deployNode runner cfg) [] nodes
-                  let ok = all (\d -> d.deploySuccess) deploys
-                  pure (Right (WebhookResult nodes deploys ok))
+            Right _ ->
+              step runner (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "dns-gate"] (cfg.whWorkDir)) >>= \case
+                Left err -> pure (Left err)
+                Right _ -> do
+                  planRaw <- loadPlan
+                  nodesForProjectWithDns ref.prOrg ref.prProject planRaw >>= \case
+                    Left err -> pure (Left (WebhookPlanError err))
+                    Right nodes -> do
+                      deploys <- foldM (deployNode runner cfg) [] nodes
+                      let ok = all (\d -> d.deploySuccess) deploys
+                      pure (Right (WebhookResult nodes deploys ok))
   where
     step run spec = do
       res <- run spec

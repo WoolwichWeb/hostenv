@@ -4,6 +4,8 @@
 
 module Hostenv.Provider.Project
   ( addProjectFlow
+  , ProjectFlowError(..)
+  , projectFlowErrorText
   , bootstrapRepoFlow
   , ensureWebhook
   , regenerateFlake
@@ -26,112 +28,134 @@ import System.Posix.Files (setFileMode)
 import Hostenv.Provider.Command (commandErrorText, runCommandWithEnv)
 import Hostenv.Provider.Config (AppConfig(..), appWorkDir, resolvePath)
 import Hostenv.Provider.DB
-  ( GitlabAccessToken(..)
+  ( OAuthCredential(..)
   , ProjectRow(..)
   , SessionInfo(..)
   , User(..)
-  , loadLatestUserGitlabToken
   , loadProjects
-  , saveGitlabToken
+  , upsertProjectOAuthCredential
   , withDb
   )
-import Hostenv.Provider.Gitlab (GitlabHook(..), GitlabProject(..), appendNixAccessTokenConfig, createGitlabWebhook, fetchGitlabProject, updateGitlabWebhook)
-import Hostenv.Provider.Repo (bootstrapProviderRepo)
+import Hostenv.Provider.Gitlab
+  ( GitlabError
+  , GitlabHook(..)
+  , GitlabProject(..)
+  , appendNixAccessTokenConfig
+  , createGitlabWebhook
+  , fetchGitlabProject
+  , isReauthError
+  , loadUserOAuthCredential
+  , renderGitlabError
+  , updateGitlabWebhook
+  )
+import Hostenv.Provider.Repo (RepoPullError(..), bootstrapProviderRepo, pullProviderRepo)
 import Hostenv.Provider.Service (CommandSpec(..), projectHashFor, renderFlakeTemplate, renderProjectInputs)
 import Hostenv.Provider.Util (randomToken, sanitizeName, splitNamespace)
 import Hostenv.Provider.Webhook (loadPlan)
 
+data ProjectFlowError
+  = ProjectFlowError Text
+  | ProjectFlowAuthError Text
+  deriving (Eq, Show)
 
-syncFlakeFromDb :: AppConfig -> IO ()
+projectFlowErrorText :: ProjectFlowError -> Text
+projectFlowErrorText flowErr =
+  case flowErr of
+    ProjectFlowError msg -> msg
+    ProjectFlowAuthError msg -> msg
+
+syncFlakeFromDb :: AppConfig -> IO (Either Text ())
 syncFlakeFromDb cfg = do
-  projects <- withDb cfg loadProjects
-  _ <- regenerateFlake cfg projects
-  pure ()
+  pullResult <- pullProviderRepo cfg
+  case pullResult of
+    Left pullErr -> pure (Left (repoPullErrorText pullErr))
+    Right _ -> do
+      projects <- withDb cfg loadProjects
+      regenerateFlake cfg projects
 
-addProjectFlow :: AppConfig -> SessionInfo -> Int64 -> Maybe Text -> Maybe Text -> IO (Either Text Text)
-addProjectFlow cfg sess repoId orgInput projectInput = withDb cfg $ \conn -> do
-  let userIdVal = sess.user.id
-  tokenResult <- loadLatestUserGitlabToken cfg conn userIdVal
-  case tokenResult of
-    Left err -> pure (Left err)
-    Right Nothing -> pure (Left "Missing GitLab token for user")
-    Right (Just tokenInfo) -> do
-      let host = tokenInfo.host
-          token = tokenInfo.value
-      projectInfo <- fetchGitlabProject cfg host token repoId
-      case projectInfo of
-        Left msg -> pure (Left msg)
-        Right repo -> do
-          let (defaultOrg, defaultProject) = splitNamespace repo.glProjectPath
-          let orgCandidate = fromMaybe defaultOrg orgInput
-          let projCandidate = fromMaybe defaultProject projectInput
-          let org = if T.strip orgCandidate == "" then sanitizeName defaultOrg else sanitizeName orgCandidate
-          let proj = if T.strip projCandidate == "" then sanitizeName defaultProject else sanitizeName projCandidate
-          if org == "" || proj == ""
-            then pure (Left "Organisation and project names must be non-empty")
-            else do
-              let flakeInput = org <> "__" <> proj
-              [projectRow] <- query conn
-                "INSERT INTO projects (org, project, git_host, repo_id, repo_url, repo_path, flake_input) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (git_host, repo_id) DO UPDATE SET org = EXCLUDED.org, project = EXCLUDED.project, repo_url = EXCLUDED.repo_url, repo_path = EXCLUDED.repo_path, flake_input = EXCLUDED.flake_input, updated_at = now() RETURNING id, org, project, git_host, repo_id, repo_url, repo_path, flake_input, default_env_hash"
-                (org, proj, host, repo.glProjectId, repo.glProjectHttpUrl, repo.glProjectPath, flakeInput)
-              let projectIdVal = projectRow.id
-              _ <- execute conn "DELETE FROM gitlab_tokens WHERE project_id = ?" (Only projectIdVal)
-              saveResult <- saveGitlabToken cfg conn (Just userIdVal) (Just projectIdVal) host token ("api read_repository" :: Text)
-              case saveResult of
-                Left err -> pure (Left err)
-                Right _ -> do
-                  regenResult <- regenerateFlake cfg =<< loadProjects conn
-                  case regenResult of
-                    Left msg -> pure (Left msg)
+addProjectFlow :: AppConfig -> SessionInfo -> Int64 -> Maybe Text -> Maybe Text -> IO (Either ProjectFlowError Text)
+addProjectFlow cfg sess repoId orgInput projectInput = do
+  pullResult <- pullProviderRepo cfg
+  case pullResult of
+    Left pullErr -> pure (Left (projectFlowErrorFromPullError pullErr))
+    Right _ -> do
+      credentialResult <- loadUserOAuthCredential cfg sess
+      case credentialResult of
+        Left err -> pure (Left (projectFlowErrorFromGitlab err))
+        Right credential -> withDb cfg $ \conn -> do
+          let OAuthCredential { host = host, accessToken = token } = credential
+          projectInfo <- fetchGitlabProject cfg host token repoId
+          case projectInfo of
+            Left err -> pure (Left (projectFlowErrorFromGitlab err))
+            Right repo -> do
+              let (defaultOrg, defaultProject) = splitNamespace repo.path
+              let orgCandidate = fromMaybe defaultOrg orgInput
+              let projCandidate = fromMaybe defaultProject projectInput
+              let org = if T.strip orgCandidate == "" then sanitizeName defaultOrg else sanitizeName orgCandidate
+              let proj = if T.strip projCandidate == "" then sanitizeName defaultProject else sanitizeName projCandidate
+              if org == "" || proj == ""
+                then pure (Left (ProjectFlowError "Organisation and project names must be non-empty"))
+                else do
+                  let flakeInput = org <> "__" <> proj
+                  [projectRow] <- query conn
+                    "INSERT INTO projects (org, project, git_host, repo_id, repo_url, repo_path, flake_input) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (git_host, repo_id) DO UPDATE SET org = EXCLUDED.org, project = EXCLUDED.project, repo_url = EXCLUDED.repo_url, repo_path = EXCLUDED.repo_path, flake_input = EXCLUDED.flake_input, updated_at = now() RETURNING id, org, project, git_host, repo_id, repo_url, repo_path, flake_input, default_env_hash"
+                    (org, proj, host, repo.id, repo.httpUrl, repo.path, flakeInput)
+                  let projectIdVal = projectRow.id
+                  _ <- execute conn "DELETE FROM project_oauth_credentials WHERE project_id = ?" (Only projectIdVal)
+                  saveResult <- upsertProjectOAuthCredential cfg conn projectIdVal credential
+                  case saveResult of
+                    Left err -> pure (Left (ProjectFlowError err))
                     Right _ -> do
-                      existingNixConfig <- fmap (fmap T.pack) (lookupEnv "NIX_CONFIG")
-                      let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig host token
-                          runScoped = runCommandWithEnv cfg [("NIX_CONFIG", scopedNixConfig)]
-                      cmdRes <- runScoped (CommandSpec "nix" ["flake", "update", flakeInput] (appWorkDir cfg))
-                      case cmdRes of
-                        Left err -> pure (Left (commandErrorText err))
+                      regenResult <- regenerateFlake cfg =<< loadProjects conn
+                      case regenResult of
+                        Left msg -> pure (Left (ProjectFlowError msg))
                         Right _ -> do
-                          planRes <- runScoped (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] (appWorkDir cfg))
-                          case planRes of
-                            Left err -> pure (Left (commandErrorText err))
+                          existingNixConfig <- fmap (fmap T.pack) (lookupEnv "NIX_CONFIG")
+                          let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig host token
+                              runScoped = runCommandWithEnv cfg [("NIX_CONFIG", scopedNixConfig)]
+                          cmdRes <- runScoped (CommandSpec "nix" ["flake", "update", flakeInput] (appWorkDir cfg))
+                          case cmdRes of
+                            Left err -> pure (Left (ProjectFlowError (commandErrorText err)))
                             Right _ -> do
-                              planRaw <- loadPlan cfg
-                              case projectHashFor org proj planRaw of
-                                Left err -> pure (Left err)
-                                Right projHash -> do
-                                  _ <- execute conn "UPDATE projects SET default_env_hash = ?, updated_at = now() WHERE id = ?" (projHash, projectIdVal)
-                                  webhookResult <- ensureWebhook cfg conn host token repoId projectRow projHash
-                                  case webhookResult of
-                                    Left msg -> pure (Left msg)
-                                    Right (secret, _) -> do
-                                      maybeWriteSecret cfg projHash org proj secret
-                                      let AppConfig { appWebhookHost = webhookHost } = cfg
-                                      let hookUrl = "https://" <> webhookHost <> "/webhook/" <> projHash
-                                      pure (Right ("Webhook configured at " <> hookUrl))
+                              planRes <- runScoped (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] (appWorkDir cfg))
+                              case planRes of
+                                Left err -> pure (Left (ProjectFlowError (commandErrorText err)))
+                                Right _ -> do
+                                  planRaw <- loadPlan cfg
+                                  case projectHashFor org proj planRaw of
+                                    Left err -> pure (Left (ProjectFlowError err))
+                                    Right projHash -> do
+                                      _ <- execute conn "UPDATE projects SET default_env_hash = ?, updated_at = now() WHERE id = ?" (projHash, projectIdVal)
+                                      webhookResult <- ensureWebhook cfg conn host token repoId projectRow projHash
+                                      case webhookResult of
+                                        Left err -> pure (Left (projectFlowErrorFromGitlab err))
+                                        Right (secret, _) -> do
+                                          maybeWriteSecret cfg projHash org proj secret
+                                          let AppConfig { appWebhookHost = webhookHost } = cfg
+                                          let hookUrl = "https://" <> webhookHost <> "/webhook/" <> projHash
+                                          pure (Right ("Webhook configured at " <> hookUrl))
 
 bootstrapRepoFlow :: AppConfig -> SessionInfo -> Int64 -> IO (Either Text Text)
 bootstrapRepoFlow cfg sess repoId = do
-  tokenResult <- withDb cfg $ \conn -> do
-    let userIdVal = sess.user.id
-    loadLatestUserGitlabToken cfg conn userIdVal
-  case tokenResult of
-    Left err -> pure (Left err)
-    Right Nothing -> pure (Left "Missing GitLab token for user")
-    Right (Just tokenInfo) -> do
-      let host = tokenInfo.host
-          token = tokenInfo.value
+  credentialResult <- loadUserOAuthCredential cfg sess
+  case credentialResult of
+    Left err -> pure (Left (renderGitlabError err))
+    Right credential -> do
+      let OAuthCredential { host = host, accessToken = token } = credential
       projectInfo <- fetchGitlabProject cfg host token repoId
       case projectInfo of
-        Left msg -> pure (Left msg)
+        Left err -> pure (Left (renderGitlabError err))
         Right repo -> do
-          bootstrapResult <- bootstrapProviderRepo cfg repo.glProjectHttpUrl token
+          bootstrapResult <- bootstrapProviderRepo cfg repo.httpUrl token
           case bootstrapResult of
             Left msg -> pure (Left msg)
             Right _ -> do
-              syncFlakeFromDb cfg
-              pure (Right ("Provider repository bootstrapped from " <> repo.glProjectPath))
+              syncResult <- syncFlakeFromDb cfg
+              case syncResult of
+                Left msg -> pure (Left msg)
+                Right _ -> pure (Right ("Provider repository bootstrapped from " <> repo.path))
 
-ensureWebhook :: AppConfig -> Connection -> Text -> Text -> Int64 -> ProjectRow -> Text -> IO (Either Text (Text, Maybe Int64))
+ensureWebhook :: AppConfig -> Connection -> Text -> Text -> Int64 -> ProjectRow -> Text -> IO (Either GitlabError (Text, Maybe Int64))
 ensureWebhook cfg conn host token repoId projectRow projHash = do
   let projectIdVal = projectRow.id
   existing <- query conn "SELECT secret, webhook_id FROM webhooks WHERE project_id = ?" (Only projectIdVal)
@@ -150,10 +174,10 @@ ensureWebhook cfg conn host token repoId projectRow projHash = do
         Right hook -> pure (Right hook)
     Nothing -> createGitlabWebhook cfg host token repoId url secret
   case hookResult of
-    Left msg -> pure (Left msg)
+    Left err -> pure (Left err)
     Right hook -> do
-      _ <- execute conn "INSERT INTO webhooks (project_id, secret, webhook_id, webhook_url) VALUES (?, ?, ?, ?) ON CONFLICT (project_id) DO UPDATE SET secret = EXCLUDED.secret, webhook_id = EXCLUDED.webhook_id, webhook_url = EXCLUDED.webhook_url, updated_at = now()" (projectIdVal, secret, hook.glHookId, hook.glHookUrl)
-      pure (Right (secret, Just hook.glHookId))
+      _ <- execute conn "INSERT INTO webhooks (project_id, secret, webhook_id, webhook_url) VALUES (?, ?, ?, ?) ON CONFLICT (project_id) DO UPDATE SET secret = EXCLUDED.secret, webhook_id = EXCLUDED.webhook_id, webhook_url = EXCLUDED.webhook_url, updated_at = now()" (projectIdVal, secret, hook.id, hook.url)
+      pure (Right (secret, Just hook.id))
 
 regenerateFlake :: AppConfig -> [ProjectRow] -> IO (Either Text ())
 regenerateFlake cfg projects = do
@@ -226,3 +250,22 @@ removeFileIfExists path = removeFile path `catch` ignoreMissing
   where
     ignoreMissing :: IOException -> IO ()
     ignoreMissing _ = pure ()
+
+repoPullErrorText :: RepoPullError -> Text
+repoPullErrorText pullErr =
+  case pullErr of
+    RepoPullAuthError msg -> msg
+    RepoPullError msg -> msg
+
+projectFlowErrorFromPullError :: RepoPullError -> ProjectFlowError
+projectFlowErrorFromPullError pullErr =
+  case pullErr of
+    RepoPullAuthError msg -> ProjectFlowAuthError msg
+    RepoPullError msg -> ProjectFlowError msg
+
+projectFlowErrorFromGitlab :: GitlabError -> ProjectFlowError
+projectFlowErrorFromGitlab gitlabErr =
+  let msg = renderGitlabError gitlabErr
+   in if isReauthError gitlabErr
+        then ProjectFlowAuthError msg
+        else ProjectFlowError msg
