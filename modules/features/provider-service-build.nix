@@ -39,7 +39,6 @@ in
         createdb -h "$base" hostenv-provider >/dev/null 2>&1 || true
 
         data_dir="''${HOSTENV_PROVIDER_DATA_DIR:-$base/data}"
-        repo_source="''${HOSTENV_PROVIDER_REPO_SOURCE:-$PWD}"
         listen_socket="''${HOSTENV_PROVIDER_LISTEN_SOCKET:-$base/hostenv-provider.sock}"
         webhook_host="''${HOSTENV_PROVIDER_WEBHOOK_HOST:-localhost}"
         ui_base_url="''${HOSTENV_PROVIDER_UI_BASE_URL:-http://localhost}"
@@ -65,7 +64,6 @@ in
         cat > "$config_file" <<EOF
         {
           "dataDir": "$data_dir",
-          "repoSource": "$repo_source",
           "flakeRoot": ".",
           "listenSocket": "$listen_socket",
           "webhookSecretFile": null,

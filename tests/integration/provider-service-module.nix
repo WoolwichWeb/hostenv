@@ -60,9 +60,6 @@ else
       grep -q -- 'mkdir -p ' "$execStart" || { echo "hostenv-provider start wrapper must create data directory"; exit 1; }
       configPath=$(sed -n 's/^exec .* --config //p' "$execStart" | head -n1)
       test -f "$configPath" || { echo "hostenv-provider config file missing"; exit 1; }
-      repoSource=$(sed -n 's/.*"repoSource":"\([^"]*\)".*/\1/p' "$configPath")
-      test -n "$repoSource" || { echo "hostenv-provider config missing repoSource"; exit 1; }
-      test -d "$repoSource" || { echo "hostenv-provider repoSource path does not exist in closure"; exit 1; }
       grep -q -- '"seedUsers":' "$configPath" || { echo "hostenv-provider config missing seedUsers"; exit 1; }
       grep -q -- '"configUsername":"alice"' "$configPath" || { echo "hostenv-provider config missing alice seed"; exit 1; }
       grep -q -- '"provider":"gitlab"' "$configPath" || { echo "hostenv-provider config missing gitlab provider account seed"; exit 1; }

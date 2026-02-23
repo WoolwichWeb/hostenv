@@ -38,7 +38,6 @@ import Hostenv.Provider.Service (GitlabSecrets, WebhookConfig(..), readGitlabSec
 
 data AppConfig = AppConfig
   { appDataDir :: FilePath
-  , appRepoSource :: FilePath
   , appFlakeRoot :: FilePath
   , appListenSocket :: FilePath
   , appWebhookSecretFile :: Maybe FilePath
@@ -61,7 +60,6 @@ data AppConfig = AppConfig
 
 data ProviderConfigFile = ProviderConfigFile
   { dataDir :: FilePath
-  , repoSource :: FilePath
   , flakeRoot :: FilePath
   , listenSocket :: FilePath
   , webhookSecretFile :: Maybe FilePath
@@ -132,7 +130,6 @@ instance A.FromJSON ProviderConfigFile where
               }
     ProviderConfigFile
       <$> o A..: "dataDir"
-      <*> o A..: "repoSource"
       <*> o A..: "flakeRoot"
       <*> o A..: "listenSocket"
       <*> o A..:? "webhookSecretFile"
@@ -202,7 +199,6 @@ loadConfig configPath = do
   pure
     AppConfig
       { appDataDir = providerCfg.dataDir
-      , appRepoSource = providerCfg.repoSource
       , appFlakeRoot = providerCfg.flakeRoot
       , appListenSocket = providerCfg.listenSocket
       , appWebhookSecretFile = providerCfg.webhookSecretFile

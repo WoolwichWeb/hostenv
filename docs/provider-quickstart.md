@@ -124,8 +124,9 @@ client project (usually the default environment hash).
 
 Notes:
 
-- On first boot the service copies the provider repo into `$XDG_DATA_HOME/hostenv-provider` if
-  `flake.nix` or `generated/state.json` are missing, then runs a broad `nix flake update`.
+- If `$XDG_DATA_HOME/hostenv-provider` is missing, the service starts in onboarding mode.
+  An admin logs into the dashboard and bootstraps the provider repository by selecting
+  a GitLab repository to clone.
 - The service resolves hashes from `generated/plan.json`, so ensure a plan exists
   (run `nix run .#hostenv-provider plan` at least once).
 - Webhook requests resolve the project by matching `<hash>` to

@@ -4,6 +4,7 @@
 
 module Hostenv.Provider.Project
   ( addProjectFlow
+  , bootstrapRepoFlow
   , ensureWebhook
   , regenerateFlake
   , syncFlakeFromDb
@@ -34,6 +35,7 @@ import Hostenv.Provider.DB
   , withDb
   )
 import Hostenv.Provider.Gitlab (GitlabHook(..), GitlabProject(..), appendNixAccessTokenConfig, createGitlabWebhook, fetchGitlabProject, updateGitlabWebhook)
+import Hostenv.Provider.Repo (bootstrapProviderRepo)
 import Hostenv.Provider.Service (CommandSpec(..), projectHashFor, renderFlakeTemplate, renderProjectInputs)
 import Hostenv.Provider.Util (randomToken, sanitizeName, splitNamespace)
 import Hostenv.Provider.Webhook (loadPlan)
@@ -105,6 +107,28 @@ addProjectFlow cfg sess repoId orgInput projectInput = withDb cfg $ \conn -> do
                                       let AppConfig { appWebhookHost = webhookHost } = cfg
                                       let hookUrl = "https://" <> webhookHost <> "/webhook/" <> projHash
                                       pure (Right ("Webhook configured at " <> hookUrl))
+
+bootstrapRepoFlow :: AppConfig -> SessionInfo -> Int64 -> IO (Either Text Text)
+bootstrapRepoFlow cfg sess repoId = do
+  tokenResult <- withDb cfg $ \conn -> do
+    let userIdVal = sess.user.id
+    loadLatestUserGitlabToken cfg conn userIdVal
+  case tokenResult of
+    Left err -> pure (Left err)
+    Right Nothing -> pure (Left "Missing GitLab token for user")
+    Right (Just tokenInfo) -> do
+      let host = tokenInfo.host
+          token = tokenInfo.value
+      projectInfo <- fetchGitlabProject cfg host token repoId
+      case projectInfo of
+        Left msg -> pure (Left msg)
+        Right repo -> do
+          bootstrapResult <- bootstrapProviderRepo cfg repo.glProjectHttpUrl token
+          case bootstrapResult of
+            Left msg -> pure (Left msg)
+            Right _ -> do
+              syncFlakeFromDb cfg
+              pure (Right ("Provider repository bootstrapped from " <> repo.glProjectPath))
 
 ensureWebhook :: AppConfig -> Connection -> Text -> Text -> Int64 -> ProjectRow -> Text -> IO (Either Text (Text, Maybe Int64))
 ensureWebhook cfg conn host token repoId projectRow projHash = do

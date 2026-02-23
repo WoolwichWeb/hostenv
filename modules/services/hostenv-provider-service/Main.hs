@@ -2,10 +2,12 @@
 
 module Main where
 
+import Control.Monad (when)
+import qualified Data.Text as T
 import Hostenv.Provider.Config (loadConfig)
 import Hostenv.Provider.DB (ensureSchema, syncUsers)
 import Hostenv.Provider.Project (syncFlakeFromDb)
-import Hostenv.Provider.Repo (ensureProviderRepo)
+import Hostenv.Provider.Repo (RepoStatus(..), ensureProviderRepo)
 import Hostenv.Provider.Server (runServer)
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
@@ -18,13 +20,21 @@ main = do
       ["--config", path] -> pure path
       _ -> dieWithUsage
     cfg <- loadConfig configPath
-    ensureProviderRepo cfg
+    repoStatusResult <- ensureProviderRepo cfg
+    repoStatus <- case repoStatusResult of
+      Left err -> dieWith (T.unpack err)
+      Right status -> pure status
     ensureSchema cfg
     syncUsers cfg
-    syncFlakeFromDb cfg
-    runServer cfg
+    when (repoStatus == RepoReady) (syncFlakeFromDb cfg)
+    runServer cfg repoStatus
 
 dieWithUsage :: IO a
 dieWithUsage = do
   hPutStrLn stderr "usage: hostenv-provider-service --config <path>"
+  exitFailure
+
+dieWith :: String -> IO a
+dieWith msg = do
+  hPutStrLn stderr msg
   exitFailure

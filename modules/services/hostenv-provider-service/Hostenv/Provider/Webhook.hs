@@ -13,7 +13,7 @@ import Control.Monad (unless)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -28,6 +28,7 @@ import Hostenv.Provider.Config (AppConfig(..))
 import Hostenv.Provider.DB (ProjectDeployCredential(..), loadProjectDeployCredentialByHash, withDb)
 import Hostenv.Provider.Gitlab (GitlabDeployToken(..), appendNixAccessTokenConfig, createProjectDeployToken, revokeProjectDeployToken)
 import Hostenv.Provider.Http (ErrorResponse(..), errorWithBody)
+import Hostenv.Provider.Repo (RepoStatus(..))
 import Hostenv.Provider.Service
   ( CommandError(..)
   , CommandOutput(..)
@@ -48,8 +49,17 @@ loadPlan cfg =
   let AppConfig { appWebhookConfig = WebhookConfig { whPlanPath = planPath } } = cfg
    in BL.readFile planPath
 
-webhookHandler :: MVar () -> AppConfig -> Text -> Maybe Text -> Maybe Text -> BL.ByteString -> Handler WebhookResult
-webhookHandler webhookLock cfg hash mHubSig mGitlabToken rawBody = do
+webhookHandler :: MVar () -> IORef RepoStatus -> AppConfig -> Text -> Maybe Text -> Maybe Text -> BL.ByteString -> Handler WebhookResult
+webhookHandler webhookLock repoStatusRef cfg hash mHubSig mGitlabToken rawBody = do
+  repoStatus <- liftIO (readIORef repoStatusRef)
+  case repoStatus of
+    RepoMissing ->
+      throwError
+        ( errorWithBody
+            err503
+            (ErrorResponse "provider repository is not initialized; bootstrap it via the dashboard first" Nothing Nothing Nothing Nothing)
+        )
+    RepoReady -> pure ()
   planRaw <- liftIO (loadPlan cfg)
   projectRef <-
     case projectForHash hash planRaw of

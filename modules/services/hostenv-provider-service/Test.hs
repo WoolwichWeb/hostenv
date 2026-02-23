@@ -12,12 +12,14 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import qualified Data.Text as T
-import System.Directory (getTemporaryDirectory, removeFile)
+import System.Directory (createDirectory, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.Exit (exitFailure)
 import System.IO (hClose, openTempFile)
 
+import Hostenv.Provider.Config (AppConfig(..))
 import Hostenv.Provider.Crypto
 import Hostenv.Provider.PrevNodeDiscovery
+import Hostenv.Provider.Repo (RepoStatus(..), ensureProviderRepo)
 import Hostenv.Provider.Service
 
 assert :: Bool -> String -> IO ()
@@ -40,6 +42,8 @@ main = do
   testReadGitlabSecrets
   testTokenEncryptionRoundtrip
   testTokenKeyLoading
+  testEnsureProviderRepoMissing
+  testEnsureProviderRepoInvalidDir
   putStrLn "ok"
 
 
@@ -229,3 +233,53 @@ testTokenKeyLoading = do
     Left err -> assert False ("loadTokenCipher failed: " <> T.unpack err)
     Right cipher ->
       assert (BS.length cipher.tokenCipherKey == 32) "token key file should load 32-byte key"
+
+testEnsureProviderRepoMissing :: IO ()
+testEnsureProviderRepoMissing = do
+  tmpDir <- getTemporaryDirectory
+  (path, handle) <- openTempFile tmpDir "provider-repo-missing-"
+  hClose handle
+  removeFile path
+  let cfg = mkRepoConfig path
+  result <- ensureProviderRepo cfg
+  case result of
+    Right RepoMissing -> pure ()
+    other -> assert False ("expected RepoMissing, got " <> show other)
+
+testEnsureProviderRepoInvalidDir :: IO ()
+testEnsureProviderRepoInvalidDir = do
+  tmpDir <- getTemporaryDirectory
+  (path, handle) <- openTempFile tmpDir "provider-repo-invalid-"
+  hClose handle
+  removeFile path
+  createDirectory path
+  let cfg = mkRepoConfig path
+  result <- ensureProviderRepo cfg
+  removePathForcibly path
+  case result of
+    Left msg -> assert ("not a git checkout" `T.isInfixOf` msg) "invalid repo dir should report git checkout error"
+    other -> assert False ("expected checkout error, got " <> show other)
+
+mkRepoConfig :: FilePath -> AppConfig
+mkRepoConfig dataDir =
+  AppConfig
+    { appDataDir = dataDir
+    , appFlakeRoot = "."
+    , appListenSocket = "/tmp/provider.sock"
+    , appWebhookSecretFile = Nothing
+    , appWebhookSecretsDir = Nothing
+    , appWebhookConfig = WebhookConfig dataDir (dataDir <> "/generated/plan.json")
+    , appUiBasePath = "/dashboard"
+    , appUiBaseUrl = "https://example.invalid"
+    , appWebhookHost = "example.invalid"
+    , appDbConnString = Nothing
+    , appGitlabSecrets = Nothing
+    , appGitlabHosts = ["gitlab.com"]
+    , appGitlabTokenCipher = Nothing
+    , appGitlabDeployTokenTtlMinutes = 15
+    , appGitConfigPath = dataDir <> "/gitconfig"
+    , appGitCredentialsPath = dataDir <> "/git-credentials"
+    , appFlakeTemplate = "flake.template.nix"
+    , appSeedUsers = []
+    , appHttpManager = Nothing
+    }

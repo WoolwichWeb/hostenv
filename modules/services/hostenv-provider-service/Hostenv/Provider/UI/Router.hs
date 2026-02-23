@@ -6,6 +6,8 @@ module Hostenv.Provider.UI.Router
   ( uiApp
   ) where
 
+import Control.Concurrent.MVar (MVar)
+import Data.IORef (IORef)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Network.HTTP.Types (methodGet, methodPost, status404)
@@ -13,9 +15,12 @@ import qualified Network.Wai as Wai
 import Network.Wai (Application, responseLBS)
 
 import Hostenv.Provider.Config (AppConfig(..), normalizeBasePath)
+import Hostenv.Provider.Repo (RepoStatus)
 import Hostenv.Provider.UI.Handlers
   ( handleAddProjectGet
   , handleAddProjectPost
+  , handleBootstrapRepoGet
+  , handleBootstrapRepoPost
   , handleIndex
   , handleLogin
   , handleLogout
@@ -24,12 +29,12 @@ import Hostenv.Provider.UI.Handlers
   )
 
 
-uiApp :: AppConfig -> Application
-uiApp cfg req respond = do
+uiApp :: IORef RepoStatus -> MVar () -> AppConfig -> Application
+uiApp repoStatusRef bootstrapLock cfg req respond = do
   let AppConfig { appUiBasePath = basePath } = cfg
   case stripBasePath basePath (Wai.pathInfo req) of
     Nothing -> respond (responseLBS status404 [] "")
-    Just rest -> routeUi cfg rest req respond
+    Just rest -> routeUi repoStatusRef bootstrapLock cfg rest req respond
 
 stripBasePath :: Text -> [Text] -> Maybe [Text]
 stripBasePath base segments =
@@ -40,12 +45,12 @@ stripBasePath base segments =
           (prefix, remainder) | prefix == baseSegs -> Just remainder
           _ -> Nothing
 
-routeUi :: AppConfig -> [Text] -> Application
-routeUi cfg segments req respond =
+routeUi :: IORef RepoStatus -> MVar () -> AppConfig -> [Text] -> Application
+routeUi repoStatusRef bootstrapLock cfg segments req respond =
   case segments of
     [] ->
       case Wai.requestMethod req of
-        m | m == methodGet -> handleIndex cfg req respond
+        m | m == methodGet -> handleIndex repoStatusRef cfg req respond
         _ -> respond (responseLBS status404 [] "")
     ["login"] ->
       case Wai.requestMethod req of
@@ -65,7 +70,12 @@ routeUi cfg segments req respond =
         _ -> respond (responseLBS status404 [] "")
     ["add-project"] ->
       case Wai.requestMethod req of
-        m | m == methodPost -> handleAddProjectPost cfg req respond
-        m | m == methodGet -> handleAddProjectGet cfg req respond
+        m | m == methodPost -> handleAddProjectPost repoStatusRef cfg req respond
+        m | m == methodGet -> handleAddProjectGet repoStatusRef cfg req respond
+        _ -> respond (responseLBS status404 [] "")
+    ["bootstrap-repo"] ->
+      case Wai.requestMethod req of
+        m | m == methodPost -> handleBootstrapRepoPost bootstrapLock repoStatusRef cfg req respond
+        m | m == methodGet -> handleBootstrapRepoGet repoStatusRef cfg req respond
         _ -> respond (responseLBS status404 [] "")
     _ -> respond (responseLBS status404 [] "")

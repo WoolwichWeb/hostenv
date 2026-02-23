@@ -59,9 +59,13 @@ test-suite hostenv-provider-service-tests
   main-is: Test.hs
   hs-source-dirs: .
   other-modules:
+    Hostenv.Provider.Command
+    Hostenv.Provider.Config
     Hostenv.Provider.Crypto
     Hostenv.Provider.PrevNodeDiscovery
+    Hostenv.Provider.Repo
     Hostenv.Provider.Service
+    Hostenv.Provider.Util
   default-language: Haskell2010
   build-depends:
     base >=4.14 && <5,
@@ -70,7 +74,13 @@ test-suite hostenv-provider-service-tests
     containers,
     crypton,
     directory,
+    filepath,
+    http-client,
+    http-client-tls,
+    http-types,
     memory,
+    network,
     process,
     text,
-    time
+    time,
+    unix

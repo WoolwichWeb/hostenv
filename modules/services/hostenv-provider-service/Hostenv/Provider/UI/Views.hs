@@ -7,6 +7,7 @@ module Hostenv.Provider.UI.Views
   , accessDeniedPage
   , indexPage
   , addProjectPage
+  , bootstrapRepoPage
   , successPage
   , errorPage
   ) where
@@ -18,6 +19,7 @@ import qualified Data.Text as T
 import Lucid
 
 import Hostenv.Provider.Config (AppConfig(..), uiPath)
+import Hostenv.Provider.Repo (RepoStatus(..))
 import Hostenv.Provider.DB (ProjectRow(..), SessionInfo(..), User(..))
 import Hostenv.Provider.Gitlab (GitlabProject(..))
 
@@ -52,17 +54,24 @@ accessDeniedPage cfg =
     p_ "This account does not have the admin role."
     a_ [class_ "btn subtle", href_ (uiPath cfg "/logout")] "Sign out"
 
-indexPage :: AppConfig -> SessionInfo -> [ProjectRow] -> Html ()
-indexPage cfg sess projects =
+indexPage :: AppConfig -> SessionInfo -> RepoStatus -> [ProjectRow] -> Html ()
+indexPage cfg sess repoStatus projects =
   page cfg "Projects" $ do
     div_ [class_ "header"] $ do
       h1_ "Projects"
       div_ [class_ "actions"] $ do
         span_ [class_ "user"] (toHtml username)
         a_ [class_ "btn subtle", href_ (uiPath cfg "/logout")] "Sign out"
-    projectListHtml projects
-    div_ [class_ "footer"] $
-      a_ [class_ "btn", href_ (uiPath cfg "/add-project")] "Add project from GitLab"
+    case repoStatus of
+      RepoMissing -> do
+        p_ "Provider repository is not initialized yet."
+        p_ "Bootstrap it from GitLab before adding projects."
+        div_ [class_ "footer"] $
+          a_ [class_ "btn", href_ (uiPath cfg "/bootstrap-repo")] "Bootstrap provider repository"
+      RepoReady -> do
+        projectListHtml projects
+        div_ [class_ "footer"] $
+          a_ [class_ "btn", href_ (uiPath cfg "/add-project")] "Add project from GitLab"
   where
     SessionInfo { user = User { username = username } } = sess
 
@@ -111,6 +120,26 @@ addProjectPage cfg sess repos =
       label_ "Project"
       input_ [type_ "text", name_ "project", placeholder_ "project"]
       button_ [class_ "btn", type_ "submit"] "Add project"
+  where
+    SessionInfo { csrf = csrfToken } = sess
+    renderRepoOption :: GitlabProject -> Html ()
+    renderRepoOption repo =
+      let GitlabProject { glProjectId = repoId, glProjectPath = repoPath } = repo
+       in option_ [value_ (T.pack (show repoId))] (toHtml repoPath)
+
+bootstrapRepoPage :: AppConfig -> SessionInfo -> [GitlabProject] -> Html ()
+bootstrapRepoPage cfg sess repos =
+  page cfg "Bootstrap repository" $ do
+    div_ [class_ "header"] $ do
+      h1_ "Bootstrap provider repository"
+      div_ [class_ "actions"] $
+        a_ [class_ "btn subtle", href_ (uiPath cfg "/")] "Back"
+    p_ "Select the GitLab repository that should be cloned into this provider environment."
+    form_ [method_ "post", class_ "card"] $ do
+      input_ [type_ "hidden", name_ "csrf", value_ csrfToken]
+      label_ "Repository"
+      select_ [name_ "repo_id"] (mconcat (map renderRepoOption repos))
+      button_ [class_ "btn", type_ "submit"] "Clone repository"
   where
     SessionInfo { csrf = csrfToken } = sess
     renderRepoOption :: GitlabProject -> Html ()

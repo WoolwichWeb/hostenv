@@ -8,16 +8,19 @@ module Hostenv.Provider.UI.Handlers
   , handleIndex
   , handleAddProjectGet
   , handleAddProjectPost
+  , handleBootstrapRepoGet
+  , handleBootstrapRepoPost
   , handleOauthStart
   , handleOauthCallback
   ) where
 
+import Control.Concurrent.MVar (MVar, withMVar)
+import Data.IORef (IORef, readIORef, writeIORef)
 import qualified Data.ByteString.Char8 as BSC
-import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Network.HTTP.Types (hLocation, methodGet, methodPost, status200, status302, status400, status403, status500)
+import Network.HTTP.Types (hLocation, status200, status302, status400, status403, status500)
 import Network.HTTP.Types.URI (renderSimpleQuery)
 import qualified Network.Wai as Wai
 import Network.Wai (strictRequestBody)
@@ -25,10 +28,11 @@ import Network.Wai (strictRequestBody)
 import Hostenv.Provider.Config (AppConfig(..), uiPath)
 import Hostenv.Provider.DB (SessionInfo(..), User(..), getSessionInfo, loadProjects, logoutCookie, renderSessionCookie, withDb)
 import Hostenv.Provider.Gitlab (GitlabTokenResponse(..), UpsertUserSessionError(..), consumeOauthState, createOauthState, exchangeOAuthCode, fetchGitlabUser, loadUserProjects, oauthRedirectUri, requireSecrets, selectGitlabHost, upsertUserSession)
-import Hostenv.Provider.Project (addProjectFlow)
+import Hostenv.Provider.Project (addProjectFlow, bootstrapRepoFlow)
+import Hostenv.Provider.Repo (RepoStatus(..))
 import Hostenv.Provider.Service (GitlabSecrets(..))
 import Hostenv.Provider.UI.Helpers (respondHtml, respondHtmlWithHeaders, respondRedirect)
-import Hostenv.Provider.UI.Views (accessDeniedPage, addProjectPage, errorPage, indexPage, loginPage, successPage)
+import Hostenv.Provider.UI.Views (accessDeniedPage, addProjectPage, bootstrapRepoPage, errorPage, indexPage, loginPage, successPage)
 import Hostenv.Provider.Util (lookupParam, parseForm, readInt64)
 
 
@@ -43,62 +47,92 @@ handleLogout :: AppConfig -> (Wai.Response -> IO a) -> IO a
 handleLogout cfg respond =
   respondHtmlWithHeaders respond status302 [(hLocation, TE.encodeUtf8 (uiPath cfg "/login")), ("Set-Cookie", logoutCookie)] mempty
 
-handleIndex :: AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
-handleIndex cfg req respond = do
-  mSession <- getSessionInfo cfg req
-  case mSession of
-    Nothing -> respondRedirect respond cfg "/login"
-    Just sess ->
-      let SessionInfo { user = User { role = role } } = sess
-       in if role /= "admin"
-        then respondHtml respond status403 (accessDeniedPage cfg)
-        else do
-          projects <- withDb cfg (\conn -> loadProjects conn)
-          respondHtml respond status200 (indexPage cfg sess projects)
+handleIndex :: IORef RepoStatus -> AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
+handleIndex repoStatusRef cfg req respond =
+  requireAdmin cfg req respond $ \sess -> do
+    repoStatus <- readIORef repoStatusRef
+    projects <-
+      case repoStatus of
+        RepoMissing -> pure []
+        RepoReady -> withDb cfg loadProjects
+    respondHtml respond status200 (indexPage cfg sess repoStatus projects)
 
-handleAddProjectGet :: AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
-handleAddProjectGet cfg req respond = do
-  mSession <- getSessionInfo cfg req
-  case mSession of
-    Nothing -> respondRedirect respond cfg "/login"
-    Just sess ->
-      let SessionInfo { user = User { role = role } } = sess
-       in if role /= "admin"
-        then respondHtml respond status403 (accessDeniedPage cfg)
-        else do
-          result <- loadUserProjects cfg sess
-          case result of
-            Left msg -> respondHtml respond status500 (errorPage cfg msg)
-            Right repos -> respondHtml respond status200 (addProjectPage cfg sess repos)
+handleAddProjectGet :: IORef RepoStatus -> AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
+handleAddProjectGet repoStatusRef cfg req respond =
+  requireAdmin cfg req respond $ \sess -> do
+    repoStatus <- readIORef repoStatusRef
+    case repoStatus of
+      RepoMissing -> respondRedirect respond cfg "/bootstrap-repo"
+      RepoReady -> do
+        result <- loadUserProjects cfg sess
+        case result of
+          Left msg -> respondHtml respond status500 (errorPage cfg msg)
+          Right repos -> respondHtml respond status200 (addProjectPage cfg sess repos)
 
-handleAddProjectPost :: AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
-handleAddProjectPost cfg req respond = do
-  mSession <- getSessionInfo cfg req
-  case mSession of
-    Nothing -> respondRedirect respond cfg "/login"
-    Just sess ->
-      let SessionInfo { user = User { role = role }, csrf = csrf } = sess
-       in if role /= "admin"
-        then respondHtml respond status403 (accessDeniedPage cfg)
-        else do
-          body <- strictRequestBody req
-          let params = parseForm body
-          case lookupParam csrfFieldName params of
-            Nothing -> respondHtml respond status400 (errorPage cfg "Missing CSRF token")
-            Just csrfToken ->
-              if csrfToken /= csrf
-                then respondHtml respond status403 (errorPage cfg "Invalid CSRF token")
-                else do
-                  let mRepoId = lookupParam "repo_id" params >>= readInt64
-                  let orgInput = lookupParam "org" params
-                  let projectInput = lookupParam "project" params
-                  case mRepoId of
-                    Nothing -> respondHtml respond status400 (errorPage cfg "Missing repository selection")
-                    Just repoId -> do
-                      result <- addProjectFlow cfg sess repoId orgInput projectInput
+handleAddProjectPost :: IORef RepoStatus -> AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
+handleAddProjectPost repoStatusRef cfg req respond =
+  requireAdmin cfg req respond $ \sess -> do
+    repoStatus <- readIORef repoStatusRef
+    case repoStatus of
+      RepoMissing -> respondRedirect respond cfg "/bootstrap-repo"
+      RepoReady -> do
+        body <- strictRequestBody req
+        let params = parseForm body
+        case lookupParam csrfFieldName params of
+          Nothing -> respondHtml respond status400 (errorPage cfg "Missing CSRF token")
+          Just csrfToken ->
+            if csrfToken /= sess.csrf
+              then respondHtml respond status403 (errorPage cfg "Invalid CSRF token")
+              else do
+                let mRepoId = lookupParam "repo_id" params >>= readInt64
+                let orgInput = lookupParam "org" params
+                let projectInput = lookupParam "project" params
+                case mRepoId of
+                  Nothing -> respondHtml respond status400 (errorPage cfg "Missing repository selection")
+                  Just repoId -> do
+                    result <- addProjectFlow cfg sess repoId orgInput projectInput
+                    case result of
+                      Left msg -> respondHtml respond status500 (errorPage cfg msg)
+                      Right successMsg -> respondHtml respond status200 (successPage cfg successMsg)
+
+handleBootstrapRepoGet :: IORef RepoStatus -> AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
+handleBootstrapRepoGet repoStatusRef cfg req respond =
+  requireAdmin cfg req respond $ \sess -> do
+    repoStatus <- readIORef repoStatusRef
+    case repoStatus of
+      RepoReady -> respondRedirect respond cfg "/"
+      RepoMissing -> do
+        result <- loadUserProjects cfg sess
+        case result of
+          Left msg -> respondHtml respond status500 (errorPage cfg msg)
+          Right repos -> respondHtml respond status200 (bootstrapRepoPage cfg sess repos)
+
+handleBootstrapRepoPost :: MVar () -> IORef RepoStatus -> AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
+handleBootstrapRepoPost bootstrapLock repoStatusRef cfg req respond =
+  requireAdmin cfg req respond $ \sess -> do
+    body <- strictRequestBody req
+    let params = parseForm body
+    case lookupParam csrfFieldName params of
+      Nothing -> respondHtml respond status400 (errorPage cfg "Missing CSRF token")
+      Just csrfToken ->
+        if csrfToken /= sess.csrf
+          then respondHtml respond status403 (errorPage cfg "Invalid CSRF token")
+          else do
+            let mRepoId = lookupParam "repo_id" params >>= readInt64
+            case mRepoId of
+              Nothing -> respondHtml respond status400 (errorPage cfg "Missing repository selection")
+              Just repoId ->
+                withMVar bootstrapLock $ \_ -> do
+                  repoStatus <- readIORef repoStatusRef
+                  case repoStatus of
+                    RepoReady -> respondHtml respond status200 (successPage cfg "Provider repository is already bootstrapped")
+                    RepoMissing -> do
+                      result <- bootstrapRepoFlow cfg sess repoId
                       case result of
                         Left msg -> respondHtml respond status500 (errorPage cfg msg)
-                        Right successMsg -> respondHtml respond status200 (successPage cfg successMsg)
+                        Right successMsg -> do
+                          writeIORef repoStatusRef RepoReady
+                          respondHtml respond status200 (successPage cfg successMsg)
 
 handleOauthStart :: AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
 handleOauthStart cfg req respond = do
@@ -156,3 +190,14 @@ handleOauthCallback cfg req respond = do
                       let cookieHeader = ("Set-Cookie", renderSessionCookie session)
                       respondHtmlWithHeaders respond status302 [(hLocation, TE.encodeUtf8 (uiPath cfg "/")), cookieHeader] mempty
     _ -> respondHtml respond status400 (errorPage cfg "Missing OAuth callback parameters")
+
+requireAdmin :: AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> (SessionInfo -> IO a) -> IO a
+requireAdmin cfg req respond onAdmin = do
+  mSession <- getSessionInfo cfg req
+  case mSession of
+    Nothing -> respondRedirect respond cfg "/login"
+    Just sess ->
+      let SessionInfo { user = User { role = role } } = sess
+       in if role /= "admin"
+        then respondHtml respond status403 (accessDeniedPage cfg)
+        else onAdmin sess

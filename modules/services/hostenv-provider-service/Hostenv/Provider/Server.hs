@@ -8,6 +8,7 @@ module Hostenv.Provider.Server
   ) where
 
 import Control.Concurrent.MVar (MVar, newMVar)
+import Data.IORef (IORef, newIORef)
 import qualified Data.ByteString.Lazy as BL
 import Data.Tagged (Tagged (..))
 import Data.Text (Text)
@@ -16,7 +17,7 @@ import Network.Wai.Handler.Warp (defaultSettings, runSettingsSocket, setBeforeMa
 import Servant
 
 import Hostenv.Provider.Config (AppConfig(..))
-import Hostenv.Provider.Repo (openUnixSocket)
+import Hostenv.Provider.Repo (RepoStatus, openUnixSocket)
 import Hostenv.Provider.UI.Router (uiApp)
 import Hostenv.Provider.Service (WebhookResult)
 import Hostenv.Provider.Webhook (webhookHandler)
@@ -34,16 +35,19 @@ type API =
 api :: Proxy API
 api = Proxy
 
-runServer :: AppConfig -> IO ()
-runServer cfg = do
+runServer :: AppConfig -> RepoStatus -> IO ()
+runServer cfg initialRepoStatus = do
   let AppConfig { appListenSocket = listenSocket } = cfg
   webhookLock <- newMVar ()
+  bootstrapLock <- newMVar ()
+  repoStatusRef <- newIORef initialRepoStatus
   sock <- openUnixSocket listenSocket
   let settings = setBeforeMainLoop (putStrLn "hostenv-provider-service: listening") defaultSettings
-  runSettingsSocket settings sock (app webhookLock cfg)
+  runSettingsSocket settings sock (app webhookLock bootstrapLock repoStatusRef cfg)
 
-app :: MVar () -> AppConfig -> Application
-app webhookLock cfg = serve api (server webhookLock cfg)
+app :: MVar () -> MVar () -> IORef RepoStatus -> AppConfig -> Application
+app webhookLock bootstrapLock repoStatusRef cfg = serve api (server webhookLock bootstrapLock repoStatusRef cfg)
 
-server :: MVar () -> AppConfig -> Server API
-server webhookLock cfg = webhookHandler webhookLock cfg :<|> Tagged (uiApp cfg)
+server :: MVar () -> MVar () -> IORef RepoStatus -> AppConfig -> Server API
+server webhookLock bootstrapLock repoStatusRef cfg =
+  webhookHandler webhookLock repoStatusRef cfg :<|> Tagged (uiApp repoStatusRef bootstrapLock cfg)
