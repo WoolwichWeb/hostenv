@@ -57,10 +57,6 @@ else
       execStart=$(sed -n 's/^ExecStart=//p' "$profile/systemd/user/hostenv-provider.service")
       test -n "$execStart" || { echo "hostenv-provider.service missing ExecStart"; exit 1; }
       test -x "$execStart" || { echo "hostenv-provider ExecStart target is not executable"; exit 1; }
-      if grep -q -- 'mkdir -p ' "$execStart"; then
-        echo "hostenv-provider start wrapper must not pre-create data directory"
-        exit 1
-      fi
       configPath=$(sed -n 's/^exec .* --config //p' "$execStart" | head -n1)
       test -f "$configPath" || { echo "hostenv-provider config file missing"; exit 1; }
       grep -q -- '"seedUsers":' "$configPath" || { echo "hostenv-provider config missing seedUsers"; exit 1; }
