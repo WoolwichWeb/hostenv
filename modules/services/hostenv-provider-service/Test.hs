@@ -148,7 +148,7 @@ testCommandSequence = do
       assert (res.webhookOk) "webhook run should succeed"
       cmds <- readIORef ref
       let expected =
-            [ CommandSpec "git" ["pull", "--rebase"] "/tmp/provider"
+            [ CommandSpec "git" ["pull", "--rebase", "--autostash"] "/tmp/provider"
             , CommandSpec "nix" ["flake", "update", "acme__site"] "/tmp/provider"
             , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] "/tmp/provider"
             , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "dns-gate"] "/tmp/provider"

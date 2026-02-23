@@ -88,7 +88,7 @@ pullProviderRepoWithOAuth cfg host token =
 pullProviderRepoWithEnv :: AppConfig -> [(T.Text, T.Text)] -> IO (Either RepoPullError ())
 pullProviderRepoWithEnv cfg envVars = do
   let AppConfig { appDataDir = dataDir } = cfg
-  pullResult <- runCommandWithEnv cfg envVars (CommandSpec "git" ["pull", "--rebase"] dataDir)
+  pullResult <- runCommandWithEnv cfg envVars (CommandSpec "git" ["pull", "--rebase", "--autostash"] dataDir)
   case pullResult of
     Left err ->
       let msg = "Failed to synchronize provider repository before operation.\n" <> commandErrorText err
