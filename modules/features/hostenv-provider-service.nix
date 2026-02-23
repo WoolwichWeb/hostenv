@@ -92,6 +92,12 @@ in
       # Keep proxy_pass target without a URI part so it is valid in regex
       # locations (e.g. ~ ^/webhook/) and preserves the incoming request path.
       proxySocket = "http://unix:${cfg.listenSocket}:";
+      providerProxyTimeout = "600s";
+      proxyTimeoutConfig = ''
+        proxy_connect_timeout ${providerProxyTimeout};
+        proxy_send_timeout ${providerProxyTimeout};
+        proxy_read_timeout ${providerProxyTimeout};
+      '';
       configFile = pkgs.writeText "hostenv-provider-config.json" (builtins.toJSON {
         dataDir = cfg.dataDir;
         flakeRoot = cfg.flakeRoot;
@@ -309,12 +315,14 @@ in
                   "~ ^/webhook/" = {
                     recommendedProxySettings = true;
                     proxyPass = proxySocket;
+                    extraConfig = proxyTimeoutConfig;
                   };
                 }
                 {
                   "${cfg.uiBasePath}" = {
                     recommendedProxySettings = true;
                     proxyPass = proxySocket;
+                    extraConfig = proxyTimeoutConfig;
                   };
                 }
               ];

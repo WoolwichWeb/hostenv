@@ -54,6 +54,9 @@ else
       mkdir -p "$tmpdir"/{logs,run}
       output=$("$profile"/bin/nginx -e "$tmpdir/error.log" -t -c "$nginxConf" -p "$tmpdir" 2>&1 || true)
       echo "$output" | grep -q "syntax is ok" || { echo "$output"; exit 1; }
+      grep -q -- "proxy_connect_timeout 600s;" "$nginxConf" || { echo "missing provider proxy_connect_timeout"; exit 1; }
+      grep -q -- "proxy_send_timeout 600s;" "$nginxConf" || { echo "missing provider proxy_send_timeout"; exit 1; }
+      grep -q -- "proxy_read_timeout 600s;" "$nginxConf" || { echo "missing provider proxy_read_timeout"; exit 1; }
       execStart=$(sed -n 's/^ExecStart=//p' "$profile/systemd/user/hostenv-provider.service")
       test -n "$execStart" || { echo "hostenv-provider.service missing ExecStart"; exit 1; }
       test -x "$execStart" || { echo "hostenv-provider ExecStart target is not executable"; exit 1; }
