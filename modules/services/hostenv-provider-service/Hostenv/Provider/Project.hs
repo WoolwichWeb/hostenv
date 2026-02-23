@@ -48,7 +48,7 @@ import Hostenv.Provider.Gitlab
   , renderGitlabError
   , updateGitlabWebhook
   )
-import Hostenv.Provider.Repo (RepoPullError(..), bootstrapProviderRepo, pullProviderRepo)
+import Hostenv.Provider.Repo (RepoPullError(..), bootstrapProviderRepo, pullProviderRepo, pullProviderRepoWithOAuth)
 import Hostenv.Provider.Service (CommandSpec(..), projectHashFor, renderFlakeTemplate, renderProjectInputs)
 import Hostenv.Provider.Util (randomToken, sanitizeName, splitNamespace)
 import Hostenv.Provider.Webhook (loadPlan)
@@ -79,15 +79,15 @@ syncFlakeFromLocalDb cfg = do
 
 addProjectFlow :: AppConfig -> SessionInfo -> Int64 -> Maybe Text -> Maybe Text -> IO (Either ProjectFlowError Text)
 addProjectFlow cfg sess repoId orgInput projectInput = do
-  pullResult <- pullProviderRepo cfg
-  case pullResult of
-    Left pullErr -> pure (Left (projectFlowErrorFromPullError pullErr))
-    Right _ -> do
-      credentialResult <- loadUserOAuthCredential cfg sess
-      case credentialResult of
-        Left err -> pure (Left (projectFlowErrorFromGitlab err))
-        Right credential -> withDb cfg $ \conn -> do
-          let OAuthCredential { host = host, accessToken = token } = credential
+  credentialResult <- loadUserOAuthCredential cfg sess
+  case credentialResult of
+    Left err -> pure (Left (projectFlowErrorFromGitlab err))
+    Right credential -> do
+      let OAuthCredential { host = host, accessToken = token } = credential
+      pullResult <- pullProviderRepoWithOAuth cfg host token
+      case pullResult of
+        Left pullErr -> pure (Left (projectFlowErrorFromPullError pullErr))
+        Right _ -> withDb cfg $ \conn -> do
           projectInfo <- fetchGitlabProject cfg host token repoId
           case projectInfo of
             Left err -> pure (Left (projectFlowErrorFromGitlab err))

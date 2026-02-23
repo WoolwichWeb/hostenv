@@ -533,7 +533,7 @@ type PlanLoader = IO BL.ByteString
 runWebhookWith :: CommandRunner -> PlanLoader -> WebhookConfig -> ProjectRef -> IO (Either WebhookError WebhookResult)
 runWebhookWith runner loadPlan cfg ref = do
   let inputName = ref.prOrg <> "__" <> ref.prProject
-  step runner (CommandSpec "git" ["pull", "--ff-only"] (cfg.whWorkDir)) >>= \case
+  step runner (CommandSpec "git" ["pull", "--rebase"] (cfg.whWorkDir)) >>= \case
     Left err -> pure (Left err)
     Right _ ->
       step runner (CommandSpec "nix" ["flake", "update", inputName] (cfg.whWorkDir)) >>= \case
