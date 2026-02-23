@@ -87,7 +87,6 @@ in
       '';
       serviceStart = pkgs.writeShellScript "hostenv-provider-service-start" ''
         set -euo pipefail
-        mkdir -p "${cfg.dataDir}"
         exec ${cfg.package}/bin/hostenv-provider-service --config ${configFile}
       '';
       # Keep proxy_pass target without a URI part so it is valid in regex
