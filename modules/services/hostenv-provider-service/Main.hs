@@ -29,7 +29,7 @@ main = do
     when (repoStatus == RepoReady) $ do
       syncResult <- syncFlakeFromDb cfg
       case syncResult of
-        Left err -> dieWith (T.unpack err)
+        Left err -> hPutStrLn stderr ("Provider repository startup sync skipped:\n" <> T.unpack err)
         Right _ -> pure ()
     runServer cfg repoStatus
 
