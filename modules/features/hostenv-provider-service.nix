@@ -1,11 +1,15 @@
 { inputs, config, ... }:
 let
   cfgTop = config;
+  hostenvInput =
+    if inputs ? hostenv then inputs.hostenv
+    else if inputs ? self then inputs.self
+    else null;
   addressableContentInput =
     if inputs ? addressable-content
     then inputs.addressable-content
-    else if inputs ? hostenv && inputs.hostenv ? inputs && inputs.hostenv.inputs ? addressable-content
-    then inputs.hostenv.inputs.addressable-content
+    else if hostenvInput != null && hostenvInput ? inputs && hostenvInput.inputs ? addressable-content
+    then hostenvInput.inputs.addressable-content
     else throw "hostenv-provider-service requires the addressable-content flake input";
 in
 {
