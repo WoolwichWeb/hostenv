@@ -2,6 +2,12 @@
 let
   fp = inputs.flake-parts.lib;
   providerEnabled = config.provider.enable or false;
+  addressableContentInput =
+    if inputs ? addressable-content
+    then inputs.addressable-content
+    else if inputs ? hostenv && inputs.hostenv ? inputs && inputs.hostenv.inputs ? addressable-content
+    then inputs.hostenv.inputs.addressable-content
+    else throw "hostenv-provider-service requires the addressable-content flake input";
 in
 {
   options.perSystem = fp.mkPerSystemOption ({ config, pkgs, ... }:
@@ -9,7 +15,7 @@ in
       ghcPackageNames = lib.unique config.hostenv.haskell.devPackages;
       providerHaskellPackages = pkgs.haskell.packages.ghc912.override {
         overrides = self: super: {
-          addressable-content = self.callCabal2nix "addressable-content" inputs.addressable-content.outPath { };
+          addressable-content = self.callCabal2nix "addressable-content" addressableContentInput.outPath { };
         };
       };
       devGhc = providerHaskellPackages.ghcWithPackages (p: map (name: p.${name}) ghcPackageNames);
