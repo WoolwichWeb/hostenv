@@ -10,7 +10,12 @@ in
       providerService = cfgTop.flake.lib.provider.service;
       packageNames = providerService.haskellDeps;
       serviceSrc = providerService.src;
-      ghc = pkgs.haskell.packages.ghc912.ghcWithPackages (p: map (name: p.${name}) packageNames);
+      providerHaskellPackages = pkgs.haskell.packages.ghc912.override {
+        overrides = self: super: {
+          addressable-content = self.callCabal2nix "addressable-content" inputs.addressable-content.outPath { };
+        };
+      };
+      ghc = providerHaskellPackages.ghcWithPackages (p: map (name: p.${name}) packageNames);
       servicePkg = pkgs.writeShellScriptBin "hostenv-provider-service" ''
         exec ${ghc}/bin/runghc -i${serviceSrc} ${serviceSrc}/Main.hs "$@"
       '';

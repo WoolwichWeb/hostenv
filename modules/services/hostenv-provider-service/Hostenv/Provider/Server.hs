@@ -7,7 +7,6 @@ module Hostenv.Provider.Server
   , app
   ) where
 
-import Control.Concurrent.MVar (MVar, newMVar)
 import Data.IORef (IORef, newIORef)
 import qualified Data.ByteString.Lazy as BL
 import Data.Tagged (Tagged (..))
@@ -17,10 +16,10 @@ import Network.Wai.Handler.Warp (defaultSettings, runSettingsSocket, setBeforeMa
 import Servant
 
 import Hostenv.Provider.Config (AppConfig(..))
+import Hostenv.Provider.Jobs (JobRuntime, startJobRuntime)
 import Hostenv.Provider.Repo (RepoStatus, openUnixSocket)
 import Hostenv.Provider.UI.Router (uiApp)
-import Hostenv.Provider.Service (WebhookResult)
-import Hostenv.Provider.Webhook (webhookHandler)
+import Hostenv.Provider.Webhook (WebhookAccepted, webhookHandler)
 
 
 type API =
@@ -29,7 +28,7 @@ type API =
     :> Header "X-Hub-Signature-256" Text
     :> Header "X-Gitlab-Token" Text
     :> ReqBody '[OctetStream] BL.ByteString
-    :> Post '[JSON] WebhookResult
+    :> PostAccepted '[JSON] WebhookAccepted
     :<|> Raw
 
 api :: Proxy API
@@ -38,16 +37,15 @@ api = Proxy
 runServer :: AppConfig -> RepoStatus -> IO ()
 runServer cfg initialRepoStatus = do
   let AppConfig { appListenSocket = listenSocket } = cfg
-  webhookLock <- newMVar ()
-  bootstrapLock <- newMVar ()
   repoStatusRef <- newIORef initialRepoStatus
+  jobRuntime <- startJobRuntime cfg
   sock <- openUnixSocket listenSocket
   let settings = setBeforeMainLoop (putStrLn "hostenv-provider-service: listening") defaultSettings
-  runSettingsSocket settings sock (app webhookLock bootstrapLock repoStatusRef cfg)
+  runSettingsSocket settings sock (app jobRuntime repoStatusRef cfg)
 
-app :: MVar () -> MVar () -> IORef RepoStatus -> AppConfig -> Application
-app webhookLock bootstrapLock repoStatusRef cfg = serve api (server webhookLock bootstrapLock repoStatusRef cfg)
+app :: JobRuntime -> IORef RepoStatus -> AppConfig -> Application
+app jobRuntime repoStatusRef cfg = serve api (server jobRuntime repoStatusRef cfg)
 
-server :: MVar () -> MVar () -> IORef RepoStatus -> AppConfig -> Server API
-server webhookLock bootstrapLock repoStatusRef cfg =
-  webhookHandler webhookLock repoStatusRef cfg :<|> Tagged (uiApp repoStatusRef bootstrapLock cfg)
+server :: JobRuntime -> IORef RepoStatus -> AppConfig -> Server API
+server jobRuntime repoStatusRef cfg =
+  webhookHandler jobRuntime repoStatusRef cfg :<|> Tagged (uiApp jobRuntime repoStatusRef cfg)

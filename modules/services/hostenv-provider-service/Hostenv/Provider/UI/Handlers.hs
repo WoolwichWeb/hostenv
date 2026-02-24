@@ -10,19 +10,21 @@ module Hostenv.Provider.UI.Handlers
   , handleAddProjectPost
   , handleBootstrapRepoGet
   , handleBootstrapRepoPost
+  , handleJobGet
+  , handleJobEventsGet
   , handleOauthStart
   , handleOauthCallback
   ) where
 
-import Control.Concurrent.MVar (MVar, withMVar)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import Data.IORef (IORef, readIORef, writeIORef)
+import qualified Data.Aeson as A
 import qualified Data.ByteString.Char8 as BSC
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Network.HTTP.Types (Status, hLocation, status200, status302, status400, status403, status500)
+import Network.HTTP.Types (Status, hLocation, status200, status302, status400, status403, status404, status500)
 import Network.HTTP.Types.URI (renderSimpleQuery)
 import qualified Network.Wai as Wai
 import Network.Wai (strictRequestBody)
@@ -46,10 +48,11 @@ import Hostenv.Provider.Gitlab
   , upsertUserSession
   )
 import Hostenv.Provider.Project (ProjectFlowError(..), addProjectFlow, bootstrapRepoFlow, projectFlowErrorText)
+import Hostenv.Provider.Jobs (JobLogger(..), JobRuntime, NewJob(..), enqueueJob, loadJobById, loadJobEventsSince, loadRecentJobs)
 import Hostenv.Provider.Repo (RepoStatus(..))
 import Hostenv.Provider.Service (GitlabSecrets(..))
-import Hostenv.Provider.UI.Helpers (respondHtml, respondHtmlWithHeaders, respondRedirect)
-import Hostenv.Provider.UI.Views (accessDeniedPage, addProjectPage, bootstrapRepoPage, errorPage, indexPage, loginPage, successPage)
+import Hostenv.Provider.UI.Helpers (respondHtml, respondHtmlWithHeaders, respondJson, respondRedirect)
+import Hostenv.Provider.UI.Views (accessDeniedPage, addProjectPage, bootstrapRepoPage, errorPage, indexPage, jobPage, loginPage)
 import Hostenv.Provider.Util (lookupParam, parseForm, readInt64)
 
 
@@ -64,15 +67,16 @@ handleLogout :: AppConfig -> (Wai.Response -> IO a) -> IO a
 handleLogout cfg respond =
   respondHtmlWithHeaders respond status302 [(hLocation, TE.encodeUtf8 (uiPath cfg "/login")), ("Set-Cookie", logoutCookie)] mempty
 
-handleIndex :: IORef RepoStatus -> AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
-handleIndex repoStatusRef cfg req respond =
+handleIndex :: JobRuntime -> IORef RepoStatus -> AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
+handleIndex _runtime repoStatusRef cfg req respond =
   requireAdmin cfg req respond $ \sess -> do
     repoStatus <- readIORef repoStatusRef
     projects <-
       case repoStatus of
         RepoMissing -> pure []
         RepoReady -> withDb cfg loadProjects
-    respondHtml respond status200 (indexPage cfg sess repoStatus projects)
+    jobs <- loadRecentJobs cfg
+    respondHtml respond status200 (indexPage cfg sess repoStatus projects jobs)
 
 handleAddProjectGet :: IORef RepoStatus -> AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
 handleAddProjectGet repoStatusRef cfg req respond =
@@ -86,8 +90,8 @@ handleAddProjectGet repoStatusRef cfg req respond =
           Left err -> respondGitlabFailure cfg respond err
           Right repos -> respondHtml respond status200 (addProjectPage cfg sess repos)
 
-handleAddProjectPost :: IORef RepoStatus -> AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
-handleAddProjectPost repoStatusRef cfg req respond =
+handleAddProjectPost :: JobRuntime -> IORef RepoStatus -> AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
+handleAddProjectPost runtime repoStatusRef cfg req respond =
   requireAdmin cfg req respond $ \sess -> do
     repoStatus <- readIORef repoStatusRef
     case repoStatus of
@@ -111,13 +115,30 @@ handleAddProjectPost repoStatusRef cfg req respond =
                     case mRepoId of
                       Nothing -> respondHtml respond status400 (errorPage cfg "Missing repository selection")
                       Just repoId -> do
-                        result <- addProjectFlow cfg sess repoId orgInput projectInput
-                        case result of
-                          Left flowErr ->
-                            case flowErr of
-                              ProjectFlowAuthError msg -> respondReauth cfg respond msg
-                              ProjectFlowError _ -> respondHtml respond status500 (errorPage cfg (projectFlowErrorText flowErr))
-                          Right successMsg -> respondHtml respond status200 (successPage cfg successMsg)
+                        let payload =
+                              A.object
+                                [ "repoId" A..= repoId
+                                , "orgInput" A..= orgInput
+                                , "projectInput" A..= projectInput
+                                ]
+                            jobDef =
+                              NewJob
+                                { kind = "add_project"
+                                , requestedByUserId = Just sess.user.id
+                                , projectId = Nothing
+                                , payload = payload
+                                , run = \logger -> do
+                                    logger.logInfo ("Adding project for repository id " <> T.pack (show repoId))
+                                    result <- addProjectFlow cfg sess repoId orgInput projectInput
+                                    case result of
+                                      Left flowErr ->
+                                        case flowErr of
+                                          ProjectFlowAuthError msg -> pure (Left msg)
+                                          ProjectFlowError _ -> pure (Left (projectFlowErrorText flowErr))
+                                      Right successMsg -> pure (Right successMsg)
+                                }
+                        jobId <- enqueueJob runtime jobDef
+                        respondRedirect respond cfg ("/jobs/" <> jobId)
 
 handleBootstrapRepoGet :: IORef RepoStatus -> AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
 handleBootstrapRepoGet repoStatusRef cfg req respond =
@@ -131,8 +152,8 @@ handleBootstrapRepoGet repoStatusRef cfg req respond =
           Left err -> respondGitlabFailure cfg respond err
           Right repos -> respondHtml respond status200 (bootstrapRepoPage cfg sess repos)
 
-handleBootstrapRepoPost :: MVar () -> IORef RepoStatus -> AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
-handleBootstrapRepoPost bootstrapLock repoStatusRef cfg req respond =
+handleBootstrapRepoPost :: JobRuntime -> IORef RepoStatus -> AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
+handleBootstrapRepoPost runtime repoStatusRef cfg req respond =
   requireAdmin cfg req respond $ \sess -> do
     body <- strictRequestBody req
     let params = parseForm body
@@ -149,18 +170,54 @@ handleBootstrapRepoPost bootstrapLock repoStatusRef cfg req respond =
                 let mRepoId = lookupParam "repo_id" params >>= readInt64
                 case mRepoId of
                   Nothing -> respondHtml respond status400 (errorPage cfg "Missing repository selection")
-                  Just repoId ->
-                    withMVar bootstrapLock $ \_ -> do
-                      repoStatus <- readIORef repoStatusRef
-                      case repoStatus of
-                        RepoReady -> respondHtml respond status200 (successPage cfg "Provider repository is already bootstrapped")
-                        RepoMissing -> do
-                          result <- bootstrapRepoFlow cfg sess repoId
-                          case result of
-                            Left msg -> respondHtml respond status500 (errorPage cfg msg)
-                            Right successMsg -> do
-                              writeIORef repoStatusRef RepoReady
-                              respondHtml respond status200 (successPage cfg successMsg)
+                  Just repoId -> do
+                    repoStatus <- readIORef repoStatusRef
+                    case repoStatus of
+                      RepoReady -> respondRedirect respond cfg "/"
+                      RepoMissing -> do
+                        let payload = A.object [ "repoId" A..= repoId ]
+                            jobDef =
+                              NewJob
+                                { kind = "bootstrap_repo"
+                                , requestedByUserId = Just sess.user.id
+                                , projectId = Nothing
+                                , payload = payload
+                                , run = \logger -> do
+                                    logger.logInfo ("Bootstrapping provider repository from repository id " <> T.pack (show repoId))
+                                    result <- bootstrapRepoFlow cfg sess repoId
+                                    case result of
+                                      Left msg -> pure (Left msg)
+                                      Right successMsg -> do
+                                        writeIORef repoStatusRef RepoReady
+                                        pure (Right successMsg)
+                                }
+                        jobId <- enqueueJob runtime jobDef
+                        respondRedirect respond cfg ("/jobs/" <> jobId)
+
+handleJobGet :: AppConfig -> Text -> Wai.Request -> (Wai.Response -> IO a) -> IO a
+handleJobGet cfg jobId req respond =
+  requireAdmin cfg req respond $ \sess -> do
+    mJob <- loadJobById cfg jobId
+    case mJob of
+      Nothing -> respondHtml respond status404 (errorPage cfg "Job not found")
+      Just job -> respondHtml respond status200 (jobPage cfg sess job)
+
+handleJobEventsGet :: AppConfig -> Text -> Wai.Request -> (Wai.Response -> IO a) -> IO a
+handleJobEventsGet cfg jobId req respond =
+  requireAdmin cfg req respond $ \_sess -> do
+    mJob <- loadJobById cfg jobId
+    case mJob of
+      Nothing -> respondHtml respond status404 (errorPage cfg "Job not found")
+      Just _ -> do
+        let after =
+              case lookup "after" (Wai.queryString req) >>= id of
+                Nothing -> 0
+                Just raw ->
+                  case readInt64 (TE.decodeUtf8 raw) of
+                    Just n -> max 0 n
+                    Nothing -> 0
+        events <- loadJobEventsSince cfg jobId after
+        respondJson respond status200 events
 
 handleOauthStart :: AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a
 handleOauthStart cfg req respond = do

@@ -1,4 +1,4 @@
-{ config, ... }:
+{ inputs, config, ... }:
 let
   cfgTop = config;
 in
@@ -81,7 +81,12 @@ in
       providerService = cfgTop.flake.lib.provider.service;
       serviceSrc = cfg.source;
       haskellDeps = cfg.haskellDeps;
-      ghc = pkgs.haskell.packages.ghc912.ghcWithPackages (p: map (name: p.${name}) haskellDeps);
+      providerHaskellPackages = pkgs.haskell.packages.ghc912.override {
+        overrides = self: super: {
+          addressable-content = self.callCabal2nix "addressable-content" inputs.addressable-content.outPath { };
+        };
+      };
+      ghc = providerHaskellPackages.ghcWithPackages (p: map (name: p.${name}) haskellDeps);
       serviceBin = pkgs.writeShellScriptBin "hostenv-provider-service" ''
         exec ${ghc}/bin/runghc -i${serviceSrc} ${serviceSrc}/Main.hs "$@"
       '';
@@ -92,7 +97,7 @@ in
       # Keep proxy_pass target without a URI part so it is valid in regex
       # locations (e.g. ~ ^/webhook/) and preserves the incoming request path.
       proxySocket = "http://unix:${cfg.listenSocket}:";
-      providerProxyTimeout = "600s";
+      providerProxyTimeout = "120s";
       proxyTimeoutConfig = ''
         proxy_connect_timeout ${providerProxyTimeout};
         proxy_send_timeout ${providerProxyTimeout};
@@ -113,6 +118,7 @@ in
         gitCredentialsFile = cfg.gitCredentialsFile;
         gitConfigFile = cfg.gitConfigFile;
         flakeTemplate = cfg.flakeTemplate;
+        jobs = cfg.jobs;
       });
 
     in
@@ -251,6 +257,20 @@ in
           type = lib.types.str;
           default = ".";
           description = "Subdirectory within dataDir that contains flake.nix.";
+        };
+
+        jobs = {
+          retentionDays = lib.mkOption {
+            type = lib.types.int;
+            default = 30;
+            description = "How many days of completed provider job logs are retained.";
+          };
+
+          cleanupIntervalMinutes = lib.mkOption {
+            type = lib.types.int;
+            default = 1440;
+            description = "How often completed provider job logs are cleaned up.";
+          };
         };
       };
 

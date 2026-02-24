@@ -429,5 +429,7 @@ mkRepoConfig dataDir =
     , appGitCredentialsPath = dataDir <> "/git-credentials"
     , appFlakeTemplate = "flake.template.nix"
     , appSeedUsers = []
+    , appJobsRetentionDays = 30
+    , appJobsCleanupIntervalMinutes = 1440
     , appHttpManager = Nothing
     }

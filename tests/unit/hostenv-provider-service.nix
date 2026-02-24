@@ -1,7 +1,12 @@
-{ pkgs }:
+{ pkgs, inputs }:
 let
   src = ../../modules/services/hostenv-provider-service;
-  servicePkg = pkgs.haskellPackages.callCabal2nix "hostenv-provider-service" src { };
+  haskellPackages = pkgs.haskellPackages.override {
+    overrides = self: super: {
+      addressable-content = self.callCabal2nix "addressable-content" inputs.addressable-content.outPath { };
+    };
+  };
+  servicePkg = haskellPackages.callCabal2nix "hostenv-provider-service" src { };
 
 in
 {

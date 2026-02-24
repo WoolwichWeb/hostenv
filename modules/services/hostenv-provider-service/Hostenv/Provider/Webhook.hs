@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NoFieldSelectors #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -5,15 +6,17 @@
 module Hostenv.Provider.Webhook
   ( webhookHandler
   , loadPlan
+  , WebhookAccepted(..)
+  , runWebhookDeployJob
   , chooseFinalResult
   ) where
 
-import Control.Concurrent.MVar (MVar, withMVar)
 import Control.Exception (finally)
 import Control.Monad (unless)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
+import qualified Data.Aeson as A
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
@@ -24,11 +27,12 @@ import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import Servant
 
-import Hostenv.Provider.Command (exitCodeToInt, renderCommand, runCommandWithEnv)
+import Hostenv.Provider.Command (commandErrorText, exitCodeToInt, renderCommand, runCommandWithEnv)
 import Hostenv.Provider.Config (AppConfig(..))
 import Hostenv.Provider.DB (DeployCredential(..), loadDeployCredentialByHash, withDb)
 import Hostenv.Provider.Gitlab (GitlabDeployToken(..), NixGitlabTokenType(..), appendNixAccessTokenConfig, createProjectDeployToken, ensureProjectCredential, renderGitlabError, revokeProjectToken)
 import Hostenv.Provider.Http (ErrorResponse(..), errorWithBody)
+import Hostenv.Provider.Jobs (JobLogger(..), JobRuntime, NewJob(..), enqueueJob)
 import Hostenv.Provider.Repo (RepoStatus(..))
 import Hostenv.Provider.Service
   ( CommandError(..)
@@ -44,14 +48,25 @@ import Hostenv.Provider.Service
   )
 import Hostenv.Provider.Util (pickFirstExisting, readSecret)
 
+data WebhookAccepted = WebhookAccepted
+  { accepted :: Bool
+  , jobId :: Text
+  } deriving (Eq, Show)
+
+instance A.ToJSON WebhookAccepted where
+  toJSON response =
+    A.object
+      [ "accepted" A..= response.accepted
+      , "jobId" A..= response.jobId
+      ]
 
 loadPlan :: AppConfig -> IO BL.ByteString
 loadPlan cfg =
   let AppConfig { appWebhookConfig = WebhookConfig { whPlanPath = planPath } } = cfg
    in BL.readFile planPath
 
-webhookHandler :: MVar () -> IORef RepoStatus -> AppConfig -> Text -> Maybe Text -> Maybe Text -> BL.ByteString -> Handler WebhookResult
-webhookHandler webhookLock repoStatusRef cfg hash mHubSig mGitlabToken rawBody = do
+webhookHandler :: JobRuntime -> IORef RepoStatus -> AppConfig -> Text -> Maybe Text -> Maybe Text -> BL.ByteString -> Handler WebhookAccepted
+webhookHandler runtime repoStatusRef cfg hash mHubSig mGitlabToken rawBody = do
   repoStatus <- liftIO (readIORef repoStatusRef)
   case repoStatus of
     RepoMissing ->
@@ -71,52 +86,72 @@ webhookHandler webhookLock repoStatusRef cfg hash mHubSig mGitlabToken rawBody =
       Right ref -> pure ref
   secretInfo <- liftIO (resolveSecret cfg hash projectRef)
   verifyWebhook secretInfo mHubSig mGitlabToken rawBody
-  deployCredResult <- liftIO $ withDb cfg (\conn -> loadDeployCredentialByHash cfg conn hash)
+  queuedJobId <- liftIO $ enqueueJob runtime $
+    NewJob
+      { kind = "webhook_deploy"
+      , requestedByUserId = Nothing
+      , projectId = Nothing
+      , payload =
+          A.object
+            [ "hash" A..= hash
+            , "org" A..= projectRef.prOrg
+            , "project" A..= projectRef.prProject
+            ]
+      , run = runWebhookDeployJob cfg hash projectRef
+      }
+  pure (WebhookAccepted True queuedJobId)
+
+runWebhookDeployJob :: AppConfig -> Text -> ProjectRef -> JobLogger -> IO (Either Text Text)
+runWebhookDeployJob cfg hash projectRef logger = do
+  logger.logInfo ("Running webhook deployment for hash " <> hash)
+  deployCredResult <- withDb cfg (\conn -> loadDeployCredentialByHash cfg conn hash)
   deployCred <-
     case deployCredResult of
-      Left err -> throwError (errorWithBody err500 (ErrorResponse err Nothing Nothing Nothing Nothing))
-      Right Nothing -> throwError (errorWithBody err500 (ErrorResponse "Missing project OAuth token for deploy" Nothing Nothing Nothing Nothing))
-      Right (Just cred) -> pure cred
-  refreshedCredResult <- liftIO (ensureProjectCredential cfg deployCred)
-  refreshedDeployCred <-
-    case refreshedCredResult of
-      Left err -> throwError (errorWithBody err500 (ErrorResponse (renderGitlabError err) Nothing Nothing Nothing Nothing))
-      Right cred -> pure cred
-  let DeployCredential { host = deployHost, accessToken = deployAccessToken, repoId = deployRepoId } = refreshedDeployCred
-  deployTokenResult <- liftIO (createProjectDeployToken cfg deployHost deployAccessToken deployRepoId)
-  deployToken <-
-    case deployTokenResult of
-      Left err -> throwError (errorWithBody err500 (ErrorResponse (renderGitlabError err) Nothing Nothing Nothing Nothing))
-      Right token -> pure token
-  existingNixConfig <- liftIO (fmap (fmap T.pack) (lookupEnv "NIX_CONFIG"))
-  let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig deployHost NixGitlabPAT deployToken.value
-  let AppConfig { appWebhookConfig = webhookCfg } = cfg
-  revokeErrRef <- liftIO (newIORef Nothing)
-  result <-
-    liftIO $
-      withMVar webhookLock $ \_ ->
-        runWebhookWith
-          (runCommandWithEnv cfg [("NIX_CONFIG", scopedNixConfig)])
-          (loadPlan cfg)
-          webhookCfg
-          projectRef
-          `finally` do
-            revokeResult <- revokeProjectToken cfg deployHost deployAccessToken deployRepoId deployToken.id
-            case revokeResult of
-              Left msg -> writeIORef revokeErrRef (Just msg)
-              Right _ -> pure ()
-  revokeErr <- liftIO (readIORef revokeErrRef)
-  case chooseFinalResult result (fmap renderGitlabError revokeErr) of
-    Left (Left err) ->
-      -- Preserve the primary deployment error and do not mask it with token revoke failures.
-      throwError (serverError err)
-    Left (Right revokeMsg) ->
-      throwError (errorWithBody err500 (ErrorResponse revokeMsg Nothing Nothing Nothing Nothing))
-    Right okResult ->
-      let WebhookResult { webhookOk = ok } = okResult
-       in if ok
-            then pure okResult
-            else throwError (errorWithBody err500 okResult)
+      Left err -> pure (Left err)
+      Right Nothing -> pure (Left "Missing project OAuth token for deploy")
+      Right (Just cred) -> pure (Right cred)
+  case deployCred of
+    Left err -> pure (Left err)
+    Right cred -> do
+      refreshedCredResult <- ensureProjectCredential cfg cred
+      refreshedDeployCred <-
+        case refreshedCredResult of
+          Left err -> pure (Left (renderGitlabError err))
+          Right refreshed -> pure (Right refreshed)
+      case refreshedDeployCred of
+        Left err -> pure (Left err)
+        Right refreshedDeployCred' -> do
+          let DeployCredential { host = deployHost, accessToken = deployAccessToken, repoId = deployRepoId } = refreshedDeployCred'
+          deployTokenResult <- createProjectDeployToken cfg deployHost deployAccessToken deployRepoId
+          case deployTokenResult of
+            Left err -> pure (Left (renderGitlabError err))
+            Right deployToken -> do
+              existingNixConfig <- fmap (fmap T.pack) (lookupEnv "NIX_CONFIG")
+              let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig deployHost NixGitlabPAT deployToken.value
+              let AppConfig { appWebhookConfig = webhookCfg } = cfg
+              revokeErrRef <- newIORef Nothing
+              result <-
+                runWebhookWith
+                  (runCommandWithEnv cfg [("NIX_CONFIG", scopedNixConfig)])
+                  (loadPlan cfg)
+                  webhookCfg
+                  projectRef
+                  `finally` do
+                    revokeResult <- revokeProjectToken cfg deployHost deployAccessToken deployRepoId deployToken.id
+                    case revokeResult of
+                      Left msg -> writeIORef revokeErrRef (Just msg)
+                      Right _ -> pure ()
+              revokeErr <- readIORef revokeErrRef
+              case chooseFinalResult result (fmap renderGitlabError revokeErr) of
+                Left (Left err) ->
+                  pure (Left (renderWebhookError err))
+                Left (Right revokeMsg) ->
+                  pure (Left revokeMsg)
+                Right okResult ->
+                  let WebhookResult { webhookOk = ok } = okResult
+                   in if ok
+                        then pure (Right "Webhook deployment completed")
+                        else pure (Left "Webhook deployment reported one or more failed deploys")
 
 
 -- Webhook signature resolution
@@ -201,3 +236,9 @@ chooseFinalResult primaryResult mRevokeError =
       case mRevokeError of
         Just revokeErr -> Left (Right revokeErr)
         Nothing -> Right successResult
+
+renderWebhookError :: WebhookError -> Text
+renderWebhookError err =
+  case err of
+    WebhookPlanError msg -> msg
+    WebhookCommandError cmdErr -> commandErrorText cmdErr

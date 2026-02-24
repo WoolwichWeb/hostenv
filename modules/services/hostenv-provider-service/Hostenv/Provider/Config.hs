@@ -55,6 +55,8 @@ data AppConfig = AppConfig
   , appGitCredentialsPath :: FilePath
   , appFlakeTemplate :: FilePath
   , appSeedUsers :: [UserConfig]
+  , appJobsRetentionDays :: Int
+  , appJobsCleanupIntervalMinutes :: Int
   , appHttpManager :: Maybe Manager
   }
 
@@ -73,6 +75,7 @@ data ProviderConfigFile = ProviderConfigFile
   , gitConfigFile :: FilePath
   , gitCredentialsFile :: FilePath
   , flakeTemplate :: FilePath
+  , jobs :: JobsConfigFile
   } deriving (Eq, Show, Generic)
 
 data GitlabConfigFile = GitlabConfigFile
@@ -81,6 +84,11 @@ data GitlabConfigFile = GitlabConfigFile
   , hosts :: [Text]
   , tokenEncryptionKeyFile :: Maybe FilePath
   , deployTokenTtlMinutes :: Maybe Int
+  } deriving (Eq, Show, Generic)
+
+data JobsConfigFile = JobsConfigFile
+  { retentionDays :: Int
+  , cleanupIntervalMinutes :: Int
   } deriving (Eq, Show, Generic)
 
 data ProviderAccountConfig = ProviderAccountConfig
@@ -109,6 +117,12 @@ instance A.FromJSON GitlabConfigFile where
 instance A.FromJSON ProviderAccountConfig
 
 instance A.FromJSON UserConfig
+
+instance A.FromJSON JobsConfigFile where
+  parseJSON = A.withObject "JobsConfigFile" $ \o ->
+    JobsConfigFile
+      <$> o A..:? "retentionDays" A..!= 30
+      <*> o A..:? "cleanupIntervalMinutes" A..!= 1440
 
 instance A.FromJSON ProviderConfigFile where
   parseJSON = A.withObject "ProviderConfigFile" $ \o -> do
@@ -143,6 +157,7 @@ instance A.FromJSON ProviderConfigFile where
       <*> o A..: "gitConfigFile"
       <*> o A..: "gitCredentialsFile"
       <*> o A..: "flakeTemplate"
+      <*> o A..:? "jobs" A..!= JobsConfigFile { retentionDays = 30, cleanupIntervalMinutes = 1440 }
 
 appWorkDir :: AppConfig -> FilePath
 appWorkDir cfg = cfg.appDataDir </> cfg.appFlakeRoot
@@ -216,6 +231,8 @@ loadConfig configPath = do
       , appGitCredentialsPath = providerCfg.gitCredentialsFile
       , appFlakeTemplate = providerCfg.flakeTemplate
       , appSeedUsers = providerCfg.seedUsers
+      , appJobsRetentionDays = max 1 providerCfg.jobs.retentionDays
+      , appJobsCleanupIntervalMinutes = max 1 providerCfg.jobs.cleanupIntervalMinutes
       , appHttpManager = manager
       }
 

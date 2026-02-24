@@ -8,6 +8,7 @@ module Hostenv.Provider.UI.Views
   , indexPage
   , addProjectPage
   , bootstrapRepoPage
+  , jobPage
   , successPage
   , errorPage
   ) where
@@ -19,6 +20,7 @@ import qualified Data.Text as T
 import Lucid
 
 import Hostenv.Provider.Config (AppConfig(..), uiPath)
+import Hostenv.Provider.Jobs (JobSummary(..))
 import Hostenv.Provider.Repo (RepoStatus(..))
 import Hostenv.Provider.DB (ProjectRow(..), SessionInfo(..), User(..))
 import Hostenv.Provider.Gitlab (GitlabProject(..))
@@ -54,8 +56,8 @@ accessDeniedPage cfg =
     p_ "This account does not have the admin role."
     a_ [class_ "btn subtle", href_ (uiPath cfg "/logout")] "Sign out"
 
-indexPage :: AppConfig -> SessionInfo -> RepoStatus -> [ProjectRow] -> Html ()
-indexPage cfg sess repoStatus projects =
+indexPage :: AppConfig -> SessionInfo -> RepoStatus -> [ProjectRow] -> [JobSummary] -> Html ()
+indexPage cfg sess repoStatus projects jobs =
   page cfg "Projects" $ do
     div_ [class_ "header"] $ do
       h1_ "Projects"
@@ -70,6 +72,7 @@ indexPage cfg sess repoStatus projects =
           a_ [class_ "btn", href_ (uiPath cfg "/bootstrap-repo")] "Bootstrap provider repository"
       RepoReady -> do
         projectListHtml projects
+        jobsListHtml cfg jobs
         div_ [class_ "footer"] $
           a_ [class_ "btn", href_ (uiPath cfg "/add-project")] "Add project from GitLab"
   where
@@ -103,6 +106,34 @@ projectListHtml projects =
             td_ (toHtml repoPath)
             td_ (toHtml gitHost)
             td_ $ code_ (toHtml (fromMaybe "" mHash))
+
+jobsListHtml :: AppConfig -> [JobSummary] -> Html ()
+jobsListHtml cfg jobs = do
+  h2_ "Recent jobs"
+  if null jobs
+    then p_ "No jobs yet."
+    else
+      let rows = mconcat (map renderJob jobs)
+       in table_ $ do
+            thead_ $
+              tr_ $ do
+                th_ "Job"
+                th_ "Kind"
+                th_ "Status"
+                th_ "Created"
+            tbody_ rows
+  where
+    renderJob :: JobSummary -> Html ()
+    renderJob job =
+      tr_ $ do
+        td_ $
+          a_
+            [ href_ (uiPath cfg ("/jobs/" <> job.id))
+            ]
+            (code_ (toHtml job.id))
+        td_ (toHtml job.kind)
+        td_ (toHtml job.status)
+        td_ (toHtml (T.pack (show job.createdAt)))
 
 addProjectPage :: AppConfig -> SessionInfo -> [GitlabProject] -> Html ()
 addProjectPage cfg sess repos =
@@ -148,6 +179,66 @@ bootstrapRepoPage cfg sess repos =
       let repoId = repo.id
           repoPath = repo.path
        in option_ [value_ (T.pack (show repoId))] (toHtml repoPath)
+
+jobPage :: AppConfig -> SessionInfo -> JobSummary -> Html ()
+jobPage cfg _sess job =
+  page cfg ("Job " <> job.id) $ do
+    div_ [class_ "header"] $ do
+      h1_ "Job"
+      div_ [class_ "actions"] $
+        a_ [class_ "btn subtle", href_ (uiPath cfg "/")] "Back"
+    p_ $ do
+      "Job id: "
+      code_ (toHtml job.id)
+    p_ $ do
+      "Kind: "
+      code_ (toHtml job.kind)
+    p_ $ do
+      "Status: "
+      span_ [id_ "job-status"] (toHtml job.status)
+    div_ [class_ "card"] $ do
+      label_ "Logs"
+      pre_ [id_ "job-log", style_ "min-height:320px;max-height:60vh;overflow:auto;background:#f7f7f4;padding:14px;border-radius:10px;"] ""
+    script_ [type_ "application/javascript"] (jobPageScript job.id)
+
+jobPageScript :: Text -> Text
+jobPageScript jobId =
+  T.unlines
+    [ "(function(){"
+    , "  const logEl = document.getElementById('job-log');"
+    , "  const statusEl = document.getElementById('job-status');"
+    , "  let lastSeq = 0;"
+    , "  function append(line) {"
+    , "    if (!line) return;"
+    , "    logEl.textContent += line + '\\n';"
+    , "    logEl.scrollTop = logEl.scrollHeight;"
+    , "  }"
+    , "  function applyEvent(ev) {"
+    , "    if (!ev) return;"
+    , "    if (typeof ev.seq === 'number' && ev.seq > lastSeq) { lastSeq = ev.seq; }"
+    , "    if (typeof ev.line === 'string') { append('[' + ev.stream + '] ' + ev.line); }"
+    , "  }"
+    , "  function applyMessage(msg) {"
+    , "    if (!msg || !msg.type) return;"
+    , "    if (msg.type === 'job_event') { applyEvent(msg); }"
+    , "    if (msg.type === 'job_status') {"
+    , "      if (msg.status) statusEl.textContent = msg.status;"
+    , "      if (msg.error) append('[error] ' + msg.error);"
+    , "    }"
+    , "  }"
+    , "  fetch(window.location.pathname + '/events?after=0')"
+    , "    .then(r => r.json())"
+    , "    .then(items => {"
+    , "      (items || []).forEach(applyEvent);"
+    , "      const proto = window.location.protocol === 'https:' ? 'wss://' : 'ws://';"
+    , "      const ws = new WebSocket(proto + window.location.host + window.location.pathname + '/ws');"
+    , "      ws.onmessage = (event) => {"
+    , "        try { applyMessage(JSON.parse(event.data)); } catch (_) {}"
+    , "      };"
+    , "    })"
+    , "    .catch(err => append('[error] failed to load logs: ' + String(err)));"
+    , "})();"
+    ]
 
 successPage :: AppConfig -> Text -> Html ()
 successPage cfg msg =

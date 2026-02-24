@@ -6,6 +6,7 @@ import Control.Monad (when)
 import qualified Data.Text as T
 import Hostenv.Provider.Config (loadConfig)
 import Hostenv.Provider.DB (ensureSchema, syncUsers)
+import Hostenv.Provider.Jobs (ensureJobSchema)
 import Hostenv.Provider.Project (syncFlakeFromDb)
 import Hostenv.Provider.Repo (RepoStatus(..), ensureProviderRepo)
 import Hostenv.Provider.Server (runServer)
@@ -25,6 +26,7 @@ main = do
       Left err -> dieWith (T.unpack err)
       Right status -> pure status
     ensureSchema cfg
+    ensureJobSchema cfg
     syncUsers cfg
     when (repoStatus == RepoReady) $ do
       syncResult <- syncFlakeFromDb cfg

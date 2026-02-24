@@ -1,9 +1,9 @@
-{ pkgs, makeHostenv }:
+{ pkgs, makeHostenv, inputs }:
 
 # Fast/unit-style suites
 (import ./restic.nix { inherit pkgs; })
   // (import ./hostenv-assertions.nix { inherit pkgs makeHostenv; })
-  // (import ./hostenv-provider-service.nix { inherit pkgs; })
+  // (import ./hostenv-provider-service.nix { inherit pkgs inputs; })
   // (import ./provider-cli.nix { inherit pkgs; })
   // (import ./backups-repo-host.nix { inherit pkgs makeHostenv; })
   // (import ./postgresql.nix { inherit pkgs; })

@@ -15,6 +15,7 @@ executable hostenv-provider-service
     Hostenv.Provider.DB
     Hostenv.Provider.Gitlab
     Hostenv.Provider.Http
+    Hostenv.Provider.Jobs
     Hostenv.Provider.PrevNodeDiscovery
     Hostenv.Provider.Project
     Hostenv.Provider.Repo
@@ -46,6 +47,7 @@ executable hostenv-provider-service
     process,
     servant,
     servant-server,
+    stm,
     tagged,
     text,
     time,
@@ -53,6 +55,9 @@ executable hostenv-provider-service
     turtle,
     unix,
     wai,
+    wai-websockets,
+    websockets,
+    addressable-content,
     warp
 
 test-suite hostenv-provider-service-tests
@@ -66,6 +71,7 @@ test-suite hostenv-provider-service-tests
     Hostenv.Provider.DB
     Hostenv.Provider.Gitlab
     Hostenv.Provider.Http
+    Hostenv.Provider.Jobs
     Hostenv.Provider.PrevNodeDiscovery
     Hostenv.Provider.Repo
     Hostenv.Provider.Service
@@ -90,8 +96,12 @@ test-suite hostenv-provider-service-tests
     process,
     servant,
     servant-server,
+    stm,
     text,
     time,
     transformers,
     unix,
-    wai
+    wai,
+    wai-websockets,
+    websockets,
+    addressable-content

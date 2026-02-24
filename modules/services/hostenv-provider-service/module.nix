@@ -5,6 +5,7 @@ let
     name = "hostenv-provider-service-src";
   };
   haskellDeps = [
+    "addressable-content"
     "aeson"
     "bytestring"
     "containers"
@@ -23,10 +24,13 @@ let
     "text"
     "tagged"
     "time"
+    "stm"
     "turtle"
     "unix"
     "wai"
+    "wai-websockets"
     "warp"
+    "websockets"
   ];
 in
 {
