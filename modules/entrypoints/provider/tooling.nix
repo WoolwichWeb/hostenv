@@ -1,13 +1,14 @@
-{ inputs, lib, config, ... }:
+{ inputs, lib, config, hostenvInputs, ... }:
 let
   flakeParts = inputs.flake-parts.lib;
   cfg = config.provider;
   providerPlan = config.flake.lib.provider.plan;
-
   hostenvInput =
-    if inputs ? hostenv then inputs.hostenv
-    else if inputs ? self then inputs.self
-    else throw "provider tooling requires a hostenv input";
+    hostenvInputs.requireInput {
+      inherit inputs;
+      name = "hostenv";
+      context = "provider tooling";
+    };
 
   hostenvRoot = hostenvInput.outPath;
   providerRoot = hostenvRoot + "/provider";
