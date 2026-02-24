@@ -1,6 +1,12 @@
-{ config, ... }:
+{ inputs, config, ... }:
 let
   cfgTop = config;
+  addressableContentInput =
+    if inputs ? addressable-content
+    then inputs.addressable-content
+    else if inputs ? hostenv && inputs.hostenv ? inputs && inputs.hostenv.inputs ? addressable-content
+    then inputs.hostenv.inputs.addressable-content
+    else throw "hostenv-provider-service requires the addressable-content flake input";
 in
 {
   flake.modules.hostenv.hostenv-provider-service =
@@ -10,7 +16,12 @@ in
       providerService = cfgTop.flake.lib.provider.service;
       serviceSrc = cfg.source;
       haskellDeps = cfg.haskellDeps;
-      ghc = pkgs.haskellPackages.ghcWithPackages (p: map (name: p.${name}) haskellDeps);
+      providerHaskellPackages = pkgs.haskell.packages.ghc912.override {
+        overrides = self: super: {
+          addressable-content = self.callCabal2nix "addressable-content" addressableContentInput.outPath { };
+        };
+      };
+      ghc = providerHaskellPackages.ghcWithPackages (p: map (name: p.${name}) haskellDeps);
       serviceBin = pkgs.writeShellScriptBin "hostenv-provider-service" ''
         exec ${ghc}/bin/runghc -i${serviceSrc} ${serviceSrc}/Main.hs "$@"
       '';
