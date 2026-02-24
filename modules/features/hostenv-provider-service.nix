@@ -1,6 +1,7 @@
-{ inputs, config, hostenvInputs, ... }:
+{ inputs, config, ... }:
 let
   cfgTop = config;
+  hostenvInputs = cfgTop.flake.lib.hostenvInputs;
   addressableContentInput =
     hostenvInputs.requireInput {
       inherit inputs;

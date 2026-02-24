@@ -47,6 +47,5 @@ let
     };
 in
 {
-  config._module.args.hostenvInputs = hostenvInputs;
   config.flake.lib.hostenvInputs = hostenvInputs;
 }

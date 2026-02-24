@@ -1,5 +1,6 @@
-{ hostenvInputs, ... }:
+{ config, ... }:
 let
+  hostenvInputs = config.flake.lib.hostenvInputs;
   # Provider-side infrastructure generator.
   providerPlan =
     { inputs
