@@ -1,8 +1,9 @@
-{ inputs, lib, config, hostenvInputs, ... }:
+{ inputs, lib, config, ... }:
 let
   fp = inputs.flake-parts.lib;
   cfgTop = config;
   providerEnabled = config.provider.enable or false;
+  hostenvInputs = cfgTop.flake.lib.hostenvInputs;
   addressableContentInput =
     hostenvInputs.requireInput {
       inherit inputs;

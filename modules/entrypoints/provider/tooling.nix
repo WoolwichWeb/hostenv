@@ -1,8 +1,9 @@
-{ inputs, lib, config, hostenvInputs, ... }:
+{ inputs, lib, config, ... }:
 let
   flakeParts = inputs.flake-parts.lib;
   cfg = config.provider;
   providerPlan = config.flake.lib.provider.plan;
+  hostenvInputs = config.flake.lib.hostenvInputs;
   hostenvInput =
     hostenvInputs.requireInput {
       inherit inputs;
