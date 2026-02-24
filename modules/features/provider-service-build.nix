@@ -1,18 +1,14 @@
-{ inputs, lib, config, ... }:
+{ inputs, lib, config, hostenvInputs, ... }:
 let
   fp = inputs.flake-parts.lib;
   cfgTop = config;
   providerEnabled = config.provider.enable or false;
-  hostenvInput =
-    if inputs ? hostenv then inputs.hostenv
-    else if inputs ? self then inputs.self
-    else null;
   addressableContentInput =
-    if inputs ? addressable-content
-    then inputs.addressable-content
-    else if hostenvInput != null && hostenvInput ? inputs && hostenvInput.inputs ? addressable-content
-    then hostenvInput.inputs.addressable-content
-    else throw "hostenv-provider-service requires the addressable-content flake input";
+    hostenvInputs.requireInput {
+      inherit inputs;
+      name = "addressable-content";
+      context = "hostenv-provider-service";
+    };
 in
 {
   options.perSystem = fp.mkPerSystemOption ({ config, pkgs, ... }:
