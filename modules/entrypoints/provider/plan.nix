@@ -1,4 +1,4 @@
-{ ... }:
+{ hostenvInputs, ... }:
 let
   # Provider-side infrastructure generator.
   providerPlan =
@@ -32,9 +32,11 @@ let
       useEval = planSource == "eval";
       cfgHostenvHostname = hostenvHostname;
       hostenvInput =
-        if inputs ? hostenv then inputs.hostenv
-        else if inputs ? self then inputs.self
-        else builtins.throw "provider plan: missing hostenv input (and inputs.self unavailable).";
+        hostenvInputs.requireInput {
+          inherit inputs;
+          name = "hostenv";
+          context = "provider plan";
+        };
       hostenvMakeHostenv =
         if hostenvInput ? makeHostenv
         then hostenvInput.makeHostenv.${system}
