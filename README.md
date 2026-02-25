@@ -199,32 +199,9 @@ still working on improvements to Provider support.
 
 6. **Deploy**
 
-  Deploy using `deploy-rs` and `generated/flake.nix`:
-
-  ```bash
-  nix run github:serokell/deploy-rs -- --debug-logs generated/#<node>
-  ```
-
-  A concrete example:
-
-  ```bash
-  nix run github:serokell/deploy-rs -- --debug-logs generated/#backend01
-  ```
-
-  NixOS-anywhere also works:
-
-  ```bash
-  nix run github:numtide/nixos-anywhere -- --flake generated#<node> --target-host root@<node>.hosting.example.com
-  ```
-
-  A concrete nixos-anywhere example:
-
-  ```bash
-  nix run github:numtide/nixos-anywhere -- --flake /home/amir/hosting/generated#backend01 --target-host root@backend01.hostenv.sh
-  ```
-
-  Because hostenv is just Nix (for the most part), deploying using your
-  favourite tool should work.
+  Deployments are driven by comin-enabled nodes consuming deploy intents
+  produced by the provider service. Ensure `provider.comin.*` is configured
+  and the provider webhook service is running.
 
 ---
 

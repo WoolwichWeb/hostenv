@@ -47,7 +47,7 @@ in
         cliPkg = pkgs.haskellPackages.callCabal2nix "hostenv-provider-cli" providerRoot { };
         hostenvProviderCLI = pkgs.writeShellApplication {
           name = "hostenv-provider";
-          runtimeInputs = [ pkgs.jq pkgs.sops pkgs.yq-go ];
+          runtimeInputs = [ pkgs.jq pkgs.sops pkgs.yq-go pkgs.openssl ];
           text = ''
             set -euo pipefail
             exec ${cliPkg}/bin/hostenv-provider "$@"
@@ -62,24 +62,18 @@ in
               lib = pkgs.lib;
               pkgs = pkgs;
               letsEncrypt = cfg.letsEncrypt;
-              deployPublicKeys = cfg.deployPublicKeys;
-              deployUser = cfg.deployUser;
               nixSigning = cfg.nixSigning;
+              comin = cfg.comin;
               hostenvHostname = cfg.hostenvHostname;
               nodeFor = cfg.nodeFor;
               nodeSystems = cfg.nodeSystems;
-              nodeAddresses = cfg.nodeAddresses;
-              nodeSshPorts = cfg.nodeSshPorts;
-              nodeSshOpts = cfg.nodeSshOpts;
-              nodeRemoteBuild = cfg.nodeRemoteBuild;
-              nodeMagicRollback = cfg.nodeMagicRollback;
-              nodeAutoRollback = cfg.nodeAutoRollback;
               nodeModules = cfg.nodeModules;
               statePath = cfg.statePath;
               planPath = cfg.planPath;
               cloudflare = cfg.cloudflare;
               planSource = cfg.planSource;
               generatedFlake = cfg.generatedFlake;
+              service = cfg.service;
             };
       in
       {
@@ -98,18 +92,18 @@ in
         );
 
         devshells.default = {
-          devshell.packages = [
-            hostenvProviderCLI
-            providerGhc
-            pkgs.sops
-            pkgs.age
-            pkgs.jq
-            pkgs.yq-go
-            pkgs.bind
-            pkgs.deploy-rs
-            pkgs.postgresql
-            pkgs.haskellPackages.cabal-install
-          ];
+            devshell.packages = [
+              hostenvProviderCLI
+              providerGhc
+              pkgs.sops
+              pkgs.age
+              pkgs.jq
+              pkgs.yq-go
+              pkgs.bind
+              pkgs.postgresql
+              pkgs.haskellPackages.cabal-install
+            ];
+
           env = [
             {
               name = "DEVSHELL_NO_MOTD";

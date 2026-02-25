@@ -16,6 +16,28 @@ in
       cfg = config.services.hostenv-provider;
       enabledEnvironments = lib.filterAttrs (_: env: env.enable or true) (config.hostenv.publicEnvironments or { });
       enabledEnvironmentNames = lib.sort builtins.lessThan (builtins.attrNames enabledEnvironments);
+      providerServiceSelection =
+        if config ? provider then config.provider.service else null;
+      providerCominEnabled = (((config.provider or { }).comin or { }).enable or false);
+      selectedServiceEnv =
+        if providerServiceSelection == null then
+          null
+        else
+          let
+            matches = lib.filterAttrs
+              (_: env:
+                env.hostenv.organisation == providerServiceSelection.organisation
+                && env.hostenv.project == providerServiceSelection.project
+                && env.hostenv.environmentName == providerServiceSelection.environmentName)
+              enabledEnvironments;
+            values = builtins.attrValues matches;
+          in
+          if values == [ ] then null else builtins.head values;
+      selectedServiceUser =
+        if selectedServiceEnv == null then null else selectedServiceEnv.hostenv.userName;
+      currentUserName = config.hostenv.userName;
+      isSelectedService = selectedServiceUser != null && currentUserName == selectedServiceUser;
+      cominTokenMapPath = "/run/secrets/${currentUserName}/comin_node_tokens.yaml";
       uniqueSorted = xs: lib.sort builtins.lessThan (lib.unique xs);
       normalizeGitlabUsername = username:
         if username == null || username == ""
@@ -126,6 +148,7 @@ in
         gitConfigFile = cfg.gitConfigFile;
         flakeTemplate = cfg.flakeTemplate;
         jobs = cfg.jobs;
+        comin = cfg.comin;
       });
 
     in
@@ -273,10 +296,45 @@ in
             description = "How many days of completed provider job logs are retained.";
           };
 
-          cleanupIntervalMinutes = lib.mkOption {
+          cleanupIntervalMins = lib.mkOption {
             type = lib.types.int;
             default = 1440;
             description = "How often completed provider job logs are cleaned up.";
+          };
+
+          waitTimeoutMins = lib.mkOption {
+            type = lib.types.int;
+            default = 120;
+            description = "How long a job may remain in waiting before it is marked failed.";
+          };
+
+          waitInterval = lib.mkOption {
+            type = lib.types.int;
+            default = 60;
+            description = "How often (in seconds) waiting jobs are scanned for timeout expiry.";
+          };
+        };
+
+          comin = {
+            enable = lib.mkEnableOption "pull-deploy metadata and node callback APIs for comin workers";
+
+
+          branch = lib.mkOption {
+            type = lib.types.str;
+            default = "main";
+            description = "Provider repository branch used by comin nodes.";
+          };
+
+          pollIntervalSeconds = lib.mkOption {
+            type = lib.types.int;
+            default = 30;
+            description = "Polling interval for comin nodes when checking for updates.";
+          };
+
+          nodeAuthTokensFile = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Path to JSON/YAML object mapping node name -> bearer token for callback API auth.";
           };
         };
       };
@@ -293,6 +351,30 @@ in
                 message = ''
                   users.<name>.gitlabUsername is configured in enabled environments,
                   but services.hostenv-provider.enable and services.hostenv-provider.gitlab.enable are not both true.
+                '';
+              }
+              {
+                assertion = !(cfg.comin.enable && providerServiceSelection == null);
+                message = ''
+                  services.hostenv-provider.comin.enable requires provider.service to be configured.
+                '';
+              }
+              {
+                assertion = !(cfg.comin.enable && !providerCominEnabled);
+                message = ''
+                  services.hostenv-provider.comin.enable is true, but provider.comin.enable is false.
+                '';
+              }
+              {
+                assertion = !(cfg.comin.enable && !isSelectedService);
+                message = ''
+                  services.hostenv-provider.comin.enable is only supported on the provider.service environment.
+                '';
+              }
+              {
+                assertion = !(cfg.comin.enable && isSelectedService && cfg.comin.nodeAuthTokensFile == null);
+                message = ''
+                  services.hostenv-provider.comin.nodeAuthTokensFile must be configured when services.hostenv-provider.comin.enable is true.
                 '';
               }
             ]
@@ -318,6 +400,9 @@ in
               conflictingUsers;
         }
         (lib.mkIf cfg.enable {
+          services.hostenv-provider.comin.nodeAuthTokensFile =
+            if isSelectedService then cominTokenMapPath else null;
+
           services.postgresql = {
             enable = lib.mkDefault true;
             user = lib.mkDefault config.hostenv.userName;
@@ -340,6 +425,11 @@ in
               locations = lib.mkMerge [
                 {
                   "~ ^/webhook/" = {
+                    recommendedProxySettings = true;
+                    proxyPass = proxySocket;
+                    extraConfig = proxyTimeoutConfig;
+                  };
+                  "~ ^/api/" = {
                     recommendedProxySettings = true;
                     proxyPass = proxySocket;
                     extraConfig = proxyTimeoutConfig;

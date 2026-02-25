@@ -40,7 +40,8 @@ Client inputs should point at the `.hostenv` flake (e.g. `dir=.hostenv`) so `hos
 
 2) Populate nodes and secrets:
    - Copy `nodes/sample` to `nodes/<node>/` and edit `configuration.nix`/`hardware-configuration.nix`.
-   - Create `secrets/secrets.yaml` with sops.
+   - Create `secrets/provider.yaml` with sops.
+   - If using comin, set `provider.service` in `flake.nix` and run `nix run .#hostenv-provider -- comin-tokens` to add missing node tokens.
    - Create `generated/state.json` (can be `{}` initially).
 
 3) Generate plan/state (optional if using planSource=eval):
@@ -52,20 +53,14 @@ nix run .#hostenv-provider -- plan
 Why the generated `flake.nix` exists: flake inputs are static, but your client
 repos can have many environments (often one per branch/tag). Plan generation
 materialises a new flake whose inputs enumerate each environment (repo × env),
-so deploy-rs can build the exact activation packages and NixOS systems without
-re-evaluating the dynamic hostenv graph. The bundle `generated/{plan.json,
-state.json,flake.nix}` is the deployable, auditable snapshot.
+so the provider pipeline can build exact activation packages and NixOS systems
+without re-evaluating the dynamic hostenv graph. The bundle
+`generated/{plan.json,state.json,flake.nix}` is the auditable snapshot.
 
 4) DNS/ACME safety + Cloudflare (optional):
 
 ```
 CF_API_TOKEN=... CF_ZONE_ID=... nix run .#hostenv-provider -- dns-gate [--with-dns-update] [-n node]
-```
-
-5) Deploy:
-
-```
-nix run .#hostenv-provider -- deploy [-n node]
 ```
 
 End-to-end local VM demo (interactive wizard):
@@ -84,9 +79,6 @@ The local demo uses `hostctl` to install temporary hostname mappings for the dem
 
 Outputs:
 
-- `packages.deploy-nodes` / `packages.deploy-envs` per system when a plan exists.
-- Deploy specs live at `lib.hostenv.deploySpec` (per flake output). Example:
-  `nix eval .#lib.hostenv.deploySpec --json | jq` (planSource=eval recommended).
 - Add Haskell dev shell deps via `provider.haskellDevPackages` (appended to `hostenv.haskell.devPackages`).
 
 Optional per-environment settings:
@@ -99,7 +91,7 @@ Optional per-environment settings:
 ## Provider webhook service (optional)
 
 Hostenv ships an optional webhook service that can listen for GitHub/GitLab webhooks and run the
-`plan → dns-gate → deploy` workflow automatically. It runs inside a hostenv environment and is
+`plan → dns-gate → deploy-intent` workflow automatically. It runs inside a hostenv environment and is
 proxied through that environment’s nginx.
 
 Example (in a provider hostenv environment config):

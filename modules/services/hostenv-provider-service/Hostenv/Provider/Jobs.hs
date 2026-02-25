@@ -5,8 +5,10 @@
 module Hostenv.Provider.Jobs
   ( JobRuntime
   , JobSummary(..)
+  , jobSummaryStatus
   , JobEvent(..)
   , JobLogger(..)
+  , JobOutcome(..)
   , NewJob(..)
   , ensureJobSchema
   , startJobRuntime
@@ -15,6 +17,9 @@ module Hostenv.Provider.Jobs
   , loadJobById
   , loadJobEventsSince
   , duplicateBroadcastChannel
+  , publishJobUpdate
+  , markJobFailedFromDeploy
+  , markJobSucceededFromDeploy
   ) where
 
 import AddressableContent.Address (defaultScheme, renderAddr)
@@ -73,6 +78,9 @@ instance A.ToJSON JobSummary where
       , "errorSummary" A..= summary.errorSummary
       ]
 
+jobSummaryStatus :: JobSummary -> Text
+jobSummaryStatus summary = summary.status
+
 data JobEvent = JobEvent
   { seq :: Int64
   , timestamp :: UTCTime
@@ -107,7 +115,8 @@ instance A.ToJSON JobEvent where
       ]
 
 data JobLogger = JobLogger
-  { logStdout :: Text -> IO ()
+  { jobId :: Text
+  , logStdout :: Text -> IO ()
   , logStderr :: Text -> IO ()
   , logInfo :: Text -> IO ()
   , logError :: Text -> IO ()
@@ -118,8 +127,13 @@ data NewJob = NewJob
   , requestedByUserId :: Maybe Int
   , projectId :: Maybe Int
   , payload :: A.Value
-  , run :: JobLogger -> IO (Either Text Text)
+  , run :: JobLogger -> IO (Either Text JobOutcome)
   }
+
+data JobOutcome
+  = JobComplete Text
+  | JobWaiting Text
+  deriving (Eq, Show)
 
 data QueuedJob = QueuedJob
   { id :: Text
@@ -136,7 +150,8 @@ ensureJobSchema :: AppConfig -> IO ()
 ensureJobSchema cfg = withDb cfg $ \conn -> do
   initPostgresStore conn
   let ddl =
-        [ "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL, requested_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL, payload JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ, error_summary TEXT);"
+        [ "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL, requested_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL, payload JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), started_at TIMESTAMPTZ, waiting_at TIMESTAMPTZ, finished_at TIMESTAMPTZ, error_summary TEXT);"
+        , "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS waiting_at TIMESTAMPTZ;"
         , "CREATE TABLE IF NOT EXISTS job_events (job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE, seq BIGINT NOT NULL, ts TIMESTAMPTZ NOT NULL DEFAULT now(), stream TEXT NOT NULL, level TEXT, addr TEXT NOT NULL, path TEXT NOT NULL UNIQUE, line TEXT, meta JSONB NOT NULL DEFAULT '{}'::jsonb, PRIMARY KEY (job_id, seq));"
         , "CREATE INDEX IF NOT EXISTS jobs_status_created_idx ON jobs (status, created_at DESC);"
         , "CREATE INDEX IF NOT EXISTS job_events_job_seq_idx ON job_events (job_id, seq);"
@@ -152,6 +167,7 @@ startJobRuntime cfg = do
   broadcast <- newTChanIO
   let runtime = JobRuntime { cfg = cfg, queue = queue, broadcast = broadcast }
   void (forkIO (workerLoop runtime))
+  void (forkIO (waitingMonitor runtime))
   void (forkIO (cleanupLoop runtime))
   pure runtime
 
@@ -192,6 +208,28 @@ loadJobEventsSince cfg jobId afterSeq = withDb cfg $ \conn ->
 duplicateBroadcastChannel :: JobRuntime -> IO (TChan A.Value)
 duplicateBroadcastChannel runtime = atomically (dupTChan runtime.broadcast)
 
+publishJobUpdate :: JobRuntime -> A.Value -> IO ()
+publishJobUpdate runtime = publish runtime
+
+markJobFailedFromDeploy :: JobRuntime -> Text -> Text -> IO ()
+markJobFailedFromDeploy runtime jobId message = do
+  updated <- withDb runtime.cfg $ \conn ->
+    execute conn
+      "UPDATE jobs SET status = 'failed', finished_at = now(), error_summary = ? WHERE id = ? AND status IN ('queued','running','waiting')"
+      (message, jobId)
+  when (updated > 0) $ do
+    finalizePendingDeployActions runtime.cfg jobId "failed" (Just message)
+    publishStatus runtime jobId "failed" (Just message)
+
+markJobSucceededFromDeploy :: JobRuntime -> Text -> IO ()
+markJobSucceededFromDeploy runtime jobId = do
+  updated <- withDb runtime.cfg $ \conn ->
+    execute conn
+      "UPDATE jobs SET status = 'succeeded', finished_at = now(), error_summary = NULL WHERE id = ? AND status = 'waiting'"
+      (Only jobId)
+  when (updated > 0) $
+    publishStatus runtime jobId "succeeded" Nothing
+
 workerLoop :: JobRuntime -> IO ()
 workerLoop runtime = forever $ do
   queuedJob <- atomically (readTQueue runtime.queue)
@@ -218,7 +256,8 @@ runQueuedJob runtime queuedJob = do
         publishEvent runtime jobId nextSeq stream level line
       logger =
         JobLogger
-          { logStdout = appendEvent "stdout" Nothing
+          { jobId = jobId
+          , logStdout = appendEvent "stdout" Nothing
           , logStderr = appendEvent "stderr" Nothing
           , logInfo = appendEvent "app" (Just "info")
           , logError = appendEvent "app" (Just "error")
@@ -228,7 +267,7 @@ runQueuedJob runtime queuedJob = do
           CommandStdout -> logger.logStdout line
           CommandStderr -> logger.logStderr line
 
-  runResult <- try (withCommandLineLogger commandLogger (jobDef.run logger)) :: IO (Either SomeException (Either Text Text))
+  runResult <- try (withCommandLineLogger commandLogger (jobDef.run logger)) :: IO (Either SomeException (Either Text JobOutcome))
   case runResult of
     Left exception -> do
       let message = T.pack (show exception)
@@ -237,15 +276,41 @@ runQueuedJob runtime queuedJob = do
     Right (Left errText) -> do
       logger.logError errText
       markJobFailed runtime jobId errText
-    Right (Right successMsg) -> do
-      when (T.strip successMsg /= "") (logger.logInfo successMsg)
-      markJobSucceeded runtime jobId
+    Right (Right outcome) ->
+      case outcome of
+        JobComplete successMsg -> do
+          when (T.strip successMsg /= "") (logger.logInfo successMsg)
+          markJobSucceeded runtime jobId
+        JobWaiting waitingMsg -> do
+          when (T.strip waitingMsg /= "") (logger.logInfo waitingMsg)
+          markJobWaiting runtime jobId
 
 cleanupLoop :: JobRuntime -> IO ()
 cleanupLoop runtime = forever $ do
-  let cleanupMinutes = max 1 runtime.cfg.appJobsCleanupIntervalMinutes
+  let cleanupMinutes = max 1 runtime.cfg.appJobsCleanupIntervalMins
   threadDelay (cleanupMinutes * 60 * 1000000)
   cleanupOldJobs runtime.cfg
+
+waitingMonitor :: JobRuntime -> IO ()
+waitingMonitor runtime = forever $ do
+  let checkSeconds = max 1 runtime.cfg.appJobsWaitInterval
+  threadDelay (checkSeconds * 1000000)
+  timeoutWaitingJobs runtime
+
+timeoutWaitingJobs :: JobRuntime -> IO ()
+timeoutWaitingJobs runtime = do
+  let timeoutMinutes = max 1 runtime.cfg.appJobsWaitTimeoutMins
+  timedOutIds <- withDb runtime.cfg $ \conn -> do
+    rows <- query conn
+      "UPDATE jobs SET status = 'failed', finished_at = now(), error_summary = 'Timed out waiting for node callbacks' WHERE status = 'waiting' AND COALESCE(waiting_at, started_at, created_at) < now() - (? * INTERVAL '1 minute') RETURNING id"
+      (Only timeoutMinutes)
+    pure [jobId | Only jobId <- rows]
+  mapM_
+    (\jobId -> do
+      finalizePendingDeployActions runtime.cfg jobId "timed_out" (Just "Timed out waiting for node callbacks")
+      publishStatus runtime jobId "failed" (Just "Timed out waiting for node callbacks")
+    )
+    timedOutIds
 
 cleanupOldJobs :: AppConfig -> IO ()
 cleanupOldJobs cfg = withDb cfg $ \conn -> do
@@ -254,11 +319,18 @@ cleanupOldJobs cfg = withDb cfg $ \conn -> do
     "DELETE FROM jobs WHERE finished_at IS NOT NULL AND finished_at < now() - (? * INTERVAL '1 day')"
     (Only retentionDays)
   _ <- execute_ conn
+    "DELETE FROM deploy_actions a WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = a.job_id)"
+  _ <- execute_ conn
+    "DELETE FROM deploy_node_events e WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = e.job_id)"
+  _ <- execute_ conn
+    "DELETE FROM deploy_intents i WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = i.job_id)"
+  _ <- execute_ conn
     "DELETE FROM cas_objects c WHERE NOT EXISTS (SELECT 1 FROM job_events e WHERE e.addr = c.addr)"
   pure ()
 
 markJobFailed :: JobRuntime -> Text -> Text -> IO ()
 markJobFailed runtime jobId message = do
+  finalizePendingDeployActions runtime.cfg jobId "failed" (Just message)
   withDb runtime.cfg $ \conn -> do
     _ <- execute conn
       "UPDATE jobs SET status = 'failed', finished_at = now(), error_summary = ? WHERE id = ?"
@@ -274,6 +346,15 @@ markJobSucceeded runtime jobId = do
       (Only jobId)
     pure ()
   publishStatus runtime jobId "succeeded" Nothing
+
+markJobWaiting :: JobRuntime -> Text -> IO ()
+markJobWaiting runtime jobId = do
+  withDb runtime.cfg $ \conn -> do
+    _ <- execute conn
+      "UPDATE jobs SET status = 'waiting', waiting_at = now(), finished_at = NULL, error_summary = NULL WHERE id = ?"
+      (Only jobId)
+    pure ()
+  publishStatus runtime jobId "waiting" Nothing
 
 insertJobEvent :: AppConfig -> Text -> Int64 -> Text -> Maybe Text -> Text -> IO ()
 insertJobEvent cfg jobId seqNumber streamName levelName lineText = do
@@ -334,3 +415,11 @@ newJobId = do
         , chunk 12 20
         ]
     )
+
+finalizePendingDeployActions :: AppConfig -> Text -> Text -> Maybe Text -> IO ()
+finalizePendingDeployActions cfg jobId finalStatus mMessage =
+  withDb cfg $ \conn -> do
+    _ <- execute conn
+      "UPDATE deploy_actions SET status = ?, message = COALESCE(?, message), started_at = COALESCE(started_at, now()), finished_at = COALESCE(finished_at, now()), updated_at = now() WHERE job_id = ? AND status IN ('queued','waiting','running')"
+      (finalStatus, mMessage, jobId)
+    pure ()

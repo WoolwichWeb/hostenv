@@ -8,7 +8,7 @@ import Hostenv.Provider.Config (loadConfig)
 import Hostenv.Provider.DB (ensureSchema, syncUsers)
 import Hostenv.Provider.Jobs (ensureJobSchema)
 import Hostenv.Provider.Project (syncFlakeFromDb)
-import Hostenv.Provider.Repo (RepoStatus(..), ensureProviderRepo)
+import Hostenv.Provider.Repo (RepoStatus(..), ensureGitConfig, ensureProviderRepo)
 import Hostenv.Provider.Server (runServer)
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
@@ -21,6 +21,7 @@ main = do
       ["--config", path] -> pure path
       _ -> dieWithUsage
     cfg <- loadConfig configPath
+    ensureGitConfig cfg
     repoStatusResult <- ensureProviderRepo cfg
     repoStatus <- case repoStatusResult of
       Left err -> dieWith (T.unpack err)

@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE LambdaCase #-}
@@ -22,16 +23,22 @@ module Hostenv.Provider.Service
   , CommandSpec(..)
   , CommandOutput(..)
   , CommandError(..)
-  , DeployResult(..)
+  , NodeAction(..)
+  , NodeIntent(..)
+  , WebhookUpdateStatus(..)
   , WebhookResult(..)
+  , WebhookStage(..)
+  , renderWebhookStage
   , WebhookError(..)
   , CommandRunner
   , PlanLoader
+  , StageNotifier
   , runWebhookWith
+  , renderDeployIntentDocument
   ) where
 
 import Control.Exception (IOException, try)
-import Control.Monad (foldM, forM)
+import Control.Monad (forM)
 import Data.Aeson (Value (..))
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as K
@@ -49,7 +56,9 @@ import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
+import System.Directory (createDirectoryIfMissing)
 import System.Exit (ExitCode (..), die)
+import System.FilePath ((</>))
 import System.Process (readProcessWithExitCode)
 
 import "crypton" Crypto.Hash (SHA256)
@@ -488,41 +497,92 @@ data CommandError = CommandError
   } deriving (Eq, Show)
 
 
-data DeployResult = DeployResult
-  { deployNode :: Text
-  , deploySuccess :: Bool
-  , deployStdout :: Text
-  , deployStderr :: Text
+data NodeAction = NodeAction
+  { op :: Text
+  , user :: Text
+  , fromNode :: Maybe Text
+  , toNode :: Maybe Text
+  , migrations :: [Text]
   } deriving (Eq, Show)
 
-instance A.ToJSON DeployResult where
-  toJSON d =
+instance A.ToJSON NodeAction where
+  toJSON action =
     A.object
-      [ "node" A..= d.deployNode
-      , "success" A..= d.deploySuccess
-      , "stdout" A..= d.deployStdout
-      , "stderr" A..= d.deployStderr
+      [ "op" A..= action.op
+      , "user" A..= action.user
+      , "fromNode" A..= action.fromNode
+      , "toNode" A..= action.toNode
+      , "migrations" A..= action.migrations
       ]
 
+data NodeIntent = NodeIntent
+  { node :: Text
+  , actions :: [NodeAction]
+  } deriving (Eq, Show)
+
+instance A.ToJSON NodeIntent where
+  toJSON intent =
+    A.object
+      [ "node" A..= intent.node
+      , "actions" A..= intent.actions
+      ]
+
+data WebhookUpdateStatus
+  = WebhookUpdateCommitted
+  | WebhookUpdateNoop
+  deriving (Eq, Show)
+
+instance A.ToJSON WebhookUpdateStatus where
+  toJSON status =
+    case status of
+      WebhookUpdateCommitted -> A.String "committed"
+      WebhookUpdateNoop -> A.String "noop"
 
 data WebhookResult = WebhookResult
-  { webhookNodes :: [Text]
-  , webhookDeploys :: [DeployResult]
-  , webhookOk :: Bool
+  { nodes :: [Text]
+  , intents :: [NodeIntent]
+  , commitSha :: Text
+  , updateStatus :: WebhookUpdateStatus
   } deriving (Eq, Show)
 
 instance A.ToJSON WebhookResult where
   toJSON r =
     A.object
-      [ "ok" A..= r.webhookOk
-      , "nodes" A..= r.webhookNodes
-      , "deployments" A..= r.webhookDeploys
+      [ "nodes" A..= r.nodes
+      , "intents" A..= r.intents
+      , "commitSha" A..= r.commitSha
+      , "update" A..= r.updateStatus
       ]
 
 
+data WebhookStage
+  = StageSyncRepo
+  | StageUpdateFlake
+  | StagePlan
+  | StageDnsGate
+  | StageLoadPlan
+  | StageResolveNodes
+  | StageDeriveIntents
+  | StageWriteIntent
+  | StageFinalizeRepo
+  deriving (Eq, Show)
+
+renderWebhookStage :: WebhookStage -> Text
+renderWebhookStage stage =
+  case stage of
+    StageSyncRepo -> "sync_repository"
+    StageUpdateFlake -> "update_flake"
+    StagePlan -> "generate_plan"
+    StageDnsGate -> "dns_gate"
+    StageLoadPlan -> "load_plan"
+    StageResolveNodes -> "resolve_nodes"
+    StageDeriveIntents -> "derive_intents"
+    StageWriteIntent -> "write_deploy_intent"
+    StageFinalizeRepo -> "finalize_repository"
+
 data WebhookError
-  = WebhookCommandError CommandError
-  | WebhookPlanError Text
+  = WebhookCommandError WebhookStage CommandError
+  | WebhookPlanError WebhookStage Text
   deriving (Eq, Show)
 
 
@@ -530,39 +590,220 @@ type CommandRunner = CommandSpec -> IO (Either CommandError CommandOutput)
 
 type PlanLoader = IO BL.ByteString
 
-runWebhookWith :: CommandRunner -> PlanLoader -> WebhookConfig -> ProjectRef -> IO (Either WebhookError WebhookResult)
-runWebhookWith runner loadPlan cfg ref = do
+type StageNotifier = WebhookStage -> IO ()
+
+runWebhookWith :: StageNotifier -> CommandRunner -> PlanLoader -> WebhookConfig -> ProjectRef -> IO (Either WebhookError WebhookResult)
+runWebhookWith notifyStage runner loadPlan cfg ref = do
+  previousPlan <- readExistingPlan cfg.whPlanPath
   let inputName = ref.prOrg <> "__" <> ref.prProject
-  step runner (CommandSpec "git" ["pull", "--rebase", "--autostash"] (cfg.whWorkDir)) >>= \case
+  step StageSyncRepo (CommandSpec "git" ["pull", "--rebase", "--autostash"] (cfg.whWorkDir)) >>= \case
     Left err -> pure (Left err)
     Right _ ->
-      step runner (CommandSpec "nix" ["flake", "update", inputName] (cfg.whWorkDir)) >>= \case
+      step StageUpdateFlake (CommandSpec "nix" ["flake", "update", inputName] (cfg.whWorkDir)) >>= \case
         Left err -> pure (Left err)
         Right _ ->
-          step runner (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] (cfg.whWorkDir)) >>= \case
+          step StagePlan (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] (cfg.whWorkDir)) >>= \case
             Left err -> pure (Left err)
             Right _ ->
-              step runner (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "dns-gate"] (cfg.whWorkDir)) >>= \case
+              step StageDnsGate (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "dns-gate"] (cfg.whWorkDir)) >>= \case
                 Left err -> pure (Left err)
                 Right _ -> do
+                  notifyStage StageLoadPlan
                   planRaw <- loadPlan
-                  nodesForProjectWithDns ref.prOrg ref.prProject planRaw >>= \case
-                    Left err -> pure (Left (WebhookPlanError err))
-                    Right nodes -> do
-                      deploys <- foldM (deployNode runner cfg) [] nodes
-                      let ok = all (\d -> d.deploySuccess) deploys
-                      pure (Right (WebhookResult nodes deploys ok))
+                  notifyStage StageResolveNodes
+                  orderedNodesResult <- nodesForProjectWithDns ref.prOrg ref.prProject planRaw
+                  case orderedNodesResult of
+                    Left err -> pure (Left (WebhookPlanError StageResolveNodes err))
+                    Right orderedNodes -> do
+                      notifyStage StageDeriveIntents
+                      case deriveNodeIntents previousPlan planRaw ref of
+                        Left err -> pure (Left (WebhookPlanError StageDeriveIntents err))
+                        Right intentsByNode -> do
+                          notifyStage StageWriteIntent
+                          writeIntentResult <- writeDeployIntent cfg ref orderedNodes intentsByNode
+                          case writeIntentResult of
+                            Left err -> pure (Left (WebhookPlanError StageWriteIntent err))
+                            Right intentsOrdered -> do
+                              finalizeResult <- finalizeRepoUpdate notifyStage runner cfg ref
+                              case finalizeResult of
+                                Left err -> pure (Left err)
+                                Right (commitSha, committed) ->
+                                  let updateStatus = if committed then WebhookUpdateCommitted else WebhookUpdateNoop
+                                   in pure
+                                        ( Right
+                                            WebhookResult
+                                              { nodes = map (.node) intentsOrdered
+                                              , intents = intentsOrdered
+                                              , commitSha = commitSha
+                                              , updateStatus = updateStatus
+                                              }
+                                        )
+
   where
-    step run spec = do
-      res <- run spec
+    step stage spec = do
+      notifyStage stage
+      res <- runner spec
       case res of
-        Left e -> pure (Left (WebhookCommandError e))
+        Left e -> pure (Left (WebhookCommandError stage e))
         Right _ -> pure (Right ())
 
-    deployNode run config acc node = do
-      res <- run (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "deploy", "--node", node] (config.whWorkDir))
+data EnvSnapshot = EnvSnapshot
+  { userName :: Text
+  , node :: Text
+  , migrations :: [Text]
+  , payload :: Value
+  }
+
+projectEnvironments :: ProjectRef -> BL.ByteString -> Either Text (M.Map Text EnvSnapshot)
+projectEnvironments ref raw = do
+  envs <- decodeEnvironments raw
+  pure $
+    foldl'
+      (\acc (envKey, envValue) ->
+        case extract envKey envValue of
+          Nothing -> acc
+          Just envSnapshot -> M.insert envSnapshot.userName envSnapshot acc)
+      M.empty
+      (KM.toList envs)
+  where
+    extract envKey value =
+      case value of
+        Object envObj -> do
+          hostenvObj <- lookupObj (K.fromString "hostenv") envObj
+          envOrg <- lookupText (K.fromString "organisation") hostenvObj
+          envProject <- lookupText (K.fromString "project") hostenvObj
+          if envOrg == ref.prOrg && envProject == ref.prProject
+            then do
+              envNode <- lookupText (K.fromString "node") envObj
+              let envUser = fromMaybe (K.toText envKey) (lookupText (K.fromString "userName") hostenvObj)
+              let envMigrations = lookupTextList (K.fromString "migrations") envObj
+              pure
+                EnvSnapshot
+                  { userName = envUser
+                  , node = envNode
+                  , migrations = envMigrations
+                  , payload = value
+                  }
+            else
+              Nothing
+        _ -> Nothing
+
+deriveNodeIntents :: Maybe BL.ByteString -> BL.ByteString -> ProjectRef -> Either Text (M.Map Text [NodeAction])
+deriveNodeIntents previousPlan currentPlan ref = do
+  let oldSnapshots =
+        case previousPlan of
+          Nothing -> Right M.empty
+          Just previousRaw ->
+            case projectEnvironments ref previousRaw of
+              Left _ -> Right M.empty
+              Right parsed -> Right parsed
+  oldSnapshots' <- oldSnapshots
+  newSnapshots <- projectEnvironments ref currentPlan
+  let allUsers = S.toList (S.union (M.keysSet oldSnapshots') (M.keysSet newSnapshots))
+  pure (foldl' (deriveUserActions oldSnapshots' newSnapshots) M.empty allUsers)
+
+deriveUserActions :: M.Map Text EnvSnapshot -> M.Map Text EnvSnapshot -> M.Map Text [NodeAction] -> Text -> M.Map Text [NodeAction]
+deriveUserActions oldSnapshots newSnapshots intents userName =
+  case (M.lookup userName oldSnapshots, M.lookup userName newSnapshots) of
+    (Nothing, Just newEnv) ->
+      addAction intents newEnv.node (NodeAction "activate" userName Nothing (Just newEnv.node) [])
+    (Just oldEnv, Nothing) ->
+      addAction intents oldEnv.node (NodeAction "deactivate" userName (Just oldEnv.node) Nothing [])
+    (Just oldEnv, Just newEnv) ->
+      if oldEnv.node /= newEnv.node
+        then case newEnv.migrations of
+          [] ->
+            let moved =
+                  addAction intents oldEnv.node (NodeAction "deactivate" userName (Just oldEnv.node) (Just newEnv.node) [])
+             in addAction moved newEnv.node (NodeAction "activate" userName (Just oldEnv.node) (Just newEnv.node) [])
+          migrations ->
+            let withBackup =
+                  addAction intents oldEnv.node (NodeAction "backup" userName (Just oldEnv.node) (Just newEnv.node) migrations)
+                withDeactivate =
+                  addAction withBackup oldEnv.node (NodeAction "deactivate" userName (Just oldEnv.node) (Just newEnv.node) [])
+                withRestore =
+                  addAction withDeactivate newEnv.node (NodeAction "restore" userName (Just oldEnv.node) (Just newEnv.node) migrations)
+             in addAction withRestore newEnv.node (NodeAction "activate" userName (Just oldEnv.node) (Just newEnv.node) [])
+        else if oldEnv.payload /= newEnv.payload
+          then addAction intents newEnv.node (NodeAction "reload" userName (Just newEnv.node) (Just newEnv.node) [])
+          else intents
+    (Nothing, Nothing) -> intents
+
+addAction :: M.Map Text [NodeAction] -> Text -> NodeAction -> M.Map Text [NodeAction]
+addAction intents nodeName action =
+  M.insertWith (\new old -> old <> new) nodeName [action] intents
+
+renderDeployIntentDocument :: ProjectRef -> [NodeIntent] -> A.Value
+renderDeployIntentDocument ref ordered =
+  A.object
+    [ "schemaVersion" A..= (1 :: Int)
+    , "project" A..= A.object ["org" A..= ref.prOrg, "project" A..= ref.prProject]
+    , "forceSystemRestart" A..= False
+    , "nodes" A..=
+        M.fromList
+          [ (intent.node, A.object ["schemaVersion" A..= (1 :: Int), "actions" A..= intent.actions])
+          | intent <- ordered
+          ]
+    ]
+
+writeDeployIntent
+  :: WebhookConfig
+  -> ProjectRef
+  -> [Text]
+  -> M.Map Text [NodeAction]
+  -> IO (Either Text [NodeIntent])
+writeDeployIntent cfg ref orderedNodes intentsByNode = do
+  let ordered =
+        let keys = M.keys intentsByNode
+            remaining = filter (`notElem` orderedNodes) (sort keys)
+            nodeOrder = orderedNodes <> remaining
+         in mapMaybe (\n -> fmap (\actions -> NodeIntent n actions) (M.lookup n intentsByNode)) nodeOrder
+  let intentDocument = renderDeployIntentDocument ref ordered
+  let generatedDir = cfg.whWorkDir </> "generated"
+  createDirectoryIfMissing True generatedDir
+  BL.writeFile (generatedDir </> "deploy-intent.json") (A.encode intentDocument)
+  pure (Right ordered)
+
+finalizeRepoUpdate :: StageNotifier -> CommandRunner -> WebhookConfig -> ProjectRef -> IO (Either WebhookError (Text, Bool))
+finalizeRepoUpdate notifyStage runner cfg ref = do
+  notifyStage StageFinalizeRepo
+  step (CommandSpec "git" ["add", "-A", "generated"] cfg.whWorkDir) >>= \case
+    Left err -> pure (Left err)
+    Right _ ->
+      step (CommandSpec "git" ["add", "-A", "flake.nix", "flake.lock"] cfg.whWorkDir) >>= \case
+        Left err -> pure (Left err)
+        Right _ -> do
+          statusResult <- runner (CommandSpec "git" ["status", "--porcelain", "--", "generated", "flake.nix", "flake.lock"] cfg.whWorkDir)
+          case statusResult of
+            Left err -> pure (Left (WebhookCommandError StageFinalizeRepo err))
+            Right statusOut -> do
+              let hasChanges = T.strip statusOut.outStdout /= ""
+              pushedResult <-
+                if not hasChanges
+                  then pure (Right False)
+                  else do
+                    let message = "hostenv-provider: deploy intent for " <> ref.prOrg <> "/" <> ref.prProject
+                    step (CommandSpec "git" ["commit", "-m", message] cfg.whWorkDir) >>= \case
+                      Left err -> pure (Left err)
+                      Right _ -> pure (Right True)
+              case pushedResult of
+                Left err -> pure (Left err)
+                Right pushed -> do
+                  headResult <- runner (CommandSpec "git" ["rev-parse", "HEAD"] cfg.whWorkDir)
+                  case headResult of
+                    Left err -> pure (Left (WebhookCommandError StageFinalizeRepo err))
+                    Right out ->
+                      pure (Right (T.strip out.outStdout, pushed))
+  where
+    step spec = do
+      res <- runner spec
       case res of
-        Right out ->
-          pure (acc ++ [DeployResult node True out.outStdout out.outStderr])
-        Left err ->
-          pure (acc ++ [DeployResult node False err.errStdout err.errStderr])
+        Left e -> pure (Left (WebhookCommandError StageFinalizeRepo e))
+        Right _ -> pure (Right ())
+
+readExistingPlan :: FilePath -> IO (Maybe BL.ByteString)
+readExistingPlan path = do
+  result <- try (BL.readFile path) :: IO (Either IOException BL.ByteString)
+  case result of
+    Left _ -> pure Nothing
+    Right bytes -> pure (Just bytes)

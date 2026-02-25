@@ -4,7 +4,17 @@ let
   support = import ../support { inherit pkgs lib; };
   asserts = support.asserts;
   providerView = support.providerView;
-  providerPlan = inputs.self.lib.provider.plan;
+  defaultComin = {
+    enable = false;
+    remoteUrl = null;
+    branch = "main";
+    pollIntervalSeconds = 30;
+    actionTimeoutSeconds = 900;
+    providerApiBaseUrl = null;
+    nodeAuthTokenFile = null;
+    nodeAuthTokenFiles = { };
+  };
+  providerPlan = args: inputs.self.lib.provider.plan (args // { comin = args.comin or defaultComin; service = args.service or null; });
 
   mkHostenvStub = system:
     let outPath = ../../modules;
@@ -143,9 +153,10 @@ let
     state ? { },
     planSource ? "eval",
     planPath ? null,
-    deployPublicKeys ? [ "ssh-ed25519 test" ],
     nodeModules ? [ ],
-    generatedFlake ? { }
+    generatedFlake ? { },
+    comin ? defaultComin,
+    service ? null
   }:
     let
       # Build a synthetic flake inputs set: hostenv modules + one project with lib.hostenv output.
@@ -188,7 +199,6 @@ let
       system = "x86_64-linux";
       inherit lib pkgs hostenvHostname;
       letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-      deployPublicKeys = deployPublicKeys;
       nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
       statePath = statePathEffective;
       planPath = planPath;
@@ -196,6 +206,8 @@ let
       nodeSystems = { };
       cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
       planSource = planSource;
+      comin = comin;
+      service = service;
       inherit nodeModules generatedFlake;
     };
 
@@ -272,6 +284,41 @@ let
       ${user1} = { uid = 2001; node = "node1"; virtualHosts = [ "env1.example" "alias.example" ]; };
     };
   }).plan;
+  planCominRemoteConfigured = (mkPlan {
+    comin = {
+      enable = true;
+      remoteUrl = "https://gitlab.com/acme/provider.git";
+      branch = "main";
+      pollIntervalSeconds = 30;
+      actionTimeoutSeconds = 900;
+      providerApiBaseUrl = "https://hosting.test";
+      nodeAuthTokenFile = "/run/secrets/hostenv/comin_node_token";
+      nodeAuthTokenFiles = { };
+    };
+    service = {
+      organisation = "org";
+      project = "proj";
+      environmentName = "env1";
+    };
+  }).plan;
+  planCominMissingRemote =
+    builtins.tryEval (mkPlan {
+      comin = {
+        enable = true;
+        remoteUrl = null;
+        branch = "main";
+        pollIntervalSeconds = 30;
+        actionTimeoutSeconds = 900;
+        providerApiBaseUrl = "https://hosting.test";
+        nodeAuthTokenFile = "/run/secrets/hostenv/comin_node_token";
+        nodeAuthTokenFiles = { };
+      };
+      service = {
+        organisation = "org";
+        project = "proj";
+        environmentName = "env1";
+      };
+    });
   planDisk =
     mkPlan {
       planSource = "disk";
@@ -362,7 +409,6 @@ let
     system = "x86_64-linux";
     inherit lib pkgs;
     letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-    deployPublicKeys = [ "ssh-ed25519 test" ];
     hostenvHostname = "custom.host";
     nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
     statePath = dummyStatePath;
@@ -410,7 +456,6 @@ let
     system = "x86_64-linux";
     inherit lib pkgs;
     letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-    deployPublicKeys = [ "ssh-ed25519 test" ];
     hostenvHostname = "hosting.test";
     nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
     statePath = dummyStatePath;
@@ -434,8 +479,7 @@ let
         system = "x86_64-linux";
         inherit lib pkgs;
         letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-        deployPublicKeys = [ "ssh-ed25519 test" ];
-        hostenvHostname = "custom.host";
+            hostenvHostname = "custom.host";
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
         statePath = dummyStatePath;
         planPath = null;
@@ -485,8 +529,7 @@ let
         system = "x86_64-linux";
         inherit lib pkgs;
         letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-        deployPublicKeys = [ "ssh-ed25519 test" ];
-        hostenvHostname = "custom.host";
+            hostenvHostname = "custom.host";
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
         statePath = dummyStatePath;
         planPath = null;
@@ -534,8 +577,7 @@ let
       system = "x86_64-linux";
       inherit lib pkgs;
       letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-      deployPublicKeys = [ "ssh-ed25519 test" ];
-      hostenvHostname = "custom.host";
+        hostenvHostname = "custom.host";
       nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
       statePath = dummyStatePath;
       planPath = null;
@@ -636,8 +678,7 @@ EOF
         system = "x86_64-linux";
         inherit lib pkgs;
         letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-        deployPublicKeys = [ "ssh-ed25519 test" ];
-        hostenvHostname = "custom.host";
+            hostenvHostname = "custom.host";
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
         statePath = dummyStatePath;
         planPath = null;
@@ -672,11 +713,9 @@ in
     let
       plan = lib.importJSON planNoState;
       users = plan.nodes.node1.users.users or { };
-      providerCfg = plan.nodes.node1.provider or { };
       vhosts = plan.nodes.node1.services.nginx.virtualHosts or { };
       ok = (users ? ${user1}) && (users ? ${user2})
-        && (vhosts ? "env1.example") && (vhosts ? "env2.example")
-        && (providerCfg.deployPublicKeys or [ ]) == [ "ssh-ed25519 test" ];
+        && (vhosts ? "env1.example") && (vhosts ? "env2.example");
     in asserts.assertTrue "provider-plan-node-merge" ok
       "node1 should contain users and vhosts for both environments";
 
@@ -795,6 +834,24 @@ in
     asserts.assertTrue "provider-plan-default-lock"
       planDefaultLock.success
       "plan generation should use inputs.self/flake.lock when lockPath is omitted";
+
+  provider-plan-comin-remote-configured =
+    let
+      plan = lib.importJSON planCominRemoteConfigured;
+      topLevelComin = plan.comin or { };
+      nodeComin = plan.nodes.node1.provider.comin or { };
+      ok = topLevelComin.remoteUrl == "https://gitlab.com/acme/provider.git"
+        && nodeComin.remoteUrl == "https://gitlab.com/acme/provider.git"
+        && topLevelComin.providerApiBaseUrl == "https://hosting.test"
+        && nodeComin.nodeAuthTokenFile == "/run/secrets/hostenv/comin_node_token";
+    in
+    asserts.assertTrue "provider-plan-comin-remote-configured" ok
+      "plan generation should propagate comin settings from provider config";
+
+  provider-plan-comin-missing-remote-asserts =
+    asserts.assertTrue "provider-plan-comin-missing-remote-asserts"
+      (! planCominMissingRemote.success)
+      "plan generation must fail when comin is enabled and no remote URL is configured";
 
   provider-plan-vhost-conflict-state = providerPlanVhostConflictState;
   provider-plan-vhost-conflict-new-envs = providerPlanVhostConflictNewEnvs;

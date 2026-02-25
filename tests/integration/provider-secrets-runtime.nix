@@ -4,7 +4,6 @@ let
   envName = "acme__demo-main";
   hostName = "${envName}.hostenv.test";
   nodeName = "node-a";
-  deployUser = "shipper";
   trustedSigningKey = "hostenv-provider-test-1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
   ageRecipient = "age1s4c2vcrfg4sx6knkmgyayfyvhr3plyehsaut9qpp5n9zhln56sqs8c40ap";
   ageSecretKey = "AGE-SECRET-KEY-1T98SVZ66YW95TD5JEVXAA9NGY06EZU397XXWGXA79S584NXVU8ASGQMDJD";
@@ -50,7 +49,6 @@ let
   nodeSystems = { "${nodeName}" = system; };
 
   config = {
-    deployUser = deployUser;
     nixSigning.trustedPublicKeys = [ trustedSigningKey ];
     nodes = {
       "${nodeName}" = {
@@ -58,8 +56,6 @@ let
           "${envName}" = { };
         };
         provider = {
-          deployPublicKeys = [ "ssh-ed25519 test" ];
-          deployUser = deployUser;
           nixSigning.trustedPublicKeys = [ trustedSigningKey ];
         };
       };
@@ -105,8 +101,6 @@ let
     project.enable = false;
     provider = {
       hostenvHostname = "hosting.test";
-      deployPublicKeys = [ "ssh-ed25519 test" ];
-      deployUser = deployUser;
       nixSigning.trustedPublicKeys = [ trustedSigningKey ];
       nodeFor = { default = nodeName; };
       nodeSystems = nodeSystems;

@@ -13,6 +13,7 @@ executable hostenv-provider-service
     Hostenv.Provider.Config
     Hostenv.Provider.Crypto
     Hostenv.Provider.DB
+    Hostenv.Provider.DeployApi
     Hostenv.Provider.Gitlab
     Hostenv.Provider.Http
     Hostenv.Provider.Jobs
@@ -55,6 +56,7 @@ executable hostenv-provider-service
     turtle,
     unix,
     wai,
+    yaml,
     wai-websockets,
     websockets,
     addressable-content,
@@ -69,6 +71,7 @@ test-suite hostenv-provider-service-tests
     Hostenv.Provider.Config
     Hostenv.Provider.Crypto
     Hostenv.Provider.DB
+    Hostenv.Provider.DeployApi
     Hostenv.Provider.Gitlab
     Hostenv.Provider.Http
     Hostenv.Provider.Jobs
@@ -102,6 +105,7 @@ test-suite hostenv-provider-service-tests
     transformers,
     unix,
     wai,
+    yaml,
     wai-websockets,
     websockets,
     addressable-content

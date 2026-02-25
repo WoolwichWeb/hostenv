@@ -24,8 +24,8 @@
     phps = {
       url = "github:fossar/nix-phps";
     };
-    deploy-rs = {
-      url = "github:serokell/deploy-rs";
+    comin = {
+      url = "github:nlewo/comin";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     addressable-content = {

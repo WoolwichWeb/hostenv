@@ -3,6 +3,7 @@ let
   inherit (lib) mkOption types;
   hostenvLib = config.flake.lib.hostenv;
   providerNixosModules = [
+    inputs.comin.nixosModules.comin
     config.flake.modules.nixos.provider-common
     config.flake.modules.nixos.hostenv-top-level
     config.flake.modules.nixos.nginx-frontdoor
@@ -94,6 +95,36 @@ let
             (environmentWith name).hostenv.organisation
             + "_" + (environmentWith name).hostenv.project;
           envOnly = packages.lib.filterAttrs (name: _: builtins.elem name envUsers) userInfo.users.users;
+          providerService = userInfo.provider.service or null;
+          providerCominEnabled = userInfo.provider.comin.enable or false;
+          selectedServiceEnv =
+            if providerService == null then
+              null
+            else
+              let
+                matches = packages.lib.filterAttrs
+                  (_: env:
+                    env.hostenv.organisation == providerService.organisation
+                    && env.hostenv.project == providerService.project
+                    && env.hostenv.environmentName == providerService.environmentName)
+                  envsForNode;
+                values = builtins.attrValues matches;
+              in
+              if values == [ ] then null else builtins.head values;
+          selectedServiceUser =
+            if selectedServiceEnv == null then null else selectedServiceEnv.hostenv.userName;
+          providerServiceSecrets =
+            if providerCominEnabled && selectedServiceUser != null then
+              {
+                "${selectedServiceUser}/comin_node_tokens.yaml" = {
+                  owner = selectedServiceUser;
+                  group = selectedServiceUser;
+                  key = "comin_node_tokens";
+                  mode = "0400";
+                };
+              }
+            else
+              { };
 
           keysForEnv = name:
             if builtins.hasAttr name keysByEnv
@@ -143,7 +174,7 @@ let
               throw ''
                 The secrets file does not contain '${key}' for '${name}'.
 
-                From the hosting root directory, run `sops secrets/secrets.yaml` and add:
+                From the hosting root directory, run `sops secrets/provider.yaml` and add:
 
                 - '${name}/${key}' (this environment) or
                 - '${projectBucket}/${key}' (this project) or
@@ -151,28 +182,30 @@ let
               '';
         in
         {
-          sops.secrets = packages.lib.concatMapAttrs
-            (
-              name: _user:
-                let
-                  envCfg = environmentWith name;
-                  hostenvCfg = envCfg.hostenv or { };
-                  projectSecretKeys = effectiveKeys name "project" (hostenvCfg.projectSecrets or { });
-                  envSecretKeys = effectiveKeys name "environment" (envCfg.secrets or { });
-                  secretKeys = lib.unique ([ "backups_secret" "backups_env" ] ++ projectSecretKeys ++ envSecretKeys);
-                in
-                builtins.listToAttrs (map
-                  (secretKey: {
-                    name = "${name}/${secretKey}";
-                    value = {
-                      owner = name;
-                      group = name;
-                      key = "${resolveSecretSource name secretKey}/${secretKey}";
-                    };
-                  })
-                  secretKeys)
-            )
-            envOnly;
+          sops.secrets =
+            (packages.lib.concatMapAttrs
+              (
+                name: _user:
+                  let
+                    envCfg = environmentWith name;
+                    hostenvCfg = envCfg.hostenv or { };
+                    projectSecretKeys = effectiveKeys name "project" (hostenvCfg.projectSecrets or { });
+                    envSecretKeys = effectiveKeys name "environment" (envCfg.secrets or { });
+                    secretKeys = lib.unique ([ "backups_secret" "backups_env" ] ++ projectSecretKeys ++ envSecretKeys);
+                  in
+                  builtins.listToAttrs (map
+                    (secretKey: {
+                      name = "${name}/${secretKey}";
+                      value = {
+                        owner = name;
+                        group = name;
+                        key = "${resolveSecretSource name secretKey}/${secretKey}";
+                      };
+                    })
+                    secretKeys)
+              )
+              envOnly)
+            // providerServiceSecrets;
         };
 
     in
@@ -210,22 +243,14 @@ let
     { inputs
     , config
     , nixpkgs
-    , deploy-rs
-    , systems
     , localSystem
     , nodesPath
     , secretsPath
     , nodeModules ? [ ]
     , nodeSystems ? { }
-    , nodeAddresses ? { }
-    , nodeSshPorts ? { }
-    , nodeSshOpts ? { }
-    , nodeRemoteBuild ? { }
-    , nodeMagicRollback ? { }
-    , nodeAutoRollback ? { }
     }:
     let
-      forEachSystem = nixpkgs.lib.genAttrs (import systems);
+      forEachSystem = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
       pkgs = forEachSystem (system: import nixpkgs { inherit system; });
 
       nixosSystem = node: providerNixosSystem {
@@ -273,65 +298,6 @@ let
         envPkgs // nodePkgs
       );
 
-      deploy.nodes = builtins.mapAttrs
-        (node: _: {
-          # Allow local demos and non-standard network topologies to override
-          # default `<node>.<hostenvHostname>` SSH addressing.
-          hostname =
-            if builtins.hasAttr node nodeAddresses
-            then nodeAddresses.${node}
-            else node + "." + config.hostenvHostname;
-          # Keep port override and raw ssh options separate so callers can use
-          # either `nodeSshPorts` or `nodeSshOpts` without duplicating flags.
-          sshOpts =
-            let
-              portOpts =
-                if builtins.hasAttr node nodeSshPorts
-                then [ "-p" (builtins.toString nodeSshPorts.${node}) ]
-                else [ ];
-              extraOpts =
-                if builtins.hasAttr node nodeSshOpts
-                then nodeSshOpts.${node}
-                else [ ];
-            in
-            portOpts ++ extraOpts;
-          fastConnection = true;
-          remoteBuild =
-            if builtins.hasAttr node nodeRemoteBuild
-            then nodeRemoteBuild.${node}
-            else false;
-          magicRollback =
-            if builtins.hasAttr node nodeMagicRollback
-            then nodeMagicRollback.${node}
-            else true;
-          autoRollback =
-            if builtins.hasAttr node nodeAutoRollback
-            then nodeAutoRollback.${node}
-            else true;
-          profilesOrder = [ "system" ] ++ builtins.attrNames (environmentsWith node).${localSystem};
-          profiles =
-            let
-              remoteSystem = nodes.${node}.pkgs.stdenv.hostPlatform.system;
-            in
-            {
-              system = {
-                sshUser = config.deployUser or "deploy";
-                user = "root";
-                path = deploy-rs.lib.${remoteSystem}.activate.nixos nodes.${node};
-              };
-            } // builtins.mapAttrs
-              (name: environment: {
-                user = name;
-                # Environment activation must run in a real user session so
-                # systemd --user units can start reliably.
-                sshUser = name;
-                path = deploy-rs.lib.${remoteSystem}.activate.custom environment "./bin/activate";
-              })
-              (environmentsWith node).${remoteSystem};
-          checks = { };
-        })
-        config.nodes;
-
       nixosConfigurations = nodes;
     };
 in
@@ -348,25 +314,83 @@ in
       default = "example.invalid";
       description = "Hostenv control-plane hostname (must be set by provider).";
     };
-    deployUser = mkOption {
-      type = types.str;
-      default = "deploy";
-      description = "SSH/sudo user used for deploy-rs operations.";
-    };
     letsEncrypt = mkOption { type = types.attrs; default = { adminEmail = "admin@example.invalid"; acceptTerms = true; }; };
-    deployPublicKeys = mkOption { type = types.listOf types.str; default = [ ]; description = "SSH public keys for deploy user; must be set by provider."; };
     nixSigning = mkOption {
       type = types.submodule {
         options = {
           trustedPublicKeys = mkOption {
             type = types.listOf types.str;
             default = [ ];
-            description = "Public Nix signing keys trusted by provider nodes for deploy-rs copy checks.";
+            description = "Public Nix signing keys trusted by provider nodes.";
           };
         };
       };
       default = { };
       description = "Nix signing key configuration shared by generated plan and node configuration.";
+    };
+    comin = mkOption {
+      type = types.submodule {
+        options = {
+          enable = lib.mkEnableOption "pull-based node activation with comin";
+          remoteUrl = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = "Git URL for provider desired-state repository consumed by comin nodes.";
+          };
+          branch = mkOption {
+            type = types.str;
+            default = "main";
+            description = "Repository branch polled by comin.";
+          };
+          pollIntervalSeconds = mkOption {
+            type = types.int;
+            default = 30;
+            description = "Comin polling interval in seconds.";
+          };
+          actionTimeoutSeconds = mkOption {
+            type = types.int;
+            default = 900;
+            description = "Maximum seconds a single comin user action may run before it is marked timed_out.";
+          };
+          providerApiBaseUrl = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = "Base URL for provider callback APIs used by node workers.";
+          };
+          nodeAuthTokenFile = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = "Default path for node bearer token used in provider callback requests.";
+          };
+          nodeAuthTokenFiles = mkOption {
+            type = types.attrsOf types.str;
+            default = { };
+            description = "Optional map of node name -> node bearer token file path.";
+          };
+        };
+      };
+      default = { };
+      description = "Comin pull-deploy settings propagated to provider nodes.";
+    };
+    service = mkOption {
+      type = types.nullOr (types.submodule {
+        options = {
+          organisation = mkOption {
+            type = types.str;
+            description = "Organisation that owns the provider-service environment.";
+          };
+          project = mkOption {
+            type = types.str;
+            description = "Project that owns the provider-service environment.";
+          };
+          environmentName = mkOption {
+            type = types.str;
+            description = "Environment name that runs the provider service and receives provider secrets.";
+          };
+        };
+      });
+      default = null;
+      description = "Provider environment selector used for provider-service secrets.";
     };
     nodeFor = mkOption {
       type = types.attrs;
@@ -376,36 +400,6 @@ in
       type = types.attrs;
       default = { };
       description = "Map of node name -> system string (e.g. x86_64-linux, aarch64-linux).";
-    };
-    nodeAddresses = mkOption {
-      type = types.attrsOf types.str;
-      default = { };
-      description = "Optional map of node name -> SSH hostname/IP override for deploy-rs.";
-    };
-    nodeSshPorts = mkOption {
-      type = types.attrsOf types.int;
-      default = { };
-      description = "Optional map of node name -> SSH port override for deploy-rs.";
-    };
-    nodeSshOpts = mkOption {
-      type = types.attrsOf (types.listOf types.str);
-      default = { };
-      description = "Optional map of node name -> extra SSH options for deploy-rs.";
-    };
-    nodeRemoteBuild = mkOption {
-      type = types.attrsOf types.bool;
-      default = { };
-      description = "Optional map of node name -> whether deploy-rs should build on the remote host.";
-    };
-    nodeMagicRollback = mkOption {
-      type = types.attrsOf types.bool;
-      default = { };
-      description = "Optional map of node name -> deploy-rs magicRollback override.";
-    };
-    nodeAutoRollback = mkOption {
-      type = types.attrsOf types.bool;
-      default = { };
-      description = "Optional map of node name -> deploy-rs autoRollback override.";
     };
     nodeModules = mkOption {
       type = types.listOf (types.oneOf [ types.path types.str ]);
@@ -473,8 +467,7 @@ in
     nixosModules = providerNixosModules;
     nixosSystem = providerNixosSystem;
     deployOutputs = providerDeployOutputs;
-    deployPublicKeys = config.provider.deployPublicKeys;
-    deployUser = config.provider.deployUser;
     nixSigning = config.provider.nixSigning;
+    comin = config.provider.comin;
   };
 }

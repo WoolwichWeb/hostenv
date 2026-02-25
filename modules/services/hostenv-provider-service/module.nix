@@ -28,6 +28,7 @@ let
     "turtle"
     "unix"
     "wai"
+    "yaml"
     "wai-websockets"
     "warp"
     "websockets"

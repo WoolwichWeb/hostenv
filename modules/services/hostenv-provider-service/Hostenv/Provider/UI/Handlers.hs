@@ -12,6 +12,9 @@ module Hostenv.Provider.UI.Handlers
   , handleBootstrapRepoPost
   , handleJobGet
   , handleJobEventsGet
+  , handleDeployStatusGet
+  , handleDeployActionsGet
+  , handleJobDeployEventsGet
   , handleOauthStart
   , handleOauthCallback
   ) where
@@ -21,6 +24,7 @@ import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import Data.IORef (IORef, readIORef, writeIORef)
 import qualified Data.Aeson as A
 import qualified Data.ByteString.Char8 as BSC
+import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -30,7 +34,7 @@ import qualified Network.Wai as Wai
 import Network.Wai (strictRequestBody)
 
 import Hostenv.Provider.Config (AppConfig(..), uiPath)
-import Hostenv.Provider.DB (SessionInfo(..), User(..), getSessionInfo, loadProjects, logoutCookie, renderSessionCookie, withDb)
+import Hostenv.Provider.DB (SessionInfo(..), User(..), getSessionInfo, loadDeployActions, loadDeployEventsSince, loadDeployStatuses, loadProjects, logoutCookie, renderSessionCookie, withDb)
 import Hostenv.Provider.Gitlab
   ( GitlabError
   , GitlabTokenResponse(..)
@@ -48,7 +52,7 @@ import Hostenv.Provider.Gitlab
   , upsertUserSession
   )
 import Hostenv.Provider.Project (ProjectFlowError(..), addProjectFlow, bootstrapRepoFlow, projectFlowErrorText)
-import Hostenv.Provider.Jobs (JobLogger(..), JobRuntime, NewJob(..), enqueueJob, loadJobById, loadJobEventsSince, loadRecentJobs)
+import Hostenv.Provider.Jobs (JobLogger(..), JobOutcome(..), JobRuntime, NewJob(..), enqueueJob, loadJobById, loadJobEventsSince, loadRecentJobs)
 import Hostenv.Provider.Repo (RepoStatus(..))
 import Hostenv.Provider.Service (GitlabSecrets(..))
 import Hostenv.Provider.UI.Helpers (respondHtml, respondHtmlWithHeaders, respondJson, respondRedirect)
@@ -135,7 +139,7 @@ handleAddProjectPost runtime repoStatusRef cfg req respond =
                                         case flowErr of
                                           ProjectFlowAuthError msg -> pure (Left msg)
                                           ProjectFlowError _ -> pure (Left (projectFlowErrorText flowErr))
-                                      Right successMsg -> pure (Right successMsg)
+                                      Right successMsg -> pure (Right (JobComplete successMsg))
                                 }
                         jobId <- enqueueJob runtime jobDef
                         respondRedirect respond cfg ("/jobs/" <> jobId)
@@ -189,7 +193,7 @@ handleBootstrapRepoPost runtime repoStatusRef cfg req respond =
                                       Left msg -> pure (Left msg)
                                       Right successMsg -> do
                                         writeIORef repoStatusRef RepoReady
-                                        pure (Right successMsg)
+                                        pure (Right (JobComplete successMsg))
                                 }
                         jobId <- enqueueJob runtime jobDef
                         respondRedirect respond cfg ("/jobs/" <> jobId)
@@ -204,6 +208,34 @@ handleJobGet cfg jobId req respond =
 
 handleJobEventsGet :: AppConfig -> Text -> Wai.Request -> (Wai.Response -> IO a) -> IO a
 handleJobEventsGet cfg jobId req respond =
+  handleJobEventsWith cfg jobId req respond loadJobEventsSince
+
+handleDeployStatusGet :: AppConfig -> Text -> Wai.Request -> (Wai.Response -> IO a) -> IO a
+handleDeployStatusGet cfg jobId req respond =
+  requireAdmin cfg req respond $ \_sess -> do
+    mJob <- loadJobById cfg jobId
+    case mJob of
+      Nothing -> respondHtml respond status404 (errorPage cfg "Job not found")
+      Just _ -> do
+        statuses <- loadDeployStatuses cfg jobId
+        respondJson respond status200 statuses
+
+handleDeployActionsGet :: AppConfig -> Text -> Wai.Request -> (Wai.Response -> IO a) -> IO a
+handleDeployActionsGet cfg jobId req respond =
+  requireAdmin cfg req respond $ \_sess -> do
+    mJob <- loadJobById cfg jobId
+    case mJob of
+      Nothing -> respondHtml respond status404 (errorPage cfg "Job not found")
+      Just _ -> do
+        actions <- loadDeployActions cfg jobId
+        respondJson respond status200 actions
+
+handleJobDeployEventsGet :: AppConfig -> Text -> Wai.Request -> (Wai.Response -> IO a) -> IO a
+handleJobDeployEventsGet cfg jobId req respond =
+  handleJobEventsWith cfg jobId req respond loadDeployEventsSince
+
+handleJobEventsWith :: A.ToJSON a1 => AppConfig -> Text -> Wai.Request -> (Wai.Response -> IO a) -> (AppConfig -> Text -> Int64 -> IO a1) -> IO a
+handleJobEventsWith cfg jobId req respond loadEvents =
   requireAdmin cfg req respond $ \_sess -> do
     mJob <- loadJobById cfg jobId
     case mJob of
@@ -216,7 +248,7 @@ handleJobEventsGet cfg jobId req respond =
                   case readInt64 (TE.decodeUtf8 raw) of
                     Just n -> max 0 n
                     Nothing -> 0
-        events <- loadJobEventsSince cfg jobId after
+        events <- loadEvents cfg jobId after
         respondJson respond status200 events
 
 handleOauthStart :: AppConfig -> Wai.Request -> (Wai.Response -> IO a) -> IO a

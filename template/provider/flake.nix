@@ -10,10 +10,7 @@
       inputs.flake-parts.follows = "flake-parts";
       inputs.phps.follows = "phps";
     };
-    deploy-rs = {
-      url = "github:serokell/deploy-rs";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    comin.follows = "hostenv/comin";
     sops-nix = {
       url = "github:Mic92/sops-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -49,9 +46,16 @@
 
       provider = {
         hostenvHostname = "hosting.example.com";
-        deployPublicKeys = [ "ssh-ed25519 AAAA..." ];
         nodeSystems = { default = "x86_64-linux"; };
         nodeFor = { production = "node-a"; testing = "node-a"; development = "node-a"; };
+
+        # Enable pull-based activation with comin.
+        # comin = {
+        #   enable = true;
+        #   remoteUrl = "https://gitlab.com/acme/provider.git";
+        #   providerApiBaseUrl = "https://hosting.example.com";
+        #   nodeAuthTokenFile = "/run/secrets/hostenv-provider/comin_node_token";
+        # };
 
         # Add NixOS system-level configuration that's common to all servers here:
         # nodeModules = [ "nodes/common.nix" ];

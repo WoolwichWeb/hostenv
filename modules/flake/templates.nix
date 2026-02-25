@@ -21,10 +21,10 @@
         welcomeText = ''
           ## Hostenv provider flake
 
-          - Set `provider.*` options in flake.nix (hostname, deploy key, nodes).
+          - Set `provider.*` options in flake.nix (hostname, nodes).
           - Add node configs under nodes/<name>/configuration.nix.
           - Generate plan/state: nix run .#hostenv-provider -- plan
-          - Deploy using generated/flake.nix (e.g. via deploy-rs).
+          - Enable comin on nodes to pull desired state.
         '';
       };
     };

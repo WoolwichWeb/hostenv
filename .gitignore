@@ -1,4 +1,7 @@
 /result
+/.tmp/
+/result-*
+/plan.txt
 /.direnv/
 /for_refactoring/
 /dist-newstyle

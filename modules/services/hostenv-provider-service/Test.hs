@@ -5,6 +5,9 @@
 import Control.Monad (unless)
 import "crypton" Crypto.Hash (SHA256)
 import "crypton" Crypto.MAC.HMAC (HMAC (..), hmac)
+import qualified Data.Aeson as A
+import qualified Data.Aeson.Key as K
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteArray as BA
 import qualified Data.ByteArray.Encoding as BAE
 import qualified Data.ByteString as BS
@@ -16,13 +19,15 @@ import Data.Time.Clock (secondsToDiffTime)
 import Network.HTTP.Types.Status (mkStatus)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import qualified Data.Text as T
-import System.Directory (createDirectory, getTemporaryDirectory, removeFile, removePathForcibly)
+import System.Directory (createDirectory, createDirectoryIfMissing, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.Exit (exitFailure)
 import System.IO (hClose, openTempFile)
 
-import Hostenv.Provider.Config (AppConfig(..))
+import qualified Data.Map.Strict as Map
+import Hostenv.Provider.Config (AppConfig(..), CominConfig(..), loadConfig)
 import Hostenv.Provider.Crypto
 import Hostenv.Provider.DB (OAuthCredential(..))
+import Hostenv.Provider.DeployApi (acceptsNodeEvents, extractBearer, normalizeStatus, validateIntent)
 import Hostenv.Provider.Gitlab
   ( GitlabCredentialContext(..)
   , GitlabError(..)
@@ -39,7 +44,7 @@ import Hostenv.Provider.Gitlab
 import Hostenv.Provider.PrevNodeDiscovery
 import Hostenv.Provider.Repo (RepoStatus(..), ensureProviderRepo, isAuthFailure)
 import Hostenv.Provider.Service
-import Hostenv.Provider.Webhook (chooseFinalResult)
+import Hostenv.Provider.Webhook (chooseFinalResult, persistIntentsActionsAndPushWith, shouldWaitForCallbacks)
 
 assert :: Bool -> String -> IO ()
 assert cond msg = unless cond $ do
@@ -50,6 +55,10 @@ main :: IO ()
 main = do
   testGitHubSig
   testGitLabToken
+  testDeployApiBearerParsing
+  testDeployApiStatusNormalization
+  testDeployApiEventAcceptance
+  testDeployApiIntentValidation
   testPlanParsing
   testNodeOrderWithMigrations
   testNodeOrderWithDnsSkipsNonMigratingEnvDiscovery
@@ -66,10 +75,17 @@ main = do
   testGitlabReauthClassification
   testRepoAuthFailureClassifier
   testWebhookResultPriority
+  testShouldWaitForCallbacks
+  testPersistIntentsActionsAndPushOrder
   testTokenEncryptionRoundtrip
   testTokenKeyLoading
+  testLoadConfigJobDefaults
   testEnsureProviderRepoMissing
   testEnsureProviderRepoInvalidDir
+  testDeployIntentStablePayload
+  testNoIntentWhenUnchanged
+  testReloadIntentSameNodeChange
+  testMoveIntentOrdering
   putStrLn "ok"
 
 
@@ -88,6 +104,53 @@ testGitLabToken :: IO ()
 testGitLabToken = do
   assert (verifyGitLabToken "token" "token") "gitlab token should validate"
   assert (not (verifyGitLabToken "token" "bad")) "gitlab token should reject invalid"
+
+testDeployApiBearerParsing :: IO ()
+testDeployApiBearerParsing = do
+  assert (extractBearer Nothing == Nothing) "extractBearer should reject missing auth header"
+  assert (extractBearer (Just "Bearer token123") == Just "token123") "extractBearer should parse bearer token"
+  assert (extractBearer (Just " bearer token456 ") == Just "token456") "extractBearer should normalize case and whitespace"
+  assert (extractBearer (Just "Basic abc123") == Nothing) "extractBearer should reject non-bearer auth"
+
+testDeployApiStatusNormalization :: IO ()
+testDeployApiStatusNormalization = do
+  assert (normalizeStatus "RUNNING" == "running") "normalizeStatus should lowercase valid statuses"
+  assert (normalizeStatus " success " == "success") "normalizeStatus should trim whitespace"
+  assert (normalizeStatus "invalid-status" == "") "normalizeStatus should reject invalid statuses"
+
+testDeployApiEventAcceptance :: IO ()
+testDeployApiEventAcceptance = do
+  assert (acceptsNodeEvents "waiting") "acceptsNodeEvents should allow waiting jobs"
+  assert (acceptsNodeEvents " WAITING ") "acceptsNodeEvents should normalize case and whitespace"
+  assert (not (acceptsNodeEvents "running")) "acceptsNodeEvents should reject non-waiting statuses"
+  assert (not (acceptsNodeEvents "failed")) "acceptsNodeEvents should reject terminal statuses"
+
+testDeployApiIntentValidation :: IO ()
+testDeployApiIntentValidation = do
+  let validIntent =
+        A.object
+          [ "schemaVersion" A..= (1 :: Int)
+          , "actions" A..= [A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("activate" :: T.Text)]]
+          ]
+      invalidSchema =
+        A.object
+          [ "schemaVersion" A..= (2 :: Int)
+          , "actions" A..= [A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("activate" :: T.Text)]]
+          ]
+      invalidUser =
+        A.object
+          [ "schemaVersion" A..= (1 :: Int)
+          , "actions" A..= [A.object ["user" A..= ("" :: T.Text), "op" A..= ("activate" :: T.Text)]]
+          ]
+      invalidOp =
+        A.object
+          [ "schemaVersion" A..= (1 :: Int)
+          , "actions" A..= [A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("migrate" :: T.Text)]]
+          ]
+  assert (validateIntent validIntent == Just validIntent) "validateIntent should accept valid payload"
+  assert (validateIntent invalidSchema == Nothing) "validateIntent should reject unknown schema versions"
+  assert (validateIntent invalidUser == Nothing) "validateIntent should reject blank user names"
+  assert (validateIntent invalidOp == Nothing) "validateIntent should reject unknown action ops"
 
 
 testPlanParsing :: IO ()
@@ -141,24 +204,54 @@ testCommandSequence = do
         BLC.pack
           "{\"environments\":{\"env-a\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"projectNameHash\":\"hash-main\"},\"node\":\"node-a\"},\"env-b\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"projectNameHash\":\"hash-dev\"},\"node\":\"node-b\"}}}"
   ref <- newIORef ([] :: [CommandSpec])
-  let runner = recordRunner ref
+  stageRef <- newIORef ([] :: [WebhookStage])
+  let runner spec = do
+        modifyIORef' ref (<> [spec])
+        if spec.cmdName == "git"
+          && spec.cmdArgs == ["status", "--porcelain", "--", "generated", "flake.nix", "flake.lock"]
+          then pure (Right (CommandOutput " M generated/plan.json\n" ""))
+          else pure (Right (CommandOutput "" ""))
+  let notifyStage stage = modifyIORef' stageRef (<> [stage])
   let cfg = WebhookConfig "/tmp/provider" "/tmp/provider/generated/plan.json"
   let proj = ProjectRef "acme" "site"
-  result <- runWebhookWith runner (pure planJson) cfg proj
+  result <- runWebhookWith notifyStage runner (pure planJson) cfg proj
   case result of
     Left err -> assert False ("webhook run failed: " <> show err)
     Right res -> do
-      assert (res.webhookOk) "webhook run should succeed"
+      assert (res.updateStatus == WebhookUpdateCommitted) "webhook run should commit when changes exist"
+      assert (res.nodes == ["node-a", "node-b"]) "webhook run should preserve ordered nodes"
+      assert (length res.intents == 2) "webhook run should emit one intent per matching node"
+      let firstActions = case res.intents of
+            (intent:_) -> intent.actions
+            _ -> []
+      assert (any (\action -> action.op == "activate") firstActions) "new deployments should include activate intent actions"
       cmds <- readIORef ref
       let expected =
             [ CommandSpec "git" ["pull", "--rebase", "--autostash"] "/tmp/provider"
             , CommandSpec "nix" ["flake", "update", "acme__site"] "/tmp/provider"
             , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] "/tmp/provider"
             , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "dns-gate"] "/tmp/provider"
-            , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "deploy", "--node", "node-a"] "/tmp/provider"
-            , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "deploy", "--node", "node-b"] "/tmp/provider"
+            , CommandSpec "git" ["add", "-A", "generated"] "/tmp/provider"
+            , CommandSpec "git" ["add", "-A", "flake.nix", "flake.lock"] "/tmp/provider"
+            , CommandSpec "git" ["status", "--porcelain", "--", "generated", "flake.nix", "flake.lock"] "/tmp/provider"
+            , CommandSpec "git" ["commit", "-m", "hostenv-provider: deploy intent for acme/site"] "/tmp/provider"
+            , CommandSpec "git" ["rev-parse", "HEAD"] "/tmp/provider"
             ]
+
       assert (cmds == expected) "webhook command sequence should match"
+      stages <- readIORef stageRef
+      let expectedStages =
+            [ StageSyncRepo
+            , StageUpdateFlake
+            , StagePlan
+            , StageDnsGate
+            , StageLoadPlan
+            , StageResolveNodes
+            , StageDeriveIntents
+            , StageWriteIntent
+            , StageFinalizeRepo
+            ]
+      assert (stages == expectedStages) "webhook run should report stage transitions in order"
 
 
 recordRunner :: IORef [CommandSpec] -> CommandRunner
@@ -344,8 +437,8 @@ testRepoAuthFailureClassifier = do
 
 testWebhookResultPriority :: IO ()
 testWebhookResultPriority = do
-  let primary = WebhookPlanError "primary failed"
-      okResult = WebhookResult [] [] True
+  let primary = WebhookPlanError StagePlan "primary failed"
+      okResult = WebhookResult [] [] "sha" WebhookUpdateNoop
   case chooseFinalResult (Left primary) (Just "revoke failed") of
     Left (Left err) -> assert (err == primary) "primary webhook failure should take precedence over revoke failures"
     _ -> assert False "expected primary webhook failure to win"
@@ -357,6 +450,28 @@ testWebhookResultPriority = do
   case chooseFinalResult (Right okResult) Nothing of
     Right finalResult -> assert (finalResult == okResult) "successful webhook result should pass through when revoke succeeds"
     _ -> assert False "expected successful result when there is no revoke error"
+
+testShouldWaitForCallbacks :: IO ()
+testShouldWaitForCallbacks = do
+  let oneIntent = [NodeIntent "node-a" [NodeAction "activate" "alice" Nothing Nothing []]]
+  assert (shouldWaitForCallbacks WebhookUpdateCommitted True oneIntent) "waiting should require committed update, comin enabled, and non-empty intents"
+  assert (not (shouldWaitForCallbacks WebhookUpdateNoop True oneIntent)) "waiting should be skipped when commit is not pushed"
+  assert (not (shouldWaitForCallbacks WebhookUpdateCommitted False oneIntent)) "waiting should be skipped when comin is disabled"
+  assert (not (shouldWaitForCallbacks WebhookUpdateCommitted True [])) "waiting should be skipped when no node intents are generated"
+
+testPersistIntentsActionsAndPushOrder :: IO ()
+testPersistIntentsActionsAndPushOrder = do
+  stepsRef <- newIORef ([] :: [T.Text])
+  let record step = modifyIORef' stepsRef (<> [step])
+  result <-
+    persistIntentsActionsAndPushWith
+      (record "intents")
+      (record "actions")
+      (record "events")
+      (record "push" >> pure (Right ()))
+  assert (result == Right ()) "persist helper should return push result"
+  steps <- readIORef stepsRef
+  assert (steps == ["intents", "actions", "events", "push"]) "persist helper should run persistence before push"
 
 testTokenEncryptionRoundtrip :: IO ()
 testTokenEncryptionRoundtrip = do
@@ -381,6 +496,35 @@ testTokenKeyLoading = do
     Left err -> assert False ("loadTokenCipher failed: " <> T.unpack err)
     Right cipher ->
       assert (BS.length cipher.tokenCipherKey == 32) "token key file should load 32-byte key"
+
+testLoadConfigJobDefaults :: IO ()
+testLoadConfigJobDefaults = do
+  tmpDir <- getTemporaryDirectory
+  (path, handle) <- openTempFile tmpDir "provider-config-"
+  hClose handle
+  BL.writeFile path $
+    A.encode $
+      A.object
+        [ "dataDir" A..= ("/tmp/hostenv-provider" :: T.Text)
+        , "flakeRoot" A..= ("." :: T.Text)
+        , "listenSocket" A..= ("/tmp/hostenv-provider.sock" :: T.Text)
+        , "webhookHost" A..= ("example.invalid" :: T.Text)
+        , "uiBasePath" A..= ("/dashboard" :: T.Text)
+        , "uiBaseUrl" A..= ("https://example.invalid" :: T.Text)
+        , "dbUri" A..= ("host=/tmp dbname=hostenv-provider user=test" :: T.Text)
+        , "gitlab" A..= A.object [ "enable" A..= False ]
+        , "seedUsers" A..= ([] :: [A.Value])
+        , "gitConfigFile" A..= ("/tmp/gitconfig" :: T.Text)
+        , "gitCredentialsFile" A..= ("/tmp/git-credentials" :: T.Text)
+        , "flakeTemplate" A..= ("flake.template.nix" :: T.Text)
+        , "comin" A..= A.object [ "enable" A..= False ]
+        ]
+  cfg <- loadConfig path
+  removeFile path
+  assert (cfg.appJobsRetentionDays == 30) "loadConfig should default jobs.retentionDays"
+  assert (cfg.appJobsCleanupIntervalMins == 1440) "loadConfig should default jobs.cleanupIntervalMins"
+  assert (cfg.appJobsWaitTimeoutMins == 120) "loadConfig should default jobs.waitTimeoutMins"
+  assert (cfg.appJobsWaitInterval == 60) "loadConfig should default jobs.waitInterval"
 
 testEnsureProviderRepoMissing :: IO ()
 testEnsureProviderRepoMissing = do
@@ -408,6 +552,110 @@ testEnsureProviderRepoInvalidDir = do
     Left msg -> assert ("not a git checkout" `T.isInfixOf` msg) "invalid repo dir should report git checkout error"
     other -> assert False ("expected checkout error, got " <> show other)
 
+
+testDeployIntentStablePayload :: IO ()
+testDeployIntentStablePayload = do
+  let ref = ProjectRef "acme" "site"
+      intent = NodeIntent "node-a" [NodeAction "activate" "alice" Nothing Nothing []]
+      payload = renderDeployIntentDocument ref [intent]
+      missingKey key =
+        case payload of
+          A.Object obj -> not (KM.member (K.fromString key) obj)
+          _ -> False
+  assert (missingKey "jobId") "deploy intent should not include jobId"
+  assert (missingKey "generatedAt") "deploy intent should not include generatedAt"
+
+
+testNoIntentWhenUnchanged :: IO ()
+testNoIntentWhenUnchanged = do
+
+  tmpDir <- getTemporaryDirectory
+  let workDir = tmpDir <> "/hostenv-provider-no-intent"
+  let generatedDir = workDir <> "/generated"
+  let previousPlanPath = generatedDir <> "/plan.json"
+  createDirectoryIfMissing True generatedDir
+  let planJson =
+        BLC.pack
+          "{\"hostenvHostname\":\"hosting.test\",\"nodes\":{\"node-a\":{}},\"environments\":{\"env-a\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"userName\":\"env-a\",\"projectNameHash\":\"hash-main\"},\"node\":\"node-a\"}}}"
+  BLC.writeFile previousPlanPath planJson
+  cmdRef <- newIORef ([] :: [CommandSpec])
+  let runner = recordRunner cmdRef
+  let cfg = WebhookConfig workDir previousPlanPath
+  let proj = ProjectRef "acme" "site"
+  result <- runWebhookWith (\_ -> pure ()) runner (pure planJson) cfg proj
+  removePathForcibly workDir
+  case result of
+    Left err -> assert False ("unchanged webhook run failed: " <> show err)
+    Right webhookResult -> do
+      assert (webhookResult.intents == []) "unchanged plans should not emit deploy intents"
+
+testReloadIntentSameNodeChange :: IO ()
+testReloadIntentSameNodeChange = do
+  tmpDir <- getTemporaryDirectory
+  let workDir = tmpDir <> "/hostenv-provider-reload-intent"
+  let generatedDir = workDir <> "/generated"
+  let previousPlanPath = generatedDir <> "/plan.json"
+  createDirectoryIfMissing True generatedDir
+  let previousPlan =
+        BLC.pack
+          "{\"hostenvHostname\":\"hosting.test\",\"nodes\":{\"node-a\":{}},\"environments\":{\"env-a\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"userName\":\"env-a\",\"projectNameHash\":\"hash-main\"},\"node\":\"node-a\",\"version\":1}}}"
+  let currentPlan =
+        BLC.pack
+          "{\"hostenvHostname\":\"hosting.test\",\"nodes\":{\"node-a\":{}},\"environments\":{\"env-a\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"userName\":\"env-a\",\"projectNameHash\":\"hash-main\"},\"node\":\"node-a\",\"version\":2}}}"
+  BLC.writeFile previousPlanPath previousPlan
+  cmdRef <- newIORef ([] :: [CommandSpec])
+  let runner = recordRunner cmdRef
+  let cfg = WebhookConfig workDir previousPlanPath
+  let proj = ProjectRef "acme" "site"
+  result <- runWebhookWith (\_ -> pure ()) runner (pure currentPlan) cfg proj
+  removePathForcibly workDir
+  case result of
+    Left err -> assert False ("reload webhook run failed: " <> show err)
+    Right webhookResult -> do
+      let intentsByNode =
+            Map.fromList
+              [ (intent.node, map (.op) intent.actions)
+              | intent <- webhookResult.intents
+              ]
+      assert
+        (Map.findWithDefault [] "node-a" intentsByNode == ["reload"])
+        "same-node payload changes should emit reload action"
+
+testMoveIntentOrdering :: IO ()
+testMoveIntentOrdering = do
+  tmpDir <- getTemporaryDirectory
+  let workDir = tmpDir <> "/hostenv-provider-move-order"
+  let generatedDir = workDir <> "/generated"
+  let previousPlanPath = generatedDir <> "/plan.json"
+  createDirectoryIfMissing True generatedDir
+  let previousPlan =
+        BLC.pack
+          "{\"hostenvHostname\":\"hosting.test\",\"nodes\":{\"node-a\":{},\"node-b\":{}},\"environments\":{\"env-a\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"userName\":\"env-a\",\"projectNameHash\":\"hash-main\"},\"node\":\"node-a\"}}}"
+  let currentPlan =
+        BLC.pack
+          "{\"hostenvHostname\":\"hosting.test\",\"nodes\":{\"node-a\":{},\"node-b\":{}},\"environments\":{\"env-a\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"userName\":\"env-a\",\"projectNameHash\":\"hash-main\"},\"node\":\"node-b\",\"previousNode\":\"node-a\",\"migrations\":[\"db-migrate\"]}}}"
+  BLC.writeFile previousPlanPath previousPlan
+  cmdRef <- newIORef ([] :: [CommandSpec])
+  let runner = recordRunner cmdRef
+  let cfg = WebhookConfig workDir previousPlanPath
+  let proj = ProjectRef "acme" "site"
+  result <- runWebhookWith (\_ -> pure ()) runner (pure currentPlan) cfg proj
+  removePathForcibly workDir
+  case result of
+    Left err -> assert False ("move webhook run failed: " <> show err)
+    Right webhookResult -> do
+      let intentsByNode =
+            Map.fromList
+              [ (intent.node, map (.op) intent.actions)
+              | intent <- webhookResult.intents
+              ]
+      assert
+        (Map.findWithDefault [] "node-b" intentsByNode == ["restore", "activate"])
+        "destination node should run restore before activate"
+      assert
+        (Map.findWithDefault [] "node-a" intentsByNode == ["backup", "deactivate"])
+        "source node should run backup before deactivate"
+
 mkRepoConfig :: FilePath -> AppConfig
 mkRepoConfig dataDir =
   AppConfig
@@ -430,6 +678,15 @@ mkRepoConfig dataDir =
     , appFlakeTemplate = "flake.template.nix"
     , appSeedUsers = []
     , appJobsRetentionDays = 30
-    , appJobsCleanupIntervalMinutes = 1440
+    , appJobsCleanupIntervalMins = 1440
+    , appJobsWaitTimeoutMins = 120
+    , appJobsWaitInterval = 60
+    , appComin =
+        CominConfig
+          { enable = True
+          , branch = "main"
+          , pollIntervalSeconds = 30
+          , nodeAuthTokens = Map.empty
+          }
     , appHttpManager = Nothing
     }

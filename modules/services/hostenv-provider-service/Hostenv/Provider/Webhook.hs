@@ -8,11 +8,13 @@ module Hostenv.Provider.Webhook
   , loadPlan
   , WebhookAccepted(..)
   , runWebhookDeployJob
+  , shouldWaitForCallbacks
+  , persistIntentsActionsAndPushWith
   , chooseFinalResult
   ) where
 
 import Control.Exception (finally)
-import Control.Monad (unless)
+import Control.Monad (forM_, unless)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
@@ -28,19 +30,24 @@ import System.FilePath ((</>))
 import Servant
 
 import Hostenv.Provider.Command (commandErrorText, exitCodeToInt, renderCommand, runCommandWithEnv)
-import Hostenv.Provider.Config (AppConfig(..))
-import Hostenv.Provider.DB (DeployCredential(..), loadDeployCredentialByHash, withDb)
+import Hostenv.Provider.Config (AppConfig(..), CominConfig(..))
+import Hostenv.Provider.DB (DeployCredential(..), appendDeployEvent, loadDeployCredentialByHash, saveDeployActions, saveDeployIntents, withDb)
 import Hostenv.Provider.Gitlab (GitlabDeployToken(..), NixGitlabTokenType(..), appendNixAccessTokenConfig, createProjectDeployToken, ensureProjectCredential, renderGitlabError, revokeProjectToken)
 import Hostenv.Provider.Http (ErrorResponse(..), errorWithBody)
-import Hostenv.Provider.Jobs (JobLogger(..), JobRuntime, NewJob(..), enqueueJob)
+import Hostenv.Provider.Jobs (JobLogger(..), JobOutcome(..), JobRuntime, NewJob(..), enqueueJob)
 import Hostenv.Provider.Repo (RepoStatus(..))
 import Hostenv.Provider.Service
   ( CommandError(..)
+  , CommandSpec(..)
   , CommandOutput(..)
+  , NodeIntent(..)
   , ProjectRef(..)
   , WebhookConfig(..)
   , WebhookError(..)
+  , WebhookUpdateStatus(..)
   , WebhookResult(..)
+  , WebhookStage(..)
+  , renderWebhookStage
   , projectForHash
   , runWebhookWith
   , verifyGitHubSignature
@@ -101,9 +108,10 @@ webhookHandler runtime repoStatusRef cfg hash mHubSig mGitlabToken rawBody = do
       }
   pure (WebhookAccepted True queuedJobId)
 
-runWebhookDeployJob :: AppConfig -> Text -> ProjectRef -> JobLogger -> IO (Either Text Text)
+runWebhookDeployJob :: AppConfig -> Text -> ProjectRef -> JobLogger -> IO (Either Text JobOutcome)
 runWebhookDeployJob cfg hash projectRef logger = do
   logger.logInfo ("Running webhook deployment for hash " <> hash)
+  logger.logInfo "webhook stage: load_project_credential"
   deployCredResult <- withDb cfg (\conn -> loadDeployCredentialByHash cfg conn hash)
   deployCred <-
     case deployCredResult of
@@ -113,6 +121,7 @@ runWebhookDeployJob cfg hash projectRef logger = do
   case deployCred of
     Left err -> pure (Left err)
     Right cred -> do
+      logger.logInfo "webhook stage: refresh_project_credential"
       refreshedCredResult <- ensureProjectCredential cfg cred
       refreshedDeployCred <-
         case refreshedCredResult of
@@ -122,6 +131,7 @@ runWebhookDeployJob cfg hash projectRef logger = do
         Left err -> pure (Left err)
         Right refreshedDeployCred' -> do
           let DeployCredential { host = deployHost, accessToken = deployAccessToken, repoId = deployRepoId } = refreshedDeployCred'
+          logger.logInfo "webhook stage: create_deploy_token"
           deployTokenResult <- createProjectDeployToken cfg deployHost deployAccessToken deployRepoId
           case deployTokenResult of
             Left err -> pure (Left (renderGitlabError err))
@@ -130,13 +140,16 @@ runWebhookDeployJob cfg hash projectRef logger = do
               let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig deployHost NixGitlabPAT deployToken.value
               let AppConfig { appWebhookConfig = webhookCfg } = cfg
               revokeErrRef <- newIORef Nothing
+              logger.logInfo "webhook stage: execute_pipeline"
               result <-
                 runWebhookWith
+                  (\stage -> logger.logInfo ("webhook stage: " <> renderWebhookStage stage))
                   (runCommandWithEnv cfg [("NIX_CONFIG", scopedNixConfig)])
                   (loadPlan cfg)
                   webhookCfg
                   projectRef
                   `finally` do
+                    logger.logInfo "webhook stage: revoke_deploy_token"
                     revokeResult <- revokeProjectToken cfg deployHost deployAccessToken deployRepoId deployToken.id
                     case revokeResult of
                       Left msg -> writeIORef revokeErrRef (Just msg)
@@ -147,29 +160,83 @@ runWebhookDeployJob cfg hash projectRef logger = do
                   pure (Left (renderWebhookError err))
                 Left (Right revokeMsg) ->
                   pure (Left revokeMsg)
-                Right okResult ->
-                  let WebhookResult { webhookOk = ok } = okResult
-                   in if ok
-                        then pure (Right "Webhook deployment completed")
-                        else pure (Left "Webhook deployment reported one or more failed deploys")
+                Right okResult -> do
+                  let WebhookResult
+                        { commitSha = commitSha
+                        , updateStatus = updateStatus
+                        , intents = intents
+                        } = okResult
+                      CominConfig cominEnabled _ _ _ = cfg.appComin
+                      shouldWait = shouldWaitForCallbacks updateStatus cominEnabled intents
+                      payloads =
+                        map
+                          (\intent -> (intent.node, A.object ["schemaVersion" A..= (1 :: Int), "actions" A..= intent.actions]))
+                          intents
+                      pushCommittedUpdate = do
+                        pushResult <-
+                          runCommandWithEnv cfg [("NIX_CONFIG", scopedNixConfig)] (CommandSpec "git" ["push"] webhookCfg.whWorkDir)
+                        pure
+                          ( case pushResult of
+                              Left cmdErr -> Left (renderWebhookError (WebhookCommandError StageFinalizeRepo cmdErr))
+                              Right _ -> Right ()
+                          )
+                  case updateStatus of
+                    WebhookUpdateCommitted ->
+                      if shouldWait
+                        then do
+                          persistAndPushResult <-
+                            persistIntentsActionsAndPushWith
+                              (saveDeployIntents cfg logger.jobId commitSha payloads)
+                              (saveDeployActions cfg logger.jobId payloads)
+                              (forM_ intents (\intent -> appendDeployEvent cfg logger.jobId intent.node "queued" (Just "intent") (Just "Deploy intent queued") Nothing >> pure ()))
+                              pushCommittedUpdate
+                          case persistAndPushResult of
+                            Left err -> pure (Left err)
+                            Right () ->
+                              pure
+                                ( Right
+                                    (JobWaiting ("Webhook deployment prepared at " <> commitSha <> " and waiting for node callbacks"))
+                                )
+                        else do
+                          pushResult <- pushCommittedUpdate
+                          case pushResult of
+                            Left err -> pure (Left err)
+                            Right () -> pure (Right (JobComplete ("Webhook deployment prepared and pushed at " <> commitSha)))
+                    WebhookUpdateNoop ->
+                      pure
+                        ( Right
+                            (JobComplete ("Webhook deployment intent updated without new commit (HEAD " <> commitSha <> ")"))
+                        )
+
+
+shouldWaitForCallbacks :: WebhookUpdateStatus -> Bool -> [NodeIntent] -> Bool
+shouldWaitForCallbacks updateStatus cominEnabled intents =
+  updateStatus == WebhookUpdateCommitted && cominEnabled && not (null intents)
+
+persistIntentsActionsAndPushWith :: IO () -> IO () -> IO () -> IO (Either Text ()) -> IO (Either Text ())
+persistIntentsActionsAndPushWith persistIntents persistActions appendQueuedEvents pushCommit = do
+  persistIntents
+  persistActions
+  appendQueuedEvents
+  pushCommit
 
 
 -- Webhook signature resolution
 
 data SecretInfo = SecretInfo
-  { secretConfigured :: Bool
-  , secretValue :: Maybe BS.ByteString
+  { configured :: Bool
+  , value :: Maybe BS.ByteString
   }
 
 verifyWebhook :: SecretInfo -> Maybe Text -> Maybe Text -> BL.ByteString -> Handler ()
 verifyWebhook secretInfo mHubSig mGitlabToken rawBody = do
   let hasGitHub = mHubSig /= Nothing
   let hasGitLab = mGitlabToken /= Nothing
-  case secretInfo.secretValue of
+  case secretInfo.value of
     Nothing ->
-      if secretInfo.secretConfigured && (hasGitHub || hasGitLab)
+      if secretInfo.configured && (hasGitHub || hasGitLab)
         then throwError (errorWithBody err401 (ErrorResponse "webhook secret not configured" Nothing Nothing Nothing Nothing))
-        else if secretInfo.secretConfigured
+        else if secretInfo.configured
           then throwError (errorWithBody err401 (ErrorResponse "missing webhook signature" Nothing Nothing Nothing Nothing))
           else pure ()
     Just secret ->
@@ -189,14 +256,13 @@ resolveSecret cfg hash ref = do
         , appWebhookSecretsDir = secretsDir
         , appWebhookSecretFile = secretFile
         } = cfg
-  let configured = True
   dbSecret <- case dbConn of
     Nothing -> pure Nothing
     Just _ -> withDb cfg $ \conn -> do
       rows <- query conn "SELECT secret FROM webhooks JOIN projects ON webhooks.project_id = projects.id WHERE projects.default_env_hash = ?" (Only hash)
       pure (listToMaybe (map fromOnly rows))
   case dbSecret of
-    Just secret -> pure (SecretInfo configured (Just (TE.encodeUtf8 secret)))
+    Just secret -> pure (SecretInfo True (Just (TE.encodeUtf8 secret)))
     Nothing -> do
       fromDir <- case secretsDir of
         Nothing -> pure Nothing
@@ -206,13 +272,13 @@ resolveSecret cfg hash ref = do
           let byProject = dir </> T.unpack (org <> "__" <> project)
           pickFirstExisting [byHash, byProject]
       case fromDir of
-        Just secret -> pure (SecretInfo configured (Just secret))
+        Just secret -> pure (SecretInfo True (Just secret))
         Nothing ->
           case secretFile of
-            Nothing -> pure (SecretInfo configured Nothing)
+            Nothing -> pure (SecretInfo False Nothing)
             Just path -> do
               secret <- readSecret path
-              pure (SecretInfo configured (Just secret))
+              pure (SecretInfo True (Just secret))
 
 
 -- Webhook error -> HTTP
@@ -220,12 +286,15 @@ resolveSecret cfg hash ref = do
 serverError :: WebhookError -> ServerError
 serverError err =
   case err of
-    WebhookPlanError msg -> errorWithBody err500 (ErrorResponse msg Nothing Nothing Nothing Nothing)
-    WebhookCommandError cmdErr ->
+    WebhookPlanError stage msg ->
+      errorWithBody
+        err500
+        (ErrorResponse ("webhook stage " <> renderWebhookStage stage <> " failed: " <> msg) Nothing Nothing Nothing Nothing)
+    WebhookCommandError stage cmdErr ->
       let CommandError spec exitCodeRaw stdoutText stderrText = cmdErr
           cmd = renderCommand spec
           exitCode = exitCodeToInt exitCodeRaw
-          response = ErrorResponse "command failed" (Just cmd) exitCode (Just stdoutText) (Just stderrText)
+          response = ErrorResponse ("webhook stage " <> renderWebhookStage stage <> " failed") (Just cmd) exitCode (Just stdoutText) (Just stderrText)
        in errorWithBody err500 response
 
 chooseFinalResult :: Either WebhookError WebhookResult -> Maybe Text -> Either (Either WebhookError Text) WebhookResult
@@ -240,5 +309,7 @@ chooseFinalResult primaryResult mRevokeError =
 renderWebhookError :: WebhookError -> Text
 renderWebhookError err =
   case err of
-    WebhookPlanError msg -> msg
-    WebhookCommandError cmdErr -> commandErrorText cmdErr
+    WebhookPlanError stage msg ->
+      "webhook stage " <> renderWebhookStage stage <> " failed: " <> msg
+    WebhookCommandError stage cmdErr ->
+      "webhook stage " <> renderWebhookStage stage <> " failed: " <> commandErrorText cmdErr

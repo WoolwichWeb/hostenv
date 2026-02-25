@@ -10,6 +10,7 @@ module Hostenv.Provider.DB
   , ProjectRow(..)
   , OAuthCredential(..)
   , DeployCredential(..)
+  , DeployEvent(..)
   , withDb
   , ensureSchema
   , syncUsers
@@ -21,6 +22,22 @@ module Hostenv.Provider.DB
   , lookupProviderAccount
   , setProviderUserId
   , loadDeployCredentialByHash
+  , saveDeployIntents
+  , loadDeployIntentByJob
+  , loadDeployIntentBySha
+  , loadDeployIntentNodes
+  , deployIntentExists
+  , saveDeployActions
+  , applyDeployActionEvent
+  , DeployAction(..)
+  , loadDeployActions
+  , loadDeployActionsByNode
+  , DeployStatus(..)
+  , loadDeployStatuses
+  , loadDeployBackupSnapshot
+  , loadDeployStatusByNode
+  , loadDeployEventsSince
+  , appendDeployEvent
   , getSessionInfo
   , createSession
   , renderSessionCookie
@@ -28,9 +45,13 @@ module Hostenv.Provider.DB
   ) where
 
 import Control.Monad (forM_, unless, when)
+import qualified Data.Aeson as A
+import qualified Data.Aeson.Key as K
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import Data.ByteString.Builder (toLazyByteString)
 import qualified Data.ByteString.Lazy as BL
+import Data.Foldable (toList)
 import Data.Int (Int64)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -38,8 +59,9 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Time (UTCTime, addUTCTime, getCurrentTime)
-import Database.PostgreSQL.Simple (Binary (..), Connection, Only (..), Query, close, connectPostgreSQL, execute, execute_, query, query_)
+import Database.PostgreSQL.Simple (Binary (..), Connection, In (..), Only (..), Query, close, connectPostgreSQL, execute, execute_, query, query_)
 import Database.PostgreSQL.Simple.FromRow (FromRow (..), field)
+import Data.Maybe (listToMaybe, mapMaybe)
 import Network.Wai (Request)
 import qualified Network.Wai as Wai
 import Web.Cookie (SetCookie (..), defaultSetCookie, parseCookies, renderSetCookie, sameSiteLax)
@@ -110,6 +132,108 @@ data DeployCredential = DeployCredential
   , scopes :: Text
   , expiresAt :: Maybe UTCTime
   } deriving (Eq, Show)
+
+data DeployEvent = DeployEvent
+  { id :: Int64
+  , node :: Text
+  , status :: Text
+  , phase :: Maybe Text
+  , message :: Maybe Text
+  , payload :: A.Value
+  , createdAt :: UTCTime
+  } deriving (Eq, Show)
+
+instance FromRow DeployEvent where
+  fromRow =
+    DeployEvent
+      <$> field
+      <*> field
+      <*> field
+      <*> field
+      <*> field
+      <*> field
+      <*> field
+
+instance A.ToJSON DeployEvent where
+  toJSON event =
+    A.object
+      [ "id" A..= event.id
+      , "node" A..= event.node
+      , "status" A..= event.status
+      , "phase" A..= event.phase
+      , "message" A..= event.message
+      , "payload" A..= event.payload
+      , "createdAt" A..= event.createdAt
+      ]
+
+data DeployStatus = DeployStatus
+  { eventId :: Int64
+  , node :: Text
+  , status :: Text
+  , phase :: Maybe Text
+  , message :: Maybe Text
+  , createdAt :: UTCTime
+  } deriving (Eq, Show)
+
+instance FromRow DeployStatus where
+  fromRow =
+    DeployStatus
+      <$> field
+      <*> field
+      <*> field
+      <*> field
+      <*> field
+      <*> field
+
+instance A.ToJSON DeployStatus where
+  toJSON s =
+    A.object
+      [ "eventId" A..= s.eventId
+      , "node" A..= s.node
+      , "status" A..= s.status
+      , "phase" A..= s.phase
+      , "message" A..= s.message
+      , "createdAt" A..= s.createdAt
+      ]
+
+data DeployAction = DeployAction
+  { node :: Text
+  , actionIndex :: Int
+  , op :: Text
+  , user :: Text
+  , status :: Text
+  , message :: Maybe Text
+  , startedAt :: Maybe UTCTime
+  , finishedAt :: Maybe UTCTime
+  , updatedAt :: UTCTime
+  } deriving (Eq, Show)
+
+instance FromRow DeployAction where
+  fromRow =
+    DeployAction
+      <$> field
+      <*> field
+      <*> field
+      <*> field
+      <*> field
+      <*> field
+      <*> field
+      <*> field
+      <*> field
+
+instance A.ToJSON DeployAction where
+  toJSON action =
+    A.object
+      [ "node" A..= action.node
+      , "actionIndex" A..= action.actionIndex
+      , "op" A..= action.op
+      , "user" A..= action.user
+      , "status" A..= action.status
+      , "message" A..= action.message
+      , "startedAt" A..= action.startedAt
+      , "finishedAt" A..= action.finishedAt
+      , "updatedAt" A..= action.updatedAt
+      ]
 
 data StoredOAuthCredentialRow = StoredOAuthCredentialRow
   { host :: Text
@@ -188,6 +312,12 @@ ensureSchema cfg = withDb cfg $ \conn -> do
         , "CREATE TABLE IF NOT EXISTS oauth_credentials (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, provider provider_kind NOT NULL, provider_host TEXT NOT NULL, access_token_encrypted BYTEA NOT NULL, access_token_nonce BYTEA NOT NULL, refresh_token_encrypted BYTEA, refresh_token_nonce BYTEA, token_key_id TEXT NOT NULL, token_type TEXT, scopes TEXT NOT NULL, expires_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), UNIQUE (user_id, provider, provider_host));"
         , "CREATE TABLE IF NOT EXISTS project_oauth_credentials (id SERIAL PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, provider provider_kind NOT NULL, provider_host TEXT NOT NULL, access_token_encrypted BYTEA NOT NULL, access_token_nonce BYTEA NOT NULL, refresh_token_encrypted BYTEA, refresh_token_nonce BYTEA, token_key_id TEXT NOT NULL, token_type TEXT, scopes TEXT NOT NULL, expires_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), UNIQUE (project_id, provider, provider_host));"
         , "CREATE TABLE IF NOT EXISTS webhooks (id SERIAL PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, webhook_id BIGINT, webhook_url TEXT, secret TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), UNIQUE (project_id));"
+        , "CREATE TABLE IF NOT EXISTS deploy_intents (job_id TEXT NOT NULL, commit_sha TEXT NOT NULL, node TEXT NOT NULL, intent JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (job_id, node));"
+        , "CREATE INDEX IF NOT EXISTS deploy_intents_commit_node_idx ON deploy_intents (commit_sha, node, created_at DESC);"
+        , "CREATE TABLE IF NOT EXISTS deploy_actions (job_id TEXT NOT NULL, node TEXT NOT NULL, action_idx INTEGER NOT NULL, op TEXT NOT NULL, user_name TEXT NOT NULL, action JSONB NOT NULL, status TEXT NOT NULL, message TEXT, started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (job_id, node, action_idx));"
+        , "CREATE INDEX IF NOT EXISTS deploy_actions_job_node_idx ON deploy_actions (job_id, node, action_idx);"
+        , "CREATE TABLE IF NOT EXISTS deploy_node_events (id BIGSERIAL PRIMARY KEY, job_id TEXT NOT NULL, node TEXT NOT NULL, status TEXT NOT NULL, phase TEXT, message TEXT, payload JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT now());"
+        , "CREATE INDEX IF NOT EXISTS deploy_node_events_job_idx ON deploy_node_events (job_id, created_at DESC);"
         ]
   forM_ migrations (execute_ conn)
 
@@ -198,9 +328,13 @@ normalizeRole :: Text -> Text
 normalizeRole roleText =
   if normalizeIdentity roleText == "user" then "user" else "admin"
 
+-- | Syncs users with those specified in provider Hostenv project
+-- Nix configuration.
 syncUsers :: AppConfig -> IO ()
 syncUsers cfg = withDb cfg (syncUsersConn cfg)
 
+-- | Syncs users with those specified in provider Hostenv project
+-- Nix configuration.
 syncUsersConn :: AppConfig -> Connection -> IO ()
 syncUsersConn cfg conn = do
   userPairs <- mapM (upsertUser conn) cfg.appSeedUsers
@@ -365,9 +499,210 @@ loadDeployCredentialByHash cfg conn hash = do
                 )
             )
 
+saveDeployIntents :: AppConfig -> Text -> Text -> [(Text, A.Value)] -> IO ()
+saveDeployIntents cfg jobId commitSha intents =
+  withDb cfg $ \conn ->
+    forM_ intents $ \(node, intent) -> do
+      _ <- execute conn
+        "INSERT INTO deploy_intents (job_id, commit_sha, node, intent, created_at) VALUES (?, ?, ?, ?::jsonb, now()) ON CONFLICT (job_id, node) DO UPDATE SET commit_sha = EXCLUDED.commit_sha, intent = EXCLUDED.intent, created_at = now()"
+        (jobId, commitSha, node, encodeJsonText intent)
+      pure ()
+
+saveDeployActions :: AppConfig -> Text -> [(Text, A.Value)] -> IO ()
+saveDeployActions cfg jobId intents =
+  withDb cfg $ \conn -> do
+    _ <- execute conn "DELETE FROM deploy_actions WHERE job_id = ?" (Only jobId)
+    forM_ intents $ \(nodeName, intentValue) ->
+      forM_ (extractActions intentValue) $ \(actionIndex, op, userName, actionValue) -> do
+        _ <- execute conn
+          "INSERT INTO deploy_actions (job_id, node, action_idx, op, user_name, action, status, message, started_at, finished_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?::jsonb, 'queued', ?, NULL, NULL, now(), now())"
+          (jobId, nodeName, actionIndex, op, userName, encodeJsonText actionValue, Just ("Queued action " <> op <> " for " <> userName))
+        pure ()
+  where
+    extractActions :: A.Value -> [(Int, Text, Text, A.Value)]
+    extractActions value =
+      case value of
+        A.Object obj ->
+          case KM.lookup (K.fromString "actions") obj of
+            Just (A.Array arr) ->
+              mapMaybe extractAction (zip [0 ..] (toList arr))
+            _ -> []
+        _ -> []
+
+    extractAction :: (Int, A.Value) -> Maybe (Int, Text, Text, A.Value)
+    extractAction (idx, actionValue) =
+      case actionValue of
+        A.Object actionObj ->
+          case (KM.lookup (K.fromString "op") actionObj, KM.lookup (K.fromString "user") actionObj) of
+            (Just (A.String op), Just (A.String userName))
+              | T.strip op /= "" && T.strip userName /= "" -> Just (idx, T.toLower (T.strip op), T.strip userName, actionValue)
+            _ -> Nothing
+        _ -> Nothing
+
+loadDeployActions :: AppConfig -> Text -> IO [DeployAction]
+loadDeployActions cfg jobId =
+  withDb cfg $ \conn ->
+    query conn
+      "SELECT node, action_idx, op, user_name, status, message, started_at, finished_at, updated_at FROM deploy_actions WHERE job_id = ? ORDER BY node, action_idx"
+      (Only jobId)
+
+loadDeployActionsByNode :: AppConfig -> Text -> Text -> IO [DeployAction]
+loadDeployActionsByNode cfg jobId nodeName =
+  withDb cfg $ \conn ->
+    query conn
+      "SELECT node, action_idx, op, user_name, status, message, started_at, finished_at, updated_at FROM deploy_actions WHERE job_id = ? AND node = ? ORDER BY action_idx"
+      (jobId, nodeName)
+
+applyDeployActionEvent :: AppConfig -> Text -> Text -> Text -> Maybe Text -> Maybe Text -> IO ()
+applyDeployActionEvent cfg jobId nodeName rawStatus rawPhase mMessage =
+  withDb cfg $ \conn -> do
+    let status = T.toLower (T.strip rawStatus)
+        phase = fmap (T.toLower . T.strip) rawPhase
+        message = fmap T.strip mMessage >>= \msg -> if msg == "" then Nothing else Just msg
+    case phase of
+      Nothing -> pure ()
+      Just "" -> pure ()
+      Just "intent" ->
+        case status of
+          "success" -> do
+            _ <- execute conn
+              "UPDATE deploy_actions SET status = 'success', message = COALESCE(?, message), started_at = COALESCE(started_at, now()), finished_at = COALESCE(finished_at, now()), updated_at = now() WHERE job_id = ? AND node = ? AND status IN ('queued','waiting','running')"
+              (message, jobId, nodeName)
+            pure ()
+          "failed" -> finalizeRemaining conn "failed" message
+          "timed_out" -> finalizeRemaining conn "timed_out" message
+          _ -> pure ()
+      Just op ->
+        case status of
+          "waiting" -> transitionOne conn op (In ["queued" :: Text, "running"]) "waiting" True False message
+          "running" -> transitionOne conn op (In ["queued" :: Text, "waiting"]) "running" True False message
+          "success" -> transitionOne conn op (In ["running" :: Text, "waiting", "queued"]) "success" True True message
+          "failed" -> failAndFinalize conn op "failed" message
+          "timed_out" -> failAndFinalize conn op "timed_out" message
+          _ -> pure ()
+  where
+    finalizeRemaining :: Connection -> Text -> Maybe Text -> IO ()
+    finalizeRemaining conn finalStatus message = do
+      _ <- execute conn
+        "UPDATE deploy_actions SET status = ?, message = COALESCE(?, message), started_at = COALESCE(started_at, now()), finished_at = COALESCE(finished_at, now()), updated_at = now() WHERE job_id = ? AND node = ? AND status IN ('queued','waiting','running')"
+        (finalStatus, message, jobId, nodeName)
+      pure ()
+
+    transitionOne :: Connection -> Text -> In [Text] -> Text -> Bool -> Bool -> Maybe Text -> IO ()
+    transitionOne conn op eligibleStatuses newStatus setStarted setFinished message = do
+      candidates <- query conn
+        "SELECT action_idx FROM deploy_actions WHERE job_id = ? AND node = ? AND op = ? AND status IN ? ORDER BY action_idx LIMIT 1"
+        (jobId, nodeName, op, eligibleStatuses) :: IO [Only Int]
+      case candidates of
+        (Only actionIndex:_) -> do
+          _ <- execute conn
+            "UPDATE deploy_actions SET status = ?, message = COALESCE(?, message), started_at = CASE WHEN ? THEN COALESCE(started_at, now()) ELSE started_at END, finished_at = CASE WHEN ? THEN now() ELSE finished_at END, updated_at = now() WHERE job_id = ? AND node = ? AND action_idx = ?"
+            (newStatus, message, setStarted, setFinished, jobId, nodeName, actionIndex)
+          pure ()
+        _ -> pure ()
+
+    failAndFinalize :: Connection -> Text -> Text -> Maybe Text -> IO ()
+    failAndFinalize conn op finalStatus message = do
+      transitionOne conn op (In ["running" :: Text, "waiting", "queued"]) finalStatus True True message
+      finalizeRemaining conn finalStatus message
+
+-- | Load deployment intentions from a node reference.
+-- For example: backend01, webserver13, and so on.
+loadDeployIntentByJob :: AppConfig -> Text -> Text -> IO (Maybe A.Value)
+loadDeployIntentByJob cfg jobId node =
+  withDb cfg $ \conn -> do
+    rows <- query conn
+      "SELECT intent::text FROM deploy_intents WHERE job_id = ? AND node = ? ORDER BY created_at DESC LIMIT 1"
+      (jobId, node)
+    pure (listToMaybe rows >>= decodeJsonOnly)
+
+-- | Load deployment intentions from a git commit ref.
+loadDeployIntentBySha :: AppConfig -> Text -> Text -> IO (Maybe (Text, A.Value))
+loadDeployIntentBySha cfg commitSha node =
+  withDb cfg $ \conn -> do
+    rows <- query conn
+      "SELECT job_id, intent::text FROM deploy_intents WHERE commit_sha = ? AND node = ? ORDER BY created_at DESC LIMIT 1"
+      (commitSha, node)
+    pure $
+      listToMaybe rows >>= \(jobId, payloadText) ->
+        (\payload -> (jobId, payload)) <$> decodeJsonText payloadText
+
+loadDeployIntentNodes :: AppConfig -> Text -> IO [Text]
+loadDeployIntentNodes cfg jobId =
+  withDb cfg $ \conn -> do
+    rows <- query conn
+      "SELECT node FROM deploy_intents WHERE job_id = ? ORDER BY node"
+      (Only jobId)
+    pure (map fromOnly rows)
+
+-- | Returns whether deployment intentions were recorded for the given job id.
+deployIntentExists :: AppConfig -> Text -> Text -> IO Bool
+deployIntentExists cfg jobId node =
+  withDb cfg $ \conn -> do
+    rows <- query conn
+      "SELECT EXISTS (SELECT 1 FROM deploy_intents WHERE job_id = ? AND node = ?)"
+      (jobId, node)
+    pure
+      ( case rows of
+          (Only existsVal:_) -> existsVal
+          _ -> False
+      )
+
+loadDeployEventsSince :: AppConfig -> Text -> Int64 -> IO [DeployEvent]
+loadDeployEventsSince cfg jobId afterId =
+  withDb cfg $ \conn ->
+    query conn
+      "SELECT id, node, status, phase, message, payload, created_at FROM deploy_node_events WHERE job_id = ? AND id > ? ORDER BY id"
+      (jobId, afterId)
+
+loadDeployStatuses :: AppConfig -> Text -> IO [DeployStatus]
+loadDeployStatuses cfg jobId =
+  withDb cfg $ \conn ->
+    query conn
+      "SELECT id, node, status, phase, message, created_at FROM (SELECT DISTINCT ON (node) id, node, status, phase, message, created_at FROM deploy_node_events WHERE job_id = ? ORDER BY node, id DESC) latest ORDER BY node"
+      (Only jobId)
+
+loadDeployBackupSnapshot :: AppConfig -> Text -> Text -> Text -> IO (Maybe A.Value)
+loadDeployBackupSnapshot cfg jobId sourceNode userName =
+  withDb cfg $ \conn -> do
+    rows <- query conn
+      "SELECT payload FROM deploy_node_events WHERE job_id = ? AND node = ? AND phase = 'backup' AND status = 'success' AND payload ->> 'user' = ? ORDER BY id DESC LIMIT 1"
+      (jobId, sourceNode, userName)
+    pure (listToMaybe (map fromOnly rows))
+
+loadDeployStatusByNode :: AppConfig -> Text -> Text -> IO (Maybe DeployStatus)
+loadDeployStatusByNode cfg jobId nodeName =
+  withDb cfg $ \conn -> do
+    rows <- query conn
+      "SELECT id, node, status, phase, message, created_at FROM deploy_node_events WHERE job_id = ? AND node = ? ORDER BY id DESC LIMIT 1"
+      (jobId, nodeName)
+    pure (listToMaybe rows)
+
+appendDeployEvent :: AppConfig -> Text -> Text -> Text -> Maybe Text -> Maybe Text -> Maybe A.Value -> IO DeployEvent
+appendDeployEvent cfg jobId node status phase message payload =
+  withDb cfg $ \conn -> do
+    rows <- query conn
+      "INSERT INTO deploy_node_events (job_id, node, status, phase, message, payload) VALUES (?, ?, ?, ?, ?, ?::jsonb) RETURNING id, node, status, phase, message, payload, created_at"
+      (jobId, node, status, phase, message, encodeJsonText (maybe (A.object []) id payload))
+    case rows of
+      (event:_) -> pure event
+      _ -> error "appendDeployEvent failed to return inserted row"
+
 decodeOAuthRows :: AppConfig -> [StoredOAuthCredentialRow] -> Either Text (Maybe OAuthCredential)
 decodeOAuthRows _ [] = Right Nothing
 decodeOAuthRows cfg (row:_) = Just <$> decodeOAuthCredential cfg row
+
+encodeJsonText :: A.Value -> Text
+encodeJsonText = TE.decodeUtf8 . BL.toStrict . A.encode
+
+decodeJsonText :: Text -> Maybe A.Value
+decodeJsonText text =
+  case A.eitherDecode' (BL.fromStrict (TE.encodeUtf8 text)) of
+    Left _ -> Nothing
+    Right value -> Just value
+
+decodeJsonOnly :: Only Text -> Maybe A.Value
+decodeJsonOnly (Only text) = decodeJsonText text
 
 decodeOAuthCredential :: AppConfig -> StoredOAuthCredentialRow -> Either Text OAuthCredential
 decodeOAuthCredential cfg row =

@@ -32,7 +32,7 @@ import Network.Socket (Family (AF_UNIX), Socket, SocketType (Stream), SockAddr (
 
 import Hostenv.Provider.Command (commandErrorText, runCommandWithEnv)
 import Hostenv.Provider.Config (AppConfig(..), appWorkDir)
-import Hostenv.Provider.Service (CommandSpec(..), renderGitCredentials)
+import Hostenv.Provider.Service (CommandSpec(..), CommandOutput(..), renderGitCredentials)
 import Hostenv.Provider.Util (randomToken)
 
 data RepoStatus
@@ -189,3 +189,4 @@ isAuthFailure msg =
         , "invalid credentials"
         ]
    in any (`T.isInfixOf` lower) patterns
+

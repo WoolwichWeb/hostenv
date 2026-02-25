@@ -3,35 +3,36 @@ let
   hostenvInputs = config.flake.lib.hostenvInputs;
   # Provider-side infrastructure generator.
   providerPlan =
-    { inputs
-    , system
-    , lib
-    , pkgs
-    , letsEncrypt
-    , deployPublicKeys ? [ ]
-    , deployUser ? "deploy"
-    , nixSigning ? { trustedPublicKeys = [ ]; }
-    , hostenvHostname
-    , nodeFor ? { default = null; }
-    , nodeModules ? [ ]
-    , statePath ? (if inputs ? self then inputs.self + /generated/state.json else null)
-    , planPath ? (if inputs ? self then inputs.self + /generated/plan.json else null)
-    , nodeSystems ? { }
-    , nodeAddresses ? { }
-    , nodeSshPorts ? { }
-    , nodeSshOpts ? { }
-    , nodeRemoteBuild ? { }
-    , nodeMagicRollback ? { }
-    , nodeAutoRollback ? { }
-    , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
-    , planSource ? "eval"
-    , generatedFlake ? { }
-    , lockPath ? (if inputs ? self then inputs.self + /flake.lock else ../../../flake.lock)
-    }:
+{ inputs
+, system
+, lib
+, pkgs
+, hostenvHostname
+, letsEncrypt
+, nodeFor
+, nodeSystems
+ , nodeModules ? [ ]
+ , nixSigning ? { trustedPublicKeys = [ ]; }
+ , statePath ? null
+
+, planPath ? null
+, lockPath ? null
+, cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
+, planSource ? "eval"
+ , generatedFlake ? { }
+ , comin
+ , service
+ }:
+
+
 
     let
       useEval = planSource == "eval";
       cfgHostenvHostname = hostenvHostname;
+      lockPathEffective =
+        if lockPath != null then lockPath
+        else if inputs ? self then inputs.self + /flake.lock
+        else builtins.throw "provider plan: lockPath must be set when inputs.self is unavailable";
       hostenvInput =
         hostenvInputs.requireInput {
           inherit inputs;
@@ -216,12 +217,36 @@ let
         in
         lib.filterAttrs (name: _: name != "_description") rawValues;
 
+      assertCominRemoteUrl =
+        if comin.enable && (comin.remoteUrl == null || comin.remoteUrl == "") then
+          builtins.throw ''
+            provider plan: comin is enabled but provider.comin.remoteUrl is empty.
+          ''
+        else
+          true;
+      assertCominApiBase =
+        if comin.enable && (comin.providerApiBaseUrl == null || comin.providerApiBaseUrl == "") then
+          builtins.throw ''
+            provider plan: comin is enabled but provider.comin.providerApiBaseUrl is empty.
+          ''
+        else
+          true;
+      assertCominTokenFile =
+        if comin.enable
+          && (comin.nodeAuthTokenFile == null || comin.nodeAuthTokenFile == "")
+          && (comin.nodeAuthTokenFiles == { } || builtins.attrNames comin.nodeAuthTokenFiles == [ ]) then
+          builtins.throw ''
+            provider plan: comin is enabled but provider.comin.nodeAuthTokenFile is empty.
+          ''
+        else
+          true;
+
       lockData =
-        if builtins.pathExists lockPath
-        then builtins.fromJSON (builtins.readFile lockPath)
+        if builtins.pathExists lockPathEffective
+        then builtins.fromJSON (builtins.readFile lockPathEffective)
         else
           builtins.throw ''
-            flake.lock is missing at ${builtins.toString lockPath}.
+            flake.lock is missing at ${builtins.toString lockPathEffective}.
             Please run: nix flake lock (or nix flake update) at repo root
           '';
 
@@ -256,9 +281,15 @@ let
       nextUid =
         let
           minUid = 1001;
-          maxUid = builtins.foldl'
+          maxUid = lib.foldl'
             (a: b:
-              if b.uid > a.uid then b else a
+              let
+                value =
+                  if builtins.isAttrs b && b ? uid && builtins.typeOf b.uid == "int"
+                  then b.uid
+                  else minUid;
+              in
+              if value > a.uid then { uid = value; } else a
             )
             { uid = minUid; }
             (builtins.attrValues state);
@@ -567,67 +598,6 @@ let
             )
             allEnvs;
 
-      nodeConnections =
-        let
-          # Include nodes referenced by currently evaluated environments.
-          namesFromEnvs = map
-            (env: env.node)
-            allEnvsWithUid;
-          # Include nodes remembered in state.json so migrations can still target
-          # previous nodes that are no longer in the current evaluated set.
-          namesFromState =
-            map
-              (name:
-                let
-                  nodeName = state.${name}.node or null;
-                in
-                if builtins.isString nodeName && nodeName != ""
-                then nodeName
-                else null
-              )
-              (builtins.attrNames state);
-          # Build one canonical node list from:
-          # - explicit per-node config attrsets (systems/address/ssh overrides)
-          # - nodes referenced by current envs
-          # - nodes referenced by persisted state
-          # and drop sentinel/empty values.
-          knownNodes =
-            lib.filter
-              (name: builtins.isString name && name != "" && name != "default")
-              (lib.unique (
-                (builtins.attrNames nodeSystems)
-                ++ (builtins.attrNames nodeAddresses)
-                ++ (builtins.attrNames nodeSshPorts)
-                ++ (builtins.attrNames nodeSshOpts)
-                ++ namesFromEnvs
-                ++ (lib.filter (name: name != null) namesFromState)
-              ));
-          mkNodeConnection = node: {
-            # Resolve deploy hostname via explicit override first, otherwise use
-            # the conventional "<node>.<hostenvHostname>" form.
-            hostname =
-              if builtins.hasAttr node nodeAddresses
-              then nodeAddresses.${node}
-              else node + "." + cfgHostenvHostname;
-            sshOpts =
-              let
-                # If a per-node SSH port is configured, convert it to OpenSSH args.
-                portOpts =
-                  if builtins.hasAttr node nodeSshPorts
-                  then [ "-p" (builtins.toString nodeSshPorts.${node}) ]
-                  else [ ];
-                # Append raw extra per-node OpenSSH options as-is.
-                extraOpts =
-                  if builtins.hasAttr node nodeSshOpts
-                  then nodeSshOpts.${node}
-                  else [ ];
-              in
-              portOpts ++ extraOpts;
-          };
-        in
-        builtins.listToAttrs
-          (map (node: { name = node; value = mkNodeConnection node; }) knownNodes);
-
       generatedFlakeFile =
         let
           envInputSpec = val:
@@ -677,8 +647,7 @@ let
 
           baseInputs = {
             parent.url = "path:..";
-            systems.follows = "parent/deploy-rs/utils/systems";
-            deploy-rs.follows = "parent/deploy-rs";
+            comin.follows = "parent/comin";
             sops-nix.follows = "parent/sops-nix";
             hostenv.follows = "parent/hostenv";
             nixpkgs.follows = "parent/nixpkgs";
@@ -702,7 +671,7 @@ let
                   {
                     inputs = ${inputsText};
 
-                    outputs = { self, nixpkgs, deploy-rs, systems, ... } @ inputs:
+                    outputs = { self, nixpkgs, ... } @ inputs:
                       let
                         config = builtins.removeAttrs
                           (builtins.fromJSON (builtins.readFile ./plan.json))
@@ -710,16 +679,10 @@ let
                         localSystem = "x86_64-linux";
                       in
                       inputs.parent.lib.provider.deployOutputs {
-                        inherit config nixpkgs deploy-rs systems inputs localSystem;
+                        inherit config nixpkgs inputs localSystem;
                         nodesPath = ../nodes;
                         secretsPath = ./secrets.merged.yaml;
                         nodeSystems = ${lib.generators.toPretty {} nodeSystems};
-                        nodeAddresses = ${lib.generators.toPretty {} nodeAddresses};
-                        nodeSshPorts = ${lib.generators.toPretty {} nodeSshPorts};
-                        nodeSshOpts = ${lib.generators.toPretty {} nodeSshOpts};
-                        nodeRemoteBuild = ${lib.generators.toPretty {} nodeRemoteBuild};
-                        nodeMagicRollback = ${lib.generators.toPretty {} nodeMagicRollback};
-                        nodeAutoRollback = ${lib.generators.toPretty {} nodeAutoRollback};
                         nodeModules = [
             ${nodeModulesText}
                         ];
@@ -734,22 +697,31 @@ let
             base = {
               _description = ''
                 Contains a build and deployment plan for hostenv servers on NixOS.
-                There are three data substructures:
+                There are two data substructures:
 
                 1. Under **environments** is a JSON representation of hostenv's own modules config, retaining the original structure of that representation.
                 2. Each element under **nodes** is NixOS server configuration, and will be merged into the configuration of that server during build.
-                3. Under **nodeConnections** is deploy SSH metadata used by provider tooling (hostname + ssh options).
 
                 Note: all manual changes to this file will be discarded.
               '';
               hostenvHostname = cfgHostenvHostname;
               cloudflare = cloudflare;
-              deployUser = deployUser;
               nixSigning = {
-                trustedPublicKeys = nixSigning.trustedPublicKeys or [ ];
+                trustedPublicKeys = nixSigning.trustedPublicKeys;
               };
-              nodeRemoteBuild = nodeRemoteBuild;
-              nodeConnections = nodeConnections;
+              comin =
+                if comin.enable then
+                  {
+                    enable = true;
+                    remoteUrl = comin.remoteUrl;
+                    branch = comin.branch;
+                    pollIntervalSeconds = comin.pollIntervalSeconds;
+                    actionTimeoutSeconds = comin.actionTimeoutSeconds;
+                    providerApiBaseUrl = comin.providerApiBaseUrl;
+                    nodeAuthTokenFile = comin.nodeAuthTokenFile;
+                    nodeAuthTokenFiles = comin.nodeAuthTokenFiles;
+                  }
+                else { enable = false; };
               environments = { };
               nodes = { };
             };
@@ -779,9 +751,24 @@ let
                         };
 
                         provider = {
-                          inherit deployPublicKeys;
-                          inherit deployUser;
-                          nixSigning.trustedPublicKeys = nixSigning.trustedPublicKeys or [ ];
+                          service = service;
+                          nixSigning.trustedPublicKeys = nixSigning.trustedPublicKeys;
+                          comin =
+                            if comin.enable then
+                              {
+                                enable = true;
+                                remoteUrl = comin.remoteUrl;
+                                branch = comin.branch;
+                                pollIntervalSeconds = comin.pollIntervalSeconds;
+                                actionTimeoutSeconds = comin.actionTimeoutSeconds;
+                                providerApiBaseUrl = comin.providerApiBaseUrl;
+                                nodeName = nodeName;
+                                nodeAuthTokenFile =
+                                  if builtins.hasAttr nodeName comin.nodeAuthTokenFiles
+                                  then comin.nodeAuthTokenFiles.${nodeName}
+                                  else comin.nodeAuthTokenFile;
+                              }
+                            else { enable = false; };
                         };
 
                         users.groups.${elem.hostenv.userName} = {
@@ -867,7 +854,7 @@ let
         else statePathChecked;
 
     in
-    assert (assertProjectInputs && assertDiskUids);
+    assert (assertProjectInputs && assertDiskUids && assertCominRemoteUrl && assertCominApiBase && assertCominTokenFile);
     {
       flake = generatedFlakeFile;
       plan = generatedConfig;

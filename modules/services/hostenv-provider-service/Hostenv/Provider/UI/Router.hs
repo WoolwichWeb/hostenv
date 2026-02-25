@@ -28,7 +28,10 @@ import Hostenv.Provider.UI.Handlers
   , handleAddProjectPost
   , handleBootstrapRepoGet
   , handleBootstrapRepoPost
+  , handleDeployActionsGet
+  , handleDeployStatusGet
   , handleIndex
+  , handleJobDeployEventsGet
   , handleJobEventsGet
   , handleJobGet
   , handleLogin
@@ -94,6 +97,18 @@ routeUi runtime repoStatusRef cfg segments req respond =
     ["jobs", jobId, "events"] ->
       case Wai.requestMethod req of
         m | m == methodGet -> handleJobEventsGet cfg jobId req respond
+        _ -> respond (responseLBS status404 [] "")
+    ["jobs", jobId, "deploy-status"] ->
+      case Wai.requestMethod req of
+        m | m == methodGet -> handleDeployStatusGet cfg jobId req respond
+        _ -> respond (responseLBS status404 [] "")
+    ["jobs", jobId, "deploy-actions"] ->
+      case Wai.requestMethod req of
+        m | m == methodGet -> handleDeployActionsGet cfg jobId req respond
+        _ -> respond (responseLBS status404 [] "")
+    ["jobs", jobId, "deploy-events"] ->
+      case Wai.requestMethod req of
+        m | m == methodGet -> handleJobDeployEventsGet cfg jobId req respond
         _ -> respond (responseLBS status404 [] "")
     ["jobs", jobId, "ws"] ->
       case Wai.requestMethod req of

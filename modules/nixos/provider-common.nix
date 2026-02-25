@@ -3,29 +3,95 @@
   flake.modules.nixos.provider-common =
     { config, lib, pkgs, ... }:
     let
-      deployPublicKeys = config.provider.deployPublicKeys or [ ];
-      deployUser = config.provider.deployUser or "deploy";
-      trustedPublicKeys =
-        if config.provider ? nixSigning && config.provider.nixSigning ? trustedPublicKeys
-        then config.provider.nixSigning.trustedPublicKeys
-        else [ ];
+      cominCfg = config.provider.comin;
+      serviceCfg = config.provider.service;
+      trustedPublicKeys = config.provider.nixSigning.trustedPublicKeys;
+      cominActivateScript = pkgs.writeShellApplication {
+        name = "hostenv-comin-activate";
+        runtimeInputs = [
+          pkgs.coreutils
+          pkgs.curl
+          pkgs.gnused
+          pkgs.gnugrep
+          pkgs.jq
+          pkgs.systemd
+          pkgs.util-linux
+        ];
+        text = builtins.readFile ./hostenv-comin-activate.sh;
+      };
+      cominActivateWrapper = pkgs.writeShellScript "hostenv-comin-activate-wrapper" ''
+        export HOSTENV_COMIN_NODE_NAME=${cominCfg.nodeName}
+        export HOSTENV_COMIN_API_BASE_URL=${cominCfg.providerApiBaseUrl}
+        export HOSTENV_COMIN_TOKEN_FILE=${cominCfg.nodeAuthTokenFile}
+        export HOSTENV_COMIN_ACTION_TIMEOUT=${toString cominCfg.actionTimeoutSeconds}
+        exec ${cominActivateScript}/bin/hostenv-comin-activate
+      '';
+
     in
     {
       options.provider = {
-        deployPublicKeys = lib.mkOption {
-          type = lib.types.listOf lib.types.str;
-          default = [ ];
-          description = "SSH public keys for the deploy user (provider-level).";
-        };
-        deployUser = lib.mkOption {
-          type = lib.types.str;
-          default = "deploy";
-          description = "SSH/sudo user used by deploy-rs and provider tooling.";
-        };
         nixSigning.trustedPublicKeys = lib.mkOption {
           type = lib.types.listOf lib.types.str;
           default = [ ];
           description = "Public signing keys trusted by nix-daemon on provider nodes.";
+        };
+        service = lib.mkOption {
+          type = lib.types.nullOr (lib.types.submodule {
+            options = {
+              organisation = lib.mkOption {
+                type = lib.types.str;
+                description = "Organisation that owns the provider-service environment.";
+              };
+              project = lib.mkOption {
+                type = lib.types.str;
+                description = "Project that owns the provider-service environment.";
+              };
+              environmentName = lib.mkOption {
+                type = lib.types.str;
+                description = "Environment name that runs the provider service and receives provider secrets.";
+              };
+            };
+          });
+          default = null;
+          description = "Provider environment selector used for provider-service secrets.";
+        };
+        comin = {
+          enable = lib.mkEnableOption "pull-based node reconciliation using comin";
+          remoteUrl = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Git URL for the provider repository consumed by comin.";
+          };
+          branch = lib.mkOption {
+            type = lib.types.str;
+            default = "main";
+            description = "Branch comin should poll for desired-state updates.";
+          };
+          pollIntervalSeconds = lib.mkOption {
+            type = lib.types.int;
+            default = 30;
+            description = "Polling interval (seconds) for comin remotes.";
+          };
+          actionTimeoutSeconds = lib.mkOption {
+            type = lib.types.int;
+            default = 900;
+            description = "Maximum seconds a single comin user action may run before timing out.";
+          };
+          providerApiBaseUrl = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Base URL for provider callback APIs.";
+          };
+          nodeAuthTokenFile = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Bearer token file used by node callback requests.";
+          };
+          nodeName = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Logical node identity used for deploy intent lookup.";
+          };
         };
       };
 
@@ -48,9 +114,6 @@
             experimental-features = nix-command flakes
           '';
 
-          # Allow deploy-rs uploads from the provider host without disabling
-          # signature checks globally on the node.
-          settings.trusted-users = lib.mkAfter [ deployUser ];
           settings.trusted-public-keys = lib.mkAfter trustedPublicKeys;
         };
 
@@ -71,10 +134,65 @@
         users.groups.keys.name = lib.mkDefault "keys";
 
         users.mutableUsers = lib.mkDefault false;
-        users.users.${deployUser} = {
-          isNormalUser = lib.mkDefault true;
-          extraGroups = lib.mkDefault [ "wheel" "keys" ];
-          openssh.authorizedKeys.keys = lib.mkDefault deployPublicKeys;
+
+        assertions = [
+          {
+            assertion = (!cominCfg.enable) || (cominCfg.remoteUrl != null && cominCfg.remoteUrl != "");
+            message = "provider.comin.remoteUrl must be configured when provider.comin.enable is true.";
+          }
+          {
+            assertion = (!cominCfg.enable) || (cominCfg.providerApiBaseUrl != null && cominCfg.providerApiBaseUrl != "");
+            message = "provider.comin.providerApiBaseUrl must be configured when provider.comin.enable is true.";
+          }
+          {
+            assertion = (!cominCfg.enable) || (cominCfg.nodeAuthTokenFile != null && cominCfg.nodeAuthTokenFile != "");
+            message = "provider.comin.nodeAuthTokenFile must be configured when provider.comin.enable is true.";
+          }
+          {
+            assertion = (!cominCfg.enable) || (cominCfg.nodeName != null && cominCfg.nodeName != "");
+            message = "provider.comin.nodeName must be configured when provider.comin.enable is true.";
+          }
+          {
+            assertion =
+              (!cominCfg.enable)
+              || (serviceCfg != null
+                && serviceCfg.organisation != ""
+                && serviceCfg.project != ""
+                && serviceCfg.environmentName != "");
+            message = "provider.service.organisation/project/environmentName must be configured when provider.comin.enable is true.";
+          }
+          {
+            assertion = cominCfg.pollIntervalSeconds > 0;
+            message = "provider.comin.pollIntervalSeconds must be greater than zero.";
+          }
+          {
+            assertion = cominCfg.actionTimeoutSeconds > 0;
+            message = "provider.comin.actionTimeoutSeconds must be greater than zero.";
+          }
+        ];
+
+        sops.secrets = lib.mkIf cominCfg.enable {
+          hostenv-comin-node-token = {
+            key = "comin_node_tokens/${cominCfg.nodeName}";
+            path = cominCfg.nodeAuthTokenFile;
+            owner = "root";
+            group = "root";
+            mode = "0400";
+          };
+        };
+
+        services.comin = lib.mkIf cominCfg.enable {
+          enable = true;
+          hostname = cominCfg.nodeName;
+          remotes = [
+            {
+              name = "hostenv";
+              url = cominCfg.remoteUrl;
+              branches = [ cominCfg.branch ];
+              poller.period = cominCfg.pollIntervalSeconds;
+            }
+          ];
+          postDeploymentCommand = "${cominActivateWrapper}";
         };
 
         networking.firewall.enable = lib.mkDefault true;

@@ -82,13 +82,23 @@ let
     inherit pkgs lib;
     system = localSystem;
     letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-    deployPublicKeys = [ "ssh-ed25519 test" ];
     hostenvHostname = "hosting.test";
     nodeFor = { default = "node-a"; production = "node-a"; testing = "node-a"; development = "node-a"; };
     statePath = stateStub;
     lockPath = lockPath;
     nodeSystems = { };
     cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
+    comin = {
+      enable = false;
+      remoteUrl = null;
+      branch = "main";
+      pollIntervalSeconds = 30;
+      actionTimeoutSeconds = 900;
+      providerApiBaseUrl = null;
+      nodeAuthTokenFile = null;
+      nodeAuthTokenFiles = { };
+    };
+    service = null;
   };
 
   planData = lib.importJSON planEval.plan;
