@@ -886,6 +886,16 @@ condition_seed_imported_node_a() {
   [[ "$code" =~ ^[23][0-9][0-9]$ ]]
 }
 
+capture_task12_migration_source_plan() {
+  [[ -f "$PLAN_PATH" ]] || fail_stage "cannot capture migration source: missing $PLAN_PATH"
+  cp "$PLAN_PATH" "$TASK12_MIGRATION_SOURCE_PLAN"
+}
+
+apply_task12_migration_source_plan() {
+  [[ -f "$TASK12_MIGRATION_SOURCE_PLAN" ]] || fail_stage "missing migration source snapshot: $TASK12_MIGRATION_SOURCE_PLAN"
+  cp "$TASK12_MIGRATION_SOURCE_PLAN" "$PLAN_PATH"
+}
+
 condition_node_b_migrated() {
   load_plan_metadata || return 1
 
@@ -898,6 +908,95 @@ condition_node_b_migrated() {
   local code
   code="$(http_status "$VHOST" "$url")"
   [[ "$code" =~ ^[23][0-9][0-9]$ ]]
+}
+
+run_task12_backup_restore_verification() {
+  stage "Task 12: Verify migration backup/restore actions"
+
+  mkdir -p "$EVIDENCE_DIR"
+  local status_body_json="$PROVIDER_SERVICE_RUNTIME_DIR/task-12-statuses.json"
+  local snapshot_body_json="$PROVIDER_SERVICE_RUNTIME_DIR/task-12-backup-snapshot.json"
+  local snapshot_code=""
+  local backup_status="missing"
+  local restore_status="missing"
+  local snapshot_present="false"
+  local snapshot_count="0"
+
+  awk 'found { print } /^response_body:$/ { found=1; next }' "$TASK11_NODE_B_STATUS_LOG" > "$status_body_json"
+
+  if jq -e '.statuses[]? | select(.node == "node-a" and .phase == "backup" and .status == "success")' "$status_body_json" >/dev/null 2>&1; then
+    backup_status="success"
+  fi
+
+  if jq -e '.statuses[]? | select(.node == "node-b" and .phase == "restore" and .status == "success")' "$status_body_json" >/dev/null 2>&1; then
+    restore_status="success"
+  fi
+
+  snapshot_code="$(curl -sS --unix-socket "$PROVIDER_SERVICE_SOCKET" -o "$snapshot_body_json" -w '%{http_code}' \
+    -H "Authorization: Bearer $NODE_B_AUTH_TOKEN" \
+    "http://localhost/api/deploy-jobs/${NODE_B_JOB_ID}/backup-snapshot?node=node-b&source=node-a&user=${ENV_USER}" || true)"
+
+  if [[ "$snapshot_code" == "200" ]] && jq -e '.payload.snapshots | type == "object"' "$snapshot_body_json" >/dev/null 2>&1; then
+    snapshot_count="$(jq -r '(.payload.snapshots | keys | length)' "$snapshot_body_json")"
+    if [[ "$snapshot_count" =~ ^[1-9][0-9]*$ ]]; then
+      snapshot_present="true"
+    fi
+  fi
+
+  {
+    printf 'timestamp=%s\n' "$(date -Iseconds)"
+    printf 'job_id=%s\n' "$NODE_B_JOB_ID"
+    printf 'backup_node=node-a\n'
+    printf 'restore_node=node-b\n'
+    printf 'backup_phase_status=%s\n' "$backup_status"
+    printf 'restore_phase_status=%s\n' "$restore_status"
+    printf 'backup_snapshot_http_code=%s\n' "$snapshot_code"
+    printf 'backup_snapshot_present=%s\n' "$snapshot_present"
+    printf 'backup_snapshot_count=%s\n' "$snapshot_count"
+    printf 'status_response_body:\n'
+    cat "$status_body_json"
+    printf '\nbackup_snapshot_body:\n'
+    cat "$snapshot_body_json" 2>/dev/null || printf '{}\n'
+    printf '\n'
+  } > "$TASK12_BACKUP_LOG"
+
+  [[ "$backup_status" == "success" ]] || fail_stage "Task 12 backup verification failed; see $TASK12_BACKUP_LOG"
+  [[ "$restore_status" == "success" ]] || fail_stage "Task 12 restore verification failed; see $TASK12_BACKUP_LOG"
+  [[ "$snapshot_present" == "true" ]] || fail_stage "Task 12 backup snapshot verification failed; see $TASK12_BACKUP_LOG"
+
+  success "Task 12 backup/restore evidence written: $TASK12_BACKUP_LOG"
+}
+
+run_task12_migration_marker_verification() {
+  stage "Task 12: Verify migrated database marker"
+
+  mkdir -p "$EVIDENCE_DIR"
+  local body_file="$PROVIDER_SERVICE_RUNTIME_DIR/task-12-node-b-http-body.html"
+  local http_code=""
+  local marker_present="false"
+
+  http_code="$(curl -sS -o "$body_file" -w '%{http_code}' -H "Host: ${VHOST}" "http://${NODE_B_HOST_IP}:${NODE_HTTP_PORT}/" || true)"
+
+  if grep -q 'from-node-a' "$body_file"; then
+    marker_present="true"
+  fi
+
+  {
+    printf 'timestamp=%s\n' "$(date -Iseconds)"
+    printf 'url=http://%s:%s/\n' "$NODE_B_HOST_IP" "$NODE_HTTP_PORT"
+    printf 'host_header=%s\n' "$VHOST"
+    printf 'http_code=%s\n' "$http_code"
+    printf 'marker_expected=from-node-a\n'
+    printf 'marker_found=%s\n' "$marker_present"
+    printf 'response_body:\n'
+    cat "$body_file" 2>/dev/null || printf '\n'
+    printf '\n'
+  } > "$TASK12_MIGRATION_VERIFY_LOG"
+
+  [[ "$http_code" =~ ^[23][0-9][0-9]$ ]] || fail_stage "Task 12 migration HTTP verification failed; see $TASK12_MIGRATION_VERIFY_LOG"
+  [[ "$marker_present" == "true" ]] || fail_stage "Task 12 migration marker verification failed; see $TASK12_MIGRATION_VERIFY_LOG"
+
+  success "Task 12 migration marker evidence written: $TASK12_MIGRATION_VERIFY_LOG"
 }
 
 write_provider_flake() {
@@ -1299,6 +1398,9 @@ prepare_node_a_baseline() {
 
 prepare_node_b_baseline() {
   stage "Preparing node-b"
+  log "Capturing node-a plan snapshot for migration source"
+  capture_task12_migration_source_plan
+
   log "Switching provider placement to node-b"
   write_provider_flake "node-b"
 
@@ -1457,6 +1559,7 @@ run_wizard_flow() {
   prompt_continue_or_abort
   prepare_node_b_baseline
 
+  apply_task12_migration_source_plan
   NODE_B_DEPLOY_SHA="task11-node-b-$(date +%s)"
   show_node_b_migration_instructions
 
@@ -1476,6 +1579,8 @@ run_wizard_flow() {
   sync_hostctl_profile "node-b"
   success "Migration to node-b detected."
   assert_not_installer_page "$VHOST" "http://${NODE_B_HOST_IP}:${NODE_HTTP_PORT}/"
+  run_task12_backup_restore_verification
+  run_task12_migration_marker_verification
   prompt_continue_or_abort
 
   stage "Demo completed"
@@ -1509,6 +1614,7 @@ run_automated_flow() {
   prepare_node_b_baseline
 
   stage "Automated deploy: node-b migration"
+  apply_task12_migration_source_plan
   NODE_B_DEPLOY_SHA="task11-node-b-$(date +%s)"
   NODE_B_JOB_ID="$(trigger_webhook_deploy "node-b" "$NODE_B_AUTH_TOKEN" "$NODE_B_DEPLOY_SHA" "task-11-node-b")"
 
@@ -1522,6 +1628,8 @@ run_automated_flow() {
 
   sync_hostctl_profile "node-b"
   assert_not_installer_page "$VHOST" "http://${NODE_B_HOST_IP}:${NODE_HTTP_PORT}/"
+  run_task12_backup_restore_verification
+  run_task12_migration_marker_verification
 
   stage "Demo completed"
   log "View site via local hostctl mapping: curl http://${VHOST}:${NODE_HTTP_PORT}/"
@@ -1648,6 +1756,8 @@ TASK10_DEPLOY_INTENT_LOG="$EVIDENCE_DIR/task-10-deploy-intent.log"
 TASK11_PROVIDER_SERVICE_LOG="$EVIDENCE_DIR/task-11-provider-service.log"
 TASK11_NODE_A_STATUS_LOG="$EVIDENCE_DIR/task-11-node-a-job-status.log"
 TASK11_NODE_B_STATUS_LOG="$EVIDENCE_DIR/task-11-node-b-job-status.log"
+TASK12_BACKUP_LOG="$EVIDENCE_DIR/task-12-backup.log"
+TASK12_MIGRATION_VERIFY_LOG="$EVIDENCE_DIR/task-12-migration-verify.log"
 
 printf '%s\n' "hostenv-local-vm-demo" > "$WORKDIR/.hostenv-local-vm-demo"
 
@@ -1669,6 +1779,7 @@ NODE_B_DEPLOY_SHA=""
 NODE_A_JOB_ID=""
 NODE_B_JOB_ID=""
 FOUND_JOB_ID=""
+TASK12_MIGRATION_SOURCE_PLAN="$PROVIDER_DIR/generated/task-12-migration-source-plan.json"
 
 cleanup() {
   local code=$?

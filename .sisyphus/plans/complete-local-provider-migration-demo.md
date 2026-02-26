@@ -765,7 +765,7 @@ Max Concurrent: 4 (Wave 1 & 2)
 
 ---
 
-- [ ] 12. Integrate migration backup/restore
+- [x] 12. Integrate migration backup/restore
 
   **What to do:**
   - Configure migration source in deploy intent
