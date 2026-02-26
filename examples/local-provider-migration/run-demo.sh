@@ -1854,6 +1854,7 @@ log "Generating age key for sops secrets"
 rm -f "$PROVIDER_DIR/secrets/demo-age.key"
 age-keygen -o "$PROVIDER_DIR/secrets/demo-age.key" >/dev/null
 AGE_PRIVATE_KEY="$(cat "$PROVIDER_DIR/secrets/demo-age.key")"
+export SOPS_AGE_KEY="$AGE_PRIVATE_KEY"
 AGE_PUBLIC_KEY="$(grep '^# public key:' "$PROVIDER_DIR/secrets/demo-age.key" | awk '{print $4}')"
 [[ -n "$AGE_PUBLIC_KEY" ]] || fail "failed to read age public key"
 
