@@ -1047,6 +1047,7 @@ write_provider_flake() {
     flake-parts.follows = "hostenv/flake-parts";
     sops-nix.follows = "hostenv/sops-nix";
     phps.follows = "hostenv/phps";
+    comin.follows = "hostenv/comin";
 
     demo__drupal = {
       url = "git+file://${PROJECT_DIR}?dir=.hostenv&ref=main";
