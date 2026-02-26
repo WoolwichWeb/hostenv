@@ -1175,7 +1175,6 @@ ${AGE_PRIVATE_KEY}
   # Allow passwordless login for demo (not for production!)
   users.allowNoPasswordLogin = true;
 }
-}
 EOF_NODE
 }
 
