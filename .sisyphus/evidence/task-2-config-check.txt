@@ -1,0 +1,40 @@
+=== Task 2: Provider-service Configuration Verification ===
+Date: $(date)
+File: examples/local-provider-migration/demo-project/.hostenv/hostenv.nix
+
+--- Configuration Check Results ---
+
+1. Provider-service enabled:
+29:  services.hostenv-provider = {
+
+2. Provider-service enable = true:
+    enable = true;
+
+3. Webhook host configuration:
+    webhookHost = "demo.hostenv.test";
+
+4. UI base path configuration:
+    uiBasePath = "/dashboard";
+
+5. PostgreSQL configuration (workdir-relative):
+  services.postgresql = {
+    enable = true;
+    user = config.hostenv.userName;
+    dataDir = "${config.hostenv.dataDir}/postgresql";
+    runtimeDir = config.hostenv.runtimeDir;
+    ensureDatabases = [ "hostenv-provider" ];
+    ensureUsers = [
+      {
+        name = config.hostenv.userName;
+        ensurePermissions = { "hostenv-provider" = "ALL PRIVILEGES"; };
+      }
+
+6. GitLab OAuth check (should NOT be enabled):
+PASS: GitLab OAuth is NOT enabled (correct for demo simplicity)
+
+=== Verification Summary ===
+PASS: Provider-service module configured correctly
+PASS: PostgreSQL uses workdir-relative paths (config.hostenv.dataDir)
+PASS: webhookHost set to demo.hostenv.test
+PASS: uiBasePath set to /dashboard
+PASS: GitLab OAuth disabled for demo simplicity

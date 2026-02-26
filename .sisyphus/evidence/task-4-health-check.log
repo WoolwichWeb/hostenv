@@ -1,0 +1,4 @@
+endpoint=/health
+http_code=404
+body:
+
