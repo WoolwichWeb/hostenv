@@ -1,0 +1,15 @@
+scenario=cleanup-after-interrupt
+timestamp=2026-02-25T21:58:26-05:00
+interrupt_sent=true
+workdir=/tmp/hostenv-local-vm-demo-task16-int
+qemu_check=pass
+hostctl_profile_check=pass
+workdir_removed_check=pass
+runlog=/home/liam/code/hostenv/.sisyphus/evidence/task-16-run.log
+qemu_matches:
+
+
+hostctl_profiles:
+
+
+workdir_exists_after=no

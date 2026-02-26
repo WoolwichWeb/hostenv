@@ -1,0 +1,22 @@
+[task-13] starting automated local provider migration demo
+[21:55:20] Using forwarded endpoints: node-a=127.0.0.2 ssh:2223 http:8081, node-b=127.0.0.3 ssh:2223 http:8081
+[21:55:20] Copying demo fixture and provider template
+[21:55:20] Copying Drupal seed file into project
+[21:55:20] Generating SSH keypair for deploy and environment access
+[21:55:21] Generating age key for sops secrets
+Public key: age1j3frhnwfpdlk3txdd25j5yc34dusp8g0q0xfmszey53ufhhvdd8s5gds7n
+[21:55:21] Generating local Nix signing key for VM deploy trust
+[21:55:21] Patching demo project placeholders
+[21:55:21] Initializing demo project git repository
+[21:55:21] Writing provider configuration for initial deploy on node-a
+[21:55:21] Encrypting provider secrets with sops
+[21:55:21] Initializing provider git repository
+[21:55:21] Writing local SSH config
+
+== Preparing node-a ==
+[21:55:21] Generating provider plan for node-a
+error:
+       … while updating the lock file of flake 'git+file:///tmp/hostenv-local-vm-demo-fGnDHV/provider?ref=refs/heads/main&rev=a7f2a4ec7fdf5fc2768a3559e1fca179a0685d1d'
+
+       error: input 'deploy-rs' follows a non-existent input 'hostenv/deploy-rs'
+[21:55:22] Removed workdir /tmp/hostenv-local-vm-demo-fGnDHV

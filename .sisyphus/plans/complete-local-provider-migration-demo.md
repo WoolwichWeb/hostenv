@@ -824,7 +824,7 @@ Max Concurrent: 4 (Wave 1 & 2)
 
 ---
 
-- [ ] 13. Create end-to-end automated test
+- [x] 13. Create end-to-end automated test
 
   **What to do:**
   - Create NixOS VM test or comprehensive bash test
@@ -877,7 +877,7 @@ Max Concurrent: 4 (Wave 1 & 2)
 
 ---
 
-- [ ] 14. Update README documentation
+- [x] 14. Update README documentation
 
   **What to do:**
   - Document the modern provider-service + comin flow
@@ -930,7 +930,7 @@ Max Concurrent: 4 (Wave 1 & 2)
 
 ---
 
-- [ ] 15. Verify manual wizard mode
+- [x] 15. Verify manual wizard mode
 
   **What to do:**
   - Test interactive wizard mode manually
@@ -978,7 +978,7 @@ Max Concurrent: 4 (Wave 1 & 2)
 
 ---
 
-- [ ] 16. Handle edge cases and cleanup
+- [x] 16. Handle edge cases and cleanup
 
   **What to do:**
   - Handle service startup failures gracefully

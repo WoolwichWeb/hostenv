@@ -1,0 +1,26 @@
+Script started on 2026-02-25 21:53:37-05:00 [COMMAND="nix shell nixpkgs#gum nixpkgs#sops nixpkgs#age nixpkgs#openssh nixpkgs#curl nixpkgs#jq nixpkgs#pv nixpkgs#gzip nixpkgs#git nixpkgs#qemu_kvm -c bash -lc 'hostctl(){ return 0; }; sudo(){ shift; $@; }; export -f hostctl sudo; ./examples/local-provider-migration/run-demo.sh'" TERM="tmux-256color" TTY="/dev/pts/12" COLUMNS="80" LINES="24"]
+[0m[Kevaluating derivation 'flake:nixpkgs#gum'[0m[Kevaluating derivation 'flake:nixpkgs#sops'[0m[Kevaluating derivation 'flake:nixpkgs#openssh'[0m[Kevaluating derivation 'flake:nixpkgs#jq'[0m[Kevaluating derivation 'flake:nixpkgs#pv'[0m[Kevaluating derivation 'flake:nixpkgs#git'[0m[K[[32;1m0[0m/10 built] [0m[K[[32;1m0[0m/8 built] [0m[K[[32;1m0[0m/2 built] [0m[K[K[21:53:37] Using forwarded endpoints: node-a=127.0.0.2 ssh:2223 http:8081, node-b=127.0.0.3 ssh:2223 http:8081
+[21:53:37] Copying demo fixture and provider template
+[21:53:37] Copying Drupal seed file into project
+[21:53:37] Generating SSH keypair for deploy and environment access
+[21:53:37] Generating age key for sops secrets
+Public key: age1k0tk2sd3kgp2sdyxqdkx6u46a8ynm5m55av69rsdp87rq0ya8dyqp0feh7
+[21:53:37] Generating local Nix signing key for VM deploy trust
+[0m[K[K[0m[K[K[21:53:37] Patching demo project placeholders
+[21:53:37] Initializing demo project git repository
+[21:53:38] Writing provider configuration for initial deploy on node-a
+[21:53:38] Encrypting provider secrets with sops
+[21:53:38] Initializing provider git repository
+[21:53:38] Writing local SSH config
+
+[38;5;240m╭────────────────────────╮[0m
+[38;5;240m│[0m [1;38;5;63m== Preparing node-a ==[0m [38;5;240m│[0m
+[38;5;240m╰────────────────────────╯[0m
+[21:53:38] Generating provider plan for node-a
+[0m[Kcopying "/home/liam/code/hostenv" to the store[0m[K[0m[Kcopying '/nix/store/z51s88wlh5fh0907c0as4530arryazh5-source/' to the store[0m[K[K[31;1merror:[0m
+       … while updating the lock file of flake '[35;1mgit+file:///tmp/hostenv-local-vm-demo-X2ZYVs/provider?ref=refs/heads/main&rev=91bd8a23f6a9ea3e1b53b72ebaade3deb2359218[0m'
+
+       [31;1merror:[0m input '[35;1mdeploy-rs[0m' follows a non-existent input '[35;1mhostenv/deploy-rs[0m'[0m
+[0m[K[K[21:53:38] Workdir kept at /tmp/hostenv-local-vm-demo-X2ZYVs
+
+Script done on 2026-02-25 21:53:38-05:00 [COMMAND_EXIT_CODE="1"]

@@ -1,9 +1,0 @@
-timestamp=2026-02-25T21:47:39-05:00
-scenario=Migration backup created
-status=blocked
-reason=local demo could not reach migration stage because provider plan generation failed before node-a deployment
-attempted_command=nix shell nixpkgs#hostctl nixpkgs#sops nixpkgs#age nixpkgs#pv nixpkgs#gum --command ./examples/local-provider-migration/run-demo.sh --automated --cleanup --no-color
-expected_backup_source_node=node-a
-expected_restore_target_node=node-b
-error=error: input 'deploy-rs' follows a non-existent input 'hostenv/deploy-rs'
-notes=Task 12 wiring was added to run-demo.sh, but runtime validation is blocked by the existing provider flake lock/input issue.
