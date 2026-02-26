@@ -1393,7 +1393,7 @@ prepare_node_a_baseline() {
   load_plan_metadata || fail_stage "failed to load environment metadata from $PLAN_PATH"
   load_project_hash_from_plan || fail_stage "failed to resolve project hash from $PLAN_PATH"
   NODE_A_AUTH_TOKEN="$(load_comin_node_token "node-a")" || fail_stage "failed to load node-a auth token from provider secrets"
-  NODE_B_AUTH_TOKEN="$(load_comin_node_token "node-b")" || fail_stage "failed to load node-b auth token from provider secrets"
+  # Note: node-b token will be loaded in prepare_node_b_baseline() after it's generated
   sync_hostctl_profile "node-a"
 
   log "Signing deploy closures for node-a"
