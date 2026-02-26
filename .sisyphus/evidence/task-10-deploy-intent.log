@@ -1,5 +1,5 @@
-timestamp=2026-02-25T21:33:17-05:00
-job_id=8b19c1e0-4c38-9c5c-c16f-bb93d9a147b6
+timestamp=2026-02-25T21:34:52-05:00
+job_id=f5692541-5d42-ad3a-54d3-13f462454321
 endpoint=/api/deploy-intents/by-sha
 query=sha=task10-qa&node=node-a
 http_code=404
@@ -7,7 +7,7 @@ intent_response_valid=false
 actions_shape_valid=false
 backup_config_fields_valid=false
 db_check_ran=true
-db_socket_dir=/tmp/hostenv-task10-9aHZCU/runtime
+db_socket_dir=/tmp/hostenv-task10-OFQkVG/runtime
 db_row_found=false
 db_commit_matches=false
 db_action_count=
