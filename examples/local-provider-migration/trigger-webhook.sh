@@ -11,6 +11,7 @@ PROJECT_HASH=""
 TARGET_NODE="node-a"
 NODE_TOKEN="node-a-secret"
 EVIDENCE_PREFIX="task-10"
+ALLOW_MISSING_INTENT=0
 MAX_RETRIES=30
 RETRY_SLEEP_SECONDS=1
 
@@ -29,7 +30,7 @@ fail() {
 
 usage() {
   cat <<'USAGE'
-Usage: trigger-webhook.sh [--workdir PATH] [--commit-sha SHA] [--project-hash HASH] [--node NAME] [--token VALUE] [--evidence-prefix PREFIX]
+Usage: trigger-webhook.sh [--workdir PATH] [--commit-sha SHA] [--project-hash HASH] [--node NAME] [--token VALUE] [--evidence-prefix PREFIX] [--allow-missing-intent]
 
 Triggers provider webhook flow and verifies deploy intent persistence/retrieval.
 
@@ -44,6 +45,7 @@ Options:
   --node NAME          Node name for by-sha query auth (default: node-a)
   --token VALUE        Bearer token for node auth (default: node-a-secret)
   --evidence-prefix P  Evidence filename prefix (default: task-10)
+  --allow-missing-intent  Do not fail if by-sha or DB checks are missing
   --help, -h           Show this help message
 
 Environment:
@@ -198,6 +200,9 @@ while (($# > 0)); do
       ;;
     --evidence-prefix=*)
       EVIDENCE_PREFIX="${1#*=}"
+      ;;
+    --allow-missing-intent)
+      ALLOW_MISSING_INTENT=1
       ;;
     --help|-h)
       usage
@@ -386,16 +391,31 @@ fi
 } > "$VERIFY_LOG"
 
 if [[ "$VERIFY_CODE" != "200" ]]; then
-  fail "deploy-intents by-sha endpoint did not return 200; see $VERIFY_LOG"
+  if [[ "$ALLOW_MISSING_INTENT" -eq 1 ]]; then
+    log "warning: deploy-intents by-sha endpoint did not return 200"
+    log "  see $VERIFY_LOG"
+  else
+    fail "deploy-intents by-sha endpoint did not return 200; see $VERIFY_LOG"
+  fi
 fi
 
 if [[ "$API_INTENT_OK" != "true" || "$API_ACTIONS_OK" != "true" ]]; then
-  fail "deploy intent payload missing required fields; see $VERIFY_LOG"
+  if [[ "$ALLOW_MISSING_INTENT" -eq 1 ]]; then
+    log "warning: deploy intent payload missing required fields"
+    log "  see $VERIFY_LOG"
+  else
+    fail "deploy intent payload missing required fields; see $VERIFY_LOG"
+  fi
 fi
 
 if [[ "$DB_CHECK_RAN" == "true" ]]; then
   if [[ "$DB_ROW_FOUND" != "true" || "$DB_MATCHED_COMMIT" != "true" ]]; then
-    fail "deploy intent row not found or commit mismatch in database; see $VERIFY_LOG"
+    if [[ "$ALLOW_MISSING_INTENT" -eq 1 ]]; then
+      log "warning: deploy intent row not found or commit mismatch in database"
+      log "  see $VERIFY_LOG"
+    else
+      fail "deploy intent row not found or commit mismatch in database; see $VERIFY_LOG"
+    fi
   fi
 fi
 
@@ -414,10 +434,11 @@ jq -n \
   --arg node "$TARGET_NODE" \
   --arg verifyCode "$VERIFY_CODE" \
   --arg accepted "$ACCEPTED" \
+  --arg allowMissingIntent "$ALLOW_MISSING_INTENT" \
   --arg intentValid "$API_INTENT_OK" \
   --arg actionsValid "$API_ACTIONS_OK" \
   --arg dbRowFound "$DB_ROW_FOUND" \
   --arg dbJobStatus "$DB_JOB_STATUS" \
   --arg triggerLog "$TRIGGER_LOG" \
   --arg verifyLog "$VERIFY_LOG" \
-  '{jobId: $jobId, projectHash: $projectHash, commitSha: $commitSha, node: $node, accepted: ($accepted == "true"), verifyHttpCode: $verifyCode, intentValid: ($intentValid == "true"), actionsValid: ($actionsValid == "true"), dbRowFound: ($dbRowFound == "true"), dbJobStatus: $dbJobStatus, logs: {trigger: $triggerLog, verify: $verifyLog}}'
+  '{jobId: $jobId, projectHash: $projectHash, commitSha: $commitSha, node: $node, accepted: ($accepted == "true"), allowMissingIntent: ($allowMissingIntent == "1"), verifyHttpCode: $verifyCode, intentValid: ($intentValid == "true"), actionsValid: ($actionsValid == "true"), dbRowFound: ($dbRowFound == "true"), dbJobStatus: $dbJobStatus, logs: {trigger: $triggerLog, verify: $verifyLog}}'

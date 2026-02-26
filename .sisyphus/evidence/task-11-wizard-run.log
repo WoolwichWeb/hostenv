@@ -1,0 +1,26 @@
+this path will be fetched (3.33 MiB download, 13.28 MiB unpacked):
+  /nix/store/x5bn6qhx5qr16w5nz0mh5bh9ww4530h8-gum-0.17.0
+copying path '/nix/store/x5bn6qhx5qr16w5nz0mh5bh9ww4530h8-gum-0.17.0' from 'https://cache.nixos.org'...
+[21:41:55] Using forwarded endpoints: node-a=127.0.0.2 ssh:2223 http:8081, node-b=127.0.0.3 ssh:2223 http:8081
+[21:41:55] Copying demo fixture and provider template
+[21:41:55] Copying Drupal seed file into project
+[21:41:55] Generating SSH keypair for deploy and environment access
+[21:41:55] Generating age key for sops secrets
+Public key: age1ewnug28mac7nh5wcjn5xe99szdm8lp3x8z8er3lweha5z348cysqkssycl
+[21:41:55] Generating local Nix signing key for VM deploy trust
+[21:41:55] Patching demo project placeholders
+[21:41:55] Initializing demo project git repository
+[21:41:55] Writing provider configuration for initial deploy on node-a
+[21:41:55] Encrypting provider secrets with sops
+[21:41:55] Initializing provider git repository
+[21:41:55] Writing local SSH config
+
+== Preparing node-a ==
+[21:41:55] Generating provider plan for node-a
+error:
+       … while updating the lock file of flake 'git+file:///tmp/hostenv-local-vm-demo-jP5klm/provider?ref=refs/heads/main&rev=3f4555a10f98771c64b8c69835540a6c282c8ecf'
+
+       error: input 'deploy-rs' follows a non-existent input 'hostenv/deploy-rs'
+[21:41:56] Workdir kept at /tmp/hostenv-local-vm-demo-jP5klm
+
+EXIT_CODE=1

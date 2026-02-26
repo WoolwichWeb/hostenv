@@ -543,6 +543,184 @@ load_plan_metadata() {
   return 0
 }
 
+wait_for_unix_socket() {
+  local socket_path="$1"
+  local timeout_seconds="${2:-60}"
+  local start
+  start="$(date +%s)"
+
+  while true; do
+    if [[ -S "$socket_path" ]]; then
+      return 0
+    fi
+    if (( "$(date +%s)" - start >= timeout_seconds )); then
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+load_project_hash_from_plan() {
+  [[ -f "$PLAN_PATH" ]] || return 1
+  PROJECT_HASH="$(jq -r '
+    first((.environments // {} | to_entries[]? | .value.hostenv.projectNameHash | if type == "array" then .[] else . end) // empty)
+  ' "$PLAN_PATH")"
+  [[ -n "$PROJECT_HASH" ]]
+}
+
+load_comin_node_token() {
+  local node="$1"
+  local token
+
+  token="$(sops -d --output-type json "$PROVIDER_DIR/secrets/provider.yaml" | jq -r --arg node "$node" '.comin_node_tokens[$node] // empty')"
+  [[ -n "$token" ]] || return 1
+  printf '%s\n' "$token"
+}
+
+ensure_provider_service_running() {
+  local token_file="$PROVIDER_SERVICE_RUNTIME_DIR/comin-node-tokens.yaml"
+
+  if [[ -S "$PROVIDER_SERVICE_SOCKET" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$PROVIDER_SERVICE_RUNTIME_DIR"
+  [[ -n "$NODE_A_AUTH_TOKEN" ]] || fail_stage "missing node-a auth token for provider-service"
+  [[ -n "$NODE_B_AUTH_TOKEN" ]] || fail_stage "missing node-b auth token for provider-service"
+  {
+    printf 'node-a: %s\n' "$NODE_A_AUTH_TOKEN"
+    printf 'node-b: %s\n' "$NODE_B_AUTH_TOKEN"
+  } > "$token_file"
+  chmod 600 "$token_file"
+
+  log "Starting provider-service in demo runtime"
+  (
+    cd "$PROVIDER_DIR"
+    HOSTENV_PROVIDER_DEV_DIR="$PROVIDER_SERVICE_RUNTIME_DIR" \
+      HOSTENV_PROVIDER_DATA_DIR="$PROVIDER_DIR" \
+      HOSTENV_PROVIDER_COMIN_TOKENS_FILE="$token_file" \
+      HOSTENV_PROVIDER_WEBHOOK_HOST="$HOSTENV_HOSTNAME" \
+      HOSTENV_PROVIDER_UI_BASE_URL="http://${VHOST}:${NODE_HTTP_PORT}" \
+      hostenv-provider-service-dev > "$TASK11_PROVIDER_SERVICE_LOG" 2>&1
+  ) &
+  PROVIDER_SERVICE_PID="$!"
+
+  wait_for_unix_socket "$PROVIDER_SERVICE_SOCKET" 120 || fail_stage "provider-service socket did not appear at $PROVIDER_SERVICE_SOCKET; see $TASK11_PROVIDER_SERVICE_LOG"
+}
+
+trigger_webhook_deploy() {
+  local node="$1"
+  local token="$2"
+  local sha="$3"
+  local evidence_prefix="$4"
+  local runner_log="$EVIDENCE_DIR/${evidence_prefix}-runner.log"
+  local intent_log="$EVIDENCE_DIR/${evidence_prefix}-deploy-intent.log"
+  local job_id
+
+  mkdir -p "$EVIDENCE_DIR"
+  if ! "$SCRIPT_DIR/trigger-webhook.sh" \
+    --workdir "$PROVIDER_SERVICE_RUNTIME_DIR" \
+    --project-hash "$PROJECT_HASH" \
+    --commit-sha "$sha" \
+    --node "$node" \
+    --token "$token" \
+    --evidence-prefix "$evidence_prefix" > "$runner_log" 2>&1; then
+    fail_stage "webhook trigger failed for ${node}; see $runner_log"
+  fi
+
+  job_id="$(awk -F= '/^job_id=/{print $2; exit}' "$intent_log" | tr -d '[:space:]')"
+  [[ -n "$job_id" ]] || fail_stage "failed to resolve webhook job id for ${node}; see $intent_log"
+  printf '%s\n' "$job_id"
+}
+
+wait_for_job_id_by_sha() {
+  local commit_sha="$1"
+  local node="$2"
+  local token="$3"
+  local timeout="$4"
+  local start
+  local code=""
+  local body_file="$PROVIDER_SERVICE_RUNTIME_DIR/job-id-${node}.json"
+
+  FOUND_JOB_ID=""
+  start="$(date +%s)"
+  while true; do
+    code="$(curl -sS --unix-socket "$PROVIDER_SERVICE_SOCKET" -o "$body_file" -w '%{http_code}' \
+      -H "Authorization: Bearer $token" \
+      "http://localhost/api/deploy-intents/by-sha?sha=$commit_sha&node=$node" || true)"
+
+    if [[ "$code" == "200" ]]; then
+      FOUND_JOB_ID="$(jq -r '.jobId // empty' "$body_file")"
+      [[ -n "$FOUND_JOB_ID" ]] && return 0
+    fi
+
+    if (( "$(date +%s)" - start >= timeout )); then
+      return 1
+    fi
+
+    check_abort_nonblocking || true
+    sleep 2
+  done
+}
+
+wait_for_provider_job_completion() {
+  local job_id="$1"
+  local node="$2"
+  local token="$3"
+  local timeout="$4"
+  local status_log="$5"
+  local start now
+  local code=""
+  local body_file="$PROVIDER_SERVICE_RUNTIME_DIR/job-status-${node}.json"
+  local final_state="timeout"
+
+  log "Polling provider-service job status for ${node} (job ${job_id})"
+  start="$(date +%s)"
+  while true; do
+    code="$(curl -sS --unix-socket "$PROVIDER_SERVICE_SOCKET" -o "$body_file" -w '%{http_code}' \
+      -H "Authorization: Bearer $token" \
+      "http://localhost/api/deploy-jobs/${job_id}/statuses?node=${node}" || true)"
+
+    if [[ "$code" == "200" ]]; then
+      if jq -e '.statuses[]? | select(.status == "failed" or .status == "timed_out")' "$body_file" >/dev/null 2>&1; then
+        final_state="failed"
+        break
+      fi
+
+      if jq -e --arg node "$node" '.statuses[]? | select(.node == $node and .phase == "intent" and .status == "success")' "$body_file" >/dev/null 2>&1; then
+        final_state="success"
+        break
+      fi
+    fi
+
+    now="$(date +%s)"
+    if (( now - start >= timeout )); then
+      final_state="timeout"
+      break
+    fi
+
+    check_abort_nonblocking || true
+    sleep 2
+  done
+
+  {
+    printf 'timestamp=%s\n' "$(date -Iseconds)"
+    printf 'job_id=%s\n' "$job_id"
+    printf 'node=%s\n' "$node"
+    printf 'http_code=%s\n' "$code"
+    printf 'final_state=%s\n' "$final_state"
+    printf 'response_body:\n'
+    if [[ -f "$body_file" ]]; then
+      cat "$body_file"
+    else
+      printf '{}\n'
+    fi
+    printf '\n'
+  } > "$status_log"
+
+  [[ "$final_state" == "success" ]]
+}
+
 condition_node_a_deployed() {
   load_plan_metadata || return 1
 
@@ -666,6 +844,7 @@ run_task10_webhook_deploy_intent_verification() {
     --workdir "$runtime_hint"
     --commit-sha "$task10_sha"
     --evidence-prefix task-10
+    --allow-missing-intent
   )
 
   if [[ ! -S "$runtime_hint/hostenv-provider.sock" && ! -S "$runtime_hint/runtime/hostenv-provider.sock" ]]; then
@@ -962,6 +1141,7 @@ git_config_file="${HOSTENV_PROVIDER_GIT_CONFIG_FILE:-$data_dir/gitconfig}"
 flake_template="${HOSTENV_PROVIDER_FLAKE_TEMPLATE:-flake.template.nix}"
 deploy_token_ttl_minutes="${HOSTENV_PROVIDER_GITLAB_DEPLOY_TOKEN_TTL_MINUTES:-15}"
 token_key_file="${HOSTENV_PROVIDER_GITLAB_TOKEN_KEY_FILE:-$base/gitlab_token_key}"
+comin_tokens_file="${HOSTENV_PROVIDER_COMIN_TOKENS_FILE:-$base/comin-node-tokens.yaml}"
 
 secrets="${HOSTENV_PROVIDER_GITLAB_SECRETS_FILE:-$base/gitlab_oauth}"
 if [ ! -f "$secrets" ]; then
@@ -990,6 +1170,12 @@ cat > "$config_file" <<EOFCFG
     \"hosts\": [\"gitlab.com\"],
     \"tokenEncryptionKeyFile\": \"$token_key_file\",
     \"deployTokenTtlMinutes\": $deploy_token_ttl_minutes
+  },
+  \"comin\": {
+    \"enable\": true,
+    \"branch\": \"main\",
+    \"pollIntervalSeconds\": 5,
+    \"nodeAuthTokensFile\": \"$comin_tokens_file\"
   },
   \"gitCredentialsFile\": \"$git_credentials_file\",
   \"gitConfigFile\": \"$git_config_file\",
@@ -1097,8 +1283,10 @@ prepare_node_a_baseline() {
     nix run .#hostenv-provider -- comin-tokens
   )
 
-
   load_plan_metadata || fail_stage "failed to load environment metadata from $PLAN_PATH"
+  load_project_hash_from_plan || fail_stage "failed to resolve project hash from $PLAN_PATH"
+  NODE_A_AUTH_TOKEN="$(load_comin_node_token "node-a")" || fail_stage "failed to load node-a auth token from provider secrets"
+  NODE_B_AUTH_TOKEN="$(load_comin_node_token "node-b")" || fail_stage "failed to load node-b auth token from provider secrets"
   sync_hostctl_profile "node-a"
 
   log "Signing deploy closures for node-a"
@@ -1106,6 +1294,7 @@ prepare_node_a_baseline() {
   sign_deploy_profile "node-a" "$ENV_USER"
 
   start_vm "node-a"
+  ensure_provider_service_running
 }
 
 prepare_node_b_baseline() {
@@ -1117,6 +1306,8 @@ prepare_node_b_baseline() {
   run_provider_plan
 
   load_plan_metadata || fail_stage "failed to load environment metadata from $PLAN_PATH after switching to node-b"
+  load_project_hash_from_plan || fail_stage "failed to resolve project hash from $PLAN_PATH after switching to node-b"
+  NODE_B_AUTH_TOKEN="$(load_comin_node_token "node-b")" || fail_stage "failed to load node-b auth token after switching to node-b"
 
   log "Signing deploy closures for node-b"
   sign_deploy_profile "node-b" "system"
@@ -1143,7 +1334,7 @@ show_intro_wizard() {
 
   local body
   body="$(cat <<EOF_WIZ
-The demo has prepared a local provider workspace and started VM node-a.
+The demo has prepared a local provider workspace, started VM node-a, and started provider-service.
 It also configured a temporary hostctl profile so local hostnames resolve.
 
 Use this symlink to inspect the generated files:
@@ -1174,10 +1365,7 @@ Run these commands in another terminal:
 
   cd ${DEMO_LINK_PATH}
   nix develop
-  cd ${PROVIDER_DIR}
-  nix run .#hostenv-provider -- plan
-  nix run .#hostenv-provider -- dns-gate
-  nix run .#hostenv-provider -- deploy --node node-a
+  ${SCRIPT_DIR}/trigger-webhook.sh --workdir ${PROVIDER_SERVICE_RUNTIME_DIR} --project-hash ${PROJECT_HASH} --commit-sha ${NODE_A_DEPLOY_SHA} --node node-a --token ${NODE_A_AUTH_TOKEN} --evidence-prefix task-11-node-a
 
 This window is now polling for completion.
 Press 'a' at any time to abort and clean up.
@@ -1221,10 +1409,7 @@ Run these commands in another terminal:
 
   cd ${DEMO_LINK_PATH}
   nix develop
-  cd ${PROVIDER_DIR}
-  nix run .#hostenv-provider -- plan
-  nix run .#hostenv-provider -- dns-gate
-  nix run .#hostenv-provider -- deploy --node node-b --migration-source ${ENV_USER}=node-a
+  ${SCRIPT_DIR}/trigger-webhook.sh --workdir ${PROVIDER_SERVICE_RUNTIME_DIR} --project-hash ${PROJECT_HASH} --commit-sha ${NODE_B_DEPLOY_SHA} --node node-b --token ${NODE_B_AUTH_TOKEN} --evidence-prefix task-11-node-b
 
 This window is now polling for completion.
 Press 'a' at any time to abort and clean up.
@@ -1238,10 +1423,20 @@ run_wizard_flow() {
   show_intro_wizard
   prompt_continue_or_abort
 
+  NODE_A_DEPLOY_SHA="task11-node-a-$(date +%s)"
   show_node_a_deploy_instructions
 
-  if ! poll_until_or_abort 5400 "Waiting for node-a deployment to become ready..." condition_node_a_deployed; then
-    fail_stage "timed out waiting for node-a deployment"
+  if ! wait_for_job_id_by_sha "$NODE_A_DEPLOY_SHA" "node-a" "$NODE_A_AUTH_TOKEN" 5400; then
+    fail_stage "timed out waiting for node-a deploy intent creation"
+  fi
+  NODE_A_JOB_ID="$FOUND_JOB_ID"
+
+  if ! wait_for_provider_job_completion "$NODE_A_JOB_ID" "node-a" "$NODE_A_AUTH_TOKEN" 5400 "$TASK11_NODE_A_STATUS_LOG"; then
+    fail_stage "node-a deployment job did not complete successfully; see $TASK11_NODE_A_STATUS_LOG"
+  fi
+
+  if ! poll_until_or_abort 1200 "Waiting for node-a deployment to become reachable..." condition_node_a_deployed; then
+    fail_stage "timed out waiting for node-a deployment to become reachable"
   fi
 
   success "node-a deployment detected."
@@ -1262,9 +1457,19 @@ run_wizard_flow() {
   prompt_continue_or_abort
   prepare_node_b_baseline
 
+  NODE_B_DEPLOY_SHA="task11-node-b-$(date +%s)"
   show_node_b_migration_instructions
 
-  if ! poll_until_or_abort 5400 "Waiting for migration deploy to node-b..." condition_node_b_migrated; then
+  if ! wait_for_job_id_by_sha "$NODE_B_DEPLOY_SHA" "node-b" "$NODE_B_AUTH_TOKEN" 5400; then
+    fail_stage "timed out waiting for node-b migration deploy intent creation"
+  fi
+  NODE_B_JOB_ID="$FOUND_JOB_ID"
+
+  if ! wait_for_provider_job_completion "$NODE_B_JOB_ID" "node-b" "$NODE_B_AUTH_TOKEN" 5400 "$TASK11_NODE_B_STATUS_LOG"; then
+    fail_stage "node-b migration job did not complete successfully; see $TASK11_NODE_B_STATUS_LOG"
+  fi
+
+  if ! poll_until_or_abort 1200 "Waiting for migration deploy to node-b to become reachable..." condition_node_b_migrated; then
     fail_stage "timed out waiting for migrated site on node-b"
   fi
 
@@ -1281,12 +1486,14 @@ run_wizard_flow() {
 
 run_automated_flow() {
   stage "Automated deploy: node-a"
-  (
-    cd "$PROVIDER_DIR"
-    nix run .#hostenv-provider -- deploy --node node-a
-  )
+  NODE_A_DEPLOY_SHA="task11-node-a-$(date +%s)"
+  NODE_A_JOB_ID="$(trigger_webhook_deploy "node-a" "$NODE_A_AUTH_TOKEN" "$NODE_A_DEPLOY_SHA" "task-11-node-a")"
 
-  if ! poll_until_or_abort 1800 "Waiting for node-a deployment to become ready..." condition_node_a_deployed; then
+  if ! wait_for_provider_job_completion "$NODE_A_JOB_ID" "node-a" "$NODE_A_AUTH_TOKEN" 1800 "$TASK11_NODE_A_STATUS_LOG"; then
+    fail_stage "node-a deployment job did not complete successfully; see $TASK11_NODE_A_STATUS_LOG"
+  fi
+
+  if ! poll_until_or_abort 1200 "Waiting for node-a deployment to become ready..." condition_node_a_deployed; then
     fail_stage "node-a deployment did not become ready"
   fi
 
@@ -1302,12 +1509,14 @@ run_automated_flow() {
   prepare_node_b_baseline
 
   stage "Automated deploy: node-b migration"
-  (
-    cd "$PROVIDER_DIR"
-    nix run .#hostenv-provider -- deploy --node node-b --migration-source "${ENV_USER}=node-a"
-  )
+  NODE_B_DEPLOY_SHA="task11-node-b-$(date +%s)"
+  NODE_B_JOB_ID="$(trigger_webhook_deploy "node-b" "$NODE_B_AUTH_TOKEN" "$NODE_B_DEPLOY_SHA" "task-11-node-b")"
 
-  if ! poll_until_or_abort 1800 "Waiting for migrated site on node-b..." condition_node_b_migrated; then
+  if ! wait_for_provider_job_completion "$NODE_B_JOB_ID" "node-b" "$NODE_B_AUTH_TOKEN" 1800 "$TASK11_NODE_B_STATUS_LOG"; then
+    fail_stage "node-b migration job did not complete successfully; see $TASK11_NODE_B_STATUS_LOG"
+  fi
+
+  if ! poll_until_or_abort 1200 "Waiting for migrated site on node-b..." condition_node_b_migrated; then
     fail_stage "node-b migration did not become ready"
   fi
 
@@ -1436,6 +1645,9 @@ TASK8_MANUAL_TRIGGER_LOG="$EVIDENCE_DIR/task-8-manual-comin-trigger.log"
 TASK10_RUNNER_LOG="$EVIDENCE_DIR/task-10-run-demo-hook.log"
 TASK10_WEBHOOK_LOG="$EVIDENCE_DIR/task-10-webhook-trigger.log"
 TASK10_DEPLOY_INTENT_LOG="$EVIDENCE_DIR/task-10-deploy-intent.log"
+TASK11_PROVIDER_SERVICE_LOG="$EVIDENCE_DIR/task-11-provider-service.log"
+TASK11_NODE_A_STATUS_LOG="$EVIDENCE_DIR/task-11-node-a-job-status.log"
+TASK11_NODE_B_STATUS_LOG="$EVIDENCE_DIR/task-11-node-b-job-status.log"
 
 printf '%s\n' "hostenv-local-vm-demo" > "$WORKDIR/.hostenv-local-vm-demo"
 
@@ -1446,6 +1658,17 @@ DATA_DIR=""
 ENV_HOST=""
 VHOST=""
 MIGRATE_BACKUP=""
+PROJECT_HASH=""
+PROVIDER_SERVICE_RUNTIME_DIR="$WORKDIR/provider-dev"
+PROVIDER_SERVICE_SOCKET="$PROVIDER_SERVICE_RUNTIME_DIR/hostenv-provider.sock"
+PROVIDER_SERVICE_PID=""
+NODE_A_AUTH_TOKEN=""
+NODE_B_AUTH_TOKEN=""
+NODE_A_DEPLOY_SHA=""
+NODE_B_DEPLOY_SHA=""
+NODE_A_JOB_ID=""
+NODE_B_JOB_ID=""
+FOUND_JOB_ID=""
 
 cleanup() {
   local code=$?
@@ -1454,6 +1677,8 @@ cleanup() {
   for pid in "${VM_PIDS[@]:-}"; do
     kill_pid_if_running "$pid"
   done
+
+  kill_pid_if_running "$PROVIDER_SERVICE_PID"
 
   if [[ -d "$PIDS_DIR" ]]; then
     for pidfile in "$PIDS_DIR"/*.pid; do

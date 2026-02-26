@@ -1,0 +1,41 @@
+missing demo tools; re-running this script inside 'nix shell nixpkgs#hostctl'
+ERROR: missing required command: sops
+
+EXIT_CODE=1
+RETRY_WITH_NIX_SHELL=1
+these 6 paths will be fetched (1.53 MiB download, 9.51 MiB unpacked):
+  /nix/store/c1gd6m4r3wa9ydvdg1xqvdkbsksmsp67-gawk-5.3.2-man
+  /nix/store/sjwcj3hdk51wxshxw53pz3r93a2wbxs4-gzip-1.14-man
+  /nix/store/3vf14k4jycrak4zqci53jlm9rpjq3q65-ldns-1.8.4
+  /nix/store/8nlwlm79f2phsybyhy2dj0zpcfsjk5qy-libedit-20251016-3.1
+  /nix/store/vlhrk50xg0lmivk049q8yygbsm86l6m0-openssh-10.2p1
+  /nix/store/xv8qlypb39zd2lqcs5fmqzvby029ra7c-openssh-10.2p1-man
+copying path '/nix/store/c1gd6m4r3wa9ydvdg1xqvdkbsksmsp67-gawk-5.3.2-man' from 'https://cache.nixos.org'...
+copying path '/nix/store/sjwcj3hdk51wxshxw53pz3r93a2wbxs4-gzip-1.14-man' from 'https://cache.nixos.org'...
+copying path '/nix/store/xv8qlypb39zd2lqcs5fmqzvby029ra7c-openssh-10.2p1-man' from 'https://cache.nixos.org'...
+copying path '/nix/store/3vf14k4jycrak4zqci53jlm9rpjq3q65-ldns-1.8.4' from 'https://cache.nixos.org'...
+copying path '/nix/store/8nlwlm79f2phsybyhy2dj0zpcfsjk5qy-libedit-20251016-3.1' from 'https://cache.nixos.org'...
+copying path '/nix/store/vlhrk50xg0lmivk049q8yygbsm86l6m0-openssh-10.2p1' from 'https://cache.nixos.org'...
+[21:41:36] Using forwarded endpoints: node-a=127.0.0.2 ssh:2223 http:8081, node-b=127.0.0.3 ssh:2223 http:8081
+[21:41:36] Copying demo fixture and provider template
+[21:41:36] Copying Drupal seed file into project
+[21:41:36] Generating SSH keypair for deploy and environment access
+[21:41:36] Generating age key for sops secrets
+Public key: age1ujuzq5xx2u8p4e6fadk77lqd2vyaegnujjfh4m9k9kfyev0mey9swe6755
+[21:41:36] Generating local Nix signing key for VM deploy trust
+[21:41:36] Patching demo project placeholders
+[21:41:36] Initializing demo project git repository
+[21:41:36] Writing provider configuration for initial deploy on node-a
+[21:41:36] Encrypting provider secrets with sops
+[21:41:36] Initializing provider git repository
+[21:41:36] Writing local SSH config
+
+== Preparing node-a ==
+[21:41:36] Generating provider plan for node-a
+error:
+       … while updating the lock file of flake 'git+file:///tmp/hostenv-local-vm-demo-uJeRLm/provider?ref=refs/heads/main&rev=253f7419cb660c62c4e6085847198cd85c0e3037'
+
+       error: input 'deploy-rs' follows a non-existent input 'hostenv/deploy-rs'
+[21:41:37] Removed workdir /tmp/hostenv-local-vm-demo-uJeRLm
+
+RETRY_EXIT_CODE=1

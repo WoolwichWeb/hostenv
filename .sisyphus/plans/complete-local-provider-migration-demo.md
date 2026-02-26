@@ -704,7 +704,7 @@ Max Concurrent: 4 (Wave 1 & 2)
 
 ---
 
-- [ ] 11. Update run-demo.sh orchestration
+- [x] 11. Update run-demo.sh orchestration
 
   **What to do:**
   - Replace legacy deploy commands with provider-service flow

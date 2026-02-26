@@ -1,0 +1,21 @@
+## Task 11 - run-demo.sh provider-service orchestration
+
+- Updated `examples/local-provider-migration/run-demo.sh` to start `hostenv-provider-service-dev` automatically during `prepare_node_a_baseline()` after VM startup.
+- Added provider-service runtime orchestration helpers:
+  - Unix socket wait logic.
+  - Project hash extraction from `generated/plan.json`.
+  - Comin node token extraction from decrypted `secrets/provider.yaml`.
+  - Provider-service startup with explicit runtime/data directories and generated `comin-node-tokens.yaml`.
+- Updated the generated `hostenv-provider-service-dev` wrapper config payload to include:
+  - `comin.enable = true`
+  - `comin.branch = "main"`
+  - `comin.pollIntervalSeconds = 5`
+  - `comin.nodeAuthTokensFile` from `HOSTENV_PROVIDER_COMIN_TOKENS_FILE`
+- Replaced legacy deploy command usage in both wizard instructions and automated flow with webhook triggers via `examples/local-provider-migration/trigger-webhook.sh`.
+- Added job orchestration logic for both node-a and node-b deploys:
+  - Resolve deploy job IDs from `/api/deploy-intents/by-sha`.
+  - Poll `/api/deploy-jobs/<jobId>/statuses` until success (or fail fast on failed/timed_out statuses).
+  - Persist provider-service polling evidence to:
+    - `.sisyphus/evidence/task-11-node-a-job-status.log`
+    - `.sisyphus/evidence/task-11-node-b-job-status.log`
+- Kept VM orchestration, hostctl profile handling, seed import flow, and cleanup behavior intact.
