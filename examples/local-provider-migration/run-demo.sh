@@ -1069,36 +1069,6 @@ write_provider_flake() {
           node-a = "x86_64-linux";
           node-b = "x86_64-linux";
         };
-        nodeAddresses = {
-          node-a = "node-a.${HOSTENV_HOSTNAME}";
-          node-b = "node-b.${HOSTENV_HOSTNAME}";
-        };
-        nodeSshPorts = {
-          node-a = ${NODE_SSH_PORT};
-          node-b = ${NODE_SSH_PORT};
-        };
-        nodeSshOpts = {
-          node-a = [
-            "-o" "StrictHostKeyChecking=no"
-            "-o" "UserKnownHostsFile=/dev/null"
-            "-o" "IdentitiesOnly=yes"
-            "-i" "${SSH_KEY}"
-          ];
-          node-b = [
-            "-o" "StrictHostKeyChecking=no"
-            "-o" "UserKnownHostsFile=/dev/null"
-            "-o" "IdentitiesOnly=yes"
-            "-i" "${SSH_KEY}"
-          ];
-        };
-        nodeMagicRollback = {
-          node-a = false;
-          node-b = false;
-        };
-        nodeAutoRollback = {
-          node-a = false;
-          node-b = false;
-        };
         nodeFor = {
           default = "${production_node}";
           production = "${production_node}";
