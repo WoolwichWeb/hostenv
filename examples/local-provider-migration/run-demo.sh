@@ -1166,6 +1166,15 @@ write_node_config() {
 ${AGE_PRIVATE_KEY}
 '';
   sops.age.keyFile = "/etc/hostenv-demo-age-key.txt";
+
+  # Allow root login with SSH key for demo
+  users.users.root.openssh.authorizedKeys.keys = [
+    "${SSH_PUBLIC_KEY}"
+  ];
+
+  # Allow passwordless login for demo (not for production!)
+  users.allowNoPasswordLogin = true;
+}
 }
 EOF_NODE
 }
