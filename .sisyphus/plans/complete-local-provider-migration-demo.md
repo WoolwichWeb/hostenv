@@ -1031,19 +1031,19 @@ Max Concurrent: 4 (Wave 1 & 2)
 
 ## Final Verification Wave
 
-- [ ] F1. **Plan Compliance Audit** — `oracle`
+- [x] F1. **Plan Compliance Audit** — `oracle`
   Read the plan end-to-end. For each "Must Have": verify implementation exists. For each "Must NOT Have": search codebase for forbidden patterns. Check evidence files exist in `.sisyphus/evidence/`.
   Output: `Must Have [N/N] | Must NOT Have [N/N] | Tasks [N/N] | VERDICT: APPROVE/REJECT`
 
-- [ ] F2. **Code Quality Review** — `unspecified-high`
+- [x] F2. **Code Quality Review** — `unspecified-high`
   Run `nix flake check`. Review all changed files for: bash best practices, Nix formatting, no hardcoded paths, proper error handling.
   Output: `Build [PASS/FAIL] | Lint [PASS/FAIL] | Files [N clean/N issues] | VERDICT`
 
-- [ ] F3. **Full Demo Run Verification** — `unspecified-high`
+- [x] F3. **Full Demo Run Verification** — `unspecified-high`
   Run `./examples/local-provider-migration/run-demo.sh --automated --cleanup` on clean Linux with KVM. Verify all stages complete, all assertions pass.
   Output: `Demo [PASS/FAIL] | Stages [N/N] | Duration [MM:SS] | VERDICT`
 
-- [ ] F4. **Documentation Review** — `writing`
+- [x] F4. **Documentation Review** — `writing`
   Review README for accuracy, completeness, clarity. Verify all commands work as documented.
   Output: `README [APPROVE/NEEDS_WORK] | Issues [list] | VERDICT`
 
