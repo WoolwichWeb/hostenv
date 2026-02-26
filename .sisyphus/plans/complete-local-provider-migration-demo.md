@@ -654,7 +654,7 @@ Max Concurrent: 4 (Wave 1 & 2)
 
 ---
 
-- [ ] 10. Implement deploy intent creation flow
+- [x] 10. Implement deploy intent creation flow
 
   **What to do:**
   - Connect webhook trigger to deploy intent creation
