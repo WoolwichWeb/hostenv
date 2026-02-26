@@ -603,7 +603,7 @@ Max Concurrent: 4 (Wave 1 & 2)
 
 ---
 
-- [ ] 9. Create webhook trigger mechanism
+- [x] 9. Create webhook trigger mechanism
 
   **What to do:**
   - Create script to simulate webhook trigger
