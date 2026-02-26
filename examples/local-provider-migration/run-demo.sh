@@ -1413,7 +1413,14 @@ prepare_node_b_baseline() {
   write_provider_flake "node-b"
 
   log "Generating provider plan for node-b"
+  log "Generating provider plan for node-b"
   run_provider_plan
+
+  log "Generating comin node token for node-b"
+  (
+    cd "$PROVIDER_DIR"
+    nix run .#hostenv-provider -- comin-tokens
+  )
 
   load_plan_metadata || fail_stage "failed to load environment metadata from $PLAN_PATH after switching to node-b"
   load_project_hash_from_plan || fail_stage "failed to resolve project hash from $PLAN_PATH after switching to node-b"
