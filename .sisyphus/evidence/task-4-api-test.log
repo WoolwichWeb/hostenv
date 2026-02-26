@@ -1,0 +1,5 @@
+endpoint=/api/deploy-intents/by-sha
+query=sha=abc123&node=node-a
+http_code=404
+body:
+

@@ -1,0 +1,51 @@
+=== Task 3: PostgreSQL Configuration Evidence ===
+Date: $(date)
+File Modified: examples/local-provider-migration/demo-project/.hostenv/hostenv.nix
+
+=== Configuration Added ===
+
+  # PostgreSQL for hostenv-provider service (ephemeral, workdir-relative)
+  services.postgresql = {
+    enable = true;
+    user = config.hostenv.userName;
+    dataDir = "${config.hostenv.dataDir}/postgresql";
+    runtimeDir = config.hostenv.runtimeDir;
+    ensureDatabases = [ "hostenv-provider" ];
+    ensureUsers = [
+      {
+        name = config.hostenv.userName;
+        ensurePermissions = { "hostenv-provider" = "ALL PRIVILEGES"; };
+      }
+    ];
+  };
+
+=== Verification ===
+1. Nix syntax validation: PASSED
+   Command: nix-instantiate --parse hostenv.nix
+   Result: Successfully parsed
+
+2. PostgreSQL service enabled: YES
+   - services.postgresql.enable = true
+
+3. Data directory: Workdir-relative
+   - dataDir = "${config.hostenv.dataDir}/postgresql"
+   - Ephemeral (won't persist outside workdir)
+
+4. Database created: hostenv-provider
+   - ensureDatabases = [ "hostenv-provider" ]
+
+5. User permissions: ALL PRIVILEGES
+   - ensurePermissions = { "hostenv-provider" = "ALL PRIVILEGES" }
+
+=== QA Scenario Status ===
+Scenario: PostgreSQL database accessible
+  - Configuration validated via nix-instantiate
+  - Database and user permissions configured
+  - Full activation requires: cd $PROJECT_DIR/.hostenv && nix develop
+
+=== Compliance ===
+✓ NOT using system PostgreSQL (self-contained)
+✓ Data directory is workdir-relative (ephemeral)
+✓ NOT persisting data outside workdir
+✓ Database hostenv-provider will be created
+✓ Environment user has ALL PRIVILEGES
