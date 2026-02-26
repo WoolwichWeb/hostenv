@@ -8,6 +8,15 @@ EVIDENCE_DIR="$REPO_ROOT/.sisyphus/evidence"
 WORKDIR=""
 COMMIT_SHA=""
 PROJECT_HASH=""
+TARGET_NODE="node-a"
+NODE_TOKEN="node-a-secret"
+EVIDENCE_PREFIX="task-10"
+MAX_RETRIES=30
+RETRY_SLEEP_SECONDS=1
+
+SOCKET_PATH=""
+RUNTIME_DIR=""
+PLAN_PATH=""
 
 log() {
   printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"
@@ -20,24 +29,123 @@ fail() {
 
 usage() {
   cat <<'USAGE'
-Usage: trigger-webhook.sh [--workdir PATH] [--commit-sha SHA] [--project-hash HASH]
+Usage: trigger-webhook.sh [--workdir PATH] [--commit-sha SHA] [--project-hash HASH] [--node NAME] [--token VALUE] [--evidence-prefix PREFIX]
 
-Triggers a webhook deployment by POSTing to /webhook/<hash> endpoint.
-Creates a deploy intent in the provider service database.
+Triggers provider webhook flow and verifies deploy intent persistence/retrieval.
+
+Accepted workdir layouts:
+  1) <workdir>/runtime/hostenv-provider.sock (test-service harness)
+  2) <workdir>/hostenv-provider.sock (provider-dev runtime)
 
 Options:
   --workdir PATH       Path to the provider service workspace (contains hostenv-provider.sock)
   --commit-sha SHA     Git commit SHA to trigger deployment for (default: abc123)
   --project-hash HASH  Project hash for webhook URL (default: read from plan.json or use 'demohash')
+  --node NAME          Node name for by-sha query auth (default: node-a)
+  --token VALUE        Bearer token for node auth (default: node-a-secret)
+  --evidence-prefix P  Evidence filename prefix (default: task-10)
   --help, -h           Show this help message
 
 Environment:
-  WORKDIR              Alternative to --workdir
+  HOSTENV_PROVIDER_WORKDIR  Alternative to --workdir
 
 Examples:
   ./trigger-webhook.sh --workdir /tmp/hostenv-demo
   ./trigger-webhook.sh --workdir /tmp/hostenv-demo --commit-sha 1a2b3c4d
 USAGE
+}
+
+resolve_runtime_paths() {
+  local input="$1"
+  local abs
+
+  abs="$(cd -- "$input" && pwd)"
+
+  if [[ -S "$abs/runtime/hostenv-provider.sock" ]]; then
+    WORKDIR="$abs"
+    RUNTIME_DIR="$abs/runtime"
+    SOCKET_PATH="$RUNTIME_DIR/hostenv-provider.sock"
+    if [[ -f "$RUNTIME_DIR/repo/generated/plan.json" ]]; then
+      PLAN_PATH="$RUNTIME_DIR/repo/generated/plan.json"
+    elif [[ -f "$RUNTIME_DIR/generated/plan.json" ]]; then
+      PLAN_PATH="$RUNTIME_DIR/generated/plan.json"
+    else
+      PLAN_PATH=""
+    fi
+    return 0
+  fi
+
+  if [[ -S "$abs/hostenv-provider.sock" ]]; then
+    WORKDIR="$abs"
+    RUNTIME_DIR="$abs"
+    SOCKET_PATH="$RUNTIME_DIR/hostenv-provider.sock"
+    if [[ -f "$RUNTIME_DIR/repo/generated/plan.json" ]]; then
+      PLAN_PATH="$RUNTIME_DIR/repo/generated/plan.json"
+    elif [[ -f "$RUNTIME_DIR/generated/plan.json" ]]; then
+      PLAN_PATH="$RUNTIME_DIR/generated/plan.json"
+    else
+      PLAN_PATH=""
+    fi
+    return 0
+  fi
+
+  fail "could not locate provider socket under $abs (expected runtime/hostenv-provider.sock or hostenv-provider.sock)"
+}
+
+first_project_hash_from_plan() {
+  local path="$1"
+  jq -r '
+    first((.environments // {} | to_entries[]? | .value.hostenv.projectNameHash | if type == "array" then .[] else . end) // empty)
+  ' "$path"
+}
+
+wait_for_intent_by_sha() {
+  local socket="$1"
+  local sha="$2"
+  local node="$3"
+  local token="$4"
+  local out_file="$5"
+  local retries="$6"
+  local sleep_seconds="$7"
+  local code=""
+  local attempt
+
+  for ((attempt = 1; attempt <= retries; attempt++)); do
+    code="$(curl -sS --unix-socket "$socket" -o "$out_file" -w '%{http_code}' \
+      -H "Authorization: Bearer $token" \
+      "http://localhost/api/deploy-intents/by-sha?sha=$sha&node=$node" || true)"
+
+    if [[ "$code" == "200" ]]; then
+      printf '%s\n' "$code"
+      return 0
+    fi
+
+    sleep "$sleep_seconds"
+  done
+
+  printf '%s\n' "$code"
+  return 1
+}
+
+detect_pg_socket_dir() {
+  local -a candidates=(
+    "$RUNTIME_DIR"
+    "$WORKDIR/runtime"
+    "$WORKDIR/provider-dev"
+    "$WORKDIR"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -S "$candidate/.s.PGSQL.5432" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+sql_escape_literal() {
+  printf '%s' "$1" | sed -e "s/'/''/g"
 }
 
 # Parse arguments
@@ -67,6 +175,30 @@ while (($# > 0)); do
     --project-hash=*)
       PROJECT_HASH="${1#*=}"
       ;;
+    --node)
+      shift
+      (($# > 0)) || fail "--node requires a value"
+      TARGET_NODE="$1"
+      ;;
+    --node=*)
+      TARGET_NODE="${1#*=}"
+      ;;
+    --token)
+      shift
+      (($# > 0)) || fail "--token requires a value"
+      NODE_TOKEN="$1"
+      ;;
+    --token=*)
+      NODE_TOKEN="${1#*=}"
+      ;;
+    --evidence-prefix)
+      shift
+      (($# > 0)) || fail "--evidence-prefix requires a value"
+      EVIDENCE_PREFIX="$1"
+      ;;
+    --evidence-prefix=*)
+      EVIDENCE_PREFIX="${1#*=}"
+      ;;
     --help|-h)
       usage
       exit 0
@@ -79,30 +211,23 @@ while (($# > 0)); do
 done
 
 # Use environment variable as fallback
-WORKDIR="${WORKDIR:-${WORKDIR:-}}"
+WORKDIR="${WORKDIR:-${HOSTENV_PROVIDER_WORKDIR:-}}"
 COMMIT_SHA="${COMMIT_SHA:-abc123}"
 
 if [[ -z "$WORKDIR" ]]; then
-  fail "--workdir is required (or set WORKDIR environment variable)"
+  fail "--workdir is required (or set HOSTENV_PROVIDER_WORKDIR)"
 fi
 
 if [[ ! -d "$WORKDIR" ]]; then
   fail "workdir does not exist: $WORKDIR"
 fi
 
-WORKDIR="$(cd -- "$WORKDIR" && pwd)"
-SOCKET_PATH="$WORKDIR/runtime/hostenv-provider.sock"
-PLAN_PATH="$WORKDIR/runtime/repo/generated/plan.json"
-
-if [[ ! -S "$SOCKET_PATH" ]]; then
-  fail "service socket not found: $SOCKET_PATH (is the provider service running?)"
-fi
+resolve_runtime_paths "$WORKDIR"
 
 # Determine project hash from plan.json if not provided
 if [[ -z "$PROJECT_HASH" ]]; then
-  if [[ -f "$PLAN_PATH" ]]; then
-    # Extract projectNameHash from plan.json
-    PROJECT_HASH="$(jq -r '.environments[]?.hostenv?.projectNameHash // empty' "$PLAN_PATH" | head -1)"
+  if [[ -n "$PLAN_PATH" && -f "$PLAN_PATH" ]]; then
+    PROJECT_HASH="$(first_project_hash_from_plan "$PLAN_PATH")"
     if [[ -z "$PROJECT_HASH" ]]; then
       log "warning: could not extract projectNameHash from $PLAN_PATH, using default 'demohash'"
       PROJECT_HASH="demohash"
@@ -117,30 +242,25 @@ fi
 
 mkdir -p "$EVIDENCE_DIR"
 
-TRIGGER_LOG="$EVIDENCE_DIR/task-9-webhook-trigger.log"
-VERIFY_LOG="$EVIDENCE_DIR/task-9-deploy-intent-verify.log"
-BODY_FILE="$WORKDIR/runtime/webhook-response.json"
+TRIGGER_LOG="$EVIDENCE_DIR/${EVIDENCE_PREFIX}-webhook-trigger.log"
+VERIFY_LOG="$EVIDENCE_DIR/${EVIDENCE_PREFIX}-deploy-intent.log"
+BODY_FILE="$RUNTIME_DIR/webhook-response.json"
 
 log "triggering webhook deployment"
 log "  project hash: $PROJECT_HASH"
 log "  commit SHA: $COMMIT_SHA"
+log "  target node: $TARGET_NODE"
 log "  socket: $SOCKET_PATH"
 
 # Build webhook payload with commit information
 # The webhook handler accepts any body when no signature verification is configured
 # Note: Use application/octet-stream content type as the webhook handler
 # accepts raw bytes for signature verification (which is disabled in this demo)
-# The webhook handler expects a JSON body but doesn't validate specific fields
-# for signature verification in this demo context
 PAYLOAD="{\"ref\":\"refs/heads/main\",\"checkout_sha\":\"$COMMIT_SHA\",\"project\":{\"path_with_namespace\":\"acme/demo\"}}"
 
 # Trigger webhook
 WEBHOOK_CODE="$(curl -sS --unix-socket "$SOCKET_PATH" -o "$BODY_FILE" -w '%{http_code}' \
   -H 'Content-Type: application/octet-stream' \
-  --data-binary "$PAYLOAD" \
-  "http://localhost/webhook/$PROJECT_HASH" || true)"
-WEBHOOK_CODE="$(curl -sS --unix-socket "$SOCKET_PATH" -o "$BODY_FILE" -w '%{http_code}' \
-  -H 'Content-Type: application/json' \
   --data-binary "$PAYLOAD" \
   "http://localhost/webhook/$PROJECT_HASH" || true)"
 
@@ -175,42 +295,112 @@ fi
 log "webhook accepted, jobId: $JOB_ID"
 log "webhook trigger logged to: $TRIGGER_LOG"
 
-# Verify deploy intent was created by querying the by-sha endpoint
-sleep 1  # Brief delay for intent to be persisted
-
 log "verifying deploy intent creation..."
 
-VERIFY_BODY="$WORKDIR/runtime/verify-intent.json"
-VERIFY_CODE="$(curl -sS --unix-socket "$SOCKET_PATH" -o "$VERIFY_BODY" -w '%{http_code}' \
-  -H 'Authorization: Bearer node-a-secret' \
-  "http://localhost/api/deploy-intents/by-sha?sha=$COMMIT_SHA&node=node-a" || true)"
+VERIFY_BODY="$RUNTIME_DIR/verify-intent.json"
+VERIFY_CODE=""
+
+if ! VERIFY_CODE="$(wait_for_intent_by_sha "$SOCKET_PATH" "$COMMIT_SHA" "$TARGET_NODE" "$NODE_TOKEN" "$VERIFY_BODY" "$MAX_RETRIES" "$RETRY_SLEEP_SECONDS")"; then
+  log "warning: deploy intent endpoint did not return 200 within timeout"
+fi
+
+API_INTENT_OK="false"
+API_ACTIONS_OK="false"
+API_HAS_BACKUP_CONFIG="false"
+if [[ -f "$VERIFY_BODY" ]] && [[ "$VERIFY_CODE" == "200" ]]; then
+  if jq -e \
+    --arg job "$JOB_ID" \
+    --arg sha "$COMMIT_SHA" \
+    --arg node "$TARGET_NODE" \
+    '.jobId == $job and .commitSha == $sha and .node == $node and (.intent.schemaVersion == 1) and (.intent.actions | type == "array" and length > 0)' \
+    "$VERIFY_BODY" >/dev/null 2>&1; then
+    API_INTENT_OK="true"
+  fi
+
+  if jq -e '.intent.actions | all(has("op") and has("user") and has("migrations"))' "$VERIFY_BODY" >/dev/null 2>&1; then
+    API_ACTIONS_OK="true"
+  fi
+
+  if jq -e '[.intent.actions[]? | select((.op == "backup" or .op == "restore") and (.migrations | type == "array"))] | length >= 0' "$VERIFY_BODY" >/dev/null 2>&1; then
+    API_HAS_BACKUP_CONFIG="true"
+  fi
+fi
+
+DB_CHECK_RAN="false"
+DB_ROW_FOUND="false"
+DB_MATCHED_COMMIT="false"
+DB_JOB_STATUS=""
+DB_ACTION_COUNT=""
+DB_HAS_BACKUP_OR_RESTORE=""
+DB_SOCKET_DIR=""
+DB_ROW_RAW=""
+
+if command -v psql >/dev/null 2>&1; then
+  if DB_SOCKET_DIR="$(detect_pg_socket_dir)"; then
+    DB_CHECK_RAN="true"
+    ESCAPED_JOB_ID="$(sql_escape_literal "$JOB_ID")"
+    ESCAPED_NODE="$(sql_escape_literal "$TARGET_NODE")"
+    DB_ROW_RAW="$(psql -h "$DB_SOCKET_DIR" -d hostenv-provider -Atqc "
+      SELECT job_id || E'\\t' || commit_sha || E'\\t' || node || E'\\t' ||
+             COALESCE(jsonb_array_length(intent->'actions'), 0)::text || E'\\t' ||
+             COALESCE((SELECT bool_or((a->>'op') IN ('backup','restore'))
+                       FROM jsonb_array_elements(COALESCE(intent->'actions','[]'::jsonb)) a), false)::text
+      FROM deploy_intents
+      WHERE job_id = '${ESCAPED_JOB_ID}' AND node = '${ESCAPED_NODE}'
+      LIMIT 1;
+    " 2>/dev/null || true)"
+
+    if [[ -n "$DB_ROW_RAW" ]]; then
+      DB_ROW_FOUND="true"
+      IFS=$'\t' read -r DB_ROW_JOB_ID DB_ROW_COMMIT DB_ROW_NODE DB_ACTION_COUNT DB_HAS_BACKUP_OR_RESTORE <<< "$DB_ROW_RAW"
+      if [[ "$DB_ROW_COMMIT" == "$COMMIT_SHA" ]]; then
+        DB_MATCHED_COMMIT="true"
+      fi
+      DB_JOB_STATUS="$(psql -h "$DB_SOCKET_DIR" -d hostenv-provider -Atqc "SELECT status FROM jobs WHERE id = '${ESCAPED_JOB_ID}' LIMIT 1;" 2>/dev/null | tr -d '\n' || true)"
+    fi
+  fi
+fi
 
 {
   printf 'timestamp=%s\n' "$(date -Iseconds)"
+  printf 'job_id=%s\n' "$JOB_ID"
   printf 'endpoint=/api/deploy-intents/by-sha\n'  
-  printf 'query=sha=%s&node=node-a\n' "$COMMIT_SHA"
+  printf 'query=sha=%s&node=%s\n' "$COMMIT_SHA" "$TARGET_NODE"
   printf 'http_code=%s\n' "$VERIFY_CODE"
+  printf 'intent_response_valid=%s\n' "$API_INTENT_OK"
+  printf 'actions_shape_valid=%s\n' "$API_ACTIONS_OK"
+  printf 'backup_config_fields_valid=%s\n' "$API_HAS_BACKUP_CONFIG"
+  printf 'db_check_ran=%s\n' "$DB_CHECK_RAN"
+  printf 'db_socket_dir=%s\n' "$DB_SOCKET_DIR"
+  printf 'db_row_found=%s\n' "$DB_ROW_FOUND"
+  printf 'db_commit_matches=%s\n' "$DB_MATCHED_COMMIT"
+  printf 'db_action_count=%s\n' "$DB_ACTION_COUNT"
+  printf 'db_has_backup_or_restore=%s\n' "$DB_HAS_BACKUP_OR_RESTORE"
+  printf 'db_job_status=%s\n' "$DB_JOB_STATUS"
+  if [[ -n "$DB_ROW_RAW" ]]; then
+    printf 'db_row_raw=%s\n' "$DB_ROW_RAW"
+  fi
   printf 'response_body:\n'
   cat "$VERIFY_BODY" 2>/dev/null || echo '{}'
   printf '\n'
 } > "$VERIFY_LOG"
 
-if [[ "$VERIFY_CODE" == "200" ]]; then
-  # Check if we got a valid deploy intent response
-  if jq -e '.sha == "'$COMMIT_SHA'" or .status != null' "$VERIFY_BODY" >/dev/null 2>&1; then
-    log "deploy intent verified successfully"
-    log "  verification logged to: $VERIFY_LOG"
-  else
-    log "warning: deploy intent response format unexpected"
-    log "  see $VERIFY_LOG for details"
-  fi
-elif [[ "$VERIFY_CODE" == "404" ]]; then
-  log "note: deploy intent not yet visible (404) - this may be expected if processing is async"
-  log "  verification logged to: $VERIFY_LOG"
-else
-  log "warning: unexpected response code $VERIFY_CODE from deploy-intents endpoint"
-  log "  see $VERIFY_LOG for details"
+if [[ "$VERIFY_CODE" != "200" ]]; then
+  fail "deploy-intents by-sha endpoint did not return 200; see $VERIFY_LOG"
 fi
+
+if [[ "$API_INTENT_OK" != "true" || "$API_ACTIONS_OK" != "true" ]]; then
+  fail "deploy intent payload missing required fields; see $VERIFY_LOG"
+fi
+
+if [[ "$DB_CHECK_RAN" == "true" ]]; then
+  if [[ "$DB_ROW_FOUND" != "true" || "$DB_MATCHED_COMMIT" != "true" ]]; then
+    fail "deploy intent row not found or commit mismatch in database; see $VERIFY_LOG"
+  fi
+fi
+
+log "deploy intent verified successfully"
+log "  verification logged to: $VERIFY_LOG"
 
 log "webhook trigger completed successfully"
 log "  jobId: $JOB_ID"
@@ -221,7 +411,13 @@ jq -n \
   --arg jobId "$JOB_ID" \
   --arg projectHash "$PROJECT_HASH" \
   --arg commitSha "$COMMIT_SHA" \
+  --arg node "$TARGET_NODE" \
+  --arg verifyCode "$VERIFY_CODE" \
   --arg accepted "$ACCEPTED" \
+  --arg intentValid "$API_INTENT_OK" \
+  --arg actionsValid "$API_ACTIONS_OK" \
+  --arg dbRowFound "$DB_ROW_FOUND" \
+  --arg dbJobStatus "$DB_JOB_STATUS" \
   --arg triggerLog "$TRIGGER_LOG" \
   --arg verifyLog "$VERIFY_LOG" \
-  '{jobId: $jobId, projectHash: $projectHash, commitSha: $commitSha, accepted: ($accepted == "true"), logs: {trigger: $triggerLog, verify: $verifyLog}}'
+  '{jobId: $jobId, projectHash: $projectHash, commitSha: $commitSha, node: $node, accepted: ($accepted == "true"), verifyHttpCode: $verifyCode, intentValid: ($intentValid == "true"), actionsValid: ($actionsValid == "true"), dbRowFound: ($dbRowFound == "true"), dbJobStatus: $dbJobStatus, logs: {trigger: $triggerLog, verify: $verifyLog}}'

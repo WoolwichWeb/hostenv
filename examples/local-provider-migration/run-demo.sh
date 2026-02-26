@@ -654,6 +654,45 @@ EOF_TASK8_MANUAL
   log "  - $TASK8_MANUAL_TRIGGER_LOG"
 }
 
+run_task10_webhook_deploy_intent_verification() {
+  stage "Task 10: Verify webhook deploy intent creation"
+
+  mkdir -p "$EVIDENCE_DIR"
+
+  local runtime_hint="${HOSTENV_PROVIDER_DEV_DIR:-$WORKDIR/provider-dev}"
+  local task10_sha="task10-$(date +%s)"
+  local -a trigger_cmd=(
+    "$SCRIPT_DIR/trigger-webhook.sh"
+    --workdir "$runtime_hint"
+    --commit-sha "$task10_sha"
+    --evidence-prefix task-10
+  )
+
+  if [[ ! -S "$runtime_hint/hostenv-provider.sock" && ! -S "$runtime_hint/runtime/hostenv-provider.sock" ]]; then
+    warn "Task 10 runtime check skipped: provider service socket not found under $runtime_hint"
+    warn "Start provider service in demo shell, then run:"
+    warn "  ${trigger_cmd[*]}"
+    {
+      printf 'timestamp=%s\n' "$(date -Iseconds)"
+      printf 'status=skipped\n'
+      printf 'reason=provider service socket not found\n'
+      printf 'runtime_hint=%s\n' "$runtime_hint"
+      printf 'command=%s\n' "${trigger_cmd[*]}"
+    } > "$TASK10_RUNNER_LOG"
+    return 0
+  fi
+
+  log "Running webhook trigger for deploy-intent verification"
+  if "${trigger_cmd[@]}" >"$TASK10_RUNNER_LOG" 2>&1; then
+    success "Task 10 verification logs written:"
+    log "  - $TASK10_RUNNER_LOG"
+    log "  - $TASK10_WEBHOOK_LOG"
+    log "  - $TASK10_DEPLOY_INTENT_LOG"
+  else
+    fail_stage "Task 10 deploy-intent verification failed; see $TASK10_RUNNER_LOG"
+  fi
+}
+
 condition_seed_imported_node_a() {
   load_plan_metadata || return 1
 
@@ -1208,6 +1247,7 @@ run_wizard_flow() {
   success "node-a deployment detected."
   log "View node-a installer page with: curl http://${VHOST}:${NODE_HTTP_PORT}/"
   run_task8_post_deploy_verification
+  run_task10_webhook_deploy_intent_verification
   prompt_continue_or_abort
 
   show_seed_instructions
@@ -1251,6 +1291,7 @@ run_automated_flow() {
   fi
 
   run_task8_post_deploy_verification
+  run_task10_webhook_deploy_intent_verification
 
   run_automated_seed_import
 
@@ -1392,6 +1433,9 @@ EVIDENCE_DIR="$REPO_ROOT/.sisyphus/evidence"
 TASK8_ACTIVATION_LOG="$EVIDENCE_DIR/task-8-activation-script.log"
 TASK8_API_LOG="$EVIDENCE_DIR/task-8-provider-api.log"
 TASK8_MANUAL_TRIGGER_LOG="$EVIDENCE_DIR/task-8-manual-comin-trigger.log"
+TASK10_RUNNER_LOG="$EVIDENCE_DIR/task-10-run-demo-hook.log"
+TASK10_WEBHOOK_LOG="$EVIDENCE_DIR/task-10-webhook-trigger.log"
+TASK10_DEPLOY_INTENT_LOG="$EVIDENCE_DIR/task-10-deploy-intent.log"
 
 printf '%s\n' "hostenv-local-vm-demo" > "$WORKDIR/.hostenv-local-vm-demo"
 
