@@ -525,7 +525,13 @@ sign_deploy_profile() {
   local profile="$2"
   local profile_path
 
-  profile_path="$(nix build --no-link --print-out-paths "$PROVIDER_DIR/generated/.#deploy.nodes.${node}.profiles.${profile}.path")"
+  # For comin flow, use nixosConfigurations instead of deploy-rs
+  if [[ "$profile" == "system" ]]; then
+    profile_path="$(nix build --no-link --print-out-paths "$PROVIDER_DIR/generated/.#nixosConfigurations.${node}.config.system.build.toplevel")"
+  else
+    # For environment user packages, use the env-${profile} package
+    profile_path="$(nix build --no-link --print-out-paths "$PROVIDER_DIR/generated/.#packages.x86_64-linux.env-${profile}")"
+  fi
   nix store sign --key-file "$NIX_SIGNING_KEY_FILE" --recursive "$profile_path" >/dev/null
 }
 
