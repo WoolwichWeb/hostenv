@@ -31,6 +31,7 @@ HOSTCTL_IN_USE=0
 HOSTCTL_PROFILE=""
 HOSTCTL_SOURCE_FILE=""
 HOSTCTL_CMD=()
+DEMO_FAILED=0
 
 setup_colors() {
   if [[ "$NO_COLOR" -eq 1 ]] || [[ ! -t 1 ]]; then
@@ -76,11 +77,13 @@ show_issue_hint() {
 }
 
 fail() {
+  DEMO_FAILED=1
   echo "ERROR: $*" >&2
   exit 1
 }
 
 fail_stage() {
+  DEMO_FAILED=1
   echo "ERROR: $*" >&2
   if [[ -n "${LOG_DIR:-}" ]]; then
     echo "VM logs: $LOG_DIR" >&2
@@ -427,6 +430,7 @@ wait_for_ssh() {
   local host_alias="$1"
   local user="$2"
   local timeout="${3:-360}"
+  local monitor_pid="${4:-}"
   local start
   start="$(date +%s)"
 
@@ -434,9 +438,13 @@ wait_for_ssh() {
     if ssh -F "$SSH_CONFIG" -o ConnectTimeout=2 "${user}@${host_alias}" true >/dev/null 2>&1; then
       return 0
     fi
+    if [[ "$monitor_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$monitor_pid" >/dev/null 2>&1; then
+      return 2
+    fi
     if (( "$(date +%s)" - start > timeout )); then
       return 1
     fi
+    check_abort_nonblocking || true
     sleep 2
   done
 }
@@ -546,6 +554,7 @@ load_plan_metadata() {
 wait_for_unix_socket() {
   local socket_path="$1"
   local timeout_seconds="${2:-60}"
+  local monitor_pid="${3:-}"
   local start
   start="$(date +%s)"
 
@@ -553,9 +562,13 @@ wait_for_unix_socket() {
     if [[ -S "$socket_path" ]]; then
       return 0
     fi
+    if [[ "$monitor_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$monitor_pid" >/dev/null 2>&1; then
+      return 2
+    fi
     if (( "$(date +%s)" - start >= timeout_seconds )); then
       return 1
     fi
+    check_abort_nonblocking || true
     sleep 1
   done
 }
@@ -579,9 +592,14 @@ load_comin_node_token() {
 
 ensure_provider_service_running() {
   local token_file="$PROVIDER_SERVICE_RUNTIME_DIR/comin-node-tokens.yaml"
+  local health_code=""
 
   if [[ -S "$PROVIDER_SERVICE_SOCKET" ]]; then
-    return 0
+    health_code="$(curl -sS --unix-socket "$PROVIDER_SERVICE_SOCKET" -o /dev/null -w '%{http_code}' "http://localhost/health" --connect-timeout 1 --max-time 2 2>/dev/null || true)"
+    if [[ "$health_code" =~ ^2[0-9][0-9]$ ]]; then
+      return 0
+    fi
+    rm -f "$PROVIDER_SERVICE_SOCKET"
   fi
 
   mkdir -p "$PROVIDER_SERVICE_RUNTIME_DIR"
@@ -605,7 +623,17 @@ ensure_provider_service_running() {
   ) &
   PROVIDER_SERVICE_PID="$!"
 
-  wait_for_unix_socket "$PROVIDER_SERVICE_SOCKET" 120 || fail_stage "provider-service socket did not appear at $PROVIDER_SERVICE_SOCKET; see $TASK11_PROVIDER_SERVICE_LOG"
+  wait_for_unix_socket "$PROVIDER_SERVICE_SOCKET" 120 "$PROVIDER_SERVICE_PID"
+  case "$?" in
+    0)
+      ;;
+    2)
+      fail_stage "provider-service exited before creating socket; see $TASK11_PROVIDER_SERVICE_LOG"
+      ;;
+    *)
+      fail_stage "provider-service socket did not appear at $PROVIDER_SERVICE_SOCKET; see $TASK11_PROVIDER_SERVICE_LOG"
+      ;;
+  esac
 }
 
 trigger_webhook_deploy() {
@@ -1189,7 +1217,17 @@ start_vm() {
   printf '%s\n' "$vm_pid" > "$PIDS_DIR/${node}.pid"
 
   log "Waiting for SSH on $node"
-  wait_for_ssh "${node}.${HOSTENV_HOSTNAME}" deploy 420 || fail_stage "timed out waiting for ${node} SSH; see $LOG_DIR/${node}.log"
+  wait_for_ssh "${node}.${HOSTENV_HOSTNAME}" deploy 420 "$vm_pid"
+  case "$?" in
+    0)
+      ;;
+    2)
+      fail_stage "${node} VM process exited during boot; see $LOG_DIR/${node}.log"
+      ;;
+    *)
+      fail_stage "timed out waiting for ${node} SSH; see $LOG_DIR/${node}.log"
+      ;;
+  esac
 }
 
 write_ssh_wrapper() {
@@ -1806,11 +1844,9 @@ cleanup() {
     fi
   fi
 
-  if [[ "$HOSTCTL_IN_USE" -eq 1 ]]; then
-    remove_hostctl_profile "$HOSTCTL_PROFILE"
-  fi
+  remove_hostctl_profile "$HOSTCTL_PROFILE"
 
-  if [[ "$AUTO_CLEANUP" -eq 1 || "$ABORTED" -eq 1 ]]; then
+  if [[ "$AUTO_CLEANUP" -eq 1 || "$ABORTED" -eq 1 || "$DEMO_FAILED" -eq 1 || "$code" -ne 0 ]]; then
     rm -rf "$WORKDIR"
     log "Removed workdir $WORKDIR"
   else

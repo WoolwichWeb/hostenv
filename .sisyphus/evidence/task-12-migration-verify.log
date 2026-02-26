@@ -1,8 +1,0 @@
-timestamp=2026-02-25T21:47:39-05:00
-scenario=Migration restore completed
-status=blocked
-reason=demo did not deploy node-a due provider plan lock/input failure; migration to node-b was never triggered
-verification_command=curl -s http://demo-project.main.demo.hostenv.test:8080/ | grep "from-node-a"
-expected_marker=from-node-a
-error=error: input 'deploy-rs' follows a non-existent input 'hostenv/deploy-rs'
-notes=Task 12 verification function is now implemented in run-demo.sh and will write this evidence automatically once the demo can complete.
