@@ -182,6 +182,13 @@ profile_name_for_workdir() {
 }
 
 configure_hostctl_command() {
+  # Allow skipping hostctl for testing environments without passwordless sudo
+  if [[ "${HOSTENV_DEMO_SKIP_HOSTCTL:-}" == "1" ]]; then
+    log "Skipping hostctl (HOSTENV_DEMO_SKIP_HOSTCTL=1)"
+    HOSTCTL_CMD=()
+    return 0
+  fi
+
   if [[ -w /etc/hosts ]]; then
     HOSTCTL_CMD=(hostctl)
     return 0
@@ -196,7 +203,10 @@ configure_hostctl_command() {
 }
 
 run_hostctl() {
-  [[ "${#HOSTCTL_CMD[@]}" -gt 0 ]] || fail "hostctl command not configured"
+  [[ "${#HOSTCTL_CMD[@]}" -gt 0 ]] || {
+    log "hostctl skipped: $@"
+    return 0
+  }
   "${HOSTCTL_CMD[@]}" "$@"
 }
 
