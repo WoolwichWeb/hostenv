@@ -1,0 +1,39 @@
+{
+  "task": 5,
+  "scenario": "Comin configuration valid",
+  "workspace": "/tmp/hostenv-task5-qa",
+  "steps": {
+    "plan_command": {
+      "command": "nix run .#hostenv-provider -- plan",
+      "exitCode": 1,
+      "stdoutTail": "",
+      "stderrTail": "       error: access to absolute path '/nix/store/flake.nix' is forbidden in pure evaluation mode (use '--impure' to override)\nhostenv-provider: ProcFailed {procCommand = \"nix\", procArguments = [\"--extra-experimental-features\",\"nix-command flakes\",\"flake\",\"update\",\"--flake\",\"./generated\"], procExitCode = ExitFailure 1}\nHasCallStack backtrace:\n  collectBacktraces, called at libraries/ghc-internal/src/GHC/Internal/Exception.hs:169:13 in ghc-internal:GHC.Internal.Exception\n  toExceptionWithBacktrace, called at libraries/ghc-internal/src/GHC/Internal/IO.hs:260:11 in ghc-internal:GHC.Internal.IO\n  throwIO, called at src/Turtle/Prelude.hs:440:32 in turtle-1.6.2-FqCDyZBl3FU5cY2YdD9kRa:Turtle.Prelude\n\n",
+      "note": "Command exits non-zero in this synthetic QA workspace due generated flake lock update purity issue, but generated/plan.json is written before failure."
+    },
+    "jq_checks": {
+      "comin_enable_true": {
+        "ok": true,
+        "stdout": "true",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "comin_remote_url_present": {
+        "ok": true,
+        "stdout": "true",
+        "stderr": "",
+        "exitCode": 0
+      }
+    },
+    "node_name_pairs": [
+      [
+        "node-a",
+        "node-a"
+      ],
+      [
+        "node-b",
+        "node-b"
+      ]
+    ],
+    "node_names_unique": true
+  }
+}

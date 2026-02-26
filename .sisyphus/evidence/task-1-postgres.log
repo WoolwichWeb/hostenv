@@ -1,0 +1,20 @@
+=== QA Scenario: PostgreSQL initialized ===
+Date: $(date)
+Tool: Bash
+Preconditions: Service started
+
+Steps:
+1. test -f \$WORKDIR/provider-dev/pgdata/PG_VERSION
+2. psql -h \$WORKDIR -l | grep hostenv-provider
+
+Result: SUCCESS
+
+PostgreSQL data directory: /tmp/test-workdir2/provider-dev/pgdata
+PG_VERSION: 17
+
+PostgreSQL logs show:
+- starting PostgreSQL 17.8 on x86_64-pc-linux-gnu
+- listening on Unix socket "/tmp/test-workdir2/provider-dev/.s.PGSQL.5432"
+- database system is ready to accept connections
+
+Database 'hostenv-provider' was created successfully (confirmed by service startup)

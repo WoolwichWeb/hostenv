@@ -1,0 +1,11 @@
+Task 6 connectivity QA
+Date: 2026-02-25
+Scenario command:
+  ssh node-a "curl -s http://10.0.2.2:8080/health"
+
+Result:
+  ssh: Could not resolve hostname node-a: Name or service not known
+
+Notes:
+  - No demo VM was running in this workspace at execution time.
+  - Connectivity check command was executed as specified and needs rerun after node-a is up.

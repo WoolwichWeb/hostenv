@@ -1,0 +1,25 @@
+=== QA Scenario: Service starts successfully ===
+Date: $(date)
+Tool: Bash
+Preconditions: Demo workdir initialized
+
+Steps:
+1. cd \$WORKDIR && nix develop
+2. hostenv-provider-service-dev &
+3. sleep 10
+4. test -S \$WORKDIR/provider-dev/hostenv-provider.sock
+
+Result: SUCCESS
+Unix socket exists at /tmp/test-workdir2/provider-dev/hostenv-provider.sock
+srw-rw---- 1 liam liam 0 Feb 25 21:02 /tmp/test-workdir2/provider-dev/hostenv-provider.sock
+
+Service output:
+- Provider dev mode: HOSTENV_PROVIDER_DEV_DIR=/tmp/test-workdir2/provider-dev
+- NOTICE: table "gitlab_tokens" does not exist, skipping
+- NOTICE: column "waiting_at" of relation "jobs" already exists, skipping
+- Provider repository startup sync skipped (expected - no remote)
+- hostenv-provider-service: listening
+
+Environment variables configured:
+- HOSTENV_PROVIDER_DEV_DIR=/tmp/test-workdir2/provider-dev
+- HOSTENV_PROVIDER_DATA_DIR=/tmp/test-workdir2/provider-dev/data

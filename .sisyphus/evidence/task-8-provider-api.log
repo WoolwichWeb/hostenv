@@ -1,0 +1,8 @@
+check=provider-api-calls-static
+script=modules/nixos/hostenv-comin-activate.sh
+result=pass
+details:
+- deploy intent query URL: $api_base/api/deploy-intents/by-sha?sha=$sha&node=$node
+- deploy intent query call uses curl -sS with bearer auth header when token exists.
+- event callback call uses curl -fsS POST to $api_base/api/deploy-jobs/$job_id/events.
+- token file is read using: if [ -r "$token_file" ]; then token="$(tr -d '\n' < "$token_file")".
