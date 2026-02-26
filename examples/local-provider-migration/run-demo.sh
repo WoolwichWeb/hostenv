@@ -1045,7 +1045,6 @@ write_provider_flake() {
 
     nixpkgs.follows = "hostenv/nixpkgs";
     flake-parts.follows = "hostenv/flake-parts";
-    deploy-rs.follows = "hostenv/deploy-rs";
     sops-nix.follows = "hostenv/sops-nix";
     phps.follows = "hostenv/phps";
 
@@ -1064,7 +1063,7 @@ write_provider_flake() {
 
       provider = {
         hostenvHostname = "${HOSTENV_HOSTNAME}";
-        deployPublicKeys = [ "${SSH_PUBLIC_KEY}" ];
+        nixSigning.trustedPublicKeys = [ "${SSH_PUBLIC_KEY}" ];
         nodeSystems = {
           default = "x86_64-linux";
           node-a = "x86_64-linux";
