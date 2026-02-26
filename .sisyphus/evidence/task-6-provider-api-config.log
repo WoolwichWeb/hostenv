@@ -1,0 +1,16 @@
+Task 6 configuration evidence
+Date: 2026-02-25
+
+Configured provider API base URL in run-demo provider flake template:
+  examples/local-provider-migration/run-demo.sh:674
+  providerApiBaseUrl = "http://${PROVIDER_API_VM_GATEWAY}:${PROVIDER_HTTP_PORT}";
+
+Configured constants:
+  examples/local-provider-migration/run-demo.sh:1187
+  PROVIDER_API_VM_GATEWAY="10.0.2.2"
+  PROVIDER_HTTP_PORT=8080
+
+Configured provider-service dev HTTP exposure:
+  examples/local-provider-migration/run-demo.sh:910
+  export HOSTENV_PROVIDER_HTTP_PORT=${PROVIDER_HTTP_PORT}
+  export HOSTENV_PROVIDER_HTTP_BIND=127.0.0.1

@@ -401,7 +401,7 @@ Max Concurrent: 4 (Wave 1 & 2)
 
 ---
 
-- [ ] 5. Configure comin on node VMs
+- [x] 5. Configure comin on node VMs
 
   **What to do:**
   - Enable `provider.comin.enable = true` in provider flake
@@ -454,7 +454,7 @@ Max Concurrent: 4 (Wave 1 & 2)
 
 ---
 
-- [ ] 6. Configure node-to-provider-service connectivity
+- [x] 6. Configure node-to-provider-service connectivity
 
   **What to do:**
   - Ensure VMs can reach provider-service API
@@ -502,7 +502,7 @@ Max Concurrent: 4 (Wave 1 & 2)
 
 ---
 
-- [ ] 7. Generate and distribute comin node tokens
+- [x] 7. Generate and distribute comin node tokens
 
   **What to do:**
   - Generate unique tokens for node-a and node-b
@@ -553,7 +553,7 @@ Max Concurrent: 4 (Wave 1 & 2)
 
 ---
 
-- [ ] 8. Verify post-deployment activation script
+- [x] 8. Verify post-deployment activation script
 
   **What to do:**
   - Verify `hostenv-comin-activate.sh` is called by comin

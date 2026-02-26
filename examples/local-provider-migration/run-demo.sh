@@ -554,6 +554,106 @@ condition_node_a_deployed() {
   [[ "$code" != "000" ]]
 }
 
+run_task8_post_deploy_verification() {
+  stage "Task 8: Verify comin post-deployment activation"
+
+  mkdir -p "$EVIDENCE_DIR"
+  local node_alias="node-a.${HOSTENV_HOSTNAME}"
+
+  log "Running activation script presence/env checks on ${node_alias}"
+  ssh -F "$SSH_CONFIG" "deploy@${node_alias}" "bash -s" >"$TASK8_ACTIVATION_LOG" 2>&1 <<'EOF_TASK8_ACTIVATION'
+set -euo pipefail
+
+echo "[task8] checking activation script binary"
+test -x /run/current-system/sw/bin/hostenv-comin-activate
+
+echo "[task8] locating comin post-deployment wrapper"
+unit_text="$(systemctl cat comin.service)"
+wrapper_path="$(printf '%s\n' "$unit_text" | tr ' ' '\n' | grep 'hostenv-comin-activate-wrapper' | head -n1 || true)"
+test -n "$wrapper_path"
+test -r "$wrapper_path"
+
+echo "[task8] validating wrapper exports"
+grep -q '^export HOSTENV_COMIN_NODE_NAME=' "$wrapper_path"
+grep -q '^export HOSTENV_COMIN_API_BASE_URL=' "$wrapper_path"
+grep -q '^export HOSTENV_COMIN_TOKEN_FILE=' "$wrapper_path"
+grep -q '^export HOSTENV_COMIN_ACTION_TIMEOUT=' "$wrapper_path"
+
+echo "[task8] validating token file and curl availability"
+token_file="$(grep '^export HOSTENV_COMIN_TOKEN_FILE=' "$wrapper_path" | cut -d= -f2-)"
+test -n "$token_file"
+test -r "$token_file"
+command -v curl
+
+echo "[task8] validating provider event callback endpoint exists in script"
+grep -q '/api/deploy-jobs/\$job_id/events' /run/current-system/sw/bin/hostenv-comin-activate
+
+echo "[task8] PASS"
+EOF_TASK8_ACTIVATION
+
+  log "Running provider API query check on ${node_alias}"
+  ssh -F "$SSH_CONFIG" "deploy@${node_alias}" "bash -s" >"$TASK8_API_LOG" 2>&1 <<'EOF_TASK8_API'
+set -euo pipefail
+
+unit_text="$(systemctl cat comin.service)"
+wrapper_path="$(printf '%s\n' "$unit_text" | tr ' ' '\n' | grep 'hostenv-comin-activate-wrapper' | head -n1 || true)"
+test -n "$wrapper_path"
+
+api_base="$(grep '^export HOSTENV_COMIN_API_BASE_URL=' "$wrapper_path" | cut -d= -f2-)"
+node_name="$(grep '^export HOSTENV_COMIN_NODE_NAME=' "$wrapper_path" | cut -d= -f2-)"
+token_file="$(grep '^export HOSTENV_COMIN_TOKEN_FILE=' "$wrapper_path" | cut -d= -f2-)"
+token="$(tr -d '\n' < "$token_file")"
+
+query_url="$api_base/api/deploy-intents/by-sha?sha=task8-manual-check&node=$node_name"
+status="$(curl -sS -o /tmp/task8-api-query.json -w '%{http_code}' -H "Authorization: Bearer $token" "$query_url")"
+
+echo "query_url=$query_url"
+echo "http_status=$status"
+cat /tmp/task8-api-query.json
+rm -f /tmp/task8-api-query.json
+
+case "$status" in
+  200|404)
+    echo "[task8] PASS"
+    ;;
+  *)
+    echo "[task8] unexpected status: $status" >&2
+    exit 1
+    ;;
+esac
+EOF_TASK8_API
+
+  log "Running manual comin trigger check on ${node_alias}"
+  ssh -F "$SSH_CONFIG" "deploy@${node_alias}" "bash -s" >"$TASK8_MANUAL_TRIGGER_LOG" 2>&1 <<'EOF_TASK8_MANUAL'
+set -euo pipefail
+
+echo "[task8] restarting comin service"
+sudo -n systemctl restart comin.service || systemctl restart comin.service
+systemctl is-active comin.service
+
+echo "[task8] running activation script manually with synthetic SHA"
+unit_text="$(systemctl cat comin.service)"
+wrapper_path="$(printf '%s\n' "$unit_text" | tr ' ' '\n' | grep 'hostenv-comin-activate-wrapper' | head -n1 || true)"
+test -n "$wrapper_path"
+
+export COMIN_GIT_SHA="task8-manual-trigger"
+export HOSTENV_COMIN_NODE_NAME="$(grep '^export HOSTENV_COMIN_NODE_NAME=' "$wrapper_path" | cut -d= -f2-)"
+export HOSTENV_COMIN_API_BASE_URL="$(grep '^export HOSTENV_COMIN_API_BASE_URL=' "$wrapper_path" | cut -d= -f2-)"
+export HOSTENV_COMIN_TOKEN_FILE="$(grep '^export HOSTENV_COMIN_TOKEN_FILE=' "$wrapper_path" | cut -d= -f2-)"
+export HOSTENV_COMIN_ACTION_TIMEOUT="10"
+/run/current-system/sw/bin/hostenv-comin-activate
+
+echo "[task8] recent comin journal"
+journalctl -u comin.service -n 20 --no-pager
+echo "[task8] PASS"
+EOF_TASK8_MANUAL
+
+  success "Task 8 verification logs written:"
+  log "  - $TASK8_ACTIVATION_LOG"
+  log "  - $TASK8_API_LOG"
+  log "  - $TASK8_MANUAL_TRIGGER_LOG"
+}
+
 condition_seed_imported_node_a() {
   load_plan_metadata || return 1
 
@@ -584,6 +684,11 @@ condition_node_b_migrated() {
 
 write_provider_flake() {
   local production_node="$1"
+  local shared_provider_repo="$SHARED_DIR/provider-repo"
+
+  rm -f "$shared_provider_repo"
+  ln -s "$PROVIDER_DIR" "$shared_provider_repo"
+
   cat > "$PROVIDER_DIR/flake.nix" <<EOF_FLAKE
 {
   description = "Hostenv local VM migration demo provider";
@@ -655,6 +760,19 @@ write_provider_flake() {
           production = "${production_node}";
           testing = "${production_node}";
           development = "${production_node}";
+        };
+
+        service = {
+          organisation = "demo";
+          project = "drupal";
+          environmentName = "main";
+        };
+
+        comin = {
+          enable = true;
+          remoteUrl = "file:///mnt/hostenv-shared/provider-repo";
+          providerApiBaseUrl = "http://${PROVIDER_API_VM_GATEWAY}:${PROVIDER_HTTP_PORT}";
+          nodeAuthTokenFile = "/run/secrets/hostenv-provider/comin_node_token";
         };
 
         planSource = "eval";
@@ -841,9 +959,10 @@ cat > "$config_file" <<EOFCFG
 EOFCFG
 
 if [ -n "${HOSTENV_PROVIDER_HTTP_PORT:-}" ]; then
-  socat TCP-LISTEN:"$HOSTENV_PROVIDER_HTTP_PORT",fork,reuseaddr UNIX-CONNECT:"$listen_socket" &
+  http_bind="${HOSTENV_PROVIDER_HTTP_BIND:-127.0.0.1}"
+  socat TCP-LISTEN:"$HOSTENV_PROVIDER_HTTP_PORT",bind="$http_bind",fork,reuseaddr UNIX-CONNECT:"$listen_socket" &
   socat_pid=$!
-  echo "hostenv-provider-service-dev: proxying http://localhost:$HOSTENV_PROVIDER_HTTP_PORT -> unix:$listen_socket" >&2
+  echo "hostenv-provider-service-dev: proxying http://$http_bind:$HOSTENV_PROVIDER_HTTP_PORT -> unix:$listen_socket" >&2
 fi
 
 exec hostenv-provider-service --config "$config_file"
@@ -888,6 +1007,8 @@ EOF_DEV_SCRIPT
               export GIT_SSH_COMMAND='ssh -F ${SSH_CONFIG}'
               export HOSTENV_PROVIDER_DEV_DIR=${WORKDIR}/provider-dev
               export HOSTENV_PROVIDER_DATA_DIR=${WORKDIR}/provider-dev/data
+              export HOSTENV_PROVIDER_HTTP_PORT=${PROVIDER_HTTP_PORT}
+              export HOSTENV_PROVIDER_HTTP_BIND=127.0.0.1
 
               if [ -n "''\${NIX_CONFIG:-}" ]; then
                 export NIX_CONFIG="''\${NIX_CONFIG}
@@ -930,6 +1051,13 @@ prepare_node_a_baseline() {
   stage "Preparing node-a"
   log "Generating provider plan for node-a"
   run_provider_plan
+
+  log "Generating comin node tokens"
+  (
+    cd "$PROVIDER_DIR"
+    nix run .#hostenv-provider -- comin-tokens
+  )
+
 
   load_plan_metadata || fail_stage "failed to load environment metadata from $PLAN_PATH"
   sync_hostctl_profile "node-a"
@@ -1079,6 +1207,7 @@ run_wizard_flow() {
 
   success "node-a deployment detected."
   log "View node-a installer page with: curl http://${VHOST}:${NODE_HTTP_PORT}/"
+  run_task8_post_deploy_verification
   prompt_continue_or_abort
 
   show_seed_instructions
@@ -1121,6 +1250,8 @@ run_automated_flow() {
     fail_stage "node-a deployment did not become ready"
   fi
 
+  run_task8_post_deploy_verification
+
   run_automated_seed_import
 
   if ! poll_until_or_abort 1800 "Waiting for seed import to complete on node-a..." condition_seed_imported_node_a; then
@@ -1156,6 +1287,8 @@ DEMO_FIXTURE_DIR="$SCRIPT_DIR/demo-project"
 SEED_SOURCE="$SCRIPT_DIR/seed/seed.sql.gz"
 
 HOSTENV_HOSTNAME="demo.hostenv.test"
+PROVIDER_API_VM_GATEWAY="10.0.2.2"
+PROVIDER_HTTP_PORT=8080
 NODE_A_HOST_IP="127.0.0.2"
 NODE_B_HOST_IP="127.0.0.3"
 NODE_SSH_PORT=2222
@@ -1255,6 +1388,10 @@ PLAN_PATH="$PROVIDER_DIR/generated/plan.json"
 DEMO_LINK_PATH="$CALLER_DIR/hostenv-demo"
 HOSTCTL_PROFILE="$(profile_name_for_workdir "$WORKDIR")"
 HOSTCTL_SOURCE_FILE="$WORKDIR/hostctl-profile.hosts"
+EVIDENCE_DIR="$REPO_ROOT/.sisyphus/evidence"
+TASK8_ACTIVATION_LOG="$EVIDENCE_DIR/task-8-activation-script.log"
+TASK8_API_LOG="$EVIDENCE_DIR/task-8-provider-api.log"
+TASK8_MANUAL_TRIGGER_LOG="$EVIDENCE_DIR/task-8-manual-comin-trigger.log"
 
 printf '%s\n' "hostenv-local-vm-demo" > "$WORKDIR/.hostenv-local-vm-demo"
 

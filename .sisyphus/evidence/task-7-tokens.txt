@@ -1,0 +1,57 @@
+Task 7: Generate and distribute comin node tokens
+====================================================
+
+## Changes Made
+
+Modified: examples/local-provider-migration/run-demo.sh
+
+Added comin node token generation in prepare_node_a_baseline() function:
+
+  log "Generating comin node tokens"
+  (
+    cd "$PROVIDER_DIR"
+    nix run .#hostenv-provider -- comin-tokens
+  )
+
+This runs after `run_provider_plan` (which creates plan.json with node names)
+and before `load_plan_metadata`.
+
+## Token Storage
+
+Tokens are stored in secrets/provider.yaml under the comin_node_tokens key
+by the hostenv-provider CLI. The CLI:
+
+1. Reads plan.json to get node names (node-a, node-b)
+2. Generates unique tokens using openssl rand -hex 32
+3. Stores them in sops-encrypted secrets/provider.yaml
+
+Example structure after generation:
+  comin_node_tokens:
+    node-a: <64-char-hex-token>
+    node-b: <64-char-hex-token>
+
+## Node Configuration
+
+The nodeAuthTokenFile is already configured in write_provider_flake():
+  comin = {
+    enable = true;
+    remoteUrl = "file:///mnt/hostenv-shared/provider-repo";
+    providerApiBaseUrl = "http://10.0.2.2:${NODE_HTTP_PORT}";
+    nodeAuthTokenFile = "/run/secrets/hostenv-provider/comin_node_token";
+  };
+
+## Security
+
+- Each node gets a unique token (not shared)
+- Tokens stored in sops-encrypted YAML file
+- Tokens are 64-character hex strings (256 bits of entropy)
+- Provider service validates tokens against node names
+
+## QA Verification
+
+The tokens can be verified by:
+1. Running the demo script
+2. Checking secrets/provider.yaml contains comin_node_tokens.node-a
+3. Checking secrets/provider.yaml contains comin_node_tokens.node-b
+
+Evidence recorded: 2025-02-25

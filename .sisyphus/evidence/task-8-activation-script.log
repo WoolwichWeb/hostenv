@@ -1,0 +1,10 @@
+check=activation-script-integration-static
+module=modules/nixos/provider-common.nix
+script=modules/nixos/hostenv-comin-activate.sh
+result=pass
+details:
+- comin activation script packaged as `hostenv-comin-activate` via writeShellApplication.
+- runtime inputs include `curl`, `jq`, and system tools required by the script.
+- wrapper exports HOSTENV_COMIN_NODE_NAME, HOSTENV_COMIN_API_BASE_URL, HOSTENV_COMIN_TOKEN_FILE, HOSTENV_COMIN_ACTION_TIMEOUT.
+- comin is configured with postDeploymentCommand = "${cominActivateWrapper}".
+- activation script reads bearer token from HOSTENV_COMIN_TOKEN_FILE when readable.

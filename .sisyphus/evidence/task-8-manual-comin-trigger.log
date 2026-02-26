@@ -1,0 +1,10 @@
+check=manual-comin-trigger-runtime
+command=./examples/local-provider-migration/run-demo.sh --automated --cleanup --no-color
+result=blocked
+blocker=provider flake input error before node deploy
+stderr_excerpt:
+error: input 'deploy-rs' follows a non-existent input 'hostenv/deploy-rs'
+notes:
+- Automated demo reached provider plan generation and failed before node-a deployment.
+- Runtime VM checks (ssh node-a, comin restart/manual trigger) could not execute in this run.
+- Added Task 8 verification stage to run-demo.sh so runtime checks execute automatically once deploy reaches node-a.
