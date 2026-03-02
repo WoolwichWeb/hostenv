@@ -47,18 +47,28 @@
       provider = {
         hostenvHostname = "hosting.example.com";
         nodeSystems = { default = "x86_64-linux"; };
-        nodeFor = { production = "node-a"; testing = "node-a"; development = "node-a"; };
+        nodeFor = {
+          # FIXME: Configure which environments map to which nodes
+          # production = "node-a";
+          # staging = "node-a";
+          # development = "node-a";
+        };
+
+        # Auto-discover nodes from the nodes/ directory:
+        # nodes = let
+        #   nodeDirs = builtins.attrNames (builtins.readDir ./nodes);
+        # in lib.genAttrs nodeDirs (node: {
+        #   configuration = ./nodes/${node}/configuration.nix;
+        # });
 
         # Enable pull-based activation with comin.
-        # comin = {
-        #   enable = true;
-        #   remoteUrl = "https://gitlab.com/acme/provider.git";
-        #   providerApiBaseUrl = "https://hosting.example.com";
-        #   nodeAuthTokenFile = "/run/secrets/hostenv-provider/comin_node_token";
-        # };
-
+        comin = {
+          enable = true;
+          remoteUrl = "https://gitlab.com/acme/provider.git";
+          providerApiBaseUrl = "https://hosting.example.com";
+          nodeAuthTokenFile = "/run/secrets/hostenv-provider/comin_node_token";
+        };
         # Add NixOS system-level configuration that's common to all servers here:
-        # nodeModules = [ "nodes/common.nix" ];
         planSource = "eval";
 
         # Hostenv generates a new flake in `generated/flake.nix`, which

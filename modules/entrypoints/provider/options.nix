@@ -401,6 +401,18 @@ in
       default = { };
       description = "Map of node name -> system string (e.g. x86_64-linux, aarch64-linux).";
     };
+
+
+
+    nodes = mkOption {
+      type = types.attrsOf (types.submodule {
+        options.configuration = mkOption {
+          type = types.path;
+        };
+      });
+      default = {};
+      description = "Declarative node configuration. Each attribute defines a node with a configuration.nix path.";
+    };
     nodeModules = mkOption {
       type = types.listOf (types.oneOf [ types.path types.str ]);
       default = [ ];
