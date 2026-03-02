@@ -1,0 +1,1 @@
+- Current branch evaluation shows no provider auto-init startup hook in provider devshell; enabled generation assertion derivation fails until feature wiring exists.

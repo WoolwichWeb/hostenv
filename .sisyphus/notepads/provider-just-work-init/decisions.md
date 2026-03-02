@@ -1,0 +1,2 @@
+- Chose behavior-oriented integration checks: execute discovered startup script in temporary directory and assert created artifacts/content instead of checking internal implementation symbols.
+- Kept new tests in standalone file without modifying existing test registries per task constraint.
