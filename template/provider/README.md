@@ -4,20 +4,42 @@ This template boots a provider flake that consumes hostenv projects and generate
 
 ## Quick start
 
-1. Copy this template (or `nix flake init -t gitlab:woolwichweb/hostenv#provider` once exported).
-2. If you use direnv, run `direnv allow` to load the dev shell from `.envrc`.
-3. Set `provider.hostenvHostname` and your node mappings in `flake.nix`.
-4. The template ships starter node stubs:
-   - `nodes/sample/` (copy to `nodes/<node>/` and edit).
-5. Create `secrets/provider.yaml` with `sops` (provider uses this at deploy time).
-6. Create `generated/state.json` (can be `{}` initially).
-7. Add NixOS node configs under `nodes/<node>/configuration.nix` (with `system.stateVersion`).
-8. Run `nix run .#hostenv-provider -- plan` to write `generated/{flake.nix,plan.json,state.json}`.
-9. If you use comin, set `provider.comin.enable = true`, `provider.comin.remoteUrl`,
-   `provider.comin.providerApiBaseUrl`, and `provider.comin.nodeAuthTokenFile` so nodes
-   can pull and report status.
-10. Set `provider.service.{organisation,project,environmentName}` and run
-    `nix run .#hostenv-provider -- comin-tokens` to generate node tokens in `secrets/provider.yaml`.
+1. Initialize the provider flake:
+   ```bash
+   nix flake init -t gitlab:woolwichweb/hostenv#provider
+   ```
+
+2. Configure your nodes:
+   - Copy `nodes/sample/` to `nodes/<node>/` for each server
+   - Edit `nodes/<node>/configuration.nix` (set hostname, `system.stateVersion`)
+   - Set `provider.hostenvHostname` in `flake.nix`
+
+3. Enter the devshell to auto-generate files:
+   ```bash
+   direnv allow  # or: nix develop
+   ```
+   This creates `secrets/provider.yaml`, `generated/state.json`, and generates comin tokens if comin is enabled.
+
+4. Generate the deployment plan:
+   ```bash
+   nix run .#hostenv-provider -- plan
+   ```
+
+That's it. The provider now tracks state and secrets automatically. Files that don't exist are created on first run. Comin tokens generate when you enter the devshell if `provider.comin.enable = true`.
+
+
+## Auto-init details
+
+The provider devshell includes an auto-initialization hook that runs when you enter the shell:
+
+- **`secrets/provider.yaml`** - Created automatically with a generated age key if missing. You can rotate to proper sops recipients later.
+- **`generated/state.json`** - Created as an empty JSON object if missing.
+- **Comin tokens** - Generated automatically when `provider.comin.enable = true` and tokens don't exist.
+
+To disable auto-init (if you prefer manual setup):
+```nix
+provider.plan.autoInit = false;
+```
 
 
 ## Admin UI template
