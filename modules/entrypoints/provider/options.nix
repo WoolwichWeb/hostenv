@@ -421,6 +421,7 @@ in
         else builtins.throw "provider.planPath: inputs.self is required to resolve defaults; set provider.planPath explicitly.";
     };
     planSource = mkOption { type = types.enum [ "disk" "eval" ]; default = "eval"; };
+    plan.autoInit = (lib.mkEnableOption "automatically setup necessary config for tracking state and secrets") // { default = true; };
     generatedFlake = mkOption {
       type = types.submodule {
         options = {

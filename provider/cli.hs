@@ -46,7 +46,7 @@ import Prelude hiding (FilePath)
 data Command
     = CmdPlan {dryRun :: Bool}
     | CmdDnsGate {node :: Maybe Text, token :: Maybe Text, zone :: Maybe Text, withDnsUpdate :: Bool, dryRun :: Bool}
-    | CmdCominTokens {dryRun :: Bool}
+    | CmdCominTokens {dryRun :: Bool, quiet :: Bool}
 
 data CLI = CLI {cliCmd :: Command}
 
@@ -79,6 +79,13 @@ dryRunOpt =
         ( OA.long "dry-run"
             <> OA.help "Preview changes without mutating generated files or remote state"
         )
+quietOpt :: OA.Parser Bool
+quietOpt =
+    OA.switch
+        ( OA.long "quiet"
+            <> OA.short 'q'
+            <> OA.help "Suppress output messages"
+        )
 
 
 cliParser :: OA.Parser CLI
@@ -87,7 +94,7 @@ cliParser =
         <$> OA.hsubparser
             ( OA.command "plan" (OA.info (CmdPlan <$> dryRunOpt) (OA.progDesc "Generate plan.json, state.json, and flake.nix"))
                 <> OA.command "dns-gate" (OA.info (CmdDnsGate <$> nodeOpt <*> tokenOpt <*> zoneOpt <*> withDnsUpdateOpt <*> dryRunOpt) (OA.progDesc "Disable ACME/forceSSL for vhosts not pointing at node; add --with-dns-update to upsert Cloudflare records"))
-                <> OA.command "comin-tokens" (OA.info (CmdCominTokens <$> dryRunOpt) (OA.progDesc "Generate missing comin node tokens in provider secrets"))
+                <> OA.command "comin-tokens" (OA.info (CmdCominTokens <$> dryRunOpt <*> quietOpt) (OA.progDesc "Generate missing comin node tokens in provider secrets"))
             )
 
 cliOpts :: OA.ParserInfo CLI
@@ -1366,8 +1373,9 @@ prepareMergedSecrets envSecretsConfigs = do
                 )
     ensureTrackedInGit [mergedSecretsPath]
 
-runCominTokens :: Bool -> IO ()
-runCominTokens dryRun = do
+runCominTokens :: Bool -> Bool -> IO ()
+runCominTokens dryRun quiet = do
+    let printIfNotQuiet = if quiet then const (pure ()) else printProvider
     let planPath = "generated/plan.json"
     planExists <- Dir.doesFileExist planPath
     unless planExists $
@@ -1399,11 +1407,11 @@ runCominTokens dryRun = do
     let missingNodes = filter (\nodeName -> M.notMember nodeName existingTokens) nodes
 
     if null missingNodes
-        then printProvider ("hostenv-provider: comin node tokens already present in " <> providerSecretsPath)
+        then printIfNotQuiet ("hostenv-provider: comin node tokens already present in " <> providerSecretsPath)
         else
             if dryRun
                 then
-                    printProvider
+                    printIfNotQuiet
                         ( "hostenv-provider: dry-run: would generate comin node tokens for "
                             <> T.intercalate ", " missingNodes
                             <> " (" <> providerSecretsPath <> ")"
@@ -1429,7 +1437,7 @@ runCominTokens dryRun = do
                                 <> ". Add recipients under sops.age[].recipient."
                             )
                     writeProviderSecrets recipients updatedSecrets
-                    printProvider
+                    printIfNotQuiet
                         ( "hostenv-provider: wrote "
                             <> T.pack (show (length missingNodes))
                             <> " comin node token(s) to "
@@ -1450,4 +1458,4 @@ main = do
     case cmd of
         CmdPlan dryRun -> runPlan dryRun
         CmdDnsGate mNode mTok mZone withDnsUpdate dryRun -> runDnsGate mNode mTok mZone withDnsUpdate dryRun
-        CmdCominTokens dryRun -> runCominTokens dryRun
+        CmdCominTokens dryRun quiet -> runCominTokens dryRun quiet
