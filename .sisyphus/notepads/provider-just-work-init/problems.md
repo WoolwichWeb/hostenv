@@ -1,1 +1,0 @@
-- New provider-auto-init test file is not wired into tests/integration/default.nix because task constraints disallow edits to existing test files; orchestrator may wire it later.

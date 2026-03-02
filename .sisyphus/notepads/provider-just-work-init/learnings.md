@@ -1,2 +1,0 @@
-- Added integration test scaffold at tests/integration/provider-auto-init.nix following provider-plan/support assertion patterns.
-- Auto-init test locates provider devshell startup hook by behavior signature (secrets/provider.yaml + generated/state.json) rather than hardcoding hook name.
