@@ -104,6 +104,14 @@ The wizard:
 
 This runs the full pipeline non-interactively, suitable for regression testing.
 
+Recommended for local iteration: run from a repo dev shell so required tools are pre-provisioned.
+
+```bash
+nix develop . --command ./examples/local-provider-migration/run-demo.sh --automated --cleanup
+```
+
+Maintenance note: the fallback bootstrap logic in `run-demo.sh` currently has a large per-command tool check list. Plan to replace that with a single `nix develop`-first execution path.
+
 ### Manual Webhook Trigger
 
 To trigger a deployment manually:

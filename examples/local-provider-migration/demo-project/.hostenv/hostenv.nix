@@ -1,4 +1,4 @@
-{ pkgs, config, ... }:
+{ config, ... }:
 {
   services.drupal.enable = true;
   services.drupal.backups.enable = true;
