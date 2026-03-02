@@ -39,14 +39,20 @@ in
           initdb -D "$pgdata" -A trust >/dev/null
         fi
 
-        pg_ctl -D "$pgdata" -o "-k $base" -l "$base/postgres.log" start >/dev/null
+        if ! pg_ctl -D "$pgdata" status >/dev/null 2>&1; then
+          pg_ctl -D "$pgdata" -o "-k $base" -l "$base/postgres.log" start >/dev/null
+        fi
         cleanup() {
+          if [ -n "''${service_pid:-}" ]; then
+            kill "$service_pid" >/dev/null 2>&1 || true
+            wait "$service_pid" >/dev/null 2>&1 || true
+          fi
           if [ -n "''${socat_pid:-}" ]; then
             kill "$socat_pid" >/dev/null 2>&1 || true
           fi
           pg_ctl -D "$pgdata" stop >/dev/null || true
         }
-        trap cleanup EXIT
+        trap cleanup EXIT INT TERM
 
         createdb -h "$base" hostenv-provider >/dev/null 2>&1 || true
 
@@ -103,7 +109,9 @@ in
           echo "hostenv-provider-service-dev: proxying http://localhost:$HOSTENV_PROVIDER_HTTP_PORT -> unix:$listen_socket" >&2
         fi
 
-        ${servicePkg}/bin/hostenv-provider-service --config "$config_file"
+        ${servicePkg}/bin/hostenv-provider-service --config "$config_file" &
+        service_pid=$!
+        wait "$service_pid"
       '';
     in
     {

@@ -11,6 +11,7 @@ module Hostenv.Provider.Config
   , ProviderAccountConfig(..)
   , UserConfig(..)
   , loadConfig
+  , hasGitlabAuth
   , appWorkDir
   , resolvePath
   , uiPath
@@ -346,3 +347,9 @@ loadNodeAuthTokensStrict path = do
       if Map.null tokens
         then dieWith ("comin node auth tokens file has no valid node/token entries: " <> path)
         else pure tokens
+
+hasGitlabAuth :: AppConfig -> Bool
+hasGitlabAuth cfg =
+  case cfg.appGitlabSecrets of
+    Just _ -> True
+    Nothing -> False

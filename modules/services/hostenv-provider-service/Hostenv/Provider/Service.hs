@@ -37,6 +37,7 @@ module Hostenv.Provider.Service
   , renderDeployIntentDocument
   ) where
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (IOException, try)
 import Control.Monad (forM)
 import Data.Aeson (Value (..))
@@ -50,13 +51,14 @@ import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (toLower)
 import Data.Foldable (toList)
-import Data.List (foldl', intersect, nub, sort, sortOn)
+import Data.List (foldl', intersect, isInfixOf, nub, sort, sortOn)
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
-import System.Directory (createDirectoryIfMissing)
+import System.Directory (createDirectoryIfMissing, removeFile, renameFile)
+import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..), die)
 import System.FilePath ((</>))
 import System.Process (readProcessWithExitCode)
@@ -594,7 +596,17 @@ type StageNotifier = WebhookStage -> IO ()
 
 runWebhookWith :: StageNotifier -> CommandRunner -> PlanLoader -> WebhookConfig -> ProjectRef -> IO (Either WebhookError WebhookResult)
 runWebhookWith notifyStage runner loadPlan cfg ref = do
-  previousPlan <- readExistingPlan cfg.whPlanPath
+  previousPlanOnDisk <- readExistingPlan cfg.whPlanPath
+  previousPlanFromGit <- readPreviousPlanFromGit cfg.whWorkDir
+  forceInitialIntents <- lookupEnv "HOSTENV_PROVIDER_FORCE_INITIAL_INTENTS"
+  previousIntentOnDisk <- readExistingPlan (cfg.whWorkDir </> "generated" </> "deploy-intent.json")
+  let previousPlanBaseline = case previousPlanFromGit of
+        Just planBytes -> Just planBytes
+        Nothing -> previousPlanOnDisk
+  let previousPlan =
+        if forceInitialIntents == Just "1" && previousIntentOnDisk == Nothing
+          then Nothing
+          else previousPlanBaseline
   let inputName = ref.prOrg <> "__" <> ref.prProject
   step StageSyncRepo (CommandSpec "git" ["pull", "--rebase", "--autostash"] (cfg.whWorkDir)) >>= \case
     Left err -> pure (Left err)
@@ -761,8 +773,10 @@ writeDeployIntent cfg ref orderedNodes intentsByNode = do
   let intentDocument = renderDeployIntentDocument ref ordered
   let generatedDir = cfg.whWorkDir </> "generated"
   createDirectoryIfMissing True generatedDir
-  BL.writeFile (generatedDir </> "deploy-intent.json") (A.encode intentDocument)
-  pure (Right ordered)
+  writeResult <- writeDeployIntentFileWithRetry (generatedDir </> "deploy-intent.json") (A.encode intentDocument)
+  case writeResult of
+    Left err -> pure (Left err)
+    Right () -> pure (Right ordered)
 
 finalizeRepoUpdate :: StageNotifier -> CommandRunner -> WebhookConfig -> ProjectRef -> IO (Either WebhookError (Text, Bool))
 finalizeRepoUpdate notifyStage runner cfg ref = do
@@ -807,3 +821,48 @@ readExistingPlan path = do
   case result of
     Left _ -> pure Nothing
     Right bytes -> pure (Just bytes)
+
+readPreviousPlanFromGit :: FilePath -> IO (Maybe BL.ByteString)
+readPreviousPlanFromGit workDir = do
+  result <- try (readProcessWithExitCode "git" ["-C", workDir, "show", "HEAD^:generated/plan.json"] "") :: IO (Either IOException (ExitCode, String, String))
+  case result of
+    Left _ -> pure Nothing
+    Right (ExitSuccess, stdoutText, _) ->
+      if null stdoutText
+        then pure Nothing
+        else pure (Just (BL.fromStrict (BSC.pack stdoutText)))
+    Right _ -> pure Nothing
+
+writeDeployIntentFileWithRetry :: FilePath -> BL.ByteString -> IO (Either Text ())
+writeDeployIntentFileWithRetry path bytes = go (0 :: Int)
+  where
+    maxAttempts = 20
+    baseDelayMicros = 100000
+
+    go attempt = do
+      let tmpPath = path <> ".tmp-" <> show attempt
+      writeResult <- try (BL.writeFile tmpPath bytes) :: IO (Either IOException ())
+      case writeResult of
+        Left err ->
+          if attempt + 1 < maxAttempts && isRetryableWriteError err
+            then do
+              threadDelay (baseDelayMicros * (attempt + 1))
+              go (attempt + 1)
+            else pure (Left (T.pack (show err)))
+        Right () -> do
+          renameResult <- try (renameFile tmpPath path) :: IO (Either IOException ())
+          case renameResult of
+            Right () -> pure (Right ())
+            Left err -> do
+              _ <- try (removeFile tmpPath) :: IO (Either IOException ())
+              if attempt + 1 < maxAttempts && isRetryableWriteError err
+                then do
+                  threadDelay (baseDelayMicros * (attempt + 1))
+                  go (attempt + 1)
+                else pure (Left (T.pack (show err)))
+
+isRetryableWriteError :: IOException -> Bool
+isRetryableWriteError err =
+  let msg = map toLower (show err)
+      lockHints = ["resource busy", "file is locked", "text file busy"]
+   in any (`isInfixOf` msg) lockHints

@@ -1,10 +1,11 @@
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main where
 
 import Control.Monad (when)
 import qualified Data.Text as T
-import Hostenv.Provider.Config (loadConfig)
+import Hostenv.Provider.Config (hasGitlabAuth, loadConfig)
 import Hostenv.Provider.DB (ensureSchema, syncUsers)
 import Hostenv.Provider.Jobs (ensureJobSchema)
 import Hostenv.Provider.Project (syncFlakeFromDb)
@@ -29,7 +30,7 @@ main = do
     ensureSchema cfg
     ensureJobSchema cfg
     syncUsers cfg
-    when (repoStatus == RepoReady) $ do
+    when (repoStatus == RepoReady && hasGitlabAuth cfg) $ do
       syncResult <- syncFlakeFromDb cfg
       case syncResult of
         Left err -> hPutStrLn stderr ("Provider repository startup sync skipped:\n" <> T.unpack err)

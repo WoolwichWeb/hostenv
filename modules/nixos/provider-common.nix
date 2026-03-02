@@ -188,7 +188,7 @@
             {
               name = "hostenv";
               url = cominCfg.remoteUrl;
-              branches = [ cominCfg.branch ];
+              branches.main.name = cominCfg.branch;
               poller.period = cominCfg.pollIntervalSeconds;
             }
           ];

@@ -113,100 +113,97 @@ runWebhookDeployJob cfg hash projectRef logger = do
   logger.logInfo ("Running webhook deployment for hash " <> hash)
   logger.logInfo "webhook stage: load_project_credential"
   deployCredResult <- withDb cfg (\conn -> loadDeployCredentialByHash cfg conn hash)
-  deployCred <-
-    case deployCredResult of
-      Left err -> pure (Left err)
-      Right Nothing -> pure (Left "Missing project OAuth token for deploy")
-      Right (Just cred) -> pure (Right cred)
-  case deployCred of
+  case deployCredResult of
     Left err -> pure (Left err)
-    Right cred -> do
-      logger.logInfo "webhook stage: refresh_project_credential"
-      refreshedCredResult <- ensureProjectCredential cfg cred
-      refreshedDeployCred <-
-        case refreshedCredResult of
-          Left err -> pure (Left (renderGitlabError err))
-          Right refreshed -> pure (Right refreshed)
-      case refreshedDeployCred of
-        Left err -> pure (Left err)
-        Right refreshedDeployCred' -> do
-          let DeployCredential { host = deployHost, accessToken = deployAccessToken, repoId = deployRepoId } = refreshedDeployCred'
-          logger.logInfo "webhook stage: create_deploy_token"
-          deployTokenResult <- createProjectDeployToken cfg deployHost deployAccessToken deployRepoId
-          case deployTokenResult of
+    Right maybeCred -> do
+      existingNixConfig <- fmap (fmap T.pack) (lookupEnv "NIX_CONFIG")
+      case maybeCred of
+        Nothing -> do
+          logger.logInfo "webhook stage: execute_pipeline"
+          executePipeline existingNixConfig
+        Just cred -> do
+          logger.logInfo "webhook stage: refresh_project_credential"
+          refreshedCredResult <- ensureProjectCredential cfg cred
+          case refreshedCredResult of
             Left err -> pure (Left (renderGitlabError err))
-            Right deployToken -> do
-              existingNixConfig <- fmap (fmap T.pack) (lookupEnv "NIX_CONFIG")
-              let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig deployHost NixGitlabPAT deployToken.value
-              let AppConfig { appWebhookConfig = webhookCfg } = cfg
-              revokeErrRef <- newIORef Nothing
-              logger.logInfo "webhook stage: execute_pipeline"
-              result <-
-                runWebhookWith
-                  (\stage -> logger.logInfo ("webhook stage: " <> renderWebhookStage stage))
-                  (runCommandWithEnv cfg [("NIX_CONFIG", scopedNixConfig)])
-                  (loadPlan cfg)
-                  webhookCfg
-                  projectRef
-                  `finally` do
-                    logger.logInfo "webhook stage: revoke_deploy_token"
-                    revokeResult <- revokeProjectToken cfg deployHost deployAccessToken deployRepoId deployToken.id
-                    case revokeResult of
-                      Left msg -> writeIORef revokeErrRef (Just msg)
-                      Right _ -> pure ()
-              revokeErr <- readIORef revokeErrRef
-              case chooseFinalResult result (fmap renderGitlabError revokeErr) of
-                Left (Left err) ->
-                  pure (Left (renderWebhookError err))
-                Left (Right revokeMsg) ->
-                  pure (Left revokeMsg)
-                Right okResult -> do
-                  let WebhookResult
-                        { commitSha = commitSha
-                        , updateStatus = updateStatus
-                        , intents = intents
-                        } = okResult
-                      CominConfig cominEnabled _ _ _ = cfg.appComin
-                      shouldWait = shouldWaitForCallbacks updateStatus cominEnabled intents
-                      payloads =
-                        map
-                          (\intent -> (intent.node, A.object ["schemaVersion" A..= (1 :: Int), "actions" A..= intent.actions]))
-                          intents
-                      pushCommittedUpdate = do
-                        pushResult <-
-                          runCommandWithEnv cfg [("NIX_CONFIG", scopedNixConfig)] (CommandSpec "git" ["push"] webhookCfg.whWorkDir)
-                        pure
-                          ( case pushResult of
-                              Left cmdErr -> Left (renderWebhookError (WebhookCommandError StageFinalizeRepo cmdErr))
-                              Right _ -> Right ()
-                          )
-                  case updateStatus of
-                    WebhookUpdateCommitted ->
-                      if shouldWait
-                        then do
-                          persistAndPushResult <-
-                            persistIntentsActionsAndPushWith
-                              (saveDeployIntents cfg logger.jobId commitSha payloads)
-                              (saveDeployActions cfg logger.jobId payloads)
-                              (forM_ intents (\intent -> appendDeployEvent cfg logger.jobId intent.node "queued" (Just "intent") (Just "Deploy intent queued") Nothing >> pure ()))
-                              pushCommittedUpdate
-                          case persistAndPushResult of
-                            Left err -> pure (Left err)
-                            Right () ->
-                              pure
-                                ( Right
-                                    (JobWaiting ("Webhook deployment prepared at " <> commitSha <> " and waiting for node callbacks"))
-                                )
-                        else do
-                          pushResult <- pushCommittedUpdate
-                          case pushResult of
-                            Left err -> pure (Left err)
-                            Right () -> pure (Right (JobComplete ("Webhook deployment prepared and pushed at " <> commitSha)))
-                    WebhookUpdateNoop ->
-                      pure
-                        ( Right
-                            (JobComplete ("Webhook deployment intent updated without new commit (HEAD " <> commitSha <> ")"))
-                        )
+            Right refreshedCred -> do
+              let DeployCredential { host = deployHost, accessToken = deployAccessToken, repoId = deployRepoId } = refreshedCred
+              logger.logInfo "webhook stage: create_deploy_token"
+              deployTokenResult <- createProjectDeployToken cfg deployHost deployAccessToken deployRepoId
+              case deployTokenResult of
+                Left err -> pure (Left (renderGitlabError err))
+                Right deployToken -> do
+                  let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig deployHost NixGitlabPAT deployToken.value
+                  revokeErrRef <- newIORef Nothing
+                  logger.logInfo "webhook stage: execute_pipeline"
+                  pipelineResult <-
+                    executePipeline (Just scopedNixConfig)
+                      `finally` do
+                        logger.logInfo "webhook stage: revoke_deploy_token"
+                        revokeResult <- revokeProjectToken cfg deployHost deployAccessToken deployRepoId deployToken.id
+                        case revokeResult of
+                          Left msg -> writeIORef revokeErrRef (Just msg)
+                          Right _ -> pure ()
+                  revokeErr <- readIORef revokeErrRef
+                  case revokeErr of
+                    Nothing -> pure pipelineResult
+                    Just revokeMsg -> pure (Left (renderGitlabError revokeMsg))
+  where
+    executePipeline :: Maybe Text -> IO (Either Text JobOutcome)
+    executePipeline mNixConfig = do
+      let AppConfig { appWebhookConfig = webhookCfg } = cfg
+          envVars = maybe [] (\cfgText -> [("NIX_CONFIG", cfgText)]) mNixConfig
+      result <-
+        runWebhookWith
+          (\stage -> logger.logInfo ("webhook stage: " <> renderWebhookStage stage))
+          (runCommandWithEnv cfg envVars)
+          (loadPlan cfg)
+          webhookCfg
+          projectRef
+      case result of
+        Left err -> pure (Left (renderWebhookError err))
+        Right okResult -> do
+          let WebhookResult
+                { commitSha = commitSha
+                , updateStatus = updateStatus
+                , intents = intents
+                } = okResult
+              CominConfig cominEnabled _ _ _ = cfg.appComin
+              shouldWait = shouldWaitForCallbacks updateStatus cominEnabled intents
+              payloads =
+                map
+                  (\intent -> (intent.node, A.object ["schemaVersion" A..= (1 :: Int), "actions" A..= intent.actions]))
+                  intents
+              pushCommittedUpdate = do
+                pushResult <- runCommandWithEnv cfg envVars (CommandSpec "git" ["push"] webhookCfg.whWorkDir)
+                pure
+                  ( case pushResult of
+                      Left cmdErr -> Left (renderWebhookError (WebhookCommandError StageFinalizeRepo cmdErr))
+                      Right _ -> Right ()
+                  )
+          case updateStatus of
+            WebhookUpdateCommitted ->
+              if shouldWait
+                then do
+                  persistAndPushResult <-
+                    persistIntentsActionsAndPushWith
+                      (saveDeployIntents cfg logger.jobId commitSha payloads)
+                      (saveDeployActions cfg logger.jobId payloads)
+                      (forM_ intents (\intent -> appendDeployEvent cfg logger.jobId intent.node "queued" (Just "intent") (Just "Deploy intent queued") Nothing >> pure ()))
+                      pushCommittedUpdate
+                  case persistAndPushResult of
+                    Left err -> pure (Left err)
+                    Right () -> pure (Right (JobWaiting ("Webhook deployment prepared at " <> commitSha <> " and waiting for node callbacks")))
+                else do
+                  pushResult <- pushCommittedUpdate
+                  case pushResult of
+                    Left err -> pure (Left err)
+                    Right () -> pure (Right (JobComplete ("Webhook deployment prepared and pushed at " <> commitSha)))
+            WebhookUpdateNoop ->
+              pure
+                ( Right
+                    (JobComplete ("Webhook deployment intent updated without new commit (HEAD " <> commitSha <> ")"))
+                )
 
 
 shouldWaitForCallbacks :: WebhookUpdateStatus -> Bool -> [NodeIntent] -> Bool
