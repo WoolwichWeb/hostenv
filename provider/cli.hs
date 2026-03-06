@@ -1,7 +1,7 @@
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- hostenv-provider CLI: plan | dns-gate | comin-tokens
+-- hostenv-provider CLI: plan | dns-gate | node-tokens
 -- dns-gate ports the legacy scripts/postgen.hs DNS/ACME gate and Cloudflare upsert logic.
 
 import Control.Concurrent (threadDelay)
@@ -46,7 +46,8 @@ import Prelude hiding (FilePath)
 data Command
     = CmdPlan {dryRun :: Bool}
     | CmdDnsGate {node :: Maybe Text, token :: Maybe Text, zone :: Maybe Text, withDnsUpdate :: Bool, dryRun :: Bool}
-    | CmdCominTokens {dryRun :: Bool, quiet :: Bool}
+    | CmdNodeTokens {dryRun :: Bool, quiet :: Bool}
+    | CmdCacheSecrets {dryRun :: Bool, quiet :: Bool}
 
 data CLI = CLI {cliCmd :: Command}
 
@@ -94,7 +95,8 @@ cliParser =
         <$> OA.hsubparser
             ( OA.command "plan" (OA.info (CmdPlan <$> dryRunOpt) (OA.progDesc "Generate plan.json, state.json, and flake.nix"))
                 <> OA.command "dns-gate" (OA.info (CmdDnsGate <$> nodeOpt <*> tokenOpt <*> zoneOpt <*> withDnsUpdateOpt <*> dryRunOpt) (OA.progDesc "Disable ACME/forceSSL for vhosts not pointing at node; add --with-dns-update to upsert Cloudflare records"))
-                <> OA.command "comin-tokens" (OA.info (CmdCominTokens <$> dryRunOpt <*> quietOpt) (OA.progDesc "Generate missing comin node tokens in provider secrets"))
+                <> OA.command "node-tokens" (OA.info (CmdNodeTokens <$> dryRunOpt <*> quietOpt) (OA.progDesc "Generate missing provider node tokens in provider secrets"))
+                <> OA.command "cache-secrets" (OA.info (CmdCacheSecrets <$> dryRunOpt <*> quietOpt) (OA.progDesc "Generate missing cache signing/auth secrets and cache public key file"))
             )
 
 cliOpts :: OA.ParserInfo CLI
@@ -210,12 +212,6 @@ planNodeNames plan =
     case lookupObj (K.fromString "nodes") plan of
         Nothing -> []
         Just nodesObj -> map (K.toText . fst) (KM.toList nodesObj)
-
-planCominEnabled :: KM.KeyMap A.Value -> Bool
-planCominEnabled plan =
-    case lookupObj (K.fromString "comin") plan >>= lookupBool (K.fromString "enable") of
-        Just enabled -> enabled
-        Nothing -> False
 
 modifyAt :: [KM.Key] -> (A.Value -> A.Value) -> KM.KeyMap A.Value -> KM.KeyMap A.Value
 modifyAt [] _ obj = obj
@@ -1373,8 +1369,8 @@ prepareMergedSecrets envSecretsConfigs = do
                 )
     ensureTrackedInGit [mergedSecretsPath]
 
-runCominTokens :: Bool -> Bool -> IO ()
-runCominTokens dryRun quiet = do
+runNodeTokens :: Bool -> Bool -> IO ()
+runNodeTokens dryRun quiet = do
     let printIfNotQuiet = if quiet then const (pure ()) else printProvider
     let planPath = "generated/plan.json"
     planExists <- Dir.doesFileExist planPath
@@ -1392,7 +1388,7 @@ runCominTokens dryRun quiet = do
         error "hostenv-provider: no nodes found in generated/plan.json"
 
     secretsObj <- readSecretsObject providerSecretsPath
-    let tokensValue = KM.lookup (K.fromString "comin_node_tokens") secretsObj
+    let tokensValue = KM.lookup (K.fromString "provider_node_tokens") secretsObj
     let existingTokens =
             case tokensValue of
                 Nothing -> M.empty
@@ -1403,22 +1399,22 @@ runCominTokens dryRun quiet = do
                         , T.strip token /= ""
                         ]
                 Just _ ->
-                    error "hostenv-provider: comin_node_tokens must be a mapping of node -> token"
+                    error "hostenv-provider: provider_node_tokens must be a mapping of node -> token"
     let missingNodes = filter (\nodeName -> M.notMember nodeName existingTokens) nodes
 
     if null missingNodes
-        then printIfNotQuiet ("hostenv-provider: comin node tokens already present in " <> providerSecretsPath)
+        then printIfNotQuiet ("hostenv-provider: provider node tokens already present in " <> providerSecretsPath)
         else
             if dryRun
                 then
                     printIfNotQuiet
-                        ( "hostenv-provider: dry-run: would generate comin node tokens for "
+                        ( "hostenv-provider: dry-run: would generate provider node tokens for "
                             <> T.intercalate ", " missingNodes
                             <> " (" <> providerSecretsPath <> ")"
                         )
                 else do
                     newTokens <- forM missingNodes $ \nodeName -> do
-                        token <- generateCominToken
+                        token <- generateNodeToken
                         pure (nodeName, token)
                     let mergedTokens = M.union existingTokens (M.fromList newTokens)
                     let tokensObj =
@@ -1428,7 +1424,7 @@ runCominTokens dryRun quiet = do
                                     | (nodeName, token) <- M.toList mergedTokens
                                     ]
                                 )
-                    let updatedSecrets = KM.insert (K.fromString "comin_node_tokens") tokensObj secretsObj
+                    let updatedSecrets = KM.insert (K.fromString "provider_node_tokens") tokensObj secretsObj
                     recipients <- ageRecipients providerSecretsPath
                     when (null recipients) $
                         error
@@ -1440,16 +1436,141 @@ runCominTokens dryRun quiet = do
                     printIfNotQuiet
                         ( "hostenv-provider: wrote "
                             <> T.pack (show (length missingNodes))
-                            <> " comin node token(s) to "
+                            <> " provider node token(s) to "
                             <> providerSecretsPath
                         )
   where
-    generateCominToken = do
+    generateNodeToken = do
         (code, out, err) <- readProcessWithExitCode "openssl" ["rand", "-hex", "32"] ""
         case code of
             ExitSuccess -> pure (T.strip (T.pack out))
             ExitFailure _ ->
-                error ("hostenv-provider: failed to generate comin node token: " <> err)
+                error ("hostenv-provider: failed to generate provider node token: " <> err)
+
+runCacheSecrets :: Bool -> Bool -> IO ()
+runCacheSecrets dryRun quiet = do
+    let printIfNotQuiet = if quiet then const (pure ()) else printProvider
+    secretsObj <- readSecretsObject providerSecretsPath
+    let planPath = "generated/plan.json"
+    planExists <- Dir.doesFileExist planPath
+    hostenvHostname <-
+        if not planExists
+            then pure "hostenv.invalid"
+            else do
+                raw <- BL.readFile planPath
+                case A.eitherDecode' raw of
+                    Left err -> error err
+                    Right (planObj :: KM.KeyMap A.Value) ->
+                        pure (fromMaybe "hostenv.invalid" (lookupText (K.fromString "hostenvHostname") planObj))
+
+    let signingKeyName = K.fromString "cache_signing_key"
+    let htpasswdKeyName = K.fromString "cache_htpasswd"
+    let netrcKeyName = K.fromString "cache_netrc"
+    let publicKeyPath = "generated/cache-public-key.txt"
+
+    let lookupSecretText key =
+            case KM.lookup key secretsObj of
+                Just (A.String value) | T.strip value /= "" -> Just (T.strip value)
+                Just _ -> error ("hostenv-provider: " <> K.toString key <> " must be a non-empty string")
+                Nothing -> Nothing
+
+    let existingSigningKey = lookupSecretText signingKeyName
+    let existingHtpasswd = lookupSecretText htpasswdKeyName
+    let existingNetrc = lookupSecretText netrcKeyName
+
+    publicKeyExists <- Dir.doesFileExist publicKeyPath
+
+    when ((existingSigningKey == Nothing) /= (not publicKeyExists)) $
+        error
+            "hostenv-provider: cache signing key and generated/cache-public-key.txt must be created together; fix mismatch manually or regenerate both"
+
+    when ((existingHtpasswd == Nothing) /= (existingNetrc == Nothing)) $
+        error "hostenv-provider: cache_htpasswd and cache_netrc must be created together; fix mismatch manually"
+
+    let needsSigningMaterial = existingSigningKey == Nothing && not publicKeyExists
+    let needsAuthMaterial = existingHtpasswd == Nothing && existingNetrc == Nothing
+
+    if not needsSigningMaterial && not needsAuthMaterial
+        then printIfNotQuiet ("hostenv-provider: cache signing/auth secrets already present in " <> providerSecretsPath)
+        else
+            if dryRun
+                then do
+                    when needsSigningMaterial $ printIfNotQuiet "hostenv-provider: dry-run: would generate cache signing keypair and write generated/cache-public-key.txt"
+                    when needsAuthMaterial $ printIfNotQuiet "hostenv-provider: dry-run: would generate cache_htpasswd and cache_netrc"
+                else do
+                    Dir.createDirectoryIfMissing True "generated"
+                    (mSigningKey, mPublicKey) <-
+                        if not needsSigningMaterial
+                            then pure (Nothing, Nothing)
+                            else do
+                                tmpDir <- Dir.getTemporaryDirectory
+                                (tmpPriv, privHandle) <- openTempFile tmpDir "hostenv-cache-priv-XXXXXX"
+                                hClose privHandle
+                                (tmpPub, pubHandle) <- openTempFile tmpDir "hostenv-cache-pub-XXXXXX"
+                                hClose pubHandle
+                                let keyHostPart =
+                                        let normalized = T.map (\c -> if isAlphaNum c then c else '-') (T.toLower hostenvHostname)
+                                         in if T.strip normalized == "" then "hostenv" else normalized
+                                let keyName = "hostenv-cache-" <> keyHostPart
+                                (keyCode, _keyOut, keyErr) <- readProcessWithExitCode "nix-store" ["--generate-binary-cache-key", T.unpack keyName, tmpPriv, tmpPub] ""
+                                case keyCode of
+                                    ExitFailure _ -> error ("hostenv-provider: failed to generate cache signing keypair: " <> keyErr)
+                                    ExitSuccess -> do
+                                        privText <- T.strip . T.pack <$> readFile tmpPriv
+                                        pubText <- T.strip . T.pack <$> readFile tmpPub
+                                        _ <- try (Dir.removeFile tmpPriv) :: IO (Either SomeException ())
+                                        _ <- try (Dir.removeFile tmpPub) :: IO (Either SomeException ())
+                                        writeFile publicKeyPath (T.unpack pubText <> "\n")
+                                        pure (Just privText, Just pubText)
+
+                    (mHtpasswd, mNetrc) <-
+                        if not needsAuthMaterial
+                            then pure (Nothing, Nothing)
+                            else do
+                                (pwdCode, pwdOut, pwdErr) <- readProcessWithExitCode "openssl" ["rand", "-hex", "24"] ""
+                                password <-
+                                    case pwdCode of
+                                        ExitFailure _ -> error ("hostenv-provider: failed to generate cache password: " <> pwdErr)
+                                        ExitSuccess -> pure (T.strip (T.pack pwdOut))
+                                (hashCode, hashOut, hashErr) <- readProcessWithExitCode "openssl" ["passwd", "-apr1", T.unpack password] ""
+                                hashText <-
+                                    case hashCode of
+                                        ExitFailure _ -> error ("hostenv-provider: failed to generate htpasswd hash: " <> hashErr)
+                                        ExitSuccess -> pure (T.strip (T.pack hashOut))
+                                let htpasswdText = "cache:" <> hashText
+                                let netrcText =
+                                        T.intercalate
+                                            "\n"
+                                            [ "machine " <> hostenvHostname
+                                            , "  login cache"
+                                            , "  password " <> password
+                                            ]
+                                pure (Just htpasswdText, Just netrcText)
+
+                    let withSigning =
+                            case mSigningKey of
+                                Nothing -> secretsObj
+                                Just value -> KM.insert signingKeyName (A.String value) secretsObj
+                    let withHtpasswd =
+                            case mHtpasswd of
+                                Nothing -> withSigning
+                                Just value -> KM.insert htpasswdKeyName (A.String value) withSigning
+                    let withNetrc =
+                            case mNetrc of
+                                Nothing -> withHtpasswd
+                                Just value -> KM.insert netrcKeyName (A.String value) withHtpasswd
+
+                    recipients <- ageRecipients providerSecretsPath
+                    when (null recipients) $
+                        error
+                            ( "hostenv-provider: no age recipients found in "
+                                <> T.unpack providerSecretsPath
+                                <> ". Add recipients under sops.age[].recipient."
+                            )
+                    writeProviderSecrets recipients withNetrc
+                    ensureTrackedInGit ["generated/cache-public-key.txt"]
+                    when needsSigningMaterial $ printIfNotQuiet "hostenv-provider: generated cache signing keypair and wrote generated/cache-public-key.txt"
+                    when needsAuthMaterial $ printIfNotQuiet "hostenv-provider: generated cache_htpasswd and cache_netrc"
 
 -- -------- Main --------
 main :: IO ()
@@ -1458,4 +1579,5 @@ main = do
     case cmd of
         CmdPlan dryRun -> runPlan dryRun
         CmdDnsGate mNode mTok mZone withDnsUpdate dryRun -> runDnsGate mNode mTok mZone withDnsUpdate dryRun
-        CmdCominTokens dryRun quiet -> runCominTokens dryRun quiet
+        CmdNodeTokens dryRun quiet -> runNodeTokens dryRun quiet
+        CmdCacheSecrets dryRun quiet -> runCacheSecrets dryRun quiet

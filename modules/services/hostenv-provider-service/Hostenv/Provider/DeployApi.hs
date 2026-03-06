@@ -12,6 +12,7 @@ module Hostenv.Provider.DeployApi
   , jobStatusHandler
   , jobStatusesHandler
   , jobActionsHandler
+  , nextDeployJobHandler
   , backupSnapshotHandler
   , eventHandler
   , validateIntent
@@ -24,13 +25,14 @@ import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Map.Strict as Map
+import Data.Char (isAsciiLower, isDigit)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Control.Monad.IO.Class (liftIO)
 import Servant
 
-import Hostenv.Provider.Config (AppConfig(..), CominConfig(..))
-import Hostenv.Provider.DB (DeployAction(..), DeployStatus(..), appendDeployEvent, applyDeployActionEvent, deployIntentExists, loadDeployActions, loadDeployActionsByNode, loadDeployBackupSnapshot, loadDeployIntentByJob, loadDeployIntentBySha, loadDeployIntentNodes, loadDeployStatusByNode, loadDeployStatuses)
+import Hostenv.Provider.Config (AppConfig(..), DeployConfig(..))
+import Hostenv.Provider.DB (DeployAction(..), DeployStatus(..), appendDeployEvent, applyDeployActionEvent, deployIntentExists, loadDeployActions, loadDeployActionsByNode, loadDeployBackupSnapshot, loadDeployIntentByJob, loadDeployIntentBySha, loadDeployIntentNodes, loadDeployStatusByNode, loadDeployStatuses, loadLatestDeployIntentForNode)
 import Hostenv.Provider.Jobs (jobSummaryStatus, loadJobById)
 
 
@@ -159,6 +161,32 @@ jobActionsHandler cfg jobId nodeName mAuth = do
             ]
         )
 
+nextDeployJobHandler :: AppConfig -> Text -> Maybe Text -> Handler A.Value
+nextDeployJobHandler cfg nodeName mAuth = do
+  requireNodeAuth cfg nodeName mAuth
+  mNext <- liftIO (loadLatestDeployIntentForNode cfg nodeName)
+  case mNext of
+    Nothing -> throwError err404
+    Just (jobId, commitSha, payload) -> do
+      mJob <- liftIO (loadJobById cfg jobId)
+      case mJob of
+        Nothing -> throwError err404
+        Just job ->
+          if not (acceptsNodeEvents (jobSummaryStatus job))
+            then throwError err404
+            else do
+              validated <- maybe (throwError err500) pure (validateIntent payload)
+              actions <- liftIO (loadDeployActionsByNode cfg jobId nodeName)
+              pure
+                ( A.object
+                    [ "jobId" A..= jobId
+                    , "commitSha" A..= commitSha
+                    , "node" A..= nodeName
+                    , "intent" A..= validated
+                    , "actions" A..= actions
+                    ]
+                )
+
 backupSnapshotHandler :: AppConfig -> Text -> Text -> Text -> Text -> Maybe Text -> Handler A.Value
 backupSnapshotHandler cfg jobId nodeName sourceNode userName mAuth = do
   requireNodeAuth cfg nodeName mAuth
@@ -167,15 +195,18 @@ backupSnapshotHandler cfg jobId nodeName sourceNode userName mAuth = do
     then throwError err404
     else do
       payload <- liftIO (loadDeployBackupSnapshot cfg jobId sourceNode userName)
-      pure
-        ( A.object
-            [ "jobId" A..= jobId
-            , "node" A..= nodeName
-            , "sourceNode" A..= sourceNode
-            , "user" A..= userName
-            , "payload" A..= payload
-            ]
-        )
+      case payload of
+        Nothing -> throwError err404
+        Just snapshot ->
+          pure
+            ( A.object
+                [ "jobId" A..= jobId
+                , "node" A..= nodeName
+                , "sourceNode" A..= sourceNode
+                , "user" A..= userName
+                , "payload" A..= snapshot
+                ]
+            )
 
 eventHandler :: AppConfig -> DeployUpdateEmitter -> DeployFailureRecorder -> DeploySuccessRecorder -> Text -> Maybe Text -> NodeEvent -> Handler NoContent
 eventHandler cfg emitUpdate recordFailure recordSuccess jobId mAuth event = do
@@ -249,7 +280,7 @@ eventHandler cfg emitUpdate recordFailure recordSuccess jobId mAuth event = do
 
 requireNodeAuth :: AppConfig -> Text -> Maybe Text -> Handler ()
 requireNodeAuth cfg nodeName mAuth =
-  let tokenMap = cfg.appComin.nodeAuthTokens
+  let tokenMap = cfg.appDeploy.nodeAuthTokens
    in case (Map.lookup nodeName tokenMap, extractBearer mAuth) of
         (Nothing, _) -> throwError err403
         (_, Nothing) -> throwError err403
@@ -274,9 +305,39 @@ validateIntent value =
         A.Object actionObj ->
           case (KM.lookup (K.fromString "user") actionObj, KM.lookup (K.fromString "op") actionObj) of
             (Just (A.String userName), Just (A.String operation)) ->
-              T.strip userName /= "" && operation `elem` allowedOps
+              validUser userName
+                && operation `elem` allowedOps
+                && validOptionalNode (KM.lookup (K.fromString "fromNode") actionObj)
+                && validOptionalNode (KM.lookup (K.fromString "toNode") actionObj)
+                && validMigrations (KM.lookup (K.fromString "migrations") actionObj)
             _ -> False
         _ -> False
+
+    validUser userName = isSafeAtom (T.strip userName)
+
+    validOptionalNode nodeValue =
+      case nodeValue of
+        Nothing -> True
+        Just A.Null -> True
+        Just (A.String nodeName) -> isSafeAtom (T.strip nodeName)
+        _ -> False
+
+    validMigrations migrationsValue =
+      case migrationsValue of
+        Nothing -> True
+        Just (A.Array arr) -> all validMigration arr
+        _ -> False
+
+    validMigration entry =
+      case entry of
+        A.String txt -> isSafeAtom (T.strip txt)
+        _ -> False
+
+    isSafeAtom txt =
+      T.length txt > 0 && T.all isAllowed txt
+
+    isAllowed c =
+      isAsciiLower c || isDigit c || c == '-' || c == '_' || c == '.' || c == ':'
 
 extractBearer :: Maybe Text -> Maybe Text
 extractBearer mHeader =

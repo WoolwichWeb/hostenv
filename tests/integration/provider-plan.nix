@@ -4,17 +4,14 @@ let
   support = import ../support { inherit pkgs lib; };
   asserts = support.asserts;
   providerView = support.providerView;
-  defaultComin = {
+  defaultDeploy = {
     enable = false;
-    remoteUrl = null;
-    branch = "main";
-    pollIntervalSeconds = 30;
-    actionTimeoutSeconds = 900;
     providerApiBaseUrl = null;
     nodeAuthTokenFile = null;
     nodeAuthTokenFiles = { };
+    reconnectSeconds = 5;
   };
-  providerPlan = args: inputs.self.lib.provider.plan (args // { comin = args.comin or defaultComin; service = args.service or null; });
+  providerPlan = args: inputs.self.lib.provider.plan (args // { deploy = args.deploy or defaultDeploy; service = args.service or null; });
 
   mkHostenvStub = system:
     let outPath = ../../modules;
@@ -155,7 +152,7 @@ let
     planPath ? null,
     nodeModules ? [ ],
     generatedFlake ? { },
-    comin ? defaultComin,
+    deploy ? defaultDeploy,
     service ? null
   }:
     let
@@ -206,7 +203,7 @@ let
       nodeSystems = { };
       cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
       planSource = planSource;
-      comin = comin;
+      deploy = deploy;
       service = service;
       inherit nodeModules generatedFlake;
     };
@@ -284,16 +281,13 @@ let
       ${user1} = { uid = 2001; node = "node1"; virtualHosts = [ "env1.example" "alias.example" ]; };
     };
   }).plan;
-  planCominRemoteConfigured = (mkPlan {
-    comin = {
+  planDeployConfigured = (mkPlan {
+    deploy = {
       enable = true;
-      remoteUrl = "https://gitlab.com/acme/provider.git";
-      branch = "main";
-      pollIntervalSeconds = 30;
-      actionTimeoutSeconds = 900;
       providerApiBaseUrl = "https://hosting.test";
-      nodeAuthTokenFile = "/run/secrets/hostenv/comin_node_token";
+      nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
       nodeAuthTokenFiles = { };
+      reconnectSeconds = 5;
     };
     service = {
       organisation = "org";
@@ -301,17 +295,14 @@ let
       environmentName = "env1";
     };
   }).plan;
-  planCominMissingRemote =
+  planDeployMissingApiBase =
     builtins.tryEval (mkPlan {
-      comin = {
+      deploy = {
         enable = true;
-        remoteUrl = null;
-        branch = "main";
-        pollIntervalSeconds = 30;
-        actionTimeoutSeconds = 900;
-        providerApiBaseUrl = "https://hosting.test";
-        nodeAuthTokenFile = "/run/secrets/hostenv/comin_node_token";
+        providerApiBaseUrl = null;
+        nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
         nodeAuthTokenFiles = { };
+        reconnectSeconds = 5;
       };
       service = {
         organisation = "org";
@@ -835,23 +826,22 @@ in
       planDefaultLock.success
       "plan generation should use inputs.self/flake.lock when lockPath is omitted";
 
-  provider-plan-comin-remote-configured =
+  provider-plan-deploy-configured =
     let
-      plan = lib.importJSON planCominRemoteConfigured;
-      topLevelComin = plan.comin or { };
-      nodeComin = plan.nodes.node1.provider.comin or { };
-      ok = topLevelComin.remoteUrl == "https://gitlab.com/acme/provider.git"
-        && nodeComin.remoteUrl == "https://gitlab.com/acme/provider.git"
-        && topLevelComin.providerApiBaseUrl == "https://hosting.test"
-        && nodeComin.nodeAuthTokenFile == "/run/secrets/hostenv/comin_node_token";
+      plan = lib.importJSON planDeployConfigured;
+      topLevelDeploy = plan.deploy or { };
+      nodeDeploy = plan.nodes.node1.provider.deploy or { };
+      ok = topLevelDeploy.providerApiBaseUrl == "https://hosting.test"
+        && nodeDeploy.providerApiBaseUrl == "https://hosting.test"
+        && nodeDeploy.nodeAuthTokenFile == "/run/secrets/hostenv/provider_node_token";
     in
-    asserts.assertTrue "provider-plan-comin-remote-configured" ok
-      "plan generation should propagate comin settings from provider config";
+    asserts.assertTrue "provider-plan-deploy-configured" ok
+      "plan generation should propagate deploy settings from provider config";
 
-  provider-plan-comin-missing-remote-asserts =
-    asserts.assertTrue "provider-plan-comin-missing-remote-asserts"
-      (! planCominMissingRemote.success)
-      "plan generation must fail when comin is enabled and no remote URL is configured";
+  provider-plan-deploy-missing-api-base-asserts =
+    asserts.assertTrue "provider-plan-deploy-missing-api-base-asserts"
+      (! planDeployMissingApiBase.success)
+      "plan generation must fail when deploy is enabled and no providerApiBaseUrl is configured";
 
   provider-plan-vhost-conflict-state = providerPlanVhostConflictState;
   provider-plan-vhost-conflict-new-envs = providerPlanVhostConflictNewEnvs;

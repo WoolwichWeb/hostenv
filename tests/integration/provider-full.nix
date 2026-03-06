@@ -88,15 +88,12 @@ let
     lockPath = lockPath;
     nodeSystems = { };
     cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
-    comin = {
+    deploy = {
       enable = false;
-      remoteUrl = null;
-      branch = "main";
-      pollIntervalSeconds = 30;
-      actionTimeoutSeconds = 900;
       providerApiBaseUrl = null;
       nodeAuthTokenFile = null;
       nodeAuthTokenFiles = { };
+      reconnectSeconds = 5;
     };
     service = null;
   };

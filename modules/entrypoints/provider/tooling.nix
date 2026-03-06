@@ -63,7 +63,7 @@ in
               pkgs = pkgs;
               letsEncrypt = cfg.letsEncrypt;
               nixSigning = cfg.nixSigning;
-              comin = cfg.comin;
+              deploy = cfg.deploy;
               hostenvHostname = cfg.hostenvHostname;
               nodeFor = cfg.nodeFor;
               nodeSystems = cfg.nodeSystems;
@@ -102,9 +102,10 @@ in
             pkgs.bind
             pkgs.postgresql
             pkgs.haskellPackages.cabal-install
+            pkgs.gum
           ];
 
-          devshell.startup.comin-tokens = lib.mkIf cfg.comin.enable {
+          devshell.startup.provider-node-tokens = lib.mkIf cfg.deploy.enable {
             text = ''
               provider_secrets="secrets/provider.yaml"
               plan_file="generated/plan.json"
@@ -115,28 +116,67 @@ in
                 git add "$plan_file" >/dev/null 2>&1 || true
               fi
 
-              has_comin_tokens=false
+              has_provider_tokens=false
               if [ -f "$provider_secrets" ]; then
-                if sops -d "$provider_secrets" 2>/dev/null | yq -e '.comin_node_tokens != null' >/dev/null 2>&1; then
-                  has_comin_tokens=true
+                if sops -d "$provider_secrets" 2>/dev/null | yq -e '.provider_node_tokens != null' >/dev/null 2>&1; then
+                  has_provider_tokens=true
                 fi
               fi
 
-              if [ "$has_comin_tokens" != "true" ]; then
+              if [ "$has_provider_tokens" != "true" ]; then
                 if [ -t 0 ] && [ -t 1 ]; then
                   if command -v gum >/dev/null 2>&1; then
                     gum confirm \
                       --default=true \
                       --affirmative="Generate" \
                       --negative="Skip" \
-                      "Hostenv could not find 'comin_node_tokens' in $provider_secrets. Generate them now?" \
-                      && nix run .#hostenv-provider -- comin-tokens
+                      "Hostenv could not find 'provider_node_tokens' in $provider_secrets. Generate them now?" \
+                      && nix run .#hostenv-provider -- node-tokens
                   else
-                    echo "Info: comin tokens are missing. Run: nix run .#hostenv-provider -- comin-tokens"
+                    echo "Info: provider node tokens are missing. Run: nix run .#hostenv-provider -- node-tokens"
                   fi
                 fi
                 if [ ! -t 0 ] || [ ! -t 1 ]; then
-                  echo "Info: comin tokens are missing. Run: nix run .#hostenv-provider -- comin-tokens"
+                  echo "Info: provider node tokens are missing. Run: nix run .#hostenv-provider -- node-tokens"
+                fi
+              fi
+
+              missing_cache_signing_key=false
+              missing_cache_htpasswd=false
+              missing_cache_netrc=false
+              missing_cache_public_key=false
+
+              if [ -f "$provider_secrets" ]; then
+                if ! sops -d "$provider_secrets" 2>/dev/null | yq -e '.cache_signing_key != null and .cache_signing_key != ""' >/dev/null 2>&1; then
+                  missing_cache_signing_key=true
+                fi
+                if ! sops -d "$provider_secrets" 2>/dev/null | yq -e '.cache_htpasswd != null and .cache_htpasswd != ""' >/dev/null 2>&1; then
+                  missing_cache_htpasswd=true
+                fi
+                if ! sops -d "$provider_secrets" 2>/dev/null | yq -e '.cache_netrc != null and .cache_netrc != ""' >/dev/null 2>&1; then
+                  missing_cache_netrc=true
+                fi
+              fi
+
+              if [ ! -s generated/cache-public-key.txt ]; then
+                missing_cache_public_key=true
+              fi
+
+              if [ "$missing_cache_signing_key" = "true" ] || [ "$missing_cache_htpasswd" = "true" ] || [ "$missing_cache_netrc" = "true" ] || [ "$missing_cache_public_key" = "true" ]; then
+                if [ -t 0 ] && [ -t 1 ]; then
+                  if command -v gum >/dev/null 2>&1; then
+                    gum confirm \
+                      --default=true \
+                      --affirmative="Generate" \
+                      --negative="Skip" \
+                      "Hostenv could not find complete cache signing/auth secrets. Generate them now?" \
+                      && nix run .#hostenv-provider -- cache-secrets
+                  else
+                    echo "Info: cache signing/auth secrets are incomplete. Run: nix run .#hostenv-provider -- cache-secrets"
+                  fi
+                fi
+                if [ ! -t 0 ] || [ ! -t 1 ]; then
+                  echo "Info: cache signing/auth secrets are incomplete. Run: nix run .#hostenv-provider -- cache-secrets"
                 fi
               fi
             '';

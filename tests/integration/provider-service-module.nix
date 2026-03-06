@@ -57,6 +57,9 @@ else
       grep -q -- "proxy_connect_timeout 120s;" "$nginxConf" || { echo "missing provider proxy_connect_timeout"; exit 1; }
       grep -q -- "proxy_send_timeout 120s;" "$nginxConf" || { echo "missing provider proxy_send_timeout"; exit 1; }
       grep -q -- "proxy_read_timeout 120s;" "$nginxConf" || { echo "missing provider proxy_read_timeout"; exit 1; }
+      grep -q -- "location /cache/" "$nginxConf" || { echo "missing /cache nginx location"; exit 1; }
+      grep -q -- "auth_basic_user_file /run/secrets/" "$nginxConf" || { echo "missing cache auth_basic_user_file"; exit 1; }
+      test -f "$profile/systemd/user/harmonia.service" || { echo "missing harmonia.service"; exit 1; }
       execStart=$(sed -n 's/^ExecStart=//p' "$profile/systemd/user/hostenv-provider.service")
       test -n "$execStart" || { echo "hostenv-provider.service missing ExecStart"; exit 1; }
       test -x "$execStart" || { echo "hostenv-provider ExecStart target is not executable"; exit 1; }

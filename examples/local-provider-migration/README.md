@@ -6,7 +6,7 @@ This example is a local, end-to-end Hostenv walkthrough. It demonstrates the pro
 
 1. **Bootstrapping a Hostenv provider locally** using VMs as nodes.
 2. **Provider-service architecture** with webhook-driven deployments.
-3. **Comin integration** for Git-based continuous deployment.
+3. **Provider-deploy integration** for node deployment execution.
 4. **Deploying a Drupal environment** to `node-a` via webhook trigger.
 5. **Importing a Drupal seed database** via project dev shell tooling.
 6. **Migrating the same environment** to `node-b` using backup/restore.
@@ -24,9 +24,9 @@ This demo uses the modern provider-service architecture:
                                               │
                                               │ deploy intent
                                               ▼
-┌─────────────────┐     comin       ┌──────────────────┐
+┌─────────────────┐ provider-deploy ┌──────────────────┐
 │     node-a      │ <────────────── │  plan.json       │
-│  (NixOS VM)     │   activation    │  (environment    │
+│  (NixOS VM)     │   actions       │  (environment    │
 └─────────────────┘                 │   placement)     │
                                     └──────────────────┘
 ```
@@ -38,7 +38,7 @@ The modern deployment flow works like this:
 1. **Plan Generation**: The provider evaluates project flakes and generates `generated/plan.json` with environment placements.
 2. **Webhook Trigger**: A POST to `/webhook/<projectHash>` starts the deployment pipeline.
 3. **Deploy Intent Creation**: The provider-service creates a deploy intent record with actions for each affected node.
-4. **Comin Activation**: Each node runs comin to pull changes and activate deployments.
+4. **Node Actions**: Each node executes provider-deploy actions and reports status.
 5. **Status Reporting**: The activation script reports job status back to the provider-service API.
 
 ### Webhook Mechanism
@@ -59,9 +59,9 @@ The webhook handler:
 - Generates deploy intents for affected nodes
 - Returns `202 Accepted` with `{"accepted": true, "jobId": "..."}`
 
-### Comin Integration
+### Provider-deploy Integration
 
-Nodes use [comin](https://github.com/nlewo/comin) for Git-based deployment:
+Nodes use provider-deploy for action-based deployment:
 
 - Polls the provider Git repository for changes
 - Runs the activation script on new commits

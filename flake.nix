@@ -24,10 +24,6 @@
     phps = {
       url = "github:fossar/nix-phps";
     };
-    comin = {
-      url = "github:nlewo/comin";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     addressable-content = {
       url = "gitlab:woolwichweb/addressable-content";
       inputs.nixpkgs.follows = "nixpkgs";

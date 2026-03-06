@@ -18,7 +18,6 @@ in
       enabledEnvironmentNames = lib.sort builtins.lessThan (builtins.attrNames enabledEnvironments);
       providerServiceSelection =
         if config ? provider then config.provider.service else null;
-      providerCominEnabled = (((config.provider or { }).comin or { }).enable or false);
       selectedServiceEnv =
         if providerServiceSelection == null then
           null
@@ -37,7 +36,7 @@ in
         if selectedServiceEnv == null then null else selectedServiceEnv.hostenv.userName;
       currentUserName = config.hostenv.userName;
       isSelectedService = selectedServiceUser != null && currentUserName == selectedServiceUser;
-      cominTokenMapPath = "/run/secrets/${currentUserName}/comin_node_tokens.yaml";
+      deployTokenMapPath = "/run/secrets/${currentUserName}/provider_node_tokens.yaml";
       uniqueSorted = xs: lib.sort builtins.lessThan (lib.unique xs);
       normalizeGitlabUsername = username:
         if username == null || username == ""
@@ -148,7 +147,7 @@ in
         gitConfigFile = cfg.gitConfigFile;
         flakeTemplate = cfg.flakeTemplate;
         jobs = cfg.jobs;
-        comin = cfg.comin;
+        deploy = cfg.deploy;
       });
 
     in
@@ -315,26 +314,13 @@ in
           };
         };
 
-          comin = {
-            enable = lib.mkEnableOption "pull-deploy metadata and node callback APIs for comin workers";
-
-
-          branch = lib.mkOption {
-            type = lib.types.str;
-            default = "main";
-            description = "Provider repository branch used by comin nodes.";
-          };
-
-          pollIntervalSeconds = lib.mkOption {
-            type = lib.types.int;
-            default = 30;
-            description = "Polling interval for comin nodes when checking for updates.";
-          };
+        deploy = {
+          enable = lib.mkEnableOption "provider-deploy metadata and node callback APIs";
 
           nodeAuthTokensFile = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
-            description = "Path to JSON/YAML object mapping node name -> bearer token for callback API auth.";
+            description = "Path to JSON/YAML object mapping node name -> bearer token for deploy callback API auth.";
           };
         };
       };
@@ -354,27 +340,21 @@ in
                 '';
               }
               {
-                assertion = !(cfg.comin.enable && providerServiceSelection == null);
+                assertion = !(cfg.deploy.enable && providerServiceSelection == null);
                 message = ''
-                  services.hostenv-provider.comin.enable requires provider.service to be configured.
+                  services.hostenv-provider.deploy.enable requires provider.service to be configured.
                 '';
               }
               {
-                assertion = !(cfg.comin.enable && !providerCominEnabled);
+                assertion = !(cfg.deploy.enable && !isSelectedService);
                 message = ''
-                  services.hostenv-provider.comin.enable is true, but provider.comin.enable is false.
+                  services.hostenv-provider.deploy.enable is only supported on the provider.service environment.
                 '';
               }
               {
-                assertion = !(cfg.comin.enable && !isSelectedService);
+                assertion = !(cfg.deploy.enable && isSelectedService && cfg.deploy.nodeAuthTokensFile == null);
                 message = ''
-                  services.hostenv-provider.comin.enable is only supported on the provider.service environment.
-                '';
-              }
-              {
-                assertion = !(cfg.comin.enable && isSelectedService && cfg.comin.nodeAuthTokensFile == null);
-                message = ''
-                  services.hostenv-provider.comin.nodeAuthTokensFile must be configured when services.hostenv-provider.comin.enable is true.
+                  services.hostenv-provider.deploy.nodeAuthTokensFile must be configured when services.hostenv-provider.deploy.enable is true.
                 '';
               }
             ]
@@ -400,8 +380,8 @@ in
               conflictingUsers;
         }
         (lib.mkIf cfg.enable {
-          services.hostenv-provider.comin.nodeAuthTokensFile =
-            if isSelectedService then cominTokenMapPath else null;
+          services.hostenv-provider.deploy.nodeAuthTokensFile =
+            if isSelectedService then deployTokenMapPath else null;
 
           services.postgresql = {
             enable = lib.mkDefault true;
@@ -432,7 +412,12 @@ in
                   "~ ^/api/" = {
                     recommendedProxySettings = true;
                     proxyPass = proxySocket;
-                    extraConfig = proxyTimeoutConfig;
+                    extraConfig = ''
+                      ${proxyTimeoutConfig}
+                      proxy_http_version 1.1;
+                      proxy_set_header Upgrade $http_upgrade;
+                      proxy_set_header Connection "upgrade";
+                    '';
                   };
                 }
                 {

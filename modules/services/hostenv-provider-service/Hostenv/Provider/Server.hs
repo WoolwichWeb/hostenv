@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeOperators #-}
 
@@ -8,17 +9,27 @@ module Hostenv.Provider.Server
   ) where
 
 import Data.IORef (IORef, newIORef)
+import Control.Concurrent.STM (atomically, readTChan)
 import qualified Data.ByteString.Lazy as BL
 import Data.Tagged (Tagged (..))
 import Data.Text (Text)
 import qualified Data.Aeson as A
+import qualified Data.Aeson.KeyMap as KM
+import qualified Data.Map.Strict as Map
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Network.Wai (Application)
+import qualified Network.Wai as Wai
 import Network.Wai.Handler.Warp (defaultSettings, runSettingsSocket, setBeforeMainLoop)
+import Network.Wai.Handler.WebSockets (websocketsOr)
+import qualified Network.WebSockets as WS
+import Network.HTTP.Types (status403, status404)
 import Servant
 
-import Hostenv.Provider.Config (AppConfig(..))
-import Hostenv.Provider.DeployApi (NodeEvent, backupSnapshotHandler, eventHandler, intentByJobHandler, intentByShaHandler, jobActionsHandler, jobStatusHandler, jobStatusesHandler)
-import Hostenv.Provider.Jobs (JobRuntime, markJobFailedFromDeploy, markJobSucceededFromDeploy, publishJobUpdate, startJobRuntime)
+import Hostenv.Provider.Config (AppConfig(..), DeployConfig(..))
+import Hostenv.Provider.DB (loadDeployActionsByNode, loadLatestDeployIntentForNode)
+import Hostenv.Provider.DeployApi (NodeEvent, acceptsNodeEvents, backupSnapshotHandler, eventHandler, intentByJobHandler, intentByShaHandler, jobActionsHandler, jobStatusHandler, jobStatusesHandler, nextDeployJobHandler, validateIntent)
+import Hostenv.Provider.Jobs (JobRuntime, duplicateBroadcastChannel, jobSummaryStatus, loadJobById, markJobFailedFromDeploy, markJobSucceededFromDeploy, publishJobUpdate, startJobRuntime)
 import Hostenv.Provider.Repo (RepoStatus, openUnixSocket)
 import Hostenv.Provider.UI.Router (uiApp)
 import Hostenv.Provider.Webhook (WebhookAccepted, webhookHandler)
@@ -61,6 +72,12 @@ type API =
       :> Get '[JSON] A.Value
     :<|> "api"
       :> "deploy-jobs"
+      :> "next"
+      :> QueryParam' '[Required] "node" Text
+      :> Header "Authorization" Text
+      :> Get '[JSON] A.Value
+    :<|> "api"
+      :> "deploy-jobs"
       :> Capture "jobId" Text
       :> "backup-snapshot"
       :> QueryParam' '[Required] "node" Text
@@ -97,7 +114,92 @@ runServer cfg initialRepoStatus = do
   runSettingsSocket settings sock (app jobRuntime repoStatusRef cfg)
 
 app :: JobRuntime -> IORef RepoStatus -> AppConfig -> Application
-app jobRuntime repoStatusRef cfg = serve api (server jobRuntime repoStatusRef cfg)
+app jobRuntime repoStatusRef cfg req respond =
+  if Wai.pathInfo req == ["api", "deploy-jobs", "ws"]
+    then deployWsApp jobRuntime cfg req respond
+    else serve api (server jobRuntime repoStatusRef cfg) req respond
+
+deployWsApp :: JobRuntime -> AppConfig -> Application
+deployWsApp runtime cfg req respond =
+  case requestedNode req of
+    Nothing -> respond (Wai.responseLBS status403 [("Content-Type", "text/plain")] "forbidden")
+    Just nodeName ->
+      let fallback = Wai.responseLBS status404 [("Content-Type", "text/plain")] "websocket required"
+       in websocketsOr WS.defaultConnectionOptions (deploySocketServer runtime cfg nodeName) (\_ respondFallback -> respondFallback fallback) req respond
+
+deploySocketServer :: JobRuntime -> AppConfig -> Text -> WS.ServerApp
+deploySocketServer runtime cfg nodeName pending = do
+  connection <- WS.acceptRequest pending
+  firstMessage <- WS.receiveData connection
+  if not (isValidWsAuth cfg nodeName firstMessage)
+    then WS.sendClose connection ("forbidden" :: Text)
+    else do
+      initialJobId <- sendLatestDeployJob cfg nodeName connection Nothing
+      WS.sendTextData connection (A.encode (A.object ["type" A..= ("deploy_hint" :: Text), "node" A..= nodeName]))
+      channel <- duplicateBroadcastChannel runtime
+      let loop mLastJobId = do
+            _ <- atomically (readTChan channel)
+            nextJobId <- sendLatestDeployJob cfg nodeName connection mLastJobId
+            WS.sendTextData connection (A.encode (A.object ["type" A..= ("deploy_hint" :: Text), "node" A..= nodeName]))
+            loop nextJobId
+      loop initialJobId
+
+sendLatestDeployJob :: AppConfig -> Text -> WS.Connection -> Maybe Text -> IO (Maybe Text)
+sendLatestDeployJob cfg nodeName connection mLastJobId = do
+  mLatest <- loadLatestDeployIntentForNode cfg nodeName
+  case mLatest of
+    Nothing -> pure mLastJobId
+    Just (jobId, commitSha, payload) ->
+      if mLastJobId == Just jobId
+        then pure mLastJobId
+        else do
+          mJob <- loadJobById cfg jobId
+          case mJob of
+            Nothing -> pure mLastJobId
+            Just job | not (acceptsNodeEvents (jobSummaryStatus job)) -> pure mLastJobId
+            Just _ ->
+              case validateIntent payload of
+                Nothing -> pure mLastJobId
+                Just validated -> do
+                  actions <- loadDeployActionsByNode cfg jobId nodeName
+                  WS.sendTextData
+                    connection
+                    ( A.encode
+                        ( A.object
+                            [ "type" A..= ("deploy_job" :: Text)
+                            , "jobId" A..= jobId
+                            , "commitSha" A..= commitSha
+                            , "node" A..= nodeName
+                            , "intent" A..= validated
+                            , "actions" A..= actions
+                            ]
+                        )
+                    )
+                  pure (Just jobId)
+
+requestedNode :: Wai.Request -> Maybe Text
+requestedNode req =
+  case lookup "node" (Wai.queryString req) of
+    Just (Just value) ->
+      case TE.decodeUtf8' value of
+        Left _ -> Nothing
+        Right decoded ->
+          let txt = T.strip decoded
+           in if txt == "" then Nothing else Just txt
+    _ -> Nothing
+
+isValidWsAuth :: AppConfig -> Text -> BL.ByteString -> Bool
+isValidWsAuth cfg nodeName rawMessage =
+  case A.decode rawMessage of
+    Just (A.Object obj) ->
+      case (KM.lookup "token" obj, KM.lookup "node" obj) of
+        (Just (A.String supplied), Just (A.String suppliedNode))
+          | suppliedNode == nodeName ->
+              case Map.lookup nodeName cfg.appDeploy.nodeAuthTokens of
+                Just expected -> expected == T.strip supplied
+                Nothing -> False
+        _ -> False
+    _ -> False
 
 server :: JobRuntime -> IORef RepoStatus -> AppConfig -> Server API
 server jobRuntime repoStatusRef cfg =
@@ -106,6 +208,7 @@ server jobRuntime repoStatusRef cfg =
     :<|> jobStatusHandler cfg
     :<|> jobStatusesHandler cfg
     :<|> jobActionsHandler cfg
+    :<|> nextDeployJobHandler cfg
     :<|> backupSnapshotHandler cfg
     :<|> eventHandler cfg (publishJobUpdate jobRuntime) (markJobFailedFromDeploy jobRuntime) (markJobSucceededFromDeploy jobRuntime)
     :<|> intentByShaHandler cfg

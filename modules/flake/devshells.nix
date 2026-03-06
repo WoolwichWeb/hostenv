@@ -44,18 +44,38 @@ in
           [ "haskell-language-server" ]
           ++ (lib.attrByPath [ "provider" "haskellDevPackages" ] [ ] config);
         devshells.default = {
-          devshell = {
-            packages =
-              (lib.optional providerEnabled config.packages.hostenv-provider)
-              ++ [
-                pkgs.jq
-                pkgs.sops
-                pkgs.age
-                pkgs.haskellPackages.cabal-install
-                devGhc
-              ];
-            startup.cabal-project = { text = cabalHook; };
-          };
+          devshell =
+            let
+              providerDemo = pkgs.writeShellApplication {
+                name = "provider-demo";
+                runtimeInputs = [ pkgs.gum pkgs.postgresql ];
+                text = ''
+                  set -euo pipefail
+
+                  # Switch to the project root directory.
+                  ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                  pushd "$ROOT"
+                  # Run the demo script
+                  exec ${pkgs.bash}/bin/bash ./examples/local-provider-migration/run-demo.sh "$@"
+                  popd
+                '';
+              };
+            in
+            {
+              packages =
+                (lib.optional providerEnabled config.packages.hostenv-provider)
+                ++ [
+                  pkgs.jq
+                  pkgs.sops
+                  pkgs.age
+                  pkgs.haskellPackages.cabal-install
+                  devGhc
+                  pkgs.gum
+                  pkgs.postgresql
+                  providerDemo
+                ];
+              startup.cabal-project = { text = cabalHook; };
+            };
           env = [
             {
               name = "DEVSHELL_NO_MOTD";

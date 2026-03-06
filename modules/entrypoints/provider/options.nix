@@ -3,7 +3,7 @@ let
   inherit (lib) mkOption types;
   hostenvLib = config.flake.lib.hostenv;
   providerNixosModules = [
-    inputs.comin.nixosModules.comin
+    config.flake.modules.nixos."provider-deploy"
     config.flake.modules.nixos.provider-common
     config.flake.modules.nixos.hostenv-top-level
     config.flake.modules.nixos.nginx-frontdoor
@@ -53,20 +53,7 @@ let
         };
       };
 
-      userPackages = userInfo:
-        let
-          envOnly = packages.lib.filterAttrs (name: _: builtins.elem name envUsers) userInfo.users.users;
-        in
-        {
-          users.users = packages.lib.concatMapAttrs
-            (name: _user:
-              let
-                userPackage = inputs.${name}.packages.${system}.${(environmentWith name).hostenv.environmentName};
-              in
-              { ${name}.packages = [ userPackage ]; }
-            )
-            envOnly;
-        };
+      userPackages = _userInfo: { };
 
       envUserMismatch =
         let
@@ -96,7 +83,8 @@ let
             + "_" + (environmentWith name).hostenv.project;
           envOnly = packages.lib.filterAttrs (name: _: builtins.elem name envUsers) userInfo.users.users;
           providerService = userInfo.provider.service or null;
-          providerCominEnabled = userInfo.provider.comin.enable or false;
+          providerConfigured = providerService != null;
+          providerCacheServerEnabled = userInfo.provider.cacheServer.enable or false;
           selectedServiceEnv =
             if providerService == null then
               null
@@ -114,12 +102,24 @@ let
           selectedServiceUser =
             if selectedServiceEnv == null then null else selectedServiceEnv.hostenv.userName;
           providerServiceSecrets =
-            if providerCominEnabled && selectedServiceUser != null then
+            if providerConfigured && providerCacheServerEnabled && selectedServiceUser != null then
               {
-                "${selectedServiceUser}/comin_node_tokens.yaml" = {
+                "${selectedServiceUser}/provider_node_tokens.yaml" = {
                   owner = selectedServiceUser;
                   group = selectedServiceUser;
-                  key = "comin_node_tokens";
+                  key = "provider_node_tokens";
+                  mode = "0400";
+                };
+                "${selectedServiceUser}/cache_signing_key" = {
+                  owner = selectedServiceUser;
+                  group = selectedServiceUser;
+                  key = "cache_signing_key";
+                  mode = "0400";
+                };
+                "${selectedServiceUser}/cache_htpasswd" = {
+                  owner = selectedServiceUser;
+                  group = selectedServiceUser;
+                  key = "cache_htpasswd";
                   mode = "0400";
                 };
               }
@@ -328,49 +328,34 @@ in
       default = { };
       description = "Nix signing key configuration shared by generated plan and node configuration.";
     };
-    comin = mkOption {
+    deploy = mkOption {
       type = types.submodule {
         options = {
-          enable = lib.mkEnableOption "pull-based node activation with comin";
-          remoteUrl = mkOption {
-            type = types.nullOr types.str;
-            default = null;
-            description = "Git URL for provider desired-state repository consumed by comin nodes.";
-          };
-          branch = mkOption {
-            type = types.str;
-            default = "main";
-            description = "Repository branch polled by comin.";
-          };
-          pollIntervalSeconds = mkOption {
-            type = types.int;
-            default = 30;
-            description = "Comin polling interval in seconds.";
-          };
-          actionTimeoutSeconds = mkOption {
-            type = types.int;
-            default = 900;
-            description = "Maximum seconds a single comin user action may run before it is marked timed_out.";
-          };
+          enable = lib.mkEnableOption "provider-deploy node agent";
           providerApiBaseUrl = mkOption {
             type = types.nullOr types.str;
             default = null;
-            description = "Base URL for provider callback APIs used by node workers.";
+            description = "Base URL for provider deploy APIs used by node workers.";
           };
           nodeAuthTokenFile = mkOption {
             type = types.nullOr types.str;
             default = null;
-            description = "Default path for node bearer token used in provider callback requests.";
+            description = "Default path for node bearer token used in provider-deploy requests.";
           };
           nodeAuthTokenFiles = mkOption {
             type = types.attrsOf types.str;
             default = { };
-            description = "Optional map of node name -> node bearer token file path.";
+            description = "Optional map of node name -> provider-deploy bearer token file path.";
+          };
+          reconnectSeconds = mkOption {
+            type = types.int;
+            default = 5;
+            description = "Provider-deploy reconnect delay in seconds.";
           };
         };
       };
       default = { };
-      description = "Comin pull-deploy settings propagated to provider nodes.";
+      description = "Provider-deploy settings propagated to provider nodes.";
     };
     service = mkOption {
       type = types.nullOr (types.submodule {
@@ -391,6 +376,15 @@ in
       });
       default = null;
       description = "Provider environment selector used for provider-service secrets.";
+    };
+    cacheServer = mkOption {
+      type = types.submodule {
+        options = {
+          enable = lib.mkEnableOption "provider-service cache server secret wiring";
+        };
+      };
+      default = { };
+      description = "Controls provider-service cache secret projection to the selected service environment.";
     };
     nodeFor = mkOption {
       type = types.attrs;
@@ -481,6 +475,6 @@ in
     nixosSystem = providerNixosSystem;
     deployOutputs = providerDeployOutputs;
     nixSigning = config.provider.nixSigning;
-    comin = config.provider.comin;
+    deploy = config.provider.deploy;
   };
 }

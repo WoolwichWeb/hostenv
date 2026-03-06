@@ -10,7 +10,6 @@
       inputs.flake-parts.follows = "flake-parts";
       inputs.phps.follows = "phps";
     };
-    comin.follows = "hostenv/comin";
     sops-nix = {
       url = "github:Mic92/sops-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -61,12 +60,11 @@
         #   configuration = ./nodes/${node}/configuration.nix;
         # });
 
-        # Enable pull-based activation with comin.
-        comin = {
+        # Enable provider-deploy node agent wiring.
+        deploy = {
           enable = true;
-          remoteUrl = "https://gitlab.com/acme/provider.git";
           providerApiBaseUrl = "https://hosting.example.com";
-          nodeAuthTokenFile = "/run/secrets/hostenv-provider/comin_node_token";
+          nodeAuthTokenFile = "/run/secrets/hostenv-provider/provider_node_token";
         };
         # Add NixOS system-level configuration that's common to all servers here:
         planSource = "eval";

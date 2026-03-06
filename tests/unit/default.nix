@@ -12,4 +12,3 @@
   // (import ./migrate-tags.nix { inherit pkgs makeHostenv; })
   // (import ./php-app-migrate.nix { inherit pkgs makeHostenv; })
   // (import ./provider-user-seeding.nix { inherit pkgs makeHostenv; })
-  // (import ./hostenv-comin-activate.nix { inherit pkgs; })

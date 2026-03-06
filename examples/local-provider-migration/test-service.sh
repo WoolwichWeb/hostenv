@@ -245,10 +245,8 @@ cat > "$CONFIG_PATH" <<EOF_CONFIG
   "gitCredentialsFile": "$BASE_DIR/git-credentials",
   "gitConfigFile": "$BASE_DIR/gitconfig",
   "flakeTemplate": "flake.template.nix",
-  "comin": {
+  "deploy": {
     "enable": true,
-    "branch": "main",
-    "pollIntervalSeconds": 5,
     "nodeAuthTokensFile": "$TOKEN_FILE"
   }
 }

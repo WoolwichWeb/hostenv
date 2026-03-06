@@ -24,7 +24,7 @@ import System.Exit (exitFailure)
 import System.IO (hClose, openTempFile)
 
 import qualified Data.Map.Strict as Map
-import Hostenv.Provider.Config (AppConfig(..), CominConfig(..), loadConfig)
+import Hostenv.Provider.Config (AppConfig(..), DeployConfig(..), loadConfig)
 import Hostenv.Provider.Crypto
 import Hostenv.Provider.DB (OAuthCredential(..))
 import Hostenv.Provider.DeployApi (acceptsNodeEvents, extractBearer, normalizeStatus, validateIntent)
@@ -454,9 +454,9 @@ testWebhookResultPriority = do
 testShouldWaitForCallbacks :: IO ()
 testShouldWaitForCallbacks = do
   let oneIntent = [NodeIntent "node-a" [NodeAction "activate" "alice" Nothing Nothing []]]
-  assert (shouldWaitForCallbacks WebhookUpdateCommitted True oneIntent) "waiting should require committed update, comin enabled, and non-empty intents"
+  assert (shouldWaitForCallbacks WebhookUpdateCommitted True oneIntent) "waiting should require committed update, deploy callbacks enabled, and non-empty intents"
   assert (not (shouldWaitForCallbacks WebhookUpdateNoop True oneIntent)) "waiting should be skipped when commit is not pushed"
-  assert (not (shouldWaitForCallbacks WebhookUpdateCommitted False oneIntent)) "waiting should be skipped when comin is disabled"
+  assert (not (shouldWaitForCallbacks WebhookUpdateCommitted False oneIntent)) "waiting should be skipped when deploy callbacks are disabled"
   assert (not (shouldWaitForCallbacks WebhookUpdateCommitted True [])) "waiting should be skipped when no node intents are generated"
 
 testPersistIntentsActionsAndPushOrder :: IO ()
@@ -517,7 +517,7 @@ testLoadConfigJobDefaults = do
         , "gitConfigFile" A..= ("/tmp/gitconfig" :: T.Text)
         , "gitCredentialsFile" A..= ("/tmp/git-credentials" :: T.Text)
         , "flakeTemplate" A..= ("flake.template.nix" :: T.Text)
-        , "comin" A..= A.object [ "enable" A..= False ]
+        , "deploy" A..= A.object [ "enable" A..= False ]
         ]
   cfg <- loadConfig path
   removeFile path
@@ -681,11 +681,9 @@ mkRepoConfig dataDir =
     , appJobsCleanupIntervalMins = 1440
     , appJobsWaitTimeoutMins = 120
     , appJobsWaitInterval = 60
-    , appComin =
-        CominConfig
+    , appDeploy =
+        DeployConfig
           { enable = True
-          , branch = "main"
-          , pollIntervalSeconds = 30
           , nodeAuthTokens = Map.empty
           }
     , appHttpManager = Nothing

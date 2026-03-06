@@ -47,7 +47,8 @@ The devshell automatically handles what used to be manual setup:
 
 - **Secrets**: Creates `secrets/provider.yaml` with an ephemeral age key if missing
 - **State**: Creates `generated/state.json` (empty `{}`) if missing
-- **Comin tokens**: If `provider.comin.enable = true`, prompts to generate node authentication tokens
+- **Provider node tokens**: If `provider.deploy.enable = true`, prompts to generate node authentication tokens
+- **Cache secrets**: Prompts to generate `cache_signing_key`, `cache_htpasswd`, `cache_netrc`, and `generated/cache-public-key.txt` when missing
 
 You'll see interactive prompts for any missing components. Confirm to auto-generate, or cancel to set up manually later.
 
@@ -83,9 +84,9 @@ Created automatically on first devshell entry with:
 
 Created as `{}` if missing. This tracks deployment state across runs.
 
-### Comin tokens
+### Provider node tokens
 
-If using comin for deployment, the devshell prompts to generate node authentication tokens. This replaces the manual `nix run .#hostenv-provider -- comin-tokens` step.
+If using provider-deploy for deployment, the devshell prompts to generate node authentication tokens. This replaces manual token setup.
 
 ## Architecture
 
@@ -267,12 +268,20 @@ If you prefer to manage secrets and state manually:
 }
 ```
 
-### Manual comin token generation
+### Manual provider node token generation
 
 If you skipped the devshell prompt or need to regenerate tokens:
 
 ```bash
-nix run .#hostenv-provider -- comin-tokens
+nix run .#hostenv-provider -- node-tokens
+```
+
+### Manual cache secret generation
+
+If you skipped the devshell prompt or need to regenerate cache signing/auth material:
+
+```bash
+nix run .#hostenv-provider -- cache-secrets
 ```
 
 ### Plan generation fails

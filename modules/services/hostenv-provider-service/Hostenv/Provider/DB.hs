@@ -32,6 +32,7 @@ module Hostenv.Provider.DB
   , DeployAction(..)
   , loadDeployActions
   , loadDeployActionsByNode
+  , loadLatestDeployIntentForNode
   , DeployStatus(..)
   , loadDeployStatuses
   , loadDeployBackupSnapshot
@@ -552,6 +553,16 @@ loadDeployActionsByNode cfg jobId nodeName =
     query conn
       "SELECT node, action_idx, op, user_name, status, message, started_at, finished_at, updated_at FROM deploy_actions WHERE job_id = ? AND node = ? ORDER BY action_idx"
       (jobId, nodeName)
+
+loadLatestDeployIntentForNode :: AppConfig -> Text -> IO (Maybe (Text, Text, A.Value))
+loadLatestDeployIntentForNode cfg nodeName =
+  withDb cfg $ \conn -> do
+    rows <- query conn
+      "SELECT i.job_id, i.commit_sha, i.intent::text FROM deploy_intents i JOIN jobs j ON j.id = i.job_id WHERE i.node = ? AND j.status = 'waiting' ORDER BY COALESCE(j.waiting_at, j.created_at) DESC, i.created_at DESC LIMIT 1"
+      (Only nodeName)
+    pure $
+      listToMaybe rows >>= \(jobId, commitSha, payloadText) ->
+        (\payload -> (jobId, commitSha, payload)) <$> decodeJsonText payloadText
 
 applyDeployActionEvent :: AppConfig -> Text -> Text -> Text -> Maybe Text -> Maybe Text -> IO ()
 applyDeployActionEvent cfg jobId nodeName rawStatus rawPhase mMessage =

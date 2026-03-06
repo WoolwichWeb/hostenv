@@ -7,7 +7,7 @@
 
 module Hostenv.Provider.Config
   ( AppConfig(..)
-  , CominConfig(..)
+  , DeployConfig(..)
   , ProviderAccountConfig(..)
   , UserConfig(..)
   , loadConfig
@@ -64,14 +64,12 @@ data AppConfig = AppConfig
   , appJobsCleanupIntervalMins :: Int
   , appJobsWaitTimeoutMins :: Int
   , appJobsWaitInterval :: Int
-  , appComin :: CominConfig
+  , appDeploy :: DeployConfig
   , appHttpManager :: Maybe Manager
   }
 
-data CominConfig = CominConfig
+data DeployConfig = DeployConfig
   { enable :: Bool
-  , branch :: Text
-  , pollIntervalSeconds :: Int
   , nodeAuthTokens :: Map.Map Text Text
   } deriving (Eq, Show)
 
@@ -91,7 +89,7 @@ data ProviderConfigFile = ProviderConfigFile
   , gitCredentialsFile :: FilePath
   , flakeTemplate :: FilePath
   , jobs :: JobsConfigFile
-  , comin :: CominConfigFile
+  , deploy :: DeployConfigFile
   } deriving (Eq, Show, Generic)
 
 data GitlabConfigFile = GitlabConfigFile
@@ -109,10 +107,8 @@ data JobsConfigFile = JobsConfigFile
   , waitInterval :: Int
   } deriving (Eq, Show, Generic)
 
-data CominConfigFile = CominConfigFile
+data DeployConfigFile = DeployConfigFile
   { enable :: Bool
-  , branch :: Text
-  , pollIntervalSeconds :: Int
   , nodeAuthTokensFile :: Maybe FilePath
   } deriving (Eq, Show, Generic)
 
@@ -151,12 +147,10 @@ instance A.FromJSON JobsConfigFile where
       <*> o A..:? "waitTimeoutMins" A..!= 120
       <*> o A..:? "waitInterval" A..!= 60
 
-instance A.FromJSON CominConfigFile where
-  parseJSON = A.withObject "CominConfigFile" $ \o ->
-    CominConfigFile
+instance A.FromJSON DeployConfigFile where
+  parseJSON = A.withObject "DeployConfigFile" $ \o ->
+    DeployConfigFile
       <$> o A..:? "enable" A..!= False
-      <*> o A..:? "branch" A..!= "main"
-      <*> o A..:? "pollIntervalSeconds" A..!= 30
       <*> o A..:? "nodeAuthTokensFile"
 
 instance A.FromJSON ProviderConfigFile where
@@ -177,6 +171,7 @@ instance A.FromJSON ProviderConfigFile where
               , tokenEncryptionKeyFile = legacyTokenKey
               , deployTokenTtlMinutes = legacyDeployTokenTtl
               }
+    deployCfg <- o A..:? "deploy" A..!= DeployConfigFile { enable = False, nodeAuthTokensFile = Nothing }
     ProviderConfigFile
       <$> o A..: "dataDir"
       <*> o A..: "flakeRoot"
@@ -193,7 +188,7 @@ instance A.FromJSON ProviderConfigFile where
       <*> o A..: "gitCredentialsFile"
       <*> o A..: "flakeTemplate"
       <*> o A..:? "jobs" A..!= JobsConfigFile { retentionDays = 30, cleanupIntervalMins = 1440, waitTimeoutMins = 120, waitInterval = 60 }
-      <*> o A..:? "comin" A..!= CominConfigFile { enable = False, branch = "main", pollIntervalSeconds = 30, nodeAuthTokensFile = Nothing }
+      <*> pure deployCfg
 
 appWorkDir :: AppConfig -> FilePath
 appWorkDir cfg = cfg.appDataDir </> cfg.appFlakeRoot
@@ -221,7 +216,7 @@ loadConfig :: FilePath -> IO AppConfig
 loadConfig configPath = do
   providerCfg <- readProviderConfig configPath
   let gitlabCfg = providerCfg.gitlab
-  let cominCfg = providerCfg.comin
+  let deployCfg = providerCfg.deploy
   secrets <-
     if gitlabCfg.enable
       then case gitlabCfg.oAuthSecretsFile of
@@ -244,12 +239,12 @@ loadConfig configPath = do
 
   manager <- Just <$> newManager tlsManagerSettings
   nodeTokens <-
-    if cominCfg.enable
+    if deployCfg.enable
       then do
         tokenPath <-
-          case cominCfg.nodeAuthTokensFile of
+          case deployCfg.nodeAuthTokensFile of
             Nothing ->
-              dieWith "comin.nodeAuthTokensFile must be configured when comin.enable is true"
+              dieWith "deploy.nodeAuthTokensFile must be configured when deploy.enable is true"
             Just path -> pure path
         loadNodeAuthTokensStrict tokenPath
       else pure Map.empty
@@ -282,11 +277,9 @@ loadConfig configPath = do
       , appJobsCleanupIntervalMins = max 1 providerCfg.jobs.cleanupIntervalMins
       , appJobsWaitTimeoutMins = max 1 providerCfg.jobs.waitTimeoutMins
       , appJobsWaitInterval = max 1 providerCfg.jobs.waitInterval
-      , appComin =
-          CominConfig
-            { enable = cominCfg.enable
-            , branch = T.strip cominCfg.branch
-            , pollIntervalSeconds = max 1 cominCfg.pollIntervalSeconds
+      , appDeploy =
+          DeployConfig
+            { enable = deployCfg.enable
             , nodeAuthTokens = nodeTokens
             }
       , appHttpManager = manager
@@ -322,7 +315,7 @@ loadNodeAuthTokens mPath =
           case Y.decodeEither' (BL.toStrict bytes) of
             Left err ->
               dieWith
-                ( "failed to parse comin node auth tokens file "
+                ( "failed to parse provider deploy node auth tokens file "
                     <> path
                     <> ": "
                     <> Y.prettyPrintParseException err
@@ -341,11 +334,11 @@ loadNodeAuthTokensStrict :: FilePath -> IO (Map.Map Text Text)
 loadNodeAuthTokensStrict path = do
   exists <- doesFileExist path
   if not exists
-    then dieWith ("comin node auth tokens file not found: " <> path)
+    then dieWith ("provider deploy node auth tokens file not found: " <> path)
     else do
       tokens <- loadNodeAuthTokens (Just path)
       if Map.null tokens
-        then dieWith ("comin node auth tokens file has no valid node/token entries: " <> path)
+        then dieWith ("provider deploy node auth tokens file has no valid node/token entries: " <> path)
         else pure tokens
 
 hasGitlabAuth :: AppConfig -> Bool

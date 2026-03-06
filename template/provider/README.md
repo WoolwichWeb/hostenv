@@ -18,14 +18,14 @@ This template boots a provider flake that consumes hostenv projects and generate
    ```bash
    direnv allow  # or: nix develop
    ```
-   This creates `secrets/provider.yaml`, `generated/state.json`, and generates comin tokens if comin is enabled.
+   This creates `secrets/provider.yaml`, `generated/state.json`, and generates provider node tokens if deploy is enabled.
 
 4. Generate the deployment plan:
    ```bash
    nix run .#hostenv-provider -- plan
    ```
 
-That's it. The provider now tracks state and secrets automatically. Files that don't exist are created on first run. Comin tokens generate when you enter the devshell if `provider.comin.enable = true`.
+That's it. The provider now tracks state and secrets automatically. Files that don't exist are created on first run. Provider node tokens and cache signing/auth secrets generate when you enter the devshell.
 
 
 ## Auto-init details
@@ -34,7 +34,8 @@ The provider devshell includes an auto-initialization hook that runs when you en
 
 - **`secrets/provider.yaml`** - Created automatically with a generated age key if missing. You can rotate to proper sops recipients later.
 - **`generated/state.json`** - Created as an empty JSON object if missing.
-- **Comin tokens** - Generated automatically when `provider.comin.enable = true` and tokens don't exist.
+- **Provider node tokens** - Generated automatically when `provider.deploy.enable = true` and tokens don't exist.
+- **Cache signing/auth secrets** - Generated automatically when missing: `cache_signing_key`, `cache_htpasswd`, `cache_netrc`, and `generated/cache-public-key.txt`.
 
 To disable auto-init (if you prefer manual setup):
 ```nix

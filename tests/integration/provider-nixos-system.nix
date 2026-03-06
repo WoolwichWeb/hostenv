@@ -8,6 +8,7 @@ let
   hostName = "${envName}.hostenv.test";
   nodeName = "node-a";
   trustedSigningKey = "hostenv-provider-test-1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  cacheSigningKey = "hostenv-cache-test-1:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
 
   nodesPath = pkgs.runCommand "nodes-stub" { } ''
     mkdir -p "$out/${nodeName}"
@@ -30,7 +31,7 @@ let
       project_provider_only: "provider-project-only"
     acme:
       org_only: "org"
-    comin_node_tokens:
+    provider_node_tokens:
       ${nodeName}: "node-token"
     __hostenv_selected_keys:
       ${envName}:
@@ -60,15 +61,18 @@ let
             project = "demo";
             environmentName = "main";
           };
-          comin = {
+          deploy = {
             enable = true;
-            remoteUrl = "https://gitlab.com/acme/provider.git";
-            branch = "main";
-            pollIntervalSeconds = 30;
-            actionTimeoutSeconds = 45;
             providerApiBaseUrl = "https://hosting.test";
             nodeName = nodeName;
-            nodeAuthTokenFile = "/run/secrets/hostenv/comin_node_token";
+            nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
+            reconnectSeconds = 5;
+          };
+          cache = {
+            enable = true;
+            url = "https://hosting.test/cache";
+            publicKey = cacheSigningKey;
+            netrcFile = "/run/secrets/hostenv/cache_netrc";
           };
         };
       };
@@ -130,13 +134,11 @@ let
         project = "demo";
         environmentName = "main";
       };
-      comin = {
+      deploy = {
         enable = true;
-        remoteUrl = "https://gitlab.com/acme/provider.git";
-        branch = "main";
-        pollIntervalSeconds = 30;
-        actionTimeoutSeconds = 45;
         providerApiBaseUrl = "https://hosting.test";
+        nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
+        reconnectSeconds = 5;
       };
     };
   };
@@ -168,7 +170,7 @@ let
   });
 
   makeHostenv = providerFlake.makeHostenv.${system};
-  cominMismatchModules = [
+  providerServiceMismatchModules = [
     ({ ... }: {
       hostenv = {
         organisation = "acme";
@@ -182,33 +184,28 @@ let
         type = "testing";
       };
 
-      provider.service = {
-        organisation = "acme";
-        project = "demo";
-        environmentName = "main";
-      };
-
-      provider.comin.enable = false;
       services.hostenv-provider.enable = true;
-      services.hostenv-provider.comin.enable = true;
+      services.hostenv-provider.deploy.enable = true;
     })
   ];
 
-  cominMismatchEnvNoCheck = makeHostenv (cominMismatchModules ++ [ ({ ... }: { _module.check = false; }) ]) null;
-  cominMismatchEval =
-    let env = makeHostenv cominMismatchModules null;
+  providerServiceMismatchEnvNoCheck = makeHostenv (providerServiceMismatchModules ++ [ ({ ... }: { _module.check = false; }) ]) null;
+  providerServiceMismatchEval =
+    let env = makeHostenv providerServiceMismatchModules null;
     in builtins.tryEval env.config.activate;
 
   nginxOk = systemEval.config.services.nginx.enable == true;
   vhostOk = builtins.hasAttr hostName systemEval.config.services.nginx.virtualHosts;
   trustedPublicKeysOk =
-    lib.elem trustedSigningKey (systemEval.config.nix.settings.trusted-public-keys or [ ]);
-  cominEnabled = systemEval.config.services.comin.enable or false;
-  cominRemoteConfigured =
-    let remotes = systemEval.config.services.comin.remotes or [ ];
-    in builtins.any (remote: (remote.url or "") == "https://gitlab.com/acme/provider.git") remotes;
-  cominPostDeployHookConfigured =
-    lib.strings.hasInfix "hostenv-comin-activate" (systemEval.config.services.comin.postDeploymentCommand or "");
+    let keys = systemEval.config.nix.settings.trusted-public-keys or [ ];
+    in lib.elem trustedSigningKey keys && lib.elem cacheSigningKey keys;
+  deployEnabled = systemEval.config.services.provider-deploy.enable or false;
+  deployApiBaseConfigured = (systemEval.config.services.provider-deploy.providerApiBaseUrl or "") == "https://hosting.test";
+  substituters = systemEval.config.nix.settings.substituters or [ ];
+  providerCacheFirst = substituters != [ ] && builtins.head substituters == "https://hosting.test/cache";
+  requireSignedBinaries = systemEval.config.nix.settings.require-signed-binaries or false;
+  allowedUsers = systemEval.config.nix.settings.allowed-users or [ ];
+  providerServiceAllowed = lib.elem envName allowedUsers;
   secretsOk =
     builtins.hasAttr "${envName}/backups_secret" systemEval.config.sops.secrets
     && builtins.hasAttr "${envName}/backups_env" systemEval.config.sops.secrets
@@ -240,19 +237,19 @@ let
   firewallPorts = systemEval.config.networking.firewall.allowedTCPPorts or [ ];
   firewallPortsOk = lib.all (port: lib.elem port firewallPorts) [ 22 80 443 ];
 
-  cominMismatchMessageOk =
+  providerServiceMismatchMessageOk =
     let
-      assertions = cominMismatchEnvNoCheck.config.assertions or [ ];
+      assertions = providerServiceMismatchEnvNoCheck.config.assertions or [ ];
       matches = a:
         (!(a.assertion or true))
-        && lib.strings.hasInfix "services.hostenv-provider.comin.enable" (a.message or "")
-        && lib.strings.hasInfix "provider.comin.enable" (a.message or "");
+        && lib.strings.hasInfix "services.hostenv-provider.deploy.enable" (a.message or "")
+        && lib.strings.hasInfix "provider.service" (a.message or "");
     in builtins.any matches assertions;
 in
 {
   provider-nixos-system-eval =
     asserts.assertTrue "provider-nixos-system-eval"
-      (nginxOk && vhostOk && trustedPublicKeysOk && secretsOk && firewallPortsOk && cominEnabled && cominRemoteConfigured && cominPostDeployHookConfigured && ! systemMismatch.success)
+      (nginxOk && vhostOk && trustedPublicKeysOk && secretsOk && firewallPortsOk && deployEnabled && deployApiBaseConfigured && providerCacheFirst && requireSignedBinaries && providerServiceAllowed && ! systemMismatch.success)
       "provider nixosSystem should enforce env key/userName alignment";
   provider-nixos-system-wheel-sudo =
     asserts.assertTrue "provider-nixos-system-wheel-sudo"
@@ -263,8 +260,8 @@ in
       xdgVarsOk
       "provider nixosSystem should set XDG session variables";
 
-  provider-nixos-system-comin-mismatch =
-    asserts.assertTrue "provider-nixos-system-comin-mismatch"
-      (!cominMismatchEval.success && cominMismatchMessageOk)
-      "provider nixosSystem should reject services.hostenv-provider.comin.enable when provider.comin.enable is false";
+  provider-nixos-system-provider-service-mismatch =
+    asserts.assertTrue "provider-nixos-system-provider-service-mismatch"
+      (!providerServiceMismatchEval.success && providerServiceMismatchMessageOk)
+      "provider nixosSystem should reject services.hostenv-provider.deploy.enable when provider.service is unset";
 }

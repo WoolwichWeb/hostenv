@@ -20,7 +20,7 @@ let
 , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
 , planSource ? "eval"
  , generatedFlake ? { }
- , comin
+ , deploy
  , service
  }:
 
@@ -217,26 +217,19 @@ let
         in
         lib.filterAttrs (name: _: name != "_description") rawValues;
 
-      assertCominRemoteUrl =
-        if comin.enable && (comin.remoteUrl == null || comin.remoteUrl == "") then
+      assertDeployApiBase =
+        if deploy.enable && (deploy.providerApiBaseUrl == null || deploy.providerApiBaseUrl == "") then
           builtins.throw ''
-            provider plan: comin is enabled but provider.comin.remoteUrl is empty.
+            provider plan: provider-deploy is enabled but provider.deploy.providerApiBaseUrl is empty.
           ''
         else
           true;
-      assertCominApiBase =
-        if comin.enable && (comin.providerApiBaseUrl == null || comin.providerApiBaseUrl == "") then
+      assertDeployTokenFile =
+        if deploy.enable
+          && (deploy.nodeAuthTokenFile == null || deploy.nodeAuthTokenFile == "")
+          && (deploy.nodeAuthTokenFiles == { } || builtins.attrNames deploy.nodeAuthTokenFiles == [ ]) then
           builtins.throw ''
-            provider plan: comin is enabled but provider.comin.providerApiBaseUrl is empty.
-          ''
-        else
-          true;
-      assertCominTokenFile =
-        if comin.enable
-          && (comin.nodeAuthTokenFile == null || comin.nodeAuthTokenFile == "")
-          && (comin.nodeAuthTokenFiles == { } || builtins.attrNames comin.nodeAuthTokenFiles == [ ]) then
-          builtins.throw ''
-            provider plan: comin is enabled but provider.comin.nodeAuthTokenFile is empty.
+            provider plan: provider-deploy is enabled but provider.deploy.nodeAuthTokenFile is empty.
           ''
         else
           true;
@@ -647,7 +640,6 @@ let
 
           baseInputs = {
             parent.url = "path:..";
-            comin.follows = "parent/comin";
             sops-nix.follows = "parent/sops-nix";
             hostenv.follows = "parent/hostenv";
             nixpkgs.follows = "parent/nixpkgs";
@@ -709,19 +701,19 @@ let
               nixSigning = {
                 trustedPublicKeys = nixSigning.trustedPublicKeys;
               };
-              comin =
-                if comin.enable then
+              deploy =
+                if deploy.enable then
                   {
                     enable = true;
-                    remoteUrl = comin.remoteUrl;
-                    branch = comin.branch;
-                    pollIntervalSeconds = comin.pollIntervalSeconds;
-                    actionTimeoutSeconds = comin.actionTimeoutSeconds;
-                    providerApiBaseUrl = comin.providerApiBaseUrl;
-                    nodeAuthTokenFile = comin.nodeAuthTokenFile;
-                    nodeAuthTokenFiles = comin.nodeAuthTokenFiles;
+                    providerApiBaseUrl = deploy.providerApiBaseUrl;
+                    nodeAuthTokenFile = deploy.nodeAuthTokenFile;
+                    nodeAuthTokenFiles = deploy.nodeAuthTokenFiles;
+                    reconnectSeconds = deploy.reconnectSeconds;
                   }
                 else { enable = false; };
+              cacheServer = {
+                enable = service != null;
+              };
               environments = { };
               nodes = { };
             };
@@ -753,20 +745,18 @@ let
                         provider = {
                           service = service;
                           nixSigning.trustedPublicKeys = nixSigning.trustedPublicKeys;
-                          comin =
-                            if comin.enable then
+                          cacheServer.enable = service != null;
+                          deploy =
+                            if deploy.enable then
                               {
                                 enable = true;
-                                remoteUrl = comin.remoteUrl;
-                                branch = comin.branch;
-                                pollIntervalSeconds = comin.pollIntervalSeconds;
-                                actionTimeoutSeconds = comin.actionTimeoutSeconds;
-                                providerApiBaseUrl = comin.providerApiBaseUrl;
+                                providerApiBaseUrl = deploy.providerApiBaseUrl;
                                 nodeName = nodeName;
                                 nodeAuthTokenFile =
-                                  if builtins.hasAttr nodeName comin.nodeAuthTokenFiles
-                                  then comin.nodeAuthTokenFiles.${nodeName}
-                                  else comin.nodeAuthTokenFile;
+                                  if builtins.hasAttr nodeName deploy.nodeAuthTokenFiles
+                                  then deploy.nodeAuthTokenFiles.${nodeName}
+                                  else deploy.nodeAuthTokenFile;
+                                reconnectSeconds = deploy.reconnectSeconds;
                               }
                             else { enable = false; };
                         };
@@ -854,7 +844,7 @@ let
         else statePathChecked;
 
     in
-    assert (assertProjectInputs && assertDiskUids && assertCominRemoteUrl && assertCominApiBase && assertCominTokenFile);
+    assert (assertProjectInputs && assertDiskUids && assertDeployApiBase && assertDeployTokenFile);
     {
       flake = generatedFlakeFile;
       plan = generatedConfig;

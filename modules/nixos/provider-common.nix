@@ -1,32 +1,43 @@
 { ... }:
 {
   flake.modules.nixos.provider-common =
-    { config, lib, pkgs, ... }:
+    { config, lib, ... }:
     let
-      cominCfg = config.provider.comin;
       serviceCfg = config.provider.service;
-      trustedPublicKeys = config.provider.nixSigning.trustedPublicKeys;
-      cominActivateScript = pkgs.writeShellApplication {
-        name = "hostenv-comin-activate";
-        runtimeInputs = [
-          pkgs.coreutils
-          pkgs.curl
-          pkgs.gnused
-          pkgs.gnugrep
-          pkgs.jq
-          pkgs.systemd
-          pkgs.util-linux
-        ];
-        text = builtins.readFile ./hostenv-comin-activate.sh;
-      };
-      cominActivateWrapper = pkgs.writeShellScript "hostenv-comin-activate-wrapper" ''
-        export HOSTENV_COMIN_NODE_NAME=${cominCfg.nodeName}
-        export HOSTENV_COMIN_API_BASE_URL=${cominCfg.providerApiBaseUrl}
-        export HOSTENV_COMIN_TOKEN_FILE=${cominCfg.nodeAuthTokenFile}
-        export HOSTENV_COMIN_ACTION_TIMEOUT=${toString cominCfg.actionTimeoutSeconds}
-        exec ${cominActivateScript}/bin/hostenv-comin-activate
-      '';
-
+      deployCfg = config.provider.deploy;
+      cacheCfg = config.provider.cache;
+      providerTrustedKeys = config.provider.nixSigning.trustedPublicKeys;
+      cacheUrl =
+        if cacheCfg.url != null && cacheCfg.url != ""
+        then cacheCfg.url
+        else null;
+      cachePublicKey =
+        if cacheCfg.publicKey != null && cacheCfg.publicKey != ""
+        then cacheCfg.publicKey
+        else null;
+      trustedPublicKeys =
+        lib.unique (providerTrustedKeys ++ lib.optional (cachePublicKey != null) cachePublicKey);
+      enabledEnvironments = lib.filterAttrs (_: env: env.enable or true) (config.hostenv.environments or { });
+      selectedServiceEnv =
+        if serviceCfg == null then
+          null
+        else
+          let
+            matches = lib.filterAttrs
+              (_: env:
+                env.hostenv.organisation == serviceCfg.organisation
+                && env.hostenv.project == serviceCfg.project
+                && env.hostenv.environmentName == serviceCfg.environmentName)
+              enabledEnvironments;
+            values = builtins.attrValues matches;
+          in
+          if values == [ ] then null else builtins.head values;
+      selectedServiceUser =
+        if selectedServiceEnv == null then
+          null
+        else
+          selectedServiceEnv.hostenv.userName;
+      onProviderServiceNode = selectedServiceUser != null;
     in
     {
       options.provider = {
@@ -35,6 +46,7 @@
           default = [ ];
           description = "Public signing keys trusted by nix-daemon on provider nodes.";
         };
+
         service = lib.mkOption {
           type = lib.types.nullOr (lib.types.submodule {
             options = {
@@ -55,42 +67,54 @@
           default = null;
           description = "Provider environment selector used for provider-service secrets.";
         };
-        comin = {
-          enable = lib.mkEnableOption "pull-based node reconciliation using comin";
-          remoteUrl = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-            description = "Git URL for the provider repository consumed by comin.";
-          };
-          branch = lib.mkOption {
-            type = lib.types.str;
-            default = "main";
-            description = "Branch comin should poll for desired-state updates.";
-          };
-          pollIntervalSeconds = lib.mkOption {
-            type = lib.types.int;
-            default = 30;
-            description = "Polling interval (seconds) for comin remotes.";
-          };
-          actionTimeoutSeconds = lib.mkOption {
-            type = lib.types.int;
-            default = 900;
-            description = "Maximum seconds a single comin user action may run before timing out.";
-          };
+
+        deploy = {
+          enable = lib.mkEnableOption "provider-deploy node agent";
+
           providerApiBaseUrl = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
-            description = "Base URL for provider callback APIs.";
+            description = "Base URL for provider deploy APIs.";
           };
+
           nodeAuthTokenFile = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
-            description = "Bearer token file used by node callback requests.";
+            description = "Bearer token file used by provider-deploy.";
           };
+
           nodeName = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
-            description = "Logical node identity used for deploy intent lookup.";
+            description = "Logical node identity used by provider-deploy.";
+          };
+
+          reconnectSeconds = lib.mkOption {
+            type = lib.types.int;
+            default = 5;
+            description = "Backoff delay between provider-deploy reconnects.";
+          };
+        };
+
+        cache = {
+          enable = lib.mkEnableOption "provider binary cache client configuration";
+
+          url = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Provider cache URL used as highest-priority substituter.";
+          };
+
+          publicKey = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Public cache signing key appended to trusted-public-keys.";
+          };
+
+          netrcFile = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Optional netrc file path used for cache authentication.";
           };
         };
       };
@@ -115,6 +139,10 @@
           '';
 
           settings.trusted-public-keys = lib.mkAfter trustedPublicKeys;
+          settings.require-signed-binaries = lib.mkIf cacheCfg.enable true;
+          settings.substituters = lib.mkIf (cacheCfg.enable && cacheUrl != null) (lib.mkBefore [ cacheUrl "https://cache.nixos.org" ]);
+          settings.netrc-file = lib.mkIf (cacheCfg.enable && cacheCfg.netrcFile != null && cacheCfg.netrcFile != "") cacheCfg.netrcFile;
+          settings.allowed-users = lib.mkIf onProviderServiceNode (lib.mkAfter [ selectedServiceUser ]);
         };
 
         services.openssh = {
@@ -137,62 +165,73 @@
 
         assertions = [
           {
-            assertion = (!cominCfg.enable) || (cominCfg.remoteUrl != null && cominCfg.remoteUrl != "");
-            message = "provider.comin.remoteUrl must be configured when provider.comin.enable is true.";
+            assertion = (!deployCfg.enable) || (deployCfg.providerApiBaseUrl != null && deployCfg.providerApiBaseUrl != "");
+            message = "provider.deploy.providerApiBaseUrl must be configured when provider.deploy.enable is true.";
           }
           {
-            assertion = (!cominCfg.enable) || (cominCfg.providerApiBaseUrl != null && cominCfg.providerApiBaseUrl != "");
-            message = "provider.comin.providerApiBaseUrl must be configured when provider.comin.enable is true.";
+            assertion = (!deployCfg.enable) || (deployCfg.nodeAuthTokenFile != null && deployCfg.nodeAuthTokenFile != "");
+            message = "provider.deploy.nodeAuthTokenFile must be configured when provider.deploy.enable is true.";
           }
           {
-            assertion = (!cominCfg.enable) || (cominCfg.nodeAuthTokenFile != null && cominCfg.nodeAuthTokenFile != "");
-            message = "provider.comin.nodeAuthTokenFile must be configured when provider.comin.enable is true.";
+            assertion = (!deployCfg.enable) || (deployCfg.nodeName != null && deployCfg.nodeName != "");
+            message = "provider.deploy.nodeName must be configured when provider.deploy.enable is true.";
           }
           {
-            assertion = (!cominCfg.enable) || (cominCfg.nodeName != null && cominCfg.nodeName != "");
-            message = "provider.comin.nodeName must be configured when provider.comin.enable is true.";
+            assertion = deployCfg.reconnectSeconds > 0;
+            message = "provider.deploy.reconnectSeconds must be greater than zero.";
+          }
+          {
+            assertion = (!cacheCfg.enable) || (cacheCfg.url != null && cacheCfg.url != "");
+            message = "provider.cache.url must be configured when provider.cache.enable is true.";
+          }
+          {
+            assertion = (!cacheCfg.enable) || (cacheCfg.publicKey != null && cacheCfg.publicKey != "");
+            message = "provider.cache.publicKey must be configured when provider.cache.enable is true.";
           }
           {
             assertion =
-              (!cominCfg.enable)
+              (!onProviderServiceNode)
               || (serviceCfg != null
                 && serviceCfg.organisation != ""
                 && serviceCfg.project != ""
                 && serviceCfg.environmentName != "");
-            message = "provider.service.organisation/project/environmentName must be configured when provider.comin.enable is true.";
-          }
-          {
-            assertion = cominCfg.pollIntervalSeconds > 0;
-            message = "provider.comin.pollIntervalSeconds must be greater than zero.";
-          }
-          {
-            assertion = cominCfg.actionTimeoutSeconds > 0;
-            message = "provider.comin.actionTimeoutSeconds must be greater than zero.";
+            message = "provider.service.organisation/project/environmentName must be configured for provider-service node detection.";
           }
         ];
 
-        sops.secrets = lib.mkIf cominCfg.enable {
-          hostenv-comin-node-token = {
-            key = "comin_node_tokens/${cominCfg.nodeName}";
-            path = cominCfg.nodeAuthTokenFile;
-            owner = "root";
-            group = "root";
-            mode = "0400";
-          };
+        sops.secrets = lib.mkMerge [
+          (lib.mkIf deployCfg.enable {
+            hostenv-provider-node-token = {
+              key = "provider_node_tokens/${deployCfg.nodeName}";
+              path = deployCfg.nodeAuthTokenFile;
+              owner = "root";
+              group = "root";
+              mode = "0400";
+            };
+          })
+          (lib.mkIf (cacheCfg.enable && cacheCfg.netrcFile != null && cacheCfg.netrcFile != "") {
+            hostenv-provider-cache-netrc = {
+              key = "cache_netrc";
+              path = cacheCfg.netrcFile;
+              owner = "root";
+              group = "root";
+              mode = "0400";
+            };
+          })
+        ];
+
+        services.provider-deploy = lib.mkIf deployCfg.enable {
+          enable = true;
+          providerApiBaseUrl = deployCfg.providerApiBaseUrl;
+          nodeAuthTokenFile = deployCfg.nodeAuthTokenFile;
+          nodeName = deployCfg.nodeName;
+          reconnectSeconds = deployCfg.reconnectSeconds;
         };
 
-        services.comin = lib.mkIf cominCfg.enable {
-          enable = true;
-          hostname = cominCfg.nodeName;
-          remotes = [
-            {
-              name = "hostenv";
-              url = cominCfg.remoteUrl;
-              branches.main.name = cominCfg.branch;
-              poller.period = cominCfg.pollIntervalSeconds;
-            }
-          ];
-          postDeploymentCommand = "${cominActivateWrapper}";
+        users.users = lib.mkIf onProviderServiceNode {
+          ${selectedServiceUser} = {
+            extraGroups = [ "nixbld" ];
+          };
         };
 
         networking.firewall.enable = lib.mkDefault true;

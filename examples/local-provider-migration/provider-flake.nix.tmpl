@@ -7,7 +7,6 @@
     flake-parts.follows = "hostenv/flake-parts";
     sops-nix.follows = "hostenv/sops-nix";
     phps.follows = "hostenv/phps";
-    comin.follows = "hostenv/comin";
 
     demo__drupal = {
       url = "__PROJECT_URL__";
@@ -56,12 +55,11 @@
           development = "__PRODUCTION_NODE__";
         };
         service = { organisation = "demo"; project = "drupal"; environmentName = "provider-service"; };
-        comin = {
+        deploy = {
           enable = true;
-          remoteUrl = "file:///mnt/hostenv-provider";
           providerApiBaseUrl = "http://__PROVIDER_API_VM_GATEWAY__:__PROVIDER_HTTP_PORT__";
-          nodeAuthTokenFile = "/run/secrets/hostenv-provider/comin_node_token";
-          actionTimeoutSeconds = 900;
+          nodeAuthTokenFile = "/run/secrets/hostenv-provider/provider_node_token";
+          reconnectSeconds = 5;
         };
         planSource = "eval";
         letsEncrypt = { adminEmail = "demo@example.test"; acceptTerms = true; };
