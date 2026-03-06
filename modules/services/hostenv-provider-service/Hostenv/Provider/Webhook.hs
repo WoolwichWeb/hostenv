@@ -14,7 +14,9 @@ module Hostenv.Provider.Webhook
   ) where
 
 import Control.Exception (finally, IOException, try)
-import Control.Monad (forM, forM_, unless, when)
+import Control.Monad (forM, forM_, unless, when, void)
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
@@ -29,12 +31,15 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Database.PostgreSQL.Simple (Only (..), fromOnly, query)
-import System.Environment (lookupEnv)
+import System.Environment (getEnvironment, lookupEnv)
 import System.FilePath ((</>))
 import System.Directory (createDirectoryIfMissing, doesFileExist, doesPathExist, listDirectory, removeFile, removePathForcibly)
 import System.Exit (ExitCode(..))
+import System.IO (Handle, hClose, hGetLine, hIsEOF)
 import Data.Time (formatTime, getCurrentTime, defaultTimeLocale)
 import System.Posix.Files (createSymbolicLink)
+import System.Process (readProcessWithExitCode)
+import System.Process (CreateProcess(..), StdStream(CreatePipe), createProcess, getProcessExitCode, interruptProcessGroupOf, proc, waitForProcess)
 import Servant
 
 import Hostenv.Provider.Command (commandErrorText, exitCodeToInt, renderCommand, runCommandWithEnv)
@@ -180,14 +185,12 @@ runWebhookDeployJob cfg hash projectRef logger = do
           case result of
             Left err -> pure (Left (renderWebhookError err))
             Right okResult -> do
-              let WebhookResult
-                    { commitSha = commitSha
-                    , updateStatus = updateStatus
-                    , intents = intents
-                    } = okResult
-                  DeployConfig deployEnabled _ = cfg.appDeploy
-                  shouldWait = shouldWaitForCallbacks updateStatus deployEnabled intents
-                  pushCommittedUpdate = do
+              let baseCommitSha = okResult.commitSha
+              let updateStatus = okResult.updateStatus
+              let intents = okResult.intents
+              let DeployConfig deployEnabled _ = cfg.appDeploy
+              let shouldWait = shouldWaitForCallbacks updateStatus deployEnabled intents
+              let pushCommittedUpdate = do
                     pushResult <- runCommandWithSupersedeGuard cfg envVars logger.jobId hash (CommandSpec "git" ["push"] webhookCfg.whWorkDir)
                     pure
                       ( case pushResult of
@@ -195,31 +198,41 @@ runWebhookDeployJob cfg hash projectRef logger = do
                           Right _ -> Right ()
                       )
               case updateStatus of
-                WebhookUpdateCommitted ->
-                  if shouldWait
-                    then do
-                      payloadResult <- buildDeployPayloads cfg logger envVars webhookCfg commitSha hash intents
-                      case payloadResult of
+                WebhookUpdateCommitted -> do
+                  buildResult <-
+                    if null intents
+                      then pure (Right emptyArtifacts)
+                      else buildArtifactsForIntents cfg logger envVars webhookCfg logger.jobId hash intents
+                  case buildResult of
+                    Left err -> pure (Left err)
+                    Right artifacts -> do
+                      commitResult <- commitPreparedUpdate cfg envVars webhookCfg logger.jobId hash projectRef
+                      case commitResult of
                         Left err -> pure (Left err)
-                        Right payloads -> do
-                          persistAndPushResult <-
-                            persistIntentsActionsAndPushWith
-                              (saveDeployIntents cfg logger.jobId commitSha payloads)
-                              (saveDeployActions cfg logger.jobId payloads)
-                              (forM_ intents (\intent -> appendDeployEvent cfg logger.jobId intent.node "queued" (Just "intent") (Just "Deploy intent queued") Nothing >> pure ()))
-                              pushCommittedUpdate
-                          case persistAndPushResult of
-                            Left err -> pure (Left err)
-                            Right () -> pure (Right (JobWaiting ("Webhook deployment prepared at " <> commitSha <> " and waiting for node callbacks")))
-                    else do
-                      pushResult <- pushCommittedUpdate
-                      case pushResult of
-                        Left err -> pure (Left err)
-                        Right () -> pure (Right (JobComplete ("Webhook deployment prepared and pushed at " <> commitSha)))
+                        Right commitSha ->
+                          if shouldWait
+                            then do
+                              case renderPayloadsWithArtifacts commitSha artifacts intents of
+                                Left err -> pure (Left err)
+                                Right payloads -> do
+                                  persistAndPushResult <-
+                                    persistIntentsActionsAndPushWith
+                                      (saveDeployIntents cfg logger.jobId commitSha payloads)
+                                      (saveDeployActions cfg logger.jobId payloads)
+                                      (forM_ intents (\intent -> appendDeployEvent cfg logger.jobId intent.node "queued" (Just "intent") (Just "Deploy intent queued") Nothing >> pure ()))
+                                      pushCommittedUpdate
+                                  case persistAndPushResult of
+                                    Left err -> pure (Left err)
+                                    Right () -> pure (Right (JobWaiting ("Webhook deployment prepared at " <> commitSha <> " and waiting for node callbacks")))
+                            else do
+                              pushResult <- pushCommittedUpdate
+                              case pushResult of
+                                Left err -> pure (Left err)
+                                Right () -> pure (Right (JobComplete ("Webhook deployment prepared and pushed at " <> commitSha)))
                 WebhookUpdateNoop ->
                   pure
                     ( Right
-                        (JobComplete ("Webhook deployment intent updated without new commit (HEAD " <> commitSha <> ")"))
+                        (JobComplete ("Webhook deployment intent updated without new commit (HEAD " <> baseCommitSha <> ")"))
                     )
 
 
@@ -234,27 +247,34 @@ persistIntentsActionsAndPushWith persistIntents persistActions appendQueuedEvent
   appendQueuedEvents
   pushCommit
 
-buildDeployPayloads :: AppConfig -> JobLogger -> [(Text, Text)] -> WebhookConfig -> Text -> Text -> [NodeIntent] -> IO (Either Text [(Text, A.Value)])
-buildDeployPayloads cfg logger envVars webhookCfg commitSha hash intents =
-  if null intents
-    then pure (Right [])
-    else do
-      supersededBeforeBuild <- isSupersededWebhookJob cfg logger.jobId hash
-      case supersededBeforeBuild of
+data BuiltArtifacts = BuiltArtifacts
+  { systemPaths :: Map.Map Text Text
+  , envPaths :: Map.Map Text Text
+  }
+
+emptyArtifacts :: BuiltArtifacts
+emptyArtifacts = BuiltArtifacts Map.empty Map.empty
+
+buildArtifactsForIntents :: AppConfig -> JobLogger -> [(Text, Text)] -> WebhookConfig -> Text -> Text -> [NodeIntent] -> IO (Either Text BuiltArtifacts)
+buildArtifactsForIntents cfg logger envVars webhookCfg jobId hash intents = do
+  supersededBeforeBuild <- isSupersededWebhookJob cfg logger.jobId hash
+  case supersededBeforeBuild of
+    Left err -> pure (Left err)
+    Right () -> do
+      changedNodeNamesResult <- loadChangedNodes cfg webhookCfg intents
+      case changedNodeNamesResult of
         Left err -> pure (Left err)
-        Right () -> do
-          let nodeNames = sort (nub (map (.node) intents))
+        Right changedNodeNames -> do
           nodePairsResult <-
             mapM
               (\nodeName ->
                 fmap (fmap (\storePath -> (nodeName, storePath)))
-                  (buildAttrOutPathWithGuard cfg envVars webhookCfg logger.jobId hash ("./generated#node-" <> nodeName)))
-              nodeNames
+                  (buildAttrOutPathWithGuard cfg envVars webhookCfg jobId hash ("./generated#node-" <> nodeName)))
+              changedNodeNames
           case sequence nodePairsResult of
             Left err -> pure (Left err)
             Right nodePairs -> do
-              let systemPaths = Map.fromList nodePairs
-                  requiredUsers =
+              let requiredUsers =
                     sort
                       ( nub
                           [ action.user
@@ -267,38 +287,112 @@ buildDeployPayloads cfg logger envVars webhookCfg commitSha hash intents =
                 mapM
                   (\userName ->
                     fmap (fmap (\storePath -> (userName, storePath)))
-                      (buildAttrOutPathWithGuard cfg envVars webhookCfg logger.jobId hash ("./generated#env-" <> userName)))
+                      (buildAttrOutPathWithGuard cfg envVars webhookCfg jobId hash ("./generated#env-" <> userName)))
                   requiredUsers
               case sequence envPairsResult of
                 Left err -> pure (Left err)
                 Right envPairs -> do
-                  let envPaths = Map.fromList envPairs
-                      builtStorePaths = map snd (nodePairs ++ envPairs)
-                  signResult <- maybeSignArtifacts cfg logger envVars webhookCfg logger.jobId hash builtStorePaths
+                  let builtStorePaths = map snd (nodePairs ++ envPairs)
+                  signResult <- maybeSignArtifacts cfg logger envVars webhookCfg jobId hash builtStorePaths
                   case signResult of
                     Left err -> pure (Left err)
                     Right () -> do
-                      rootResult <- addGcRoots cfg logger.jobId hash nodePairs envPairs
+                      rootResult <- addGcRoots cfg jobId hash nodePairs envPairs
                       case rootResult of
                         Left err -> pure (Left err)
                         Right () ->
-                          pure (sequence (map (buildNodePayload commitSha systemPaths envPaths) intents))
+                          pure
+                            ( Right
+                                BuiltArtifacts
+                                  { systemPaths = Map.fromList nodePairs
+                                  , envPaths = Map.fromList envPairs
+                                  }
+                            )
+
+renderPayloadsWithArtifacts :: Text -> BuiltArtifacts -> [NodeIntent] -> Either Text [(Text, A.Value)]
+renderPayloadsWithArtifacts commitSha artifacts intents =
+  sequence (map (buildNodePayload commitSha artifacts.systemPaths artifacts.envPaths) intents)
+
+loadChangedNodes :: AppConfig -> WebhookConfig -> [NodeIntent] -> IO (Either Text [Text])
+loadChangedNodes cfg webhookCfg intents = do
+  currentPlanRaw <- loadPlan cfg
+  let currentNodesResult = decodePlanNodes currentPlanRaw
+  previousPlanResult <- loadPreviousPlanFromGit webhookCfg.whWorkDir
+  case (currentNodesResult, previousPlanResult) of
+    (Left err, _) -> pure (Left err)
+    (Right _, Left err) -> pure (Left err)
+    (Right currentNodes, Right mPreviousRaw) ->
+      case mPreviousRaw of
+        Nothing -> pure (Right (sort (nub (map (.node) intents))))
+        Just previousRaw ->
+          case decodePlanNodes previousRaw of
+            Left err -> pure (Left err)
+            Right previousNodes ->
+              let changed =
+                    [ nodeName
+                    | nodeName <- sort (nub (map (.node) intents))
+                    , Map.lookup nodeName currentNodes /= Map.lookup nodeName previousNodes
+                    ]
+               in pure (Right changed)
+
+decodePlanNodes :: BL.ByteString -> Either Text (Map.Map Text A.Value)
+decodePlanNodes raw =
+  case A.eitherDecode' raw of
+    Left err -> Left ("failed to decode plan.json for node diffing: " <> T.pack err)
+    Right (A.Object root) ->
+      case KM.lookup (K.fromString "nodes") root of
+        Just (A.Object nodesObj) ->
+          Right (Map.fromList [(K.toText key, value) | (key, value) <- KM.toList nodesObj])
+        _ -> Right Map.empty
+    Right _ -> Left "plan.json root is not an object"
+
+loadPreviousPlanFromGit :: FilePath -> IO (Either Text (Maybe BL.ByteString))
+loadPreviousPlanFromGit workDir = do
+  result <- try (readProcessWithExitCode "git" ["-C", workDir, "show", "HEAD^:generated/plan.json"] "") :: IO (Either IOException (ExitCode, String, String))
+  pure
+    ( case result of
+        Right (ExitSuccess, stdoutText, _) -> Right (Just (BL.fromStrict (TE.encodeUtf8 (T.pack stdoutText))))
+        Right (_, _, stderrText) ->
+          let stderrLower = T.toLower (T.pack stderrText)
+           in if "invalid object name" `T.isInfixOf` stderrLower || "path 'generated/plan.json' does not exist" `T.isInfixOf` stderrLower
+                then Right Nothing
+                else Left ("failed to read previous plan from git: " <> T.pack stderrText)
+        Left err -> Left ("failed to read previous plan from git: " <> T.pack (show err))
+    )
+
+commitPreparedUpdate :: AppConfig -> [(Text, Text)] -> WebhookConfig -> Text -> Text -> ProjectRef -> IO (Either Text Text)
+commitPreparedUpdate cfg envVars webhookCfg jobId hash projectRef = do
+  superseded <- isSupersededWebhookJob cfg jobId hash
+  case superseded of
+    Left err -> pure (Left err)
+    Right () -> do
+      let message = "hostenv-provider: deploy intent for " <> projectRef.prOrg <> "/" <> projectRef.prProject
+      commitResult <- runCommandWithEnv cfg envVars (CommandSpec "git" ["commit", "-m", message] webhookCfg.whWorkDir)
+      case commitResult of
+        Left err -> pure (Left ("failed to commit prepared provider update: " <> commandErrorText err))
+        Right _ -> do
+          headResult <- runCommandWithEnv cfg envVars (CommandSpec "git" ["rev-parse", "HEAD"] webhookCfg.whWorkDir)
+          pure
+            ( case headResult of
+                Left err -> Left ("failed to resolve committed provider revision: " <> commandErrorText err)
+                Right out -> Right (T.strip out.outStdout)
+            )
 
 buildNodePayload :: Text -> Map.Map Text Text -> Map.Map Text Text -> NodeIntent -> Either Text (Text, A.Value)
 buildNodePayload commitSha systemPaths envPaths intent = do
-  systemPath <-
-    case Map.lookup intent.node systemPaths of
-      Just storePath -> Right storePath
-      Nothing -> Left ("missing built system store path for node " <> intent.node)
   renderedActions <- mapM (buildActionPayload envPaths) intent.actions
-  pure
-    ( intent.node
-    , A.object
+  let baseFields =
         [ "schemaVersion" A..= (1 :: Int)
         , "commitSha" A..= commitSha
-        , "systemPath" A..= systemPath
         , "actions" A..= renderedActions
         ]
+      fieldsWithSystem =
+        case Map.lookup intent.node systemPaths of
+          Just storePath -> baseFields <> ["systemPath" A..= storePath]
+          Nothing -> baseFields
+  pure
+    ( intent.node
+    , A.object fieldsWithSystem
     )
 
 buildActionPayload :: Map.Map Text Text -> NodeAction -> Either Text A.Value
@@ -324,7 +418,7 @@ buildAttrOutPathWithGuard cfg envVars webhookCfg jobId hash attrRef = do
   case superseded of
     Left err -> pure (Left err)
     Right () -> do
-      commandResult <- runCommandWithEnv cfg envVars (CommandSpec "nix" ["build", "--no-link", "--print-out-paths", attrRef] webhookCfg.whWorkDir)
+      commandResult <- runCancelableBuildCommand cfg envVars jobId hash (CommandSpec "nix" ["build", "--no-link", "--print-out-paths", attrRef] webhookCfg.whWorkDir)
       pure
         ( case commandResult of
             Left err -> Left (renderWebhookError (WebhookCommandError StageFinalizeRepo err))
@@ -341,29 +435,39 @@ maybeSignArtifacts cfg logger envVars webhookCfg jobId hash storePaths = do
   case superseded of
     Left err -> pure (Left err)
     Right () -> do
-      currentUser <- lookupEnv "USER"
-      case currentUser of
-        Nothing -> pure (Right ())
-        Just userName -> do
-          let keyPath = "/run/secrets/" <> userName <> "/cache_signing_key"
-          keyExists <- doesFileExist keyPath
-          if not keyExists
-            then pure (Right ())
-            else do
-              logger.logInfo "webhook stage: sign_artifacts"
-              signResults <-
-                forM
-                  storePaths
-                  (\storePath ->
-                    runCommandWithEnv
-                      cfg
-                      envVars
-                      (CommandSpec "nix" ["store", "sign", "--key-file", T.pack keyPath, "--recursive", storePath] webhookCfg.whWorkDir))
-              pure
-                ( case [err | Left err <- signResults] of
-                    (firstErr:_) -> Left (renderWebhookError (WebhookCommandError StageFinalizeRepo firstErr))
-                    [] -> Right ()
-                )
+      if null storePaths
+        then pure (Right ())
+        else do
+          let signingRequired = cfg.appDeploy.enable
+          currentUser <- lookupEnv "USER"
+          case currentUser of
+            Nothing ->
+              if signingRequired
+                then pure (Left "cache signing is required but USER is unset")
+                else pure (Right ())
+            Just userName -> do
+              let keyPath = "/run/secrets/" <> userName <> "/cache_signing_key"
+              keyExists <- doesFileExist keyPath
+              if not keyExists
+                then
+                  if signingRequired
+                    then pure (Left ("cache signing key not found at " <> T.pack keyPath))
+                    else pure (Right ())
+                else do
+                  logger.logInfo "webhook stage: sign_artifacts"
+                  signResults <-
+                    forM
+                      storePaths
+                      (\storePath ->
+                        runCommandWithEnv
+                          cfg
+                          envVars
+                          (CommandSpec "nix" ["store", "sign", "--key-file", T.pack keyPath, "--recursive", storePath] webhookCfg.whWorkDir))
+                  pure
+                    ( case [err | Left err <- signResults] of
+                        (firstErr:_) -> Left (renderWebhookError (WebhookCommandError StageFinalizeRepo firstErr))
+                        [] -> Right ()
+                    )
 
 addGcRoots :: AppConfig -> Text -> Text -> [(Text, Text)] -> [(Text, Text)] -> IO (Either Text ())
 addGcRoots cfg jobId hash systemPairs envPairs = do
@@ -449,6 +553,84 @@ runCommandWithSupersedeGuard cfg envVars jobId hash spec = do
               }
         )
     Right () -> runCommandWithEnv cfg envVars spec
+
+runCancelableBuildCommand :: AppConfig -> [(Text, Text)] -> Text -> Text -> CommandSpec -> IO (Either CommandError CommandOutput)
+runCancelableBuildCommand cfg envVars jobId hash spec = do
+  baseEnv <- getEnvironment
+  let mergedEnv = applyEnvOverrides baseEnv envVars
+      process =
+        (proc (T.unpack spec.cmdName) (map T.unpack spec.cmdArgs))
+          { cwd = Just spec.cmdCwd
+          , env = Just mergedEnv
+          , std_out = CreatePipe
+          , std_err = CreatePipe
+          , create_group = True
+          }
+  (_, mStdout, mStderr, ph) <- createProcess process
+  outRef <- newIORef ([] :: [Text])
+  errRef <- newIORef ([] :: [Text])
+  doneStdout <- newEmptyMVar
+  doneStderr <- newEmptyMVar
+  case mStdout of
+    Nothing -> putMVar doneStdout ()
+    Just stdoutHandle ->
+      void (forkIO (readHandleLines stdoutHandle (\line -> appendLine outRef line) `finally` putMVar doneStdout ()))
+  case mStderr of
+    Nothing -> putMVar doneStderr ()
+    Just stderrHandle ->
+      void (forkIO (readHandleLines stderrHandle (\line -> appendLine errRef line) `finally` putMVar doneStderr ()))
+  code <- waitWithSupersedeGuard ph
+  takeMVar doneStdout
+  takeMVar doneStderr
+  out <- renderLines <$> readIORef outRef
+  err <- renderLines <$> readIORef errRef
+  pure
+    ( case code of
+        ExitSuccess -> Right (CommandOutput out err)
+        _ -> Left (CommandError spec code out err)
+    )
+  where
+    waitWithSupersedeGuard ph = do
+      superseded <- isSupersededWebhookJob cfg jobId hash
+      case superseded of
+        Left _ -> do
+          interruptProcessGroupOf ph
+          _ <- waitForProcess ph
+          pure commandFailureExitCode
+        Right () -> do
+          mCode <- getProcessExitCode ph
+          case mCode of
+            Just code -> pure code
+            Nothing -> do
+              threadDelay 1000000
+              waitWithSupersedeGuard ph
+
+applyEnvOverrides :: [(String, String)] -> [(Text, Text)] -> [(String, String)]
+applyEnvOverrides base overrides =
+  let overridePairs = map (\(k, v) -> (T.unpack k, T.unpack v)) overrides
+      baseMap = Map.fromList base
+      overrideMap = Map.fromList overridePairs
+   in Map.toList (Map.union overrideMap baseMap)
+
+appendLine :: IORef [Text] -> Text -> IO ()
+appendLine ref line =
+  writeIORef ref =<< ((<> [line]) <$> readIORef ref)
+
+renderLines :: [Text] -> Text
+renderLines linesSoFar =
+  if null linesSoFar
+    then ""
+    else T.unlines linesSoFar
+
+readHandleLines :: Handle -> (Text -> IO ()) -> IO ()
+readHandleLines streamHandle onLine = do
+  eof <- hIsEOF streamHandle
+  if eof
+    then hClose streamHandle
+    else do
+      line <- T.pack <$> hGetLine streamHandle
+      onLine line
+      readHandleLines streamHandle onLine
 
 isSupersededWebhookJob :: AppConfig -> Text -> Text -> IO (Either Text ())
 isSupersededWebhookJob cfg jobId hash =

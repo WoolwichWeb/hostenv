@@ -35,7 +35,7 @@ The provider devshell includes an auto-initialization hook that runs when you en
 - **`secrets/provider.yaml`** - Created automatically with a generated age key if missing. You can rotate to proper sops recipients later.
 - **`generated/state.json`** - Created as an empty JSON object if missing.
 - **Provider node tokens** - Generated automatically when `provider.deploy.enable = true` and tokens don't exist.
-- **Cache signing/auth secrets** - Generated automatically when missing: `cache_signing_key`, `cache_htpasswd`, `cache_netrc`, and `generated/cache-public-key.txt`.
+- **Cache signing/auth secrets** - Generated automatically when missing: `cache_signing_key`, `cache_auth_password`, and `generated/cache-public-key.txt`.
 
 To disable auto-init (if you prefer manual setup):
 ```nix

@@ -731,11 +731,11 @@ deriveUserActions oldSnapshots newSnapshots intents userName =
           migrations ->
             let withBackup =
                   addAction intents oldEnv.node (NodeAction "backup" userName (Just oldEnv.node) (Just newEnv.node) migrations)
-                withDeactivate =
-                  addAction withBackup oldEnv.node (NodeAction "deactivate" userName (Just oldEnv.node) (Just newEnv.node) [])
                 withRestore =
-                  addAction withDeactivate newEnv.node (NodeAction "restore" userName (Just oldEnv.node) (Just newEnv.node) migrations)
-             in addAction withRestore newEnv.node (NodeAction "activate" userName (Just oldEnv.node) (Just newEnv.node) [])
+                  addAction withBackup newEnv.node (NodeAction "restore" userName (Just oldEnv.node) (Just newEnv.node) migrations)
+                withDeactivate =
+                  addAction withRestore oldEnv.node (NodeAction "deactivate" userName (Just oldEnv.node) (Just newEnv.node) migrations)
+             in addAction withDeactivate newEnv.node (NodeAction "activate" userName (Just oldEnv.node) (Just newEnv.node) migrations)
         else if oldEnv.payload /= newEnv.payload
           then addAction intents newEnv.node (NodeAction "reload" userName (Just newEnv.node) (Just newEnv.node) [])
           else intents
@@ -792,22 +792,11 @@ finalizeRepoUpdate notifyStage runner cfg ref = do
             Left err -> pure (Left (WebhookCommandError StageFinalizeRepo err))
             Right statusOut -> do
               let hasChanges = T.strip statusOut.outStdout /= ""
-              pushedResult <-
-                if not hasChanges
-                  then pure (Right False)
-                  else do
-                    let message = "hostenv-provider: deploy intent for " <> ref.prOrg <> "/" <> ref.prProject
-                    step (CommandSpec "git" ["commit", "-m", message] cfg.whWorkDir) >>= \case
-                      Left err -> pure (Left err)
-                      Right _ -> pure (Right True)
-              case pushedResult of
-                Left err -> pure (Left err)
-                Right pushed -> do
-                  headResult <- runner (CommandSpec "git" ["rev-parse", "HEAD"] cfg.whWorkDir)
-                  case headResult of
-                    Left err -> pure (Left (WebhookCommandError StageFinalizeRepo err))
-                    Right out ->
-                      pure (Right (T.strip out.outStdout, pushed))
+              headResult <- runner (CommandSpec "git" ["rev-parse", "HEAD"] cfg.whWorkDir)
+              case headResult of
+                Left err -> pure (Left (WebhookCommandError StageFinalizeRepo err))
+                Right out ->
+                  pure (Right (T.strip out.outStdout, hasChanges))
   where
     step spec = do
       res <- runner spec

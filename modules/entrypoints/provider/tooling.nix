@@ -142,19 +142,15 @@ in
               fi
 
               missing_cache_signing_key=false
-              missing_cache_htpasswd=false
-              missing_cache_netrc=false
+              missing_cache_auth_password=false
               missing_cache_public_key=false
 
               if [ -f "$provider_secrets" ]; then
                 if ! sops -d "$provider_secrets" 2>/dev/null | yq -e '.cache_signing_key != null and .cache_signing_key != ""' >/dev/null 2>&1; then
                   missing_cache_signing_key=true
                 fi
-                if ! sops -d "$provider_secrets" 2>/dev/null | yq -e '.cache_htpasswd != null and .cache_htpasswd != ""' >/dev/null 2>&1; then
-                  missing_cache_htpasswd=true
-                fi
-                if ! sops -d "$provider_secrets" 2>/dev/null | yq -e '.cache_netrc != null and .cache_netrc != ""' >/dev/null 2>&1; then
-                  missing_cache_netrc=true
+                if ! sops -d "$provider_secrets" 2>/dev/null | yq -e '.cache_auth_password != null and .cache_auth_password != ""' >/dev/null 2>&1; then
+                  missing_cache_auth_password=true
                 fi
               fi
 
@@ -162,7 +158,7 @@ in
                 missing_cache_public_key=true
               fi
 
-              if [ "$missing_cache_signing_key" = "true" ] || [ "$missing_cache_htpasswd" = "true" ] || [ "$missing_cache_netrc" = "true" ] || [ "$missing_cache_public_key" = "true" ]; then
+              if [ "$missing_cache_signing_key" = "true" ] || [ "$missing_cache_auth_password" = "true" ] || [ "$missing_cache_public_key" = "true" ]; then
                 if [ -t 0 ] && [ -t 1 ]; then
                   if command -v gum >/dev/null 2>&1; then
                     gum confirm \

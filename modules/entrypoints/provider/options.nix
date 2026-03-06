@@ -116,10 +116,10 @@ let
                   key = "cache_signing_key";
                   mode = "0400";
                 };
-                "${selectedServiceUser}/cache_htpasswd" = {
+                "${selectedServiceUser}/cache_auth_password" = {
                   owner = selectedServiceUser;
                   group = selectedServiceUser;
-                  key = "cache_htpasswd";
+                  key = "cache_auth_password";
                   mode = "0400";
                 };
               }

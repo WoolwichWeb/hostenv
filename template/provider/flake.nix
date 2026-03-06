@@ -66,6 +66,12 @@
           providerApiBaseUrl = "https://hosting.example.com";
           nodeAuthTokenFile = "/run/secrets/hostenv-provider/provider_node_token";
         };
+        cache = {
+          enable = true;
+          url = "https://hosting.example.com/cache";
+          publicKeyFile = ./generated/cache-public-key.txt;
+          netrcFile = "/run/secrets/hostenv-provider/cache_auth_netrc";
+        };
         # Add NixOS system-level configuration that's common to all servers here:
         planSource = "eval";
 

@@ -30,9 +30,66 @@
 
           token="$(tr -d '\n\r' < "$token_file")"
           mkdir -p "$(dirname "$state_file")"
+          touch "$state_file"
           auth_cfg="$(mktemp)"
           trap 'rm -f "$auth_cfg"' EXIT
           printf 'header = "Authorization: Bearer %s"\n' "$token" > "$auth_cfg"
+          event_stderr_max_lines=25
+          command_stderr_file=""
+          command_stdout_file=""
+          command_exit_code=0
+
+          ensure_state_file() {
+            if [ ! -s "$state_file" ]; then
+              printf '{"lastAppliedJobId":"","lastAppliedSignature":"","lastCommitSha":"","system":{},"users":{},"updatedAt":""}\n' > "$state_file"
+            fi
+          }
+
+          job_signature() {
+            local payload="$1"
+            jq -c '{jobId:(.jobId // ""),commitSha:(.commitSha // ""),systemPath:(.intent.systemPath // .intent.systemToplevel // ""),actions:(.intent.actions // [])}' <<<"$payload" | sha256sum | cut -d' ' -f1
+          }
+
+          last_applied_signature() {
+            if [ -s "$state_file" ]; then
+              jq -r '.lastAppliedSignature // empty' "$state_file" 2>/dev/null || true
+            fi
+          }
+
+          trim_stderr() {
+            local path="$1"
+            if [ -f "$path" ]; then
+              tail -n "$event_stderr_max_lines" "$path" | jq -Rs '.'
+            else
+              printf '""\n'
+            fi
+          }
+
+          mark_system_state() {
+            local store_path="$1"
+            ensure_state_file
+            tmp="$(mktemp)"
+            jq -c --arg storePath "$store_path" --arg updatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.system={storePath:$storePath,updatedAt:$updatedAt} | .updatedAt=$updatedAt' "$state_file" > "$tmp"
+            mv "$tmp" "$state_file"
+          }
+
+          mark_user_state() {
+            local user_name="$1"
+            local store_path="$2"
+            ensure_state_file
+            tmp="$(mktemp)"
+            jq -c --arg user "$user_name" --arg storePath "$store_path" --arg updatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.users[$user]={storePath:$storePath,updatedAt:$updatedAt} | .updatedAt=$updatedAt' "$state_file" > "$tmp"
+            mv "$tmp" "$state_file"
+          }
+
+          cleanup_command_files() {
+            if [ -n "$command_stdout_file" ]; then rm -f "$command_stdout_file"; fi
+            if [ -n "$command_stderr_file" ]; then rm -f "$command_stderr_file"; fi
+            command_stdout_file=""
+            command_stderr_file=""
+          }
+
+          ensure_state_file
 
           ws_url_for_api() {
             case "$api_base" in
@@ -72,6 +129,17 @@
               "$api_base/api/deploy-jobs/$job_id/events" >/dev/null
           }
 
+          post_event_with_command() {
+            local job_id="$1"
+            local status="$2"
+            local phase="$3"
+            local message="$4"
+            local extra_payload="$5"
+            local stderr_json
+            stderr_json="$(trim_stderr "$command_stderr_file")"
+            post_event "$job_id" "$status" "$phase" "$message" "$(jq -cn --argjson extra "$extra_payload" --argjson stderrSummary "$stderr_json" --argjson exitCode "$command_exit_code" '{exitCode:$exitCode,stderrSummary:$stderrSummary} + $extra')"
+          }
+
           fetch_next_job() {
             local tmp
             local code
@@ -94,10 +162,8 @@
             esac
           }
 
-          fetch_ws_job() {
+          run_ws_session() {
             local ws_url
-            local tmp
-            local payload
             local auth_message
             if [ "$ws_supported" -ne 1 ]; then
               return 1
@@ -110,14 +176,19 @@
               ws_supported=0
               return 1
             fi
-            tmp="$(mktemp)"
             auth_message="$(jq -cn --arg node "$node_name" --arg token "$token" '{type:"auth",node:$node,token:$token}')"
-            timeout "$reconnect_seconds" \
-              env HOSTENV_WS_AUTH_MESSAGE="$auth_message" sh -c 'printf "%s\n" "$HOSTENV_WS_AUTH_MESSAGE" | websocat "$1"' _ "$ws_url" >"$tmp" 2>/dev/null || true
-            payload="$(jq -cs 'map(select(type=="object" and .type=="deploy_job" and (.jobId // "") != "" and .intent != null)) | if length == 0 then empty else (.[-1] | {jobId,commitSha,node,intent,actions}) end' "$tmp" 2>/dev/null || true)"
-            rm -f "$tmp"
-            if [ -n "$payload" ]; then
-              printf '%s\n' "$payload"
+            if (env HOSTENV_WS_AUTH_MESSAGE="$auth_message" sh -c 'printf "%s\n" "$HOSTENV_WS_AUTH_MESSAGE"; tail -f /dev/null' | websocat "$ws_url" 2>/dev/null | while IFS= read -r line; do
+              payload="$(jq -c 'select(type=="object" and .type=="deploy_job" and (.jobId // "") != "" and .intent != null) | {jobId,commitSha,node,intent,actions}' <<<"$line" 2>/dev/null || true)"
+              if [ -z "$payload" ]; then
+                continue
+              fi
+              current_job_id="$(jq -r '.jobId // empty' <<<"$payload")"
+              current_signature="$(job_signature "$payload")"
+              previous_signature="$(last_applied_signature)"
+              if [ -n "$current_job_id" ] && [ "$current_signature" != "$previous_signature" ]; then
+                handle_job "$payload" || true
+              fi
+            done); then
               return 0
             fi
             return 1
@@ -151,8 +222,11 @@
             local child
             local checks=0
             local interval="${toString cfg.reconnectSeconds}"
+            command_stdout_file="$(mktemp)"
+            command_stderr_file="$(mktemp)"
+            command_exit_code=0
 
-            setsid "$@" &
+            setsid "$@" >"$command_stdout_file" 2>"$command_stderr_file" &
             child=$!
 
             while kill -0 "$child" >/dev/null 2>&1; do
@@ -163,7 +237,9 @@
                 if superseding="$(newer_job_id "$job_id" 2>/dev/null || true)" && [ -n "$superseding" ]; then
                   kill -TERM -- "-$child" >/dev/null 2>&1 || true
                   wait "$child" >/dev/null 2>&1 || true
+                  command_exit_code=99
                   if [ "$superseding" = "__JOB_GONE__" ]; then
+                    command_exit_code=98
                     return 98
                   fi
                   return 99
@@ -171,7 +247,12 @@
               fi
             done
 
-            wait "$child"
+            if wait "$child"; then
+              command_exit_code=0
+            else
+              command_exit_code=$?
+            fi
+            return "$command_exit_code"
           }
 
           run_profile_action() {
@@ -180,7 +261,8 @@
             local user_name="$3"
             local store_path="$4"
             local source_node="$5"
-            local migrations_csv="$6"
+            local to_node="$6"
+            local migrations_csv="$7"
             local phase="$op"
             local profile="/nix/var/nix/profiles/per-user/$user_name/profile"
             local exec_path=""
@@ -191,12 +273,15 @@
             if [ -n "$source_node" ] && ! is_safe_atom "$source_node"; then
               return 3
             fi
+            if [ -n "$to_node" ] && ! is_safe_atom "$to_node"; then
+              return 3
+            fi
 
             if [ -n "$store_path" ]; then
               if ! run_cmd_cancelable "$job_id" "realise-$op-$user_name" nix store realise "$store_path"; then
                 return $?
               fi
-              if ! run_cmd_cancelable "$job_id" "set-profile-$user_name" nix-env -p "$profile" --set "$store_path"; then
+              if ! run_cmd_cancelable "$job_id" "set-profile-$user_name" runuser -u "$user_name" -- nix-env -p "$profile" --set "$store_path"; then
                 return $?
               fi
             fi
@@ -236,6 +321,10 @@
             if ! run_cmd_cancelable "$job_id" "$op-$user_name" timeout "$action_timeout" runuser -u "$user_name" -- "$exec_path"; then
               return $?
             fi
+
+            if [ -n "$store_path" ] && { [ "$op" = "activate" ] || [ "$op" = "reload" ] || [ "$op" = "restore" ] || [ "$op" = "backup" ]; }; then
+              mark_user_state "$user_name" "$store_path"
+            fi
           }
 
           handle_job() {
@@ -250,6 +339,19 @@
 
             [ -n "$job_id" ] || return 1
 
+            local current_signature
+            current_signature="$(job_signature "$job_json")"
+
+            local action_count
+            action_count="$(jq '.intent.actions | length' <<<"$job_json")"
+            if [ -z "$system_path" ] && [ "$action_count" -eq 0 ]; then
+              ensure_state_file
+              tmp="$(mktemp)"
+              jq -c --arg signature "$current_signature" --arg updatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.lastAppliedSignature=$signature | .updatedAt=$updatedAt' "$state_file" > "$tmp"
+              mv "$tmp" "$state_file"
+              return 0
+            fi
+
             post_event "$job_id" "running" "intent" "Deploy job started" "{}" || true
 
             if [ -n "$system_path" ]; then
@@ -257,35 +359,38 @@
               if ! run_cmd_cancelable "$job_id" "system-realise" nix store realise "$system_path"; then
                 rc=$?
                 if [ "$rc" -eq 99 ] || [ "$rc" -eq 98 ]; then
-                  post_event "$job_id" "failed" "intent" "Superseded by newer job" '{"reason":"superseded"}' || true
+                  post_event_with_command "$job_id" "failed" "intent" "Superseded by newer job" '{"reason":"superseded","step":"system-realise"}' || true
                 else
-                  post_event "$job_id" "failed" "system" "Failed to realise system path" "{}" || true
+                  post_event_with_command "$job_id" "failed" "system" "Failed to realise system path" '{"step":"system-realise"}' || true
                 fi
+                cleanup_command_files
                 return "$rc"
               fi
               if ! run_cmd_cancelable "$job_id" "system-set" nix-env -p /nix/var/nix/profiles/system --set "$system_path"; then
                 rc=$?
                 if [ "$rc" -eq 99 ] || [ "$rc" -eq 98 ]; then
-                  post_event "$job_id" "failed" "intent" "Superseded by newer job" '{"reason":"superseded"}' || true
+                  post_event_with_command "$job_id" "failed" "intent" "Superseded by newer job" '{"reason":"superseded","step":"system-set"}' || true
                 else
-                  post_event "$job_id" "failed" "system" "Failed to set system profile" "{}" || true
+                  post_event_with_command "$job_id" "failed" "system" "Failed to set system profile" '{"step":"system-set"}' || true
                 fi
+                cleanup_command_files
                 return "$rc"
               fi
               if ! run_cmd_cancelable "$job_id" "system-switch" "$system_path/bin/switch-to-configuration" switch; then
                 rc=$?
                 if [ "$rc" -eq 99 ] || [ "$rc" -eq 98 ]; then
-                  post_event "$job_id" "failed" "intent" "Superseded by newer job" '{"reason":"superseded"}' || true
+                  post_event_with_command "$job_id" "failed" "intent" "Superseded by newer job" '{"reason":"superseded","step":"system-switch"}' || true
                 else
-                  post_event "$job_id" "failed" "system" "System switch failed" "{}" || true
+                  post_event_with_command "$job_id" "failed" "system" "System switch failed" '{"step":"system-switch"}' || true
                 fi
+                cleanup_command_files
                 return "$rc"
               fi
-              post_event "$job_id" "success" "system" "System switch complete" "{}" || true
+              post_event_with_command "$job_id" "success" "system" "System switch complete" '{"step":"system-switch"}' || true
+              mark_system_state "$system_path"
+              cleanup_command_files
             fi
 
-            local action_count
-            action_count="$(jq '.intent.actions | length' <<<"$job_json")"
             local idx=0
             while [ "$idx" -lt "$action_count" ]; do
               local action
@@ -293,6 +398,7 @@
               local user_name
               local store_path
               local source_node
+              local to_node
               local migrations_csv
 
               action="$(jq -c ".intent.actions[$idx]" <<<"$job_json")"
@@ -300,6 +406,7 @@
               user_name="$(jq -r '.user // empty' <<<"$action")"
               store_path="$(jq -r '.storePath // .envStorePath // .path // empty' <<<"$action")"
               source_node="$(jq -r '.fromNode // empty' <<<"$action")"
+              to_node="$(jq -r '.toNode // empty' <<<"$action")"
               migrations_csv="$(jq -r '(.migrations // []) | map(tostring) | join(",")' <<<"$action")"
 
               if [ -z "$op" ] || [ -z "$user_name" ]; then
@@ -309,50 +416,52 @@
 
               post_event "$job_id" "running" "$op" "Running action $op for $user_name" "{}" || true
 
-              if ! run_profile_action "$job_id" "$op" "$user_name" "$store_path" "$source_node" "$migrations_csv"; then
+              if ! run_profile_action "$job_id" "$op" "$user_name" "$store_path" "$source_node" "$to_node" "$migrations_csv"; then
                 rc=$?
                 if [ "$rc" -eq 99 ] || [ "$rc" -eq 98 ]; then
-                  post_event "$job_id" "failed" "intent" "Superseded by newer job" '{"reason":"superseded"}' || true
+                  post_event_with_command "$job_id" "failed" "intent" "Superseded by newer job" "$(jq -cn --arg reason superseded --arg op "$op" '{reason:$reason,op:$op}')" || true
                 elif [ "$rc" -eq 124 ]; then
-                  post_event "$job_id" "timed_out" "$op" "Action timed out" "{}" || true
+                  post_event_with_command "$job_id" "timed_out" "$op" "Action timed out" "$(jq -cn --arg op "$op" '{op:$op}')" || true
                 elif [ "$rc" -eq 4 ]; then
-                  post_event "$job_id" "failed" "$op" "Restore snapshot unavailable" "{}" || true
+                  post_event_with_command "$job_id" "failed" "$op" "Restore snapshot unavailable" "$(jq -cn --arg op "$op" '{op:$op}')" || true
                 elif [ "$rc" -eq 3 ]; then
-                  post_event "$job_id" "failed" "$op" "Action executable not found" "{}" || true
+                  post_event_with_command "$job_id" "failed" "$op" "Action executable not found" "$(jq -cn --arg op "$op" '{op:$op}')" || true
                 else
-                  post_event "$job_id" "failed" "$op" "Action failed" "{}" || true
+                  post_event_with_command "$job_id" "failed" "$op" "Action failed" "$(jq -cn --arg op "$op" '{op:$op}')" || true
                 fi
+                cleanup_command_files
                 return "$rc"
               fi
 
               if [ "$op" = "backup" ]; then
-                post_event "$job_id" "success" "$op" "Action complete" "$(jq -cn --arg user "$user_name" '{user:$user}')" || true
+                post_event_with_command "$job_id" "success" "$op" "Action complete" "$(jq -cn --arg user "$user_name" --arg op "$op" '{user:$user,op:$op}')" || true
               else
-                post_event "$job_id" "success" "$op" "Action complete" "{}" || true
+                post_event_with_command "$job_id" "success" "$op" "Action complete" "$(jq -cn --arg user "$user_name" --arg op "$op" '{user:$user,op:$op}')" || true
               fi
+              cleanup_command_files
               idx=$((idx + 1))
             done
 
             post_event "$job_id" "success" "intent" "Deploy job complete" "{}" || true
-            jq -cn --arg jobId "$job_id" --arg commitSha "$commit_sha" --arg updatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{lastAppliedJobId:$jobId,lastCommitSha:$commitSha,updatedAt:$updatedAt}' > "$state_file"
+            ensure_state_file
+            tmp="$(mktemp)"
+            jq -c --arg jobId "$job_id" --arg signature "$current_signature" --arg commitSha "$commit_sha" --arg updatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.lastAppliedJobId=$jobId | .lastAppliedSignature=$signature | .lastCommitSha=$commitSha | .updatedAt=$updatedAt' "$state_file" > "$tmp"
+            mv "$tmp" "$state_file"
           }
 
           while true; do
-            next_job_json="$(fetch_ws_job || true)"
-            if [ -z "$next_job_json" ]; then
+            if ! run_ws_session; then
               next_job_json="$(fetch_next_job || true)"
-            fi
-            if [ -n "$next_job_json" ]; then
-              current_job_id="$(jq -r '.jobId // empty' <<<"$next_job_json")"
-              last_job_id=""
-              if [ -s "$state_file" ]; then
-                last_job_id="$(jq -r '.lastAppliedJobId // empty' "$state_file" 2>/dev/null || true)"
+              if [ -n "$next_job_json" ]; then
+                current_job_id="$(jq -r '.jobId // empty' <<<"$next_job_json")"
+                current_signature="$(job_signature "$next_job_json")"
+                previous_signature="$(last_applied_signature)"
+                if [ -n "$current_job_id" ] && [ "$current_signature" != "$previous_signature" ]; then
+                  handle_job "$next_job_json" || true
+                fi
               fi
-              if [ -n "$current_job_id" ] && [ "$current_job_id" != "$last_job_id" ]; then
-                handle_job "$next_job_json" || true
-              fi
+              sleep "$reconnect_seconds"
             fi
-            sleep "$reconnect_seconds"
           done
         '';
       };

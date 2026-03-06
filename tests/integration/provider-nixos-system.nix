@@ -33,6 +33,7 @@ let
       org_only: "org"
     provider_node_tokens:
       ${nodeName}: "node-token"
+    cache_auth_password: "cache-password"
     __hostenv_selected_keys:
       ${envName}:
         project:
@@ -204,6 +205,7 @@ let
   substituters = systemEval.config.nix.settings.substituters or [ ];
   providerCacheFirst = substituters != [ ] && builtins.head substituters == "https://hosting.test/cache";
   requireSignedBinaries = systemEval.config.nix.settings.require-signed-binaries or false;
+  netrcFileConfigured = (systemEval.config.nix.settings.netrc-file or "") == "/run/secrets/hostenv/cache_netrc";
   allowedUsers = systemEval.config.nix.settings.allowed-users or [ ];
   providerServiceAllowed = lib.elem envName allowedUsers;
   secretsOk =
@@ -249,7 +251,7 @@ in
 {
   provider-nixos-system-eval =
     asserts.assertTrue "provider-nixos-system-eval"
-      (nginxOk && vhostOk && trustedPublicKeysOk && secretsOk && firewallPortsOk && deployEnabled && deployApiBaseConfigured && providerCacheFirst && requireSignedBinaries && providerServiceAllowed && ! systemMismatch.success)
+      (nginxOk && vhostOk && trustedPublicKeysOk && secretsOk && firewallPortsOk && deployEnabled && deployApiBaseConfigured && providerCacheFirst && requireSignedBinaries && providerServiceAllowed && netrcFileConfigured && ! systemMismatch.success)
       "provider nixosSystem should enforce env key/userName alignment";
   provider-nixos-system-wheel-sudo =
     asserts.assertTrue "provider-nixos-system-wheel-sudo"

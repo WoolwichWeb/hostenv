@@ -282,9 +282,16 @@ in
           description = "Path to the flake template (relative to flakeRoot if not absolute).";
         };
 
+        cacheAuthPasswordFile = lib.mkOption {
+          type = lib.types.str;
+          default = "/run/secrets/${config.hostenv.userName}/cache_auth_password";
+          readOnly = true;
+          description = "Path to cache auth password secret used to render runtime htpasswd/netrc files.";
+        };
+
         flakeRoot = lib.mkOption {
           type = lib.types.str;
-          default = ".";
+          default = "work/provider";
           description = "Subdirectory within dataDir that contains flake.nix.";
         };
 
@@ -453,6 +460,27 @@ in
               RestartSec = "5s";
             };
           };
+
+          systemd.services.hostenv-provider-cache-auth = {
+            description = "Render provider cache auth files from cache_auth_password";
+            wantedBy = [ "default.target" ];
+            before = [ "harmonia.service" "nginx.service" ];
+            script = ''
+              set -euo pipefail
+              umask 077
+              password="$(tr -d '\n\r' < "${cfg.cacheAuthPasswordFile}")"
+              hash="$(${pkgs.openssl}/bin/openssl passwd -apr1 "$password")"
+              cat > "${config.hostenv.runtimeDir}/cache_htpasswd" <<EOF
+cache:$hash
+EOF
+              chmod 0400 "${config.hostenv.runtimeDir}/cache_htpasswd"
+            '';
+            serviceConfig = {
+              Type = "oneshot";
+              RemainAfterExit = true;
+            };
+          };
+
           profile = [ cfg.package ];
         })
       ];

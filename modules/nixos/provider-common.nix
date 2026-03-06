@@ -111,10 +111,16 @@
             description = "Public cache signing key appended to trusted-public-keys.";
           };
 
+          authPasswordFile = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = "/run/secrets/hostenv/cache_auth_password";
+            description = "Path to cache auth password secret used to derive netrc at runtime.";
+          };
+
           netrcFile = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
-            default = null;
-            description = "Optional netrc file path used for cache authentication.";
+            default = "/run/hostenv/provider-cache.netrc";
+            description = "Runtime netrc file path used for cache authentication.";
           };
         };
       };
@@ -189,6 +195,14 @@
             message = "provider.cache.publicKey must be configured when provider.cache.enable is true.";
           }
           {
+            assertion = (!cacheCfg.enable) || (cacheCfg.authPasswordFile != null && cacheCfg.authPasswordFile != "");
+            message = "provider.cache.authPasswordFile must be configured when provider.cache.enable is true.";
+          }
+          {
+            assertion = (!cacheCfg.enable) || (cacheCfg.netrcFile != null && cacheCfg.netrcFile != "");
+            message = "provider.cache.netrcFile must be configured when provider.cache.enable is true.";
+          }
+          {
             assertion =
               (!onProviderServiceNode)
               || (serviceCfg != null
@@ -209,16 +223,43 @@
               mode = "0400";
             };
           })
-          (lib.mkIf (cacheCfg.enable && cacheCfg.netrcFile != null && cacheCfg.netrcFile != "") {
-            hostenv-provider-cache-netrc = {
-              key = "cache_netrc";
-              path = cacheCfg.netrcFile;
+          (lib.mkIf (cacheCfg.enable && cacheCfg.authPasswordFile != null && cacheCfg.authPasswordFile != "") {
+            hostenv-provider-cache-auth-password = {
+              key = "cache_auth_password";
+              path = cacheCfg.authPasswordFile;
               owner = "root";
               group = "root";
               mode = "0400";
             };
           })
         ];
+
+        systemd.services.hostenv-provider-cache-netrc = lib.mkIf (cacheCfg.enable && cacheCfg.url != null && cacheCfg.url != "" && cacheCfg.netrcFile != null && cacheCfg.netrcFile != "" && cacheCfg.authPasswordFile != null && cacheCfg.authPasswordFile != "") {
+          description = "Render provider cache netrc from password secret";
+          wantedBy = [ "multi-user.target" ];
+          before = [ "provider-deploy.service" "nix-daemon.service" ];
+          script = ''
+            set -euo pipefail
+            umask 077
+            password="$(tr -d '\n\r' < "${cacheCfg.authPasswordFile}")"
+            cache_host="${cacheCfg.url}"
+            cache_host="''${cache_host#https://}"
+            cache_host="''${cache_host#http://}"
+            cache_host="''${cache_host%%/*}"
+            mkdir -p "$(dirname "${cacheCfg.netrcFile}")"
+            cat > "${cacheCfg.netrcFile}" <<EOF
+machine $cache_host
+  login cache
+  password $password
+EOF
+            chown root:root "${cacheCfg.netrcFile}"
+            chmod 0400 "${cacheCfg.netrcFile}"
+          '';
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+          };
+        };
 
         services.provider-deploy = lib.mkIf deployCfg.enable {
           enable = true;

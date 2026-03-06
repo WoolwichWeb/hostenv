@@ -1452,8 +1452,8 @@ runCacheSecrets dryRun quiet = do
     let printIfNotQuiet = if quiet then const (pure ()) else printProvider
     secretsObj <- readSecretsObject providerSecretsPath
     let planPath = "generated/plan.json"
-    planExists <- Dir.doesFileExist planPath
-    hostenvHostname <-
+    hostenvHostname <- do
+        planExists <- Dir.doesFileExist planPath
         if not planExists
             then pure "hostenv.invalid"
             else do
@@ -1462,10 +1462,8 @@ runCacheSecrets dryRun quiet = do
                     Left err -> error err
                     Right (planObj :: KM.KeyMap A.Value) ->
                         pure (fromMaybe "hostenv.invalid" (lookupText (K.fromString "hostenvHostname") planObj))
-
     let signingKeyName = K.fromString "cache_signing_key"
-    let htpasswdKeyName = K.fromString "cache_htpasswd"
-    let netrcKeyName = K.fromString "cache_netrc"
+    let authPasswordKeyName = K.fromString "cache_auth_password"
     let publicKeyPath = "generated/cache-public-key.txt"
 
     let lookupSecretText key =
@@ -1475,8 +1473,7 @@ runCacheSecrets dryRun quiet = do
                 Nothing -> Nothing
 
     let existingSigningKey = lookupSecretText signingKeyName
-    let existingHtpasswd = lookupSecretText htpasswdKeyName
-    let existingNetrc = lookupSecretText netrcKeyName
+    let existingAuthPassword = lookupSecretText authPasswordKeyName
 
     publicKeyExists <- Dir.doesFileExist publicKeyPath
 
@@ -1484,11 +1481,8 @@ runCacheSecrets dryRun quiet = do
         error
             "hostenv-provider: cache signing key and generated/cache-public-key.txt must be created together; fix mismatch manually or regenerate both"
 
-    when ((existingHtpasswd == Nothing) /= (existingNetrc == Nothing)) $
-        error "hostenv-provider: cache_htpasswd and cache_netrc must be created together; fix mismatch manually"
-
     let needsSigningMaterial = existingSigningKey == Nothing && not publicKeyExists
-    let needsAuthMaterial = existingHtpasswd == Nothing && existingNetrc == Nothing
+    let needsAuthMaterial = existingAuthPassword == Nothing
 
     if not needsSigningMaterial && not needsAuthMaterial
         then printIfNotQuiet ("hostenv-provider: cache signing/auth secrets already present in " <> providerSecretsPath)
@@ -1496,7 +1490,7 @@ runCacheSecrets dryRun quiet = do
             if dryRun
                 then do
                     when needsSigningMaterial $ printIfNotQuiet "hostenv-provider: dry-run: would generate cache signing keypair and write generated/cache-public-key.txt"
-                    when needsAuthMaterial $ printIfNotQuiet "hostenv-provider: dry-run: would generate cache_htpasswd and cache_netrc"
+                    when needsAuthMaterial $ printIfNotQuiet "hostenv-provider: dry-run: would generate cache_auth_password"
                 else do
                     Dir.createDirectoryIfMissing True "generated"
                     (mSigningKey, mPublicKey) <-
@@ -1523,42 +1517,25 @@ runCacheSecrets dryRun quiet = do
                                         writeFile publicKeyPath (T.unpack pubText <> "\n")
                                         pure (Just privText, Just pubText)
 
-                    (mHtpasswd, mNetrc) <-
+                    mAuthPassword <-
                         if not needsAuthMaterial
-                            then pure (Nothing, Nothing)
+                            then pure Nothing
                             else do
                                 (pwdCode, pwdOut, pwdErr) <- readProcessWithExitCode "openssl" ["rand", "-hex", "24"] ""
                                 password <-
                                     case pwdCode of
                                         ExitFailure _ -> error ("hostenv-provider: failed to generate cache password: " <> pwdErr)
                                         ExitSuccess -> pure (T.strip (T.pack pwdOut))
-                                (hashCode, hashOut, hashErr) <- readProcessWithExitCode "openssl" ["passwd", "-apr1", T.unpack password] ""
-                                hashText <-
-                                    case hashCode of
-                                        ExitFailure _ -> error ("hostenv-provider: failed to generate htpasswd hash: " <> hashErr)
-                                        ExitSuccess -> pure (T.strip (T.pack hashOut))
-                                let htpasswdText = "cache:" <> hashText
-                                let netrcText =
-                                        T.intercalate
-                                            "\n"
-                                            [ "machine " <> hostenvHostname
-                                            , "  login cache"
-                                            , "  password " <> password
-                                            ]
-                                pure (Just htpasswdText, Just netrcText)
+                                pure (Just password)
 
                     let withSigning =
                             case mSigningKey of
                                 Nothing -> secretsObj
                                 Just value -> KM.insert signingKeyName (A.String value) secretsObj
-                    let withHtpasswd =
-                            case mHtpasswd of
+                    let withAuthPassword =
+                            case mAuthPassword of
                                 Nothing -> withSigning
-                                Just value -> KM.insert htpasswdKeyName (A.String value) withSigning
-                    let withNetrc =
-                            case mNetrc of
-                                Nothing -> withHtpasswd
-                                Just value -> KM.insert netrcKeyName (A.String value) withHtpasswd
+                                Just value -> KM.insert authPasswordKeyName (A.String value) withSigning
 
                     recipients <- ageRecipients providerSecretsPath
                     when (null recipients) $
@@ -1567,10 +1544,10 @@ runCacheSecrets dryRun quiet = do
                                 <> T.unpack providerSecretsPath
                                 <> ". Add recipients under sops.age[].recipient."
                             )
-                    writeProviderSecrets recipients withNetrc
+                    writeProviderSecrets recipients withAuthPassword
                     ensureTrackedInGit ["generated/cache-public-key.txt"]
                     when needsSigningMaterial $ printIfNotQuiet "hostenv-provider: generated cache signing keypair and wrote generated/cache-public-key.txt"
-                    when needsAuthMaterial $ printIfNotQuiet "hostenv-provider: generated cache_htpasswd and cache_netrc"
+                    when needsAuthMaterial $ printIfNotQuiet "hostenv-provider: generated cache_auth_password"
 
 -- -------- Main --------
 main :: IO ()

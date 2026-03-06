@@ -26,8 +26,8 @@ import System.IO (hClose, openTempFile)
 import qualified Data.Map.Strict as Map
 import Hostenv.Provider.Config (AppConfig(..), DeployConfig(..), loadConfig)
 import Hostenv.Provider.Crypto
-import Hostenv.Provider.DB (OAuthCredential(..))
-import Hostenv.Provider.DeployApi (acceptsNodeEvents, extractBearer, normalizeStatus, validateIntent)
+import Hostenv.Provider.DB (DeployAction(DeployAction), OAuthCredential(..))
+import Hostenv.Provider.DeployApi (acceptsNodeEvents, dispatchFingerprint, dispatchForNode, extractBearer, normalizeStatus, shouldDispatchActions, validateIntent)
 import Hostenv.Provider.Gitlab
   ( GitlabCredentialContext(..)
   , GitlabError(..)
@@ -59,6 +59,8 @@ main = do
   testDeployApiStatusNormalization
   testDeployApiEventAcceptance
   testDeployApiIntentValidation
+  testDispatchForNodeMigrationSequencing
+  testWebsocketDispatchFingerprinting
   testPlanParsing
   testNodeOrderWithMigrations
   testNodeOrderWithDnsSkipsNonMigratingEnvDiscovery
@@ -152,6 +154,105 @@ testDeployApiIntentValidation = do
   assert (validateIntent invalidUser == Nothing) "validateIntent should reject blank user names"
   assert (validateIntent invalidOp == Nothing) "validateIntent should reject unknown action ops"
 
+testDispatchForNodeMigrationSequencing :: IO ()
+testDispatchForNodeMigrationSequencing = do
+  let sourceIntent =
+        A.object
+          [ "schemaVersion" A..= (1 :: Int)
+          , "actions" A..=
+              [ A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("backup" :: T.Text), "toNode" A..= ("node-b" :: T.Text)]
+              , A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("deactivate" :: T.Text), "toNode" A..= ("node-b" :: T.Text)]
+              ]
+          ]
+      destinationIntent =
+        A.object
+          [ "schemaVersion" A..= (1 :: Int)
+          , "actions" A..=
+              [ A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("restore" :: T.Text), "fromNode" A..= ("node-a" :: T.Text)]
+              , A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("activate" :: T.Text), "fromNode" A..= ("node-a" :: T.Text)]
+              ]
+          ]
+      t0 = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime 0)
+      mkAction nodeName actionIndexVal opVal statusVal =
+        DeployAction
+          nodeName
+          actionIndexVal
+          opVal
+          "alice"
+          statusVal
+          Nothing
+          Nothing
+          Nothing
+          t0
+      sourceQueued = [mkAction "node-a" 0 "backup" "queued", mkAction "node-a" 1 "deactivate" "queued"]
+      destinationQueued = [mkAction "node-b" 0 "restore" "queued", mkAction "node-b" 1 "activate" "queued"]
+      allQueued = sourceQueued <> destinationQueued
+      opNames = map (\(DeployAction _ _ opVal _ _ _ _ _ _) -> opVal)
+
+  case dispatchForNode sourceIntent allQueued "node-a" of
+    Nothing -> assert False "dispatchForNode should return filtered source payload"
+    Just (_, actions) ->
+      assert
+        (opNames actions == ["backup" :: T.Text])
+        "source node should dispatch backup before deactivate"
+
+  case dispatchForNode destinationIntent allQueued "node-b" of
+    Nothing -> assert False "dispatchForNode should return filtered destination payload"
+    Just (_, actions) ->
+      assert
+        (null actions)
+        "destination restore should wait for source backup success"
+
+  let backupSucceeded = mkAction "node-a" 0 "backup" "success" : tail sourceQueued
+      afterBackup = backupSucceeded <> destinationQueued
+  case dispatchForNode destinationIntent afterBackup "node-b" of
+    Nothing -> assert False "dispatchForNode should return destination payload after backup success"
+    Just (_, actions) ->
+      assert
+        (opNames actions == ["restore" :: T.Text])
+        "destination should dispatch restore before activate"
+
+  let restoreSucceeded = [mkAction "node-b" 0 "restore" "success", mkAction "node-b" 1 "activate" "queued"]
+      afterRestore = backupSucceeded <> restoreSucceeded
+  case dispatchForNode sourceIntent afterRestore "node-a" of
+    Nothing -> assert False "dispatchForNode should return source payload after restore success"
+    Just (_, actions) ->
+      assert
+        (opNames actions == ["deactivate" :: T.Text])
+        "source should dispatch deactivate after destination restore success"
+
+  case dispatchForNode destinationIntent afterRestore "node-b" of
+    Nothing -> assert False "dispatchForNode should return destination payload after restore success"
+    Just (_, actions) ->
+      assert
+        (opNames actions == ["activate" :: T.Text])
+        "destination activate should run only after restore success"
+
+testWebsocketDispatchFingerprinting :: IO ()
+testWebsocketDispatchFingerprinting = do
+  let t0 = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime 0)
+      mkAction nodeName actionIndexVal opVal statusVal =
+        DeployAction
+          nodeName
+          actionIndexVal
+          opVal
+          "alice"
+          statusVal
+          Nothing
+          Nothing
+          Nothing
+          t0
+      actions =
+        [ mkAction "node-b" 0 "restore" "queued"
+        , mkAction "node-b" 1 "activate" "queued"
+        ]
+      fingerprintA = dispatchFingerprint "job-1" actions
+      actionsUpdated = [mkAction "node-b" 0 "restore" "success", mkAction "node-b" 1 "activate" "queued"]
+      fingerprintB = dispatchFingerprint "job-1" actionsUpdated
+  assert (shouldDispatchActions Nothing fingerprintA actions) "websocket dispatch should run on first seen payload"
+  assert (not (shouldDispatchActions (Just fingerprintA) fingerprintA actions)) "websocket dispatch should skip duplicate payload fingerprints"
+  assert (shouldDispatchActions (Just fingerprintA) fingerprintB actionsUpdated) "websocket dispatch should emit when same job id has newly executable actions"
+
 
 testPlanParsing :: IO ()
 testPlanParsing = do
@@ -234,7 +335,6 @@ testCommandSequence = do
             , CommandSpec "git" ["add", "-A", "generated"] "/tmp/provider"
             , CommandSpec "git" ["add", "-A", "flake.nix", "flake.lock"] "/tmp/provider"
             , CommandSpec "git" ["status", "--porcelain", "--", "generated", "flake.nix", "flake.lock"] "/tmp/provider"
-            , CommandSpec "git" ["commit", "-m", "hostenv-provider: deploy intent for acme/site"] "/tmp/provider"
             , CommandSpec "git" ["rev-parse", "HEAD"] "/tmp/provider"
             ]
 
@@ -544,13 +644,13 @@ testEnsureProviderRepoInvalidDir = do
   (path, handle) <- openTempFile tmpDir "provider-repo-invalid-"
   hClose handle
   removeFile path
-  createDirectory path
+  createDirectoryIfMissing True (path <> "/git/provider.git")
   let cfg = mkRepoConfig path
   result <- ensureProviderRepo cfg
   removePathForcibly path
   case result of
-    Left msg -> assert ("not a git checkout" `T.isInfixOf` msg) "invalid repo dir should report git checkout error"
-    other -> assert False ("expected checkout error, got " <> show other)
+    Left msg -> assert ("provider bare repository is invalid" `T.isInfixOf` msg) "invalid provider bare repo should report validation error"
+    other -> assert False ("expected bare repo validation error, got " <> show other)
 
 
 testDeployIntentStablePayload :: IO ()

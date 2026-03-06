@@ -575,11 +575,7 @@ applyDeployActionEvent cfg jobId nodeName rawStatus rawPhase mMessage =
       Just "" -> pure ()
       Just "intent" ->
         case status of
-          "success" -> do
-            _ <- execute conn
-              "UPDATE deploy_actions SET status = 'success', message = COALESCE(?, message), started_at = COALESCE(started_at, now()), finished_at = COALESCE(finished_at, now()), updated_at = now() WHERE job_id = ? AND node = ? AND status IN ('queued','waiting','running')"
-              (message, jobId, nodeName)
-            pure ()
+          "success" -> pure ()
           "failed" -> finalizeRemaining conn "failed" message
           "timed_out" -> finalizeRemaining conn "timed_out" message
           _ -> pure ()

@@ -32,7 +32,7 @@ import Network.Socket (Family (AF_UNIX), Socket, SocketType (Stream), SockAddr (
 
 import Hostenv.Provider.Command (commandErrorText, runCommandWithEnv)
 import Hostenv.Provider.Config (AppConfig(..), appWorkDir)
-import Hostenv.Provider.Service (CommandSpec(..), CommandOutput(..), renderGitCredentials)
+import Hostenv.Provider.Service (CommandOutput(..), CommandSpec(..), renderGitCredentials)
 import Hostenv.Provider.Util (randomToken)
 
 data RepoStatus
@@ -55,14 +55,20 @@ ensureProviderRepo cfg =
           createDirectoryIfMissing True (takeDirectory dataDir)
           pure (Right RepoMissing)
         else do
-          hasGitDir <- doesDirectoryExist (dataDir </> ".git")
-          if not hasGitDir
-            then pure (Left "dataDir exists but is not a git checkout. Delete it and retry.")
+          let bareRepoPath = providerBareRepoPath cfg
+          hasBareRepo <- doesDirectoryExist bareRepoPath
+          if not hasBareRepo
+            then pure (Right RepoMissing)
             else do
-              worktreeResult <- ensureRepoWorktree cfg
-              case worktreeResult of
-                Left err -> pure (Left err)
-                Right _ -> pure (Right RepoReady)
+              hasHead <- doesFileExist (bareRepoPath </> "HEAD")
+              hasObjects <- doesDirectoryExist (bareRepoPath </> "objects")
+              if not (hasHead && hasObjects)
+                then pure (Left ("provider bare repository is invalid at " <> T.pack bareRepoPath))
+                else do
+                  worktreeResult <- ensureRepoWorktree cfg
+                  case worktreeResult of
+                    Left err -> pure (Left err)
+                    Right _ -> pure (Right RepoReady)
 
 bootstrapProviderRepo :: AppConfig -> T.Text -> T.Text -> IO (Either T.Text RepoStatus)
 bootstrapProviderRepo cfg repoUrl token = do
@@ -87,8 +93,8 @@ pullProviderRepoWithOAuth cfg host token =
 
 pullProviderRepoWithEnv :: AppConfig -> [(T.Text, T.Text)] -> IO (Either RepoPullError ())
 pullProviderRepoWithEnv cfg envVars = do
-  let AppConfig { appDataDir = dataDir } = cfg
-  pullResult <- runCommandWithEnv cfg envVars (CommandSpec "git" ["pull", "--rebase", "--autostash"] dataDir)
+  let workDir = appWorkDir cfg
+  pullResult <- runCommandWithEnv cfg envVars (CommandSpec "git" ["pull", "--rebase", "--autostash"] workDir)
   case pullResult of
     Left err ->
       let msg = "Failed to synchronize provider repository before operation.\n" <> commandErrorText err
@@ -99,36 +105,55 @@ pullProviderRepoWithEnv cfg envVars = do
 
 ensureRepoWorktree :: AppConfig -> IO (Either T.Text ())
 ensureRepoWorktree cfg = do
-  let flakePath = appWorkDir cfg </> "flake.nix"
-  hasFlake <- doesFileExist flakePath
-  if not hasFlake
-    then pure (Left (T.pack ("missing flake.nix at " <> flakePath)))
-    else do
-      createDirectoryIfMissing True (appWorkDir cfg </> "generated")
-      let statePath = appWorkDir cfg </> "generated" </> "state.json"
-      hasState <- doesFileExist statePath
-      if hasState
-        then pure ()
-        else BL.writeFile statePath "{}\n"
-      let AppConfig { appDataDir = dataDir } = cfg
-      workDirExists <- doesDirectoryExist (appWorkDir cfg)
-      if workDirExists
-        then do
-          chmodResult <- runCommandWithEnv cfg [] (CommandSpec "chmod" ["-R", "u+rwX", T.pack (appWorkDir cfg)] dataDir)
+  let bareRepoPath = providerBareRepoPath cfg
+      workDir = appWorkDir cfg
+  workDirExists <- doesDirectoryExist workDir
+  worktreeResult <-
+    if not workDirExists
+      then do
+        createDirectoryIfMissing True (takeDirectory workDir)
+        addResult <- runCommandWithEnv cfg [] (CommandSpec "git" ["--git-dir", T.pack bareRepoPath, "worktree", "add", T.pack workDir] cfg.appDataDir)
+        case addResult of
+          Left err -> pure (Left ("failed to create provider worktree at " <> T.pack workDir <> "\n" <> commandErrorText err))
+          Right _ -> pure (Right ())
+      else pure (Right ())
+  case worktreeResult of
+    Left err -> pure (Left err)
+    Right () -> do
+      let flakePath = workDir </> "flake.nix"
+      hasFlake <- doesFileExist flakePath
+      if not hasFlake
+        then pure (Left (T.pack ("missing flake.nix at " <> flakePath)))
+        else do
+          createDirectoryIfMissing True (workDir </> "generated")
+          let statePath = workDir </> "generated" </> "state.json"
+          hasState <- doesFileExist statePath
+          if hasState
+            then pure ()
+            else BL.writeFile statePath "{}\n"
+          chmodResult <- runCommandWithEnv cfg [] (CommandSpec "chmod" ["-R", "u+rwX", T.pack workDir] cfg.appDataDir)
           case chmodResult of
             Left err -> pure (Left (commandErrorText err))
             Right _ -> pure (Right ())
-        else pure (Right ())
 
 cloneWithOAuth :: AppConfig -> T.Text -> T.Text -> IO (Either T.Text ())
 cloneWithOAuth cfg repoUrl token = do
   withTempGitCredentials repoUrl token $ \envVars -> do
     let AppConfig { appDataDir = dataDir } = cfg
-    let cloneCmd = CommandSpec "git" ["clone", repoUrl, T.pack dataDir] (takeDirectory dataDir)
+        bareRepoPath = providerBareRepoPath cfg
+    createDirectoryIfMissing True (takeDirectory bareRepoPath)
+    let cloneCmd = CommandSpec "git" ["clone", "--bare", repoUrl, T.pack bareRepoPath] (takeDirectory bareRepoPath)
     cloneResult <- runCommandWithEnv cfg envVars cloneCmd
     case cloneResult of
       Left err -> pure (Left (commandErrorText err))
-      Right _ -> pure (Right ())
+      Right _ -> do
+        worktreeResult <- ensureRepoWorktree cfg
+        case worktreeResult of
+          Left err -> pure (Left err)
+          Right () -> pure (Right ())
+
+providerBareRepoPath :: AppConfig -> FilePath
+providerBareRepoPath cfg = cfg.appDataDir </> "git" </> "provider.git"
 
 withTempGitCredentials :: T.Text -> T.Text -> ([(T.Text, T.Text)] -> IO a) -> IO a
 withTempGitCredentials repoUrl token action = do
@@ -189,4 +214,3 @@ isAuthFailure msg =
         , "invalid credentials"
         ]
    in any (`T.isInfixOf` lower) patterns
-

@@ -48,7 +48,7 @@ The devshell automatically handles what used to be manual setup:
 - **Secrets**: Creates `secrets/provider.yaml` with an ephemeral age key if missing
 - **State**: Creates `generated/state.json` (empty `{}`) if missing
 - **Provider node tokens**: If `provider.deploy.enable = true`, prompts to generate node authentication tokens
-- **Cache secrets**: Prompts to generate `cache_signing_key`, `cache_htpasswd`, `cache_netrc`, and `generated/cache-public-key.txt` when missing
+- **Cache secrets**: Prompts to generate `cache_signing_key`, `cache_auth_password`, and `generated/cache-public-key.txt` when missing
 
 You'll see interactive prompts for any missing components. Confirm to auto-generate, or cancel to set up manually later.
 

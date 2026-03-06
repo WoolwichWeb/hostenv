@@ -27,8 +27,8 @@ import Network.HTTP.Types (status403, status404)
 import Servant
 
 import Hostenv.Provider.Config (AppConfig(..), DeployConfig(..))
-import Hostenv.Provider.DB (loadDeployActionsByNode, loadLatestDeployIntentForNode)
-import Hostenv.Provider.DeployApi (NodeEvent, acceptsNodeEvents, backupSnapshotHandler, eventHandler, intentByJobHandler, intentByShaHandler, jobActionsHandler, jobStatusHandler, jobStatusesHandler, nextDeployJobHandler, validateIntent)
+import Hostenv.Provider.DB (loadDeployActions, loadLatestDeployIntentForNode)
+import Hostenv.Provider.DeployApi (NodeEvent, acceptsNodeEvents, backupSnapshotHandler, dispatchFingerprint, dispatchForNode, eventHandler, intentByJobHandler, intentByShaHandler, jobActionsHandler, jobStatusHandler, jobStatusesHandler, nextDeployJobHandler, shouldDispatchActions, validateIntent)
 import Hostenv.Provider.Jobs (JobRuntime, duplicateBroadcastChannel, jobSummaryStatus, loadJobById, markJobFailedFromDeploy, markJobSucceededFromDeploy, publishJobUpdate, startJobRuntime)
 import Hostenv.Provider.Repo (RepoStatus, openUnixSocket)
 import Hostenv.Provider.UI.Router (uiApp)
@@ -134,48 +134,53 @@ deploySocketServer runtime cfg nodeName pending = do
   if not (isValidWsAuth cfg nodeName firstMessage)
     then WS.sendClose connection ("forbidden" :: Text)
     else do
-      initialJobId <- sendLatestDeployJob cfg nodeName connection Nothing
+      initialDispatchId <- sendLatestDeployJob cfg nodeName connection Nothing
       WS.sendTextData connection (A.encode (A.object ["type" A..= ("deploy_hint" :: Text), "node" A..= nodeName]))
       channel <- duplicateBroadcastChannel runtime
-      let loop mLastJobId = do
+      let loop mLastDispatchId = do
             _ <- atomically (readTChan channel)
-            nextJobId <- sendLatestDeployJob cfg nodeName connection mLastJobId
+            nextDispatchId <- sendLatestDeployJob cfg nodeName connection mLastDispatchId
             WS.sendTextData connection (A.encode (A.object ["type" A..= ("deploy_hint" :: Text), "node" A..= nodeName]))
-            loop nextJobId
-      loop initialJobId
+            loop nextDispatchId
+      loop initialDispatchId
 
 sendLatestDeployJob :: AppConfig -> Text -> WS.Connection -> Maybe Text -> IO (Maybe Text)
-sendLatestDeployJob cfg nodeName connection mLastJobId = do
+sendLatestDeployJob cfg nodeName connection mLastDispatchId = do
   mLatest <- loadLatestDeployIntentForNode cfg nodeName
   case mLatest of
-    Nothing -> pure mLastJobId
+    Nothing -> pure mLastDispatchId
     Just (jobId, commitSha, payload) ->
-      if mLastJobId == Just jobId
-        then pure mLastJobId
-        else do
-          mJob <- loadJobById cfg jobId
-          case mJob of
-            Nothing -> pure mLastJobId
-            Just job | not (acceptsNodeEvents (jobSummaryStatus job)) -> pure mLastJobId
-            Just _ ->
-              case validateIntent payload of
-                Nothing -> pure mLastJobId
-                Just validated -> do
-                  actions <- loadDeployActionsByNode cfg jobId nodeName
-                  WS.sendTextData
-                    connection
-                    ( A.encode
-                        ( A.object
-                            [ "type" A..= ("deploy_job" :: Text)
-                            , "jobId" A..= jobId
-                            , "commitSha" A..= commitSha
-                            , "node" A..= nodeName
-                            , "intent" A..= validated
-                            , "actions" A..= actions
-                            ]
-                        )
-                    )
-                  pure (Just jobId)
+      do
+        mJob <- loadJobById cfg jobId
+        case mJob of
+          Nothing -> pure mLastDispatchId
+          Just job | not (acceptsNodeEvents (jobSummaryStatus job)) -> pure mLastDispatchId
+          Just _ ->
+            case validateIntent payload of
+              Nothing -> pure mLastDispatchId
+              Just validated -> do
+                allJobActions <- loadDeployActions cfg jobId
+                case dispatchForNode validated allJobActions nodeName of
+                  Nothing -> pure mLastDispatchId
+                  Just (filteredIntent, filteredActions) -> do
+                    let dispatchId = dispatchFingerprint jobId filteredActions
+                    if not (shouldDispatchActions mLastDispatchId dispatchId filteredActions)
+                      then pure mLastDispatchId
+                      else do
+                        WS.sendTextData
+                          connection
+                          ( A.encode
+                              ( A.object
+                                  [ "type" A..= ("deploy_job" :: Text)
+                                  , "jobId" A..= jobId
+                                  , "commitSha" A..= commitSha
+                                  , "node" A..= nodeName
+                                  , "intent" A..= filteredIntent
+                                  , "actions" A..= filteredActions
+                                  ]
+                              )
+                          )
+                        pure (Just dispatchId)
 
 requestedNode :: Wai.Request -> Maybe Text
 requestedNode req =

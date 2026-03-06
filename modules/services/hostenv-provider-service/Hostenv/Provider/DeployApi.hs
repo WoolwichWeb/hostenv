@@ -17,15 +17,21 @@ module Hostenv.Provider.DeployApi
   , eventHandler
   , validateIntent
   , acceptsNodeEvents
+  , dispatchFingerprint
   , extractBearer
+  , dispatchForNode
   , normalizeStatus
+  , shouldDispatchActions
   ) where
 
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
+import Data.Foldable (toList)
 import Data.Char (isAsciiLower, isDigit)
+import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Control.Monad.IO.Class (liftIO)
@@ -176,16 +182,23 @@ nextDeployJobHandler cfg nodeName mAuth = do
             then throwError err404
             else do
               validated <- maybe (throwError err500) pure (validateIntent payload)
-              actions <- liftIO (loadDeployActionsByNode cfg jobId nodeName)
-              pure
-                ( A.object
-                    [ "jobId" A..= jobId
-                    , "commitSha" A..= commitSha
-                    , "node" A..= nodeName
-                    , "intent" A..= validated
-                    , "actions" A..= actions
-                    ]
-                )
+              allActions <- liftIO (loadDeployActions cfg jobId)
+              case dispatchForNode validated allActions nodeName of
+                Nothing -> throwError err500
+                Just (filteredIntent, filteredActions) ->
+                  if null filteredActions && hasPendingActions (filter ((== nodeName) . (.node)) allActions)
+                    then throwError err404
+                    else
+                      pure
+                        ( A.object
+                            [ "jobId" A..= jobId
+                            , "commitSha" A..= commitSha
+                            , "node" A..= nodeName
+                            , "intent" A..= filteredIntent
+                            , "actions" A..= filteredActions
+                            ]
+                        )
+
 
 backupSnapshotHandler :: AppConfig -> Text -> Text -> Text -> Text -> Maybe Text -> Handler A.Value
 backupSnapshotHandler cfg jobId nodeName sourceNode userName mAuth = do
@@ -389,3 +402,87 @@ renderFailureMessage nodeName status mMessage =
           Just msg | T.strip msg /= "" -> ": " <> msg
           _ -> ""
    in base <> " on " <> nodeName <> detail
+
+hasPendingActions :: [DeployAction] -> Bool
+hasPendingActions actions =
+  any (\action -> action.status `elem` ["queued", "waiting", "running"]) actions
+
+dispatchForNode :: A.Value -> [DeployAction] -> Text -> Maybe (A.Value, [DeployAction])
+dispatchForNode validatedIntent allActions nodeName =
+  let nodeActions = filter ((== nodeName) . (.node)) allActions
+      executable = executableActionIndexes nodeActions allActions
+      filteredActions = filter (\action -> Set.member action.actionIndex executable) nodeActions
+      filteredIntent = filterIntentActionsByIndexes validatedIntent executable
+   in fmap (\intent -> (intent, filteredActions)) filteredIntent
+
+dispatchFingerprint :: Text -> [DeployAction] -> Text
+dispatchFingerprint jobId actions =
+  jobId <> ":" <> T.intercalate "," (map render actions)
+  where
+    render :: DeployAction -> Text
+    render action =
+      T.intercalate "/" [action.node, T.pack (show action.actionIndex), action.op, action.user, action.status]
+
+shouldDispatchActions :: Maybe Text -> Text -> [DeployAction] -> Bool
+shouldDispatchActions mLastDispatchId dispatchId filteredActions =
+  not (null filteredActions) && mLastDispatchId /= Just dispatchId
+
+executableActionIndexes :: [DeployAction] -> [DeployAction] -> Set.Set Int
+executableActionIndexes nodeActions allActions =
+  Set.fromList
+    [ action.actionIndex
+    | action <- nodeActions
+    , action.status `elem` ["queued", "waiting", "running"]
+    , canRun action
+    ]
+  where
+    pendingStatuses :: [Text]
+    pendingStatuses = ["queued", "waiting", "running"]
+
+    statusMap :: Map.Map Int Text
+    statusMap = Map.fromList [(entry.actionIndex, entry.status) | entry <- nodeActions]
+
+    pendingByNodeAndUser :: Text -> Text -> [DeployAction]
+    pendingByNodeAndUser opName userName =
+      filter
+        (\entry -> entry.op == opName && entry.user == userName && entry.status `elem` pendingStatuses)
+        nodeActions
+
+    hasSucceededGlobal :: Text -> Text -> Bool
+    hasSucceededGlobal opName userName =
+      any (\entry -> entry.op == opName && entry.user == userName && entry.status == "success") allActions
+
+    priorIndexes :: Int -> [Int]
+    priorIndexes actionIndex =
+      mapMaybe
+        (\entry -> if entry.actionIndex < actionIndex then Just entry.actionIndex else Nothing)
+        nodeActions
+
+    priorComplete :: Int -> Bool
+    priorComplete actionIndex =
+      all
+        (\idx -> Map.lookup idx statusMap == Just "success")
+        (priorIndexes actionIndex)
+
+    canRun :: DeployAction -> Bool
+    canRun action
+      | action.op == "restore" =
+          case pendingByNodeAndUser "restore" action.user of
+            (firstRestore:_) | firstRestore.actionIndex == action.actionIndex ->
+              hasSucceededGlobal "backup" action.user && priorComplete action.actionIndex
+            _ -> False
+      | action.op == "deactivate" =
+          hasSucceededGlobal "restore" action.user && priorComplete action.actionIndex
+      | otherwise = priorComplete action.actionIndex
+
+filterIntentActionsByIndexes :: A.Value -> Set.Set Int -> Maybe A.Value
+filterIntentActionsByIndexes value allowedIndexes =
+  case value of
+    A.Object obj ->
+      case KM.lookup (K.fromString "actions") obj of
+        Just (A.Array arr) ->
+          let indexed = zip [0..] (toList arr)
+              kept = [item | (idx, item) <- indexed, Set.member idx allowedIndexes]
+           in Just (A.Object (KM.insert (K.fromString "actions") (A.toJSON kept) obj))
+        _ -> Nothing
+    _ -> Nothing
