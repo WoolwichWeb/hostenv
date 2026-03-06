@@ -31,12 +31,9 @@
         #   providerApiBaseUrl = "https://hosting.example.com";
         #   nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
         # };
-        # cache = {
-        #   enable = true;
-        #   url = "https://hosting.example.com/cache";
-        #   publicKeyFile = ./generated/cache-public-key.txt;
-        #   netrcFile = "/run/secrets/hostenv-provider/cache_auth_netrc";
-        # };
+        # Note: cache client configuration is automatic when provider-service
+        # is enabled (provider.service points to an environment with
+        # services.hostenv-provider.enable = true).
       };
     };
 }

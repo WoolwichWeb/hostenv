@@ -251,6 +251,82 @@ let
       inherit projectDir eval input;
     };
 
+  mkProviderServiceProjectInput = { enableLetsEncrypt }:
+    let
+      providerProjectDir = pkgs.runCommand "hostenv-provider-service-project" { } ''
+        mkdir -p $out
+        cat > $out/hostenv.nix <<'EOF'
+        { ... }: {
+          defaultEnvironment = "env1";
+          services.hostenv-provider.enable = true;
+          services.hostenv-provider.webhookHost = "provider.hosting.test";
+          environments.env1 = {
+            enable = true;
+            type = "development";
+            virtualHosts."provider.hosting.test" = {
+              enableLetsEncrypt = ${if enableLetsEncrypt then "true" else "false"};
+              globalRedirect = null;
+              locations = { };
+            };
+          };
+          hostenv = {
+            organisation = "org";
+            project = "proj";
+            hostenvHostname = "hosting.test";
+            root = "/srv/proj";
+          };
+        }
+        EOF
+      '';
+      eval = makeHostenv [ (providerProjectDir + /hostenv.nix) ] null;
+      input = {
+        outPath = providerProjectDir;
+        __toString = self: toString providerProjectDir;
+        lib = {
+          hostenv = {
+            "${"x86_64-linux"}" = {
+              environments = eval.config.environments;
+              defaultEnvironment = eval.config.defaultEnvironment;
+            };
+          };
+        };
+      };
+    in
+    {
+      inherit providerProjectDir eval input;
+    };
+
+  providerServiceSelector = {
+    organisation = "org";
+    project = "proj";
+    environmentName = "env1";
+  };
+
+  mkProviderServicePlan = {
+    providerInput,
+    selfInput,
+    deploy ? defaultDeploy,
+    service ? providerServiceSelector
+  }:
+    providerPlan {
+      inputs = {
+        self = selfInput;
+        hostenv = mkHostenvStub "x86_64-linux";
+        org__proj = providerInput;
+      };
+      system = "x86_64-linux";
+      inherit lib pkgs;
+      letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
+      hostenvHostname = "hosting.test";
+      nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
+      statePath = dummyStatePath;
+      planPath = null;
+      nodeSystems = { };
+      cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
+      planSource = "eval";
+      inherit deploy service;
+    };
+
   providerEnvs = envsEval.config.environments;
 
   sampleProjects =
@@ -554,6 +630,56 @@ let
     cp ${selfLockFile} $out/flake.lock
   '';
 
+  selfWithCachePublicKey = pkgs.runCommand "provider-self-with-cache-public-key" { } ''
+    mkdir -p $out/generated
+    cp ${selfLockFile} $out/flake.lock
+    cat > $out/generated/cache-public-key.txt <<'EOF'
+    cache-public-key-test
+    EOF
+  '';
+
+  selfWithoutCachePublicKey = pkgs.runCommand "provider-self-without-cache-public-key" { } ''
+    mkdir -p $out
+    cp ${selfLockFile} $out/flake.lock
+  '';
+
+  providerServiceHttpsProject = mkProviderServiceProjectInput { enableLetsEncrypt = true; };
+  providerServiceHttpProject = mkProviderServiceProjectInput { enableLetsEncrypt = false; };
+
+  planDeployAutoDefaults = (mkProviderServicePlan {
+    providerInput = providerServiceHttpsProject.input;
+    selfInput = selfWithCachePublicKey;
+    deploy = {
+      enable = true;
+      providerApiBaseUrl = null;
+      nodeAuthTokenFile = null;
+      nodeAuthTokenFiles = { };
+      reconnectSeconds = 5;
+    };
+  }).plan;
+
+  planCacheClientAutoDefaults = (mkProviderServicePlan {
+    providerInput = providerServiceHttpProject.input;
+    selfInput = selfWithCachePublicKey;
+  }).plan;
+
+  planDeployDefaultsDoNotOverride = (mkProviderServicePlan {
+    providerInput = providerServiceHttpsProject.input;
+    selfInput = selfWithCachePublicKey;
+    deploy = {
+      enable = true;
+      providerApiBaseUrl = "https://provider.override.test";
+      nodeAuthTokenFile = "/run/secrets/hostenv/override_provider_node_token";
+      nodeAuthTokenFiles = { };
+      reconnectSeconds = 5;
+    };
+  }).plan;
+
+  planCachePublicKeyMissing = builtins.tryEval (lib.importJSON ((mkProviderServicePlan {
+    providerInput = providerServiceHttpsProject.input;
+    selfInput = selfWithoutCachePublicKey;
+  }).plan));
+
   planDefaultLock =
     builtins.tryEval (providerPlan {
       inputs = {
@@ -842,6 +968,46 @@ in
     asserts.assertTrue "provider-plan-deploy-missing-api-base-asserts"
       (! planDeployMissingApiBase.success)
       "plan generation must fail when deploy is enabled and no providerApiBaseUrl is configured";
+
+  provider-plan-deploy-auto-defaults =
+    let
+      plan = lib.importJSON planDeployAutoDefaults;
+      topLevelDeploy = plan.deploy or { };
+      nodeDeploy = plan.nodes.node1.provider.deploy or { };
+      ok = topLevelDeploy.providerApiBaseUrl == "https://provider.hosting.test"
+        && nodeDeploy.providerApiBaseUrl == "https://provider.hosting.test"
+        && nodeDeploy.nodeAuthTokenFile == "/run/secrets/hostenv/provider_node_token";
+    in
+    asserts.assertTrue "provider-plan-deploy-auto-defaults" ok
+      "provider deploy defaults should derive from the enabled provider-service webhook host";
+
+  provider-plan-cache-client-auto-defaults =
+    let
+      plan = lib.importJSON planCacheClientAutoDefaults;
+      nodeCache = plan.nodes.node1.provider.cache or { };
+      ok = nodeCache.enable == true
+        && nodeCache.url == "http://provider.hosting.test/cache"
+        && nodeCache.publicKey == "cache-public-key-test";
+    in
+    asserts.assertTrue "provider-plan-cache-client-auto-defaults" ok
+      "provider cache defaults should derive from webhook host and generated cache public key";
+
+  provider-plan-deploy-defaults-do-not-override =
+    let
+      plan = lib.importJSON planDeployDefaultsDoNotOverride;
+      topLevelDeploy = plan.deploy or { };
+      nodeDeploy = plan.nodes.node1.provider.deploy or { };
+      ok = topLevelDeploy.providerApiBaseUrl == "https://provider.override.test"
+        && nodeDeploy.providerApiBaseUrl == "https://provider.override.test"
+        && nodeDeploy.nodeAuthTokenFile == "/run/secrets/hostenv/override_provider_node_token";
+    in
+    asserts.assertTrue "provider-plan-deploy-defaults-do-not-override" ok
+      "explicit provider deploy settings should take precedence over derived defaults";
+
+  provider-plan-cache-public-key-missing-asserts =
+    asserts.assertTrue "provider-plan-cache-public-key-missing-asserts"
+      (! planCachePublicKeyMissing.success)
+      "plan generation must fail when provider-service is enabled and cache public key is missing";
 
   provider-plan-vhost-conflict-state = providerPlanVhostConflictState;
   provider-plan-vhost-conflict-new-envs = providerPlanVhostConflictNewEnvs;

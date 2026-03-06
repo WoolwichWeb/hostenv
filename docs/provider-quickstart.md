@@ -136,6 +136,17 @@ The bundle `generated/{plan.json,state.json,flake.nix}` is the auditable snapsho
 
     # Auto-initialization of missing files (default: true)
     plan.autoInit = true;
+
+    # Provider-deploy configuration (for node agent deployment)
+    deploy = {
+      enable = true;
+      # providerApiBaseUrl and nodeAuthTokenFile are required when provider-service
+      # is not enabled. When provider.service points to an environment with
+      # services.hostenv-provider.enable = true, these defaults are derived
+      # automatically from the service configuration.
+      providerApiBaseUrl = "https://hostenv.example.com";
+      nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
+    };
   };
 }
 ```

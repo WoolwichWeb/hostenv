@@ -101,6 +101,45 @@ let
           (if allowIndexing then "" else mkHeaderLine "X-Robots-Tag" "noindex")
         ]);
 
+      isNullOrEmpty = value: value == null || value == "";
+
+      normalizeWebhookHost = webhookHostRaw:
+        let
+          raw =
+            if webhookHostRaw == null then ""
+            else lib.strings.toLower webhookHostRaw;
+          withoutScheme =
+            if lib.strings.hasPrefix "https://" raw then
+              lib.strings.removePrefix "https://" raw
+            else if lib.strings.hasPrefix "http://" raw then
+              lib.strings.removePrefix "http://" raw
+            else
+              raw;
+        in
+        if withoutScheme == "" then
+          builtins.throw "provider plan: services.hostenv-provider.webhookHost must not be empty"
+        else if lib.strings.hasInfix "/" withoutScheme then
+          builtins.throw "provider plan: services.hostenv-provider.webhookHost must be host[:port] without a path"
+        else
+          withoutScheme;
+
+      trimTrailingNewlines = value:
+        if lib.hasSuffix "\n" value then
+          trimTrailingNewlines (lib.removeSuffix "\n" value)
+        else if lib.hasSuffix "\r" value then
+          trimTrailingNewlines (lib.removeSuffix "\r" value)
+        else
+          value;
+
+      stripTrailingSlashes = value:
+        if lib.hasSuffix "/" value then
+          stripTrailingSlashes (lib.removeSuffix "/" value)
+        else
+          value;
+
+      joinUrlPath = baseUrl: pathSegment:
+        "${stripTrailingSlashes baseUrl}/${pathSegment}";
+
       requirePath = { name, path, hint ? "" }:
         if path == null then
           builtins.throw ''
@@ -216,23 +255,6 @@ let
               lib.importJSON statePathChecked;
         in
         lib.filterAttrs (name: _: name != "_description") rawValues;
-
-      assertDeployApiBase =
-        if deploy.enable && (deploy.providerApiBaseUrl == null || deploy.providerApiBaseUrl == "") then
-          builtins.throw ''
-            provider plan: provider-deploy is enabled but provider.deploy.providerApiBaseUrl is empty.
-          ''
-        else
-          true;
-      assertDeployTokenFile =
-        if deploy.enable
-          && (deploy.nodeAuthTokenFile == null || deploy.nodeAuthTokenFile == "")
-          && (deploy.nodeAuthTokenFiles == { } || builtins.attrNames deploy.nodeAuthTokenFiles == [ ]) then
-          builtins.throw ''
-            provider plan: provider-deploy is enabled but provider.deploy.nodeAuthTokenFile is empty.
-          ''
-        else
-          true;
 
       lockData =
         if builtins.pathExists lockPathEffective
@@ -398,6 +420,35 @@ let
                           then evaluatedHostenv.config.environments.${envName}
                           else envCfg;
                         hostenv = effectiveEnvCfg.hostenv;
+                        isSelectedServiceEnv =
+                          service != null
+                          && orgAndProject.organisation == service.organisation
+                          && orgAndProject.project == service.project
+                          && envName == service.environmentName;
+                        evaluatedProviderServiceCfg =
+                          evaluatedHostenv.config.services.hostenv-provider or { };
+                        serviceEnabled = evaluatedProviderServiceCfg.enable or false;
+                        webhookHost =
+                          if isSelectedServiceEnv && serviceEnabled then
+                            normalizeWebhookHost (evaluatedProviderServiceCfg.webhookHost or null)
+                          else
+                            null;
+                        envVirtualHostsRaw = effectiveEnvCfg.virtualHosts or { };
+                        envVirtualHosts =
+                          if webhookHost != null && !(builtins.hasAttr webhookHost envVirtualHostsRaw) then
+                            envVirtualHostsRaw // {
+                              ${webhookHost} = {
+                                enableLetsEncrypt = true;
+                                globalRedirect = null;
+                                locations = { };
+                              };
+                            }
+                          else
+                            envVirtualHostsRaw;
+                        webhookEnableLetsEncrypt =
+                          if webhookHost == null then null
+                          else
+                            (envVirtualHosts.${webhookHost}.enableLetsEncrypt or true);
 
                         node = nodeFor.${effectiveEnvCfg.type} or nodeFor.default;
 
@@ -416,7 +467,7 @@ let
                           );
                         # All virtualHosts already reserved by other environments.
                         unreservableVHosts = stateVHosts;
-                        conflictsWithState = lib.intersectLists (builtins.attrNames effectiveEnvCfg.virtualHosts) unreservableVHosts;
+                        conflictsWithState = lib.intersectLists (builtins.attrNames envVirtualHosts) unreservableVHosts;
                       in
                       if conflictsWithState != [ ] then
                         builtins.throw ''
@@ -430,9 +481,9 @@ let
                                 (reservedName: vhostName == reservedName)
                                 unreservableVHosts
                             )
-                            effectiveEnvCfg.virtualHosts;
+                            envVirtualHosts;
                           conflicts = lib.subtractLists
-                            (builtins.attrNames effectiveEnvCfg.virtualHosts)
+                            (builtins.attrNames envVirtualHosts)
                             (builtins.attrNames filteredEnvVHosts);
 
                           virtualHosts =
@@ -487,6 +538,10 @@ let
                           inherit node authorizedKeys virtualHosts;
                           hostenv = hostenv';
                           repo = repo // { ref = hostenv'.gitRef; };
+                          _providerService = {
+                            enabled = serviceEnabled;
+                            inherit webhookHost webhookEnableLetsEncrypt;
+                          };
                         }
                   )
                   minimalHostenv.config.environments
@@ -590,6 +645,123 @@ let
               env // { inherit uid previousNode; }
             )
             allEnvs;
+
+      selectedServiceMatches =
+        if service == null then
+          [ ]
+        else
+          lib.filter
+            (env:
+              env.hostenv.organisation == service.organisation
+              && env.hostenv.project == service.project
+              && env.hostenv.environmentName == service.environmentName)
+            allEnvsWithUid;
+
+      selectedServiceEnv =
+        if service == null then
+          null
+        else if selectedServiceMatches == [ ] then
+          builtins.throw ''
+            provider plan: provider.service points to ${service.organisation}/${service.project}/${service.environmentName}, but no matching enabled environment was found.
+          ''
+        else
+          builtins.head selectedServiceMatches;
+
+      selectedServiceDerived =
+        if selectedServiceEnv == null then
+          { }
+        else
+          selectedServiceEnv._providerService or { };
+
+      providerServiceEnabled =
+        selectedServiceEnv != null
+        && (selectedServiceDerived.enabled or false);
+
+      providerWebhookHost =
+        if providerServiceEnabled then
+          if selectedServiceDerived.webhookHost or null == null then
+            builtins.throw "provider plan: services.hostenv-provider.webhookHost is required when services.hostenv-provider.enable is true"
+          else
+            selectedServiceDerived.webhookHost
+        else
+          null;
+
+      providerWebhookEnableLetsEncrypt =
+        if providerServiceEnabled then
+          selectedServiceDerived.webhookEnableLetsEncrypt or true
+        else
+          false;
+
+      providerApiBaseUrlDerived =
+        if providerServiceEnabled then
+          let
+            scheme = if providerWebhookEnableLetsEncrypt then "https" else "http";
+          in
+          "${scheme}://${providerWebhookHost}"
+        else
+          null;
+
+      nodeAuthTokenFileDerived =
+        if providerServiceEnabled then
+          "/run/secrets/hostenv/provider_node_token"
+        else
+          null;
+
+      effectiveDeployProviderApiBaseUrl =
+        if deploy.enable
+          && isNullOrEmpty deploy.providerApiBaseUrl
+          && providerApiBaseUrlDerived != null then
+          providerApiBaseUrlDerived
+        else
+          deploy.providerApiBaseUrl;
+
+      effectiveDeployNodeAuthTokenFile =
+        if deploy.enable
+          && isNullOrEmpty deploy.nodeAuthTokenFile
+          && nodeAuthTokenFileDerived != null then
+          nodeAuthTokenFileDerived
+        else
+          deploy.nodeAuthTokenFile;
+
+      cachePublicKeyPath =
+        if providerServiceEnabled then
+          if inputs ? self then inputs.self + /generated/cache-public-key.txt
+          else builtins.throw "provider plan: inputs.self is required to resolve generated/cache-public-key.txt"
+        else
+          null;
+
+      providerCachePublicKey =
+        if providerServiceEnabled then
+          if builtins.pathExists cachePublicKeyPath then
+            trimTrailingNewlines (builtins.readFile cachePublicKeyPath)
+          else
+            builtins.throw "missing generated/cache-public-key.txt; run nix run .#hostenv-provider -- cache-secrets"
+        else
+          null;
+
+      providerCacheUrl =
+        if providerServiceEnabled then
+          joinUrlPath providerApiBaseUrlDerived "cache"
+        else
+          null;
+
+      assertDeployApiBase =
+        if deploy.enable && isNullOrEmpty effectiveDeployProviderApiBaseUrl then
+          builtins.throw ''
+            provider plan: provider-deploy is enabled but provider.deploy.providerApiBaseUrl is empty.
+          ''
+        else
+          true;
+
+      assertDeployTokenFile =
+        if deploy.enable
+          && isNullOrEmpty effectiveDeployNodeAuthTokenFile
+          && (deploy.nodeAuthTokenFiles == { } || builtins.attrNames deploy.nodeAuthTokenFiles == [ ]) then
+          builtins.throw ''
+            provider plan: provider-deploy is enabled but provider.deploy.nodeAuthTokenFile is empty.
+          ''
+        else
+          true;
 
       generatedFlakeFile =
         let
@@ -705,8 +877,8 @@ let
                 if deploy.enable then
                   {
                     enable = true;
-                    providerApiBaseUrl = deploy.providerApiBaseUrl;
-                    nodeAuthTokenFile = deploy.nodeAuthTokenFile;
+                    providerApiBaseUrl = effectiveDeployProviderApiBaseUrl;
+                    nodeAuthTokenFile = effectiveDeployNodeAuthTokenFile;
                     nodeAuthTokenFiles = deploy.nodeAuthTokenFiles;
                     reconnectSeconds = deploy.reconnectSeconds;
                   }
@@ -729,7 +901,7 @@ let
                 in
                 lib.recursiveUpdate acc {
                   environments = acc.environments // {
-                    ${elem.hostenv.userName} = elem;
+                    ${elem.hostenv.userName} = builtins.removeAttrs elem [ "_providerService" ];
                   };
                   nodes = acc.nodes // {
                     ${nodeName} =
@@ -746,16 +918,24 @@ let
                           service = service;
                           nixSigning.trustedPublicKeys = nixSigning.trustedPublicKeys;
                           cacheServer.enable = service != null;
+                          cache =
+                            if providerServiceEnabled then
+                              {
+                                enable = true;
+                                url = providerCacheUrl;
+                                publicKey = providerCachePublicKey;
+                              }
+                            else { };
                           deploy =
                             if deploy.enable then
                               {
                                 enable = true;
-                                providerApiBaseUrl = deploy.providerApiBaseUrl;
+                                providerApiBaseUrl = effectiveDeployProviderApiBaseUrl;
                                 nodeName = nodeName;
                                 nodeAuthTokenFile =
                                   if builtins.hasAttr nodeName deploy.nodeAuthTokenFiles
                                   then deploy.nodeAuthTokenFiles.${nodeName}
-                                  else deploy.nodeAuthTokenFile;
+                                  else effectiveDeployNodeAuthTokenFile;
                                 reconnectSeconds = deploy.reconnectSeconds;
                               }
                             else { enable = false; };
@@ -849,7 +1029,7 @@ let
       flake = generatedFlakeFile;
       plan = generatedConfig;
       state = generatedState;
-      environments = allEnvs;
+      environments = map (env: builtins.removeAttrs env [ "_providerService" ]) allEnvs;
     };
 in
 {
