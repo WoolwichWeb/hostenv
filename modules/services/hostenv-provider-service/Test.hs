@@ -69,6 +69,7 @@ main = do
   testCommandSequence
   testTemplateRender
   testGitCredentials
+  testGitConfigAuthorIdentity
   testNixAccessTokenConfig
   testReadGitlabSecrets
   testGitlabOAuthCredentialMerge
