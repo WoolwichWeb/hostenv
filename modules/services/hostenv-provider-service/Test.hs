@@ -42,7 +42,7 @@ import Hostenv.Provider.Gitlab
   , renderUserIdMismatchMessage
   )
 import Hostenv.Provider.PrevNodeDiscovery
-import Hostenv.Provider.Repo (RepoStatus(..), ensureProviderRepo, isAuthFailure)
+import Hostenv.Provider.Repo (RepoStatus(..), ensureGitConfig, ensureProviderRepo, isAuthFailure)
 import Hostenv.Provider.Service
 import Hostenv.Provider.Webhook (chooseFinalResult, persistIntentsActionsAndPushWith, shouldWaitForCallbacks)
 
