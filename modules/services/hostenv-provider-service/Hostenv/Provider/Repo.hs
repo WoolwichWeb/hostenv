@@ -185,6 +185,9 @@ ensureGitConfig cfg = do
   let content = unlines
         [ "[credential]"
         , "\thelper = store --file " <> credsPath
+        , "[user]"
+        , "\temail = hostenv-provider@localhost"
+        , "\tname = hostenv-provider"
         ]
   writeFile gitConfigPath content
   setEnv "GIT_CONFIG_GLOBAL" gitConfigPath

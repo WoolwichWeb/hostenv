@@ -418,6 +418,18 @@ testGitCredentials = do
   let rendered = renderGitCredentials [("https://gitlab.com/acme/site.git", "token123")]
   assert (T.isInfixOf "oauth2:token123@gitlab.com" rendered) "credentials should inject token"
 
+testGitConfigAuthorIdentity :: IO ()
+testGitConfigAuthorIdentity = do
+  let gitConfigPath = "/tmp/test-gitconfig"
+  let credsPath = "/tmp/test-creds"
+  let cfg = mkRepoConfig "/tmp/test-data"
+  let cfgWithPaths = cfg { appGitConfigPath = gitConfigPath, appGitCredentialsPath = credsPath }
+  ensureGitConfig cfgWithPaths
+  content <- readFile gitConfigPath
+  assert (T.isInfixOf "[user]" content) "git config should include user section"
+  assert (T.isInfixOf "email = hostenv-provider@localhost" content) "git config should set email"
+  assert (T.isInfixOf "name = hostenv-provider" content) "git config should set name"
+
 testNixAccessTokenConfig :: IO ()
 testNixAccessTokenConfig = do
   let oauthLine = appendNixAccessTokenConfig Nothing "gitlab.com" NixGitlabOAuth2 "oauth-token"
