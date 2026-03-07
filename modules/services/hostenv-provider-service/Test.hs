@@ -427,9 +427,10 @@ testGitConfigAuthorIdentity = do
   let cfgWithPaths = cfg { appGitConfigPath = gitConfigPath, appGitCredentialsPath = credsPath }
   ensureGitConfig cfgWithPaths
   content <- readFile gitConfigPath
-  assert (T.isInfixOf "[user]" content) "git config should include user section"
-  assert (T.isInfixOf "email = hostenv-provider@localhost" content) "git config should set email"
-  assert (T.isInfixOf "name = hostenv-provider" content) "git config should set name"
+  let textContent = T.pack content
+  assert (T.isInfixOf "[user]" textContent) "git config should include user section"
+  assert (T.isInfixOf "email = hostenv-provider@localhost" textContent) "git config should set email"
+  assert (T.isInfixOf "name = hostenv-provider" textContent) "git config should set name"
 
 testNixAccessTokenConfig :: IO ()
 testNixAccessTokenConfig = do
