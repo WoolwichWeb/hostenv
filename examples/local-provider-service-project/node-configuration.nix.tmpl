@@ -1,0 +1,38 @@
+{ modulesPath, lib, ... }:
+{
+  imports = [ (modulesPath + "/virtualisation/qemu-vm.nix") ];
+
+  networking.hostName = "__NODE_NAME__";
+  networking.hosts."10.0.2.2" = [ "__PROVIDER_SERVICE_HOST__" ];
+  networking.firewall.allowedTCPPorts = [ 80 ];
+  system.stateVersion = "24.11";
+
+  fileSystems."/" = { device = "/dev/disk/by-label/nixos"; fsType = "ext4"; };
+  boot.loader.grub.device = lib.mkForce "nodev";
+  boot.loader.grub.devices = lib.mkForce [ "nodev" ];
+  nix.settings.trusted-public-keys = lib.mkAfter [ "__NIX_SIGNING_PUBLIC_KEY__" ];
+
+  virtualisation = {
+    graphics = false;
+    cores = 2;
+    memorySize = 4096;
+    diskSize = 32768;
+    forwardPorts = [
+      { from = "host"; host.address = "__NODE_HOST_IP__"; host.port = builtins.fromJSON "__NODE_SSH_PORT__"; guest.port = 22; }
+      { from = "host"; host.address = "__NODE_HOST_IP__"; host.port = builtins.fromJSON "__NODE_HTTP_PORT__"; guest.port = 80; }
+    ];
+    sharedDirectories.hostenv-shared = { source = "__SHARED_DIR__"; target = "/mnt/hostenv-shared"; };
+    sharedDirectories.hostenv-provider = { source = "__PROVIDER_DIR__"; target = "/mnt/hostenv-provider"; };
+    sharedDirectories.hostenv-workdir = { source = "__WORKDIR__"; target = "__WORKDIR__"; };
+    sharedDirectories.hostenv-repo = { source = "__REPO_ROOT__"; target = "__REPO_ROOT__"; };
+    mountHostNixStore = true;
+    writableStore = true;
+    writableStoreUseTmpfs = false;
+  };
+
+  environment.etc."hostenv-demo-age-key.txt".text = ''__AGE_PRIVATE_KEY__'';
+  environment.etc."gitconfig".text = ''[safe]\n\tdirectory = *\n'';
+  sops.age.keyFile = "/etc/hostenv-demo-age-key.txt";
+  users.users.root.openssh.authorizedKeys.keys = [ "__SSH_PUBLIC_KEY__" ];
+  users.allowNoPasswordLogin = true;
+}

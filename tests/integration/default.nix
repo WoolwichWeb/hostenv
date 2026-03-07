@@ -10,6 +10,7 @@
   // (import ./provider-full.nix { inherit pkgs makeHostenv inputs; })
   // (import ./provider-nixos-system.nix { inherit pkgs inputs; })
   // { local-provider-migration-test = import ./local-provider-migration.nix { inherit pkgs; }; }
+  // { local-provider-service-project-test = import ./local-provider-service-project.nix { inherit pkgs; }; }
   // { provider-service-module-eval = import ./provider-service-module.nix { inherit pkgs makeHostenv; }; }
   // { devshells-eval = import ./devshells.nix { inherit pkgs makeHostenv inputs; }; }
   // (import ./socket-contract.nix { inherit pkgs envs; })
