@@ -27,6 +27,10 @@ let
     , planSource ? "eval"
     , generatedFlake ? { }
     , lockPath ? (if inputs ? self then inputs.self + /flake.lock else ../../../flake.lock)
+      # Future provider-service configuration (not used yet).
+      # @todo: when the new provider-service is included, make these mandatory.
+    , deploy ? { }
+    , serviceResolution ? null
     }:
 
     let
@@ -440,7 +444,7 @@ let
                                             else
                                               { };
                                         in
-                                        locationDefault // vhost.locations;
+                                        vhost.locations // locationDefault;
                                     }
                                 )
                                 filteredEnvVHosts;

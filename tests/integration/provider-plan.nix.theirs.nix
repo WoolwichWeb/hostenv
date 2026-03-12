@@ -154,7 +154,6 @@ let
     , nodeModules ? [ ]
     , generatedFlake ? { }
     , deploy ? defaultDeploy
-    , deployPublicKeys ? [ "ssh-ed25519 test" ]
     , serviceResolution ? null
     }:
     let
@@ -198,7 +197,6 @@ let
       system = "x86_64-linux";
       inherit lib pkgs hostenvHostname;
       letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-      deployPublicKeys = deployPublicKeys;
       nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
       statePath = statePathEffective;
       planPath = planPath;
@@ -254,6 +252,82 @@ let
       inherit projectDir eval input;
     };
 
+  mkProviderServiceProjectInput = { enableLetsEncrypt }:
+    let
+      providerProjectDir = pkgs.runCommand "hostenv-provider-service-project" { } ''
+        mkdir -p $out
+        cat > $out/hostenv.nix <<'EOF'
+        { ... }: {
+          defaultEnvironment = "env1";
+          services.hostenv-provider.enable = true;
+          services.hostenv-provider.webhookHost = "provider.hosting.test";
+          environments.env1 = {
+            enable = true;
+            type = "development";
+            virtualHosts."provider.hosting.test" = {
+              enableLetsEncrypt = ${if enableLetsEncrypt then "true" else "false"};
+              globalRedirect = null;
+              locations = { };
+            };
+          };
+          hostenv = {
+            organisation = "org";
+            project = "proj";
+            hostenvHostname = "hosting.test";
+            root = "/srv/proj";
+          };
+        }
+        EOF
+      '';
+      eval = makeHostenv [ (providerProjectDir + /hostenv.nix) ] null;
+      input = {
+        outPath = providerProjectDir;
+        __toString = self: toString providerProjectDir;
+        lib = {
+          hostenv = {
+            "${"x86_64-linux"}" = {
+              environments = eval.config.environments;
+              defaultEnvironment = eval.config.defaultEnvironment;
+            };
+          };
+        };
+      };
+    in
+    {
+      inherit providerProjectDir eval input;
+    };
+
+  providerServiceSelector = {
+    organisation = "org";
+    project = "proj";
+    environmentName = "env1";
+  };
+
+  mkProviderServicePlan =
+    { providerInput
+    , selfInput
+    , deploy ? defaultDeploy
+    , serviceResolution ? providerServiceSelector
+    }:
+    providerPlan {
+      inputs = {
+        self = selfInput;
+        hostenv = mkHostenvStub "x86_64-linux";
+        org__proj = providerInput;
+      };
+      system = "x86_64-linux";
+      inherit lib pkgs;
+      letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
+      hostenvHostname = "hosting.test";
+      nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
+      statePath = dummyStatePath;
+      planPath = null;
+      nodeSystems = { };
+      cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
+      planSource = "eval";
+      inherit deploy serviceResolution;
+    };
+
   providerEnvs = envsEval.config.environments;
 
   sampleProjects =
@@ -284,6 +358,35 @@ let
       ${user1} = { uid = 2001; node = "node1"; virtualHosts = [ "env1.example" "alias.example" ]; };
     };
   }).plan;
+  planDeployConfigured = (mkPlan {
+    deploy = {
+      enable = true;
+      providerApiBaseUrl = "https://hosting.test";
+      nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
+      nodeAuthTokenFiles = { };
+      reconnectSeconds = 5;
+    };
+    serviceResolution = {
+      organisation = "org";
+      project = "proj";
+      environmentName = "env1";
+    };
+  }).plan;
+  planDeployMissingApiBase =
+    builtins.tryEval (mkPlan {
+      deploy = {
+        enable = true;
+        providerApiBaseUrl = null;
+        nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
+        nodeAuthTokenFiles = { };
+        reconnectSeconds = 5;
+      };
+      serviceResolution = {
+        organisation = "org";
+        project = "proj";
+        environmentName = "env1";
+      };
+    });
   planDisk =
     mkPlan {
       planSource = "disk";
@@ -374,7 +477,6 @@ let
     system = "x86_64-linux";
     inherit lib pkgs;
     letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-    deployPublicKeys = [ "ssh-ed25519 test" ];
     hostenvHostname = "custom.host";
     nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
     statePath = dummyStatePath;
@@ -422,7 +524,6 @@ let
     system = "x86_64-linux";
     inherit lib pkgs;
     letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-    deployPublicKeys = [ "ssh-ed25519 test" ];
     hostenvHostname = "hosting.test";
     nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
     statePath = dummyStatePath;
@@ -446,7 +547,6 @@ let
         system = "x86_64-linux";
         inherit lib pkgs;
         letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-        deployPublicKeys = [ "ssh-ed25519 test" ];
         hostenvHostname = "custom.host";
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
         statePath = dummyStatePath;
@@ -498,7 +598,6 @@ let
         system = "x86_64-linux";
         inherit lib pkgs;
         letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-        deployPublicKeys = [ "ssh-ed25519 test" ];
         hostenvHostname = "custom.host";
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
         statePath = dummyStatePath;
@@ -534,6 +633,58 @@ let
     cp ${selfLockFile} $out/flake.lock
   '';
 
+  selfWithCachePublicKey = pkgs.runCommand "provider-self-with-cache-public-key" { } ''
+    mkdir -p $out/generated
+    cp ${selfLockFile} $out/flake.lock
+    cat > $out/generated/cache-public-key.txt <<'EOF'
+    cache-public-key-test
+    EOF
+  '';
+
+  selfWithoutCachePublicKey = pkgs.runCommand "provider-self-without-cache-public-key" { } ''
+    mkdir -p $out
+    cp ${selfLockFile} $out/flake.lock
+  '';
+
+  providerServiceHttpsProject = mkProviderServiceProjectInput { enableLetsEncrypt = true; };
+  providerServiceHttpProject = mkProviderServiceProjectInput { enableLetsEncrypt = false; };
+
+  planDeployAutoDefaults = (mkProviderServicePlan {
+    providerInput = providerServiceHttpsProject.input;
+    selfInput = selfWithCachePublicKey;
+    deploy = {
+      enable = true;
+      providerApiBaseUrl = null;
+      nodeAuthTokenFile = null;
+      nodeAuthTokenFiles = { };
+      reconnectSeconds = 5;
+    };
+  }).plan;
+
+  planCacheClientAutoDefaults = (mkProviderServicePlan {
+    providerInput = providerServiceHttpProject.input;
+    selfInput = selfWithCachePublicKey;
+  }).plan;
+
+  planDeployDefaultsDoNotOverride = (mkProviderServicePlan {
+    providerInput = providerServiceHttpsProject.input;
+    selfInput = selfWithCachePublicKey;
+    deploy = {
+      enable = true;
+      providerApiBaseUrl = "https://provider.override.test";
+      nodeAuthTokenFile = "/run/secrets/hostenv/override_provider_node_token";
+      nodeAuthTokenFiles = { };
+      reconnectSeconds = 5;
+    };
+  }).plan;
+
+  planCachePublicKeyMissing = builtins.tryEval (lib.importJSON (
+    (mkProviderServicePlan {
+      providerInput = providerServiceHttpsProject.input;
+      selfInput = selfWithoutCachePublicKey;
+    }).plan
+  ));
+
   planDefaultLock =
     builtins.tryEval (providerPlan {
       inputs = {
@@ -548,7 +699,6 @@ let
       system = "x86_64-linux";
       inherit lib pkgs;
       letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-      deployPublicKeys = [ "ssh-ed25519 test" ];
       hostenvHostname = "custom.host";
       nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
       statePath = dummyStatePath;
@@ -651,7 +801,6 @@ let
         system = "x86_64-linux";
         inherit lib pkgs;
         letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-        deployPublicKeys = [ "ssh-ed25519 test" ];
         hostenvHostname = "custom.host";
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
         statePath = dummyStatePath;
@@ -689,11 +838,9 @@ in
     let
       plan = lib.importJSON planNoState;
       users = plan.nodes.node1.users.users or { };
-      providerCfg = plan.nodes.node1.provider or { };
       vhosts = plan.nodes.node1.services.nginx.virtualHosts or { };
       ok = (users ? ${user1}) && (users ? ${user2})
-        && (vhosts ? "env1.example") && (vhosts ? "env2.example")
-        && (providerCfg.deployPublicKeys or [ ]) == [ "ssh-ed25519 test" ];
+        && (vhosts ? "env1.example") && (vhosts ? "env2.example");
     in
     asserts.assertTrue "provider-plan-node-merge" ok
       "node1 should contain users and vhosts for both environments";
@@ -739,6 +886,7 @@ in
         && lib.strings.hasInfix "url = \"path:..\"" flakeText
         && lib.strings.hasInfix "hostenv = {" flakeText
         && lib.strings.hasInfix "follows = \"parent/hostenv\"" flakeText
+        && lib.strings.hasInfix "secretsPath = ./secrets.merged.yaml;" flakeText
         && lib.strings.hasInfix "inputs.parent.lib.provider.deployOutputs" flakeText
         && (lib.strings.hasInfix "${user1} =" flakeText || lib.strings.hasInfix "\"${user1}\" =" flakeText)
         && (lib.strings.hasInfix "${user2} =" flakeText || lib.strings.hasInfix "\"${user2}\" =" flakeText);
@@ -820,6 +968,63 @@ in
     asserts.assertTrue "provider-plan-default-lock"
       planDefaultLock.success
       "plan generation should use inputs.self/flake.lock when lockPath is omitted";
+
+  provider-plan-deploy-configured =
+    let
+      plan = lib.importJSON planDeployConfigured;
+      topLevelDeploy = plan.deploy or { };
+      nodeDeploy = plan.nodes.node1.provider.deploy or { };
+      ok = topLevelDeploy.providerApiBaseUrl == "https://hosting.test"
+        && nodeDeploy.providerApiBaseUrl == "https://hosting.test"
+        && nodeDeploy.nodeAuthTokenFile == "/run/secrets/hostenv/provider_node_token";
+    in
+    asserts.assertTrue "provider-plan-deploy-configured" ok
+      "plan generation should propagate deploy settings from provider config";
+
+  provider-plan-deploy-missing-api-base-asserts =
+    asserts.assertTrue "provider-plan-deploy-missing-api-base-asserts"
+      (! planDeployMissingApiBase.success)
+      "plan generation must fail when deploy is enabled and no providerApiBaseUrl is configured";
+
+  provider-plan-deploy-auto-defaults =
+    let
+      plan = lib.importJSON planDeployAutoDefaults;
+      topLevelDeploy = plan.deploy or { };
+      nodeDeploy = plan.nodes.node1.provider.deploy or { };
+      ok = topLevelDeploy.providerApiBaseUrl == "https://provider.hosting.test"
+        && nodeDeploy.providerApiBaseUrl == "https://provider.hosting.test"
+        && nodeDeploy.nodeAuthTokenFile == "/run/secrets/hostenv/provider_node_token";
+    in
+    asserts.assertTrue "provider-plan-deploy-auto-defaults" ok
+      "provider deploy defaults should derive from the enabled provider-service webhook host";
+
+  provider-plan-cache-client-auto-defaults =
+    let
+      plan = lib.importJSON planCacheClientAutoDefaults;
+      nodeCache = plan.nodes.node1.provider.cache or { };
+      ok = nodeCache.enable == true
+        && nodeCache.url == "http://provider.hosting.test/cache"
+        && nodeCache.publicKey == "cache-public-key-test";
+    in
+    asserts.assertTrue "provider-plan-cache-client-auto-defaults" ok
+      "provider cache defaults should derive from webhook host and generated cache public key";
+
+  provider-plan-deploy-defaults-do-not-override =
+    let
+      plan = lib.importJSON planDeployDefaultsDoNotOverride;
+      topLevelDeploy = plan.deploy or { };
+      nodeDeploy = plan.nodes.node1.provider.deploy or { };
+      ok = topLevelDeploy.providerApiBaseUrl == "https://provider.override.test"
+        && nodeDeploy.providerApiBaseUrl == "https://provider.override.test"
+        && nodeDeploy.nodeAuthTokenFile == "/run/secrets/hostenv/override_provider_node_token";
+    in
+    asserts.assertTrue "provider-plan-deploy-defaults-do-not-override" ok
+      "explicit provider deploy settings should take precedence over derived defaults";
+
+  provider-plan-cache-public-key-missing-asserts =
+    asserts.assertTrue "provider-plan-cache-public-key-missing-asserts"
+      (! planCachePublicKeyMissing.success)
+      "plan generation must fail when provider-service is enabled and cache public key is missing";
 
   provider-plan-vhost-conflict-state = providerPlanVhostConflictState;
   provider-plan-vhost-conflict-new-envs = providerPlanVhostConflictNewEnvs;

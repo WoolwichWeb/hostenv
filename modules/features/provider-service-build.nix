@@ -3,13 +3,6 @@ let
   fp = inputs.flake-parts.lib;
   cfgTop = config;
   providerEnabled = config.provider.enable or false;
-  hostenvInputs = cfgTop.flake.lib.hostenvInputs;
-  addressableContentInput =
-    hostenvInputs.requireInput {
-      inherit inputs;
-      name = "addressable-content";
-      context = "hostenv-provider-service";
-    };
 in
 {
   options.perSystem = fp.mkPerSystemOption ({ config, pkgs, ... }:
@@ -17,12 +10,7 @@ in
       providerService = cfgTop.flake.lib.provider.service;
       packageNames = providerService.haskellDeps;
       serviceSrc = providerService.src;
-      providerHaskellPackages = pkgs.haskell.packages.ghc912.override {
-        overrides = self: super: {
-          addressable-content = self.callCabal2nix "addressable-content" addressableContentInput.outPath { };
-        };
-      };
-      ghc = providerHaskellPackages.ghcWithPackages (p: map (name: p.${name}) packageNames);
+      ghc = pkgs.haskellPackages.ghcWithPackages (p: map (name: p.${name}) packageNames);
       servicePkg = pkgs.writeShellScriptBin "hostenv-provider-service" ''
         exec ${ghc}/bin/runghc -i${serviceSrc} ${serviceSrc}/Main.hs "$@"
       '';
@@ -50,56 +38,26 @@ in
 
         createdb -h "$base" hostenv-provider >/dev/null 2>&1 || true
 
-        data_dir="''${HOSTENV_PROVIDER_DATA_DIR:-$base/data}"
-        repo_source="''${HOSTENV_PROVIDER_REPO_SOURCE:-$PWD}"
-        listen_socket="''${HOSTENV_PROVIDER_LISTEN_SOCKET:-$base/hostenv-provider.sock}"
-        webhook_host="''${HOSTENV_PROVIDER_WEBHOOK_HOST:-localhost}"
-        ui_base_url="''${HOSTENV_PROVIDER_UI_BASE_URL:-http://localhost}"
-        db_uri="host=$base dbname=hostenv-provider"
-        git_credentials_file="''${HOSTENV_PROVIDER_GIT_CREDENTIALS_FILE:-$data_dir/git-credentials}"
-        git_config_file="''${HOSTENV_PROVIDER_GIT_CONFIG_FILE:-$data_dir/gitconfig}"
-        flake_template="''${HOSTENV_PROVIDER_FLAKE_TEMPLATE:-flake.template.nix}"
-        gitlab_hosts_raw="''${HOSTENV_PROVIDER_GITLAB_HOSTS:-gitlab.com}"
-        gitlab_hosts_json=$(printf '%s' "$gitlab_hosts_raw" | ${pkgs.gawk}/bin/awk -v RS=',' 'BEGIN { printf "[" } { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0); if (length($0) > 0) { if (n++) printf ","; gsub(/"/, "\\\"", $0); printf "\"%s\"", $0 } } END { printf "]" }')
-
         secrets="''${HOSTENV_PROVIDER_GITLAB_SECRETS_FILE:-$base/gitlab_oauth}"
         if [ ! -f "$secrets" ]; then
           printf "client_id=dev\nclient_secret=dev\n" > "$secrets"
         fi
 
-        config_file="$base/provider-config.json"
-        cat > "$config_file" <<EOF
-        {
-          "dataDir": "$data_dir",
-          "repoSource": "$repo_source",
-          "flakeRoot": ".",
-          "listenSocket": "$listen_socket",
-          "webhookSecretFile": null,
-          "webhookSecretsDir": null,
-          "webhookHost": "$webhook_host",
-          "uiBasePath": "/dashboard",
-          "uiBaseUrl": "$ui_base_url",
-          "dbUri": "$db_uri",
-          "gitlab": {
-            "enable": true,
-            "oAuthSecretsFile": "$secrets",
-            "hosts": $gitlab_hosts_json,
-            "tokenEncryptionKeyFile": "$token_key_file",
-            "deployTokenTtlMinutes": $deploy_token_ttl_minutes
-          },
-          "gitCredentialsFile": "$git_credentials_file",
-          "gitConfigFile": "$git_config_file",
-          "flakeTemplate": "$flake_template"
-        }
-        EOF
+        export HOSTENV_PROVIDER_GITLAB_SECRETS_FILE="$secrets"
+        export HOSTENV_PROVIDER_REPO_SOURCE="''${HOSTENV_PROVIDER_REPO_SOURCE:-$PWD}"
+        export HOSTENV_PROVIDER_DATA_DIR="''${HOSTENV_PROVIDER_DATA_DIR:-$base/data}"
+        export HOSTENV_PROVIDER_LISTEN_SOCKET="''${HOSTENV_PROVIDER_LISTEN_SOCKET:-$base/hostenv-provider.sock}"
+        export HOSTENV_PROVIDER_WEBHOOK_HOST="''${HOSTENV_PROVIDER_WEBHOOK_HOST:-localhost}"
+        export HOSTENV_PROVIDER_UI_BASE_URL="''${HOSTENV_PROVIDER_UI_BASE_URL:-http://localhost}"
+        export HOSTENV_PROVIDER_DB_URI="''${HOSTENV_PROVIDER_DB_URI:-host=$base dbname=hostenv-provider}"
 
         if [ -n "''${HOSTENV_PROVIDER_HTTP_PORT:-}" ]; then
-          socat TCP-LISTEN:"$HOSTENV_PROVIDER_HTTP_PORT",fork,reuseaddr UNIX-CONNECT:"$listen_socket" &
+          socat TCP-LISTEN:"$HOSTENV_PROVIDER_HTTP_PORT",fork,reuseaddr UNIX-CONNECT:"$HOSTENV_PROVIDER_LISTEN_SOCKET" &
           socat_pid=$!
-          echo "hostenv-provider-service-dev: proxying http://localhost:$HOSTENV_PROVIDER_HTTP_PORT -> unix:$listen_socket" >&2
+          echo "hostenv-provider-service-dev: proxying http://localhost:$HOSTENV_PROVIDER_HTTP_PORT -> unix:$HOSTENV_PROVIDER_LISTEN_SOCKET" >&2
         fi
 
-        ${servicePkg}/bin/hostenv-provider-service --config "$config_file"
+        ${servicePkg}/bin/hostenv-provider-service
       '';
     in
     {

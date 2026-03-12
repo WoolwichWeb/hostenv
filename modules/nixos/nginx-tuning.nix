@@ -5,7 +5,7 @@
     # applied when hostenv environments are present.
     { lib, config, ... }:
     let
-      envs = config.hostenv.environments or { };
+      envs = config.provider.plan.environments;
       cfg = config.hostenv.nginxTuning;
     in
     {
