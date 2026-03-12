@@ -66,8 +66,6 @@
           providerApiBaseUrl = "https://hosting.example.com";
           nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
         };
-        # Add NixOS system-level configuration that's common to all servers here:
-        planSource = "eval";
 
         # Hostenv generates a new flake in `generated/flake.nix`, which
         # includes each project environment as a separate Flake input. These

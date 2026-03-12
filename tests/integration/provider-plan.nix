@@ -11,7 +11,15 @@ let
     nodeAuthTokenFiles = { };
     reconnectSeconds = 5;
   };
-  providerPlan = args: inputs.self.lib.provider.plan (args // { deploy = args.deploy or defaultDeploy; serviceResolution = args.serviceResolution or null; });
+  providerPlan = args:
+    inputs.self.lib.provider.plan (
+      args
+      // {
+        repoRoot = args.repoRoot or inputs.self.outPath;
+        deploy = args.deploy or defaultDeploy;
+        serviceResolution = args.serviceResolution or null;
+      }
+    );
 
   mkHostenvStub = system:
     let outPath = ../../modules;
@@ -149,8 +157,7 @@ let
   mkPlan =
     { hostenvHostname ? "custom.host"
     , state ? { }
-    , planSource ? "eval"
-    , planPath ? null
+    , repoRoot ? inputs.self.outPath
     , nodeModules ? [ ]
     , generatedFlake ? { }
     , deploy ? defaultDeploy
@@ -177,10 +184,7 @@ let
 
       lockPath = pkgs.writers.writeJSON "flake.lock" lockData;
 
-      statePathEffective =
-        if state == { }
-        then dummyStatePath
-        else pkgs.writers.writeJSON "state.json" state;
+      statePath = pkgs.writers.writeJSON "state.json" state;
 
       inputsEffective = {
         hostenv = mkHostenvStub "x86_64-linux";
@@ -198,15 +202,11 @@ let
       inherit lib pkgs hostenvHostname;
       letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
       nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
-      statePath = statePathEffective;
-      planPath = planPath;
       lockPath = lockPath;
       nodeSystems = { };
       cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
-      planSource = planSource;
       deploy = deploy;
-      serviceResolution = serviceResolution;
-      inherit nodeModules generatedFlake;
+      inherit statePath repoRoot nodeModules generatedFlake serviceResolution;
     };
 
   mkProjectInput = { organisation, project, envName ? "main" }:
@@ -310,8 +310,8 @@ let
     , serviceResolution ? providerServiceSelector
     }:
     providerPlan {
+      repoRoot = selfInput;
       inputs = {
-        self = selfInput;
         hostenv = mkHostenvStub "x86_64-linux";
         org__proj = providerInput;
       };
@@ -321,10 +321,8 @@ let
       hostenvHostname = "hosting.test";
       nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
       statePath = dummyStatePath;
-      planPath = null;
       nodeSystems = { };
       cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
-      planSource = "eval";
       inherit deploy serviceResolution;
     };
 
@@ -387,12 +385,6 @@ let
         environmentName = "env1";
       };
     });
-  planDisk =
-    mkPlan {
-      planSource = "disk";
-      planPath = planNoState;
-      state = lib.importJSON stateNoState;
-    };
   planCustom =
     mkPlan {
       nodeModules = [ "nodes/common.nix" ];
@@ -470,6 +462,7 @@ let
     };
   };
   backupsMixedPlan = providerPlan {
+    repoRoot = inputs.self.outPath;
     inputs = {
       hostenv = mkHostenvStub "x86_64-linux";
       org__proj = backupsMixedInput;
@@ -479,12 +472,9 @@ let
     letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
     hostenvHostname = "custom.host";
     nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
-    statePath = dummyStatePath;
-    planPath = null;
     lockPath = backupsMixedLockPath;
     nodeSystems = { };
     cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
-    planSource = "eval";
   };
   backupsMixedPlanData = lib.importJSON backupsMixedPlan.plan;
   backupsMixedMainUser = backupsMixedEval.config.environments.main.hostenv.userName;
@@ -520,18 +510,16 @@ let
 
   quotedLockPath = pkgs.writers.writeJSON "flake.lock" quotedLockData;
   quotedPlan = providerPlan {
+    repoRoot = inputs.self.outPath;
     inputs = quotedInputs;
     system = "x86_64-linux";
     inherit lib pkgs;
     letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
     hostenvHostname = "hosting.test";
     nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
-    statePath = dummyStatePath;
-    planPath = null;
     lockPath = quotedLockPath;
     nodeSystems = { };
     cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
-    planSource = "eval";
   };
   quotedFlakeText = builtins.readFile quotedPlan.flake;
   quotedInvalidUser = quotedInvalidProject.eval.config.environments.main.hostenv.userName;
@@ -543,18 +531,16 @@ let
       };
       lockPath = pkgs.writers.writeJSON "flake.lock" { nodes = { }; };
       result = builtins.tryEval (providerPlan {
+        repoRoot = inputs.self.outPath;
         inputs = minimalInputs;
         system = "x86_64-linux";
         inherit lib pkgs;
         letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
         hostenvHostname = "custom.host";
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
-        statePath = dummyStatePath;
-        planPath = null;
         lockPath = lockPath;
         nodeSystems = { };
         cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
-        planSource = "eval";
       });
     in
     result;
@@ -594,18 +580,16 @@ let
       };
       lockPath = pkgs.writers.writeJSON "flake.lock" lockData;
       result = builtins.tryEval (providerPlan {
+        repoRoot = inputs.self.outPath;
         inputs = badInputs;
         system = "x86_64-linux";
         inherit lib pkgs;
         letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
         hostenvHostname = "custom.host";
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
-        statePath = dummyStatePath;
-        planPath = null;
         lockPath = lockPath;
         nodeSystems = { };
         cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
-        planSource = "eval";
       });
     in
     result;
@@ -687,8 +671,8 @@ let
 
   planDefaultLock =
     builtins.tryEval (providerPlan {
+      repoRoot = selfLockDir;
       inputs = {
-        self = selfLockDir;
         hostenv = mkHostenvStub "x86_64-linux";
         org__proj = {
           outPath = projectDir;
@@ -701,11 +685,8 @@ let
       letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
       hostenvHostname = "custom.host";
       nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
-      statePath = dummyStatePath;
-      planPath = null;
       nodeSystems = { };
       cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
-      planSource = "eval";
     });
 
   providerPlanVhostConflictState =
@@ -803,12 +784,9 @@ let
         letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
         hostenvHostname = "custom.host";
         nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
-        statePath = dummyStatePath;
-        planPath = null;
         lockPath = lockPath;
         nodeSystems = { };
         cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
-        planSource = "eval";
       }).environments;
       result = builtins.tryEval (builtins.deepSeq envsExpr envsExpr);
     in
@@ -914,15 +892,6 @@ in
     asserts.assertTrue "provider-plan-flake-inputs-quoted" ok
       "generated flake should quote invalid input identifiers and leave valid ones unquoted";
 
-  provider-plan-planSource-disk =
-    let
-      evalPlanData = lib.importJSON planNoState;
-      diskPlanData = lib.importJSON planDisk.plan;
-    in
-    asserts.assertTrue "provider-plan-planSource-disk"
-      (evalPlanData == diskPlanData)
-      "planSource=\"disk\" should reuse plan.json contents without re-evaluating hostenv";
-
   provider-plan-missing-projects-asserts =
     asserts.assertTrue "provider-plan-missing-projects-asserts"
       (! planMissingProjects.success)
@@ -967,7 +936,7 @@ in
   provider-plan-default-lock =
     asserts.assertTrue "provider-plan-default-lock"
       planDefaultLock.success
-      "plan generation should use inputs.self/flake.lock when lockPath is omitted";
+      "plan generation should use repoRoot/flake.lock when lockPath is omitted";
 
   provider-plan-deploy-configured =
     let

@@ -1,8 +1,6 @@
 { config, lib, ... }:
 let
   libHostenv = config.flake.lib.hostenv;
-  # hostenvModule = config.flake.lib.hostenv.module;
-  # environmentModule = config.flake.lib.hostenv.environmentModule;
   exportUser = user: {
     inherit (user) email publicKeys gitlabUsername;
   };
@@ -77,7 +75,8 @@ in
       types = lib.types;
       envModule = libHostenv.environmentModule {
         allUsers = config.allEnvironments.users;
-        inherit topLevel forceNull; inherit (libHostenv) module;
+        hostenvModule = libHostenv.module;
+        inherit topLevel forceNull;
       };
     in
     {

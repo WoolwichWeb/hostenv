@@ -81,6 +81,7 @@ let
 
   planEval = providerPlan {
     inputs = inputsEffective;
+    repoRoot = inputs.self.outPath;
     inherit pkgs lib;
     system = localSystem;
     letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };

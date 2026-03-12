@@ -5,6 +5,7 @@ This template boots a provider flake that consumes hostenv projects and generate
 ## Quick start
 
 1. Initialize the provider flake:
+
    ```bash
    nix flake init -t gitlab:woolwichweb/hostenv#provider
    ```
@@ -15,18 +16,20 @@ This template boots a provider flake that consumes hostenv projects and generate
    - Set `provider.hostenvHostname` in `flake.nix`
 
 3. Enter the devshell to auto-generate files:
+
    ```bash
    direnv allow  # or: nix develop
    ```
+
    This creates `secrets/provider.yaml`, `generated/state.json`, and generates provider node tokens if deploy is enabled.
 
 4. Generate the deployment plan:
+
    ```bash
    nix run .#hostenv-provider -- plan
    ```
 
 That's it. The provider now tracks state and secrets automatically. Files that don't exist are created on first run. Provider node tokens and cache signing/auth secrets generate when you enter the devshell.
-
 
 ## Auto-init details
 
@@ -36,12 +39,6 @@ The provider devshell includes an auto-initialization hook that runs when you en
 - **`generated/state.json`** - Created as an empty JSON object if missing.
 - **Provider node tokens** - Generated automatically when `provider.deploy.enable = true` and tokens don't exist.
 - **Cache signing/auth secrets** - Generated automatically when missing: `cache_signing_key`, `cache_auth_password`, and `generated/cache-public-key.txt`.
-
-To disable auto-init (if you prefer manual setup):
-```nix
-provider.plan.autoInit = false;
-```
-
 
 ## Admin UI template
 
@@ -67,6 +64,5 @@ Edit `flake.template.nix` to make structural changes while keeping the marker:
 ## Customisation tips
 
 - Ensure client project inputs point at the `.hostenv` flake (e.g. `dir=.hostenv`) and export `outputs.lib.hostenv`.
-- Use `planSource = "disk"` if you want to reuse an existing plan.json without re-evaluating inputs.
 - Add extra Haskell deps for the dev shell via `provider.haskellDevPackages` (appended to `hostenv.haskell.devPackages`).
 - Add provider-specific modules under `modules/` in your repo (e.g. `modules/nixos/<aspect>.nix`) and import them alongside `hostenv.flakeModules.provider` using your preferred module loader.

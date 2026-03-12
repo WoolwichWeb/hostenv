@@ -1,4 +1,4 @@
-{ inputs, lib, config, ... }:
+{ inputs, lib, config, self, ... }:
 let
   flakeParts = inputs.flake-parts.lib;
   cfg = config.provider;
@@ -59,6 +59,7 @@ in
           providerPlan
             {
               inputs = inputs // { hostenv = hostenvInput; };
+              repoRoot = self.outPath;
               inherit system;
               lib = pkgs.lib;
               pkgs = pkgs;
@@ -69,10 +70,7 @@ in
               nodeFor = cfg.nodeFor;
               nodeSystems = cfg.nodeSystems;
               nodeModules = cfg.nodeModules;
-              statePath = cfg.statePath;
-              planPath = cfg.planPath;
               cloudflare = cfg.cloudflare;
-              planSource = cfg.planSource;
               generatedFlake = cfg.generatedFlake;
               service = cfg.serviceResolution;
             };
@@ -106,14 +104,23 @@ in
             pkgs.gum
           ];
 
+          devshell.startup.provider-state-file = {
+            text = ''
+              mkdir -p generated
+              if [ ! -f generated/state.json ]; then
+                printf '{}\n' > generated/state.json
+                git add generated/state.json >/dev/null 2>&1 || true
+              fi
+            '';
+          };
+
           devshell.startup.provider-node-tokens = lib.mkIf cfg.deploy.enable {
             text = ''
               provider_secrets="secrets/provider.yaml"
               plan_file="generated/plan.json"
 
               if [ ! -f "$plan_file" ]; then
-                mkdir -p generated
-                printf '{}\n' >|"$plan_file"
+                nix run .#hostenv-provider -- plan
                 git add "$plan_file" >/dev/null 2>&1 || true
               fi
 

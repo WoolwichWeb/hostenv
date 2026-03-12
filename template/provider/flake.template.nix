@@ -25,7 +25,6 @@
         hostenvHostname = "hosting.example.com";
         nodeSystems = { default = "x86_64-linux"; };
         nodeFor = { default = "node-a"; production = "node-a"; testing = "node-a"; development = "node-a"; };
-        planSource = "eval";
         # deploy = {
         #   enable = true;
         #   providerApiBaseUrl = "https://hosting.example.com";

@@ -134,12 +134,6 @@ The bundle `generated/{plan.json,state.json,flake.nix}` is the auditable snapsho
     # Override per-environment inputs
     generatedFlake.envInputs.follows = { /* ... */ };
 
-    # Plan generation source: "eval" (default) or "disk"
-    planSource = "eval";
-
-    # Auto-initialization of missing files (default: true)
-    plan.autoInit = true;
-
     # Provider-deploy configuration (for node agent deployment)
     deploy = {
       enable = true;
@@ -271,16 +265,6 @@ client_secret=...
 - `hostenv.monitoring.enable` to turn on basic exporters/labels
 
 ## Troubleshooting
-
-### Disable auto-initialization
-
-If you prefer to manage secrets and state manually:
-
-```nix
-{
-  provider.plan.autoInit = false;
-}
-```
 
 ### Manual provider node token generation
 
