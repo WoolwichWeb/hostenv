@@ -1,13 +1,6 @@
-{ inputs, config, ... }:
+{ config, ... }:
 let
   cfgTop = config;
-  hostenvInputs = cfgTop.flake.lib.hostenvInputs;
-  addressableContentInput =
-    hostenvInputs.requireInput {
-      inherit inputs;
-      name = "addressable-content";
-      context = "hostenv-provider-service";
-    };
 in
 {
   flake.modules.hostenv.hostenv-provider-service =
@@ -17,51 +10,11 @@ in
       providerService = cfgTop.flake.lib.provider.service;
       serviceSrc = cfg.source;
       haskellDeps = cfg.haskellDeps;
-      providerHaskellPackages = pkgs.haskell.packages.ghc912.override {
-        overrides = self: super: {
-          addressable-content = self.callCabal2nix "addressable-content" addressableContentInput.outPath { };
-        };
-      };
-      ghc = providerHaskellPackages.ghcWithPackages (p: map (name: p.${name}) haskellDeps);
+      ghc = pkgs.haskellPackages.ghcWithPackages (p: map (name: p.${name}) haskellDeps);
       serviceBin = pkgs.writeShellScriptBin "hostenv-provider-service" ''
-        exec ${ghc}/bin/runghc -i${serviceSrc} ${serviceSrc}/Main.hs "$@"
+        exec ${ghc}/bin/runghc -i${serviceSrc} ${serviceSrc}/Main.hs
       '';
-      repoSourceForConfig =
-        let
-          src = cfg.repoSource;
-          srcType = builtins.typeOf src;
-        in
-        if srcType == "path" then
-          src
-        else if srcType == "string" && lib.hasPrefix "/nix/store/" src then
-        # Preserve store-path context so repoSource is shipped in the closure.
-          builtins.storePath src
-        else
-          src;
-      serviceStart = pkgs.writeShellScript "hostenv-provider-service-start" ''
-        set -euo pipefail
-        mkdir -p "${cfg.dataDir}"
-        exec ${cfg.package}/bin/hostenv-provider-service --config ${configFile}
-      '';
-      # Keep proxy_pass target without a URI part so it is valid in regex
-      # locations (e.g. ~ ^/webhook/) and preserves the incoming request path.
-      proxySocket = "http://unix:${cfg.listenSocket}:";
-      configFile = pkgs.writeText "hostenv-provider-config.json" (builtins.toJSON {
-        dataDir = cfg.dataDir;
-        repoSource = toString cfg.repoSource;
-        flakeRoot = cfg.flakeRoot;
-        listenSocket = cfg.listenSocket;
-        webhookSecretFile = cfg.webhookSecretFile;
-        webhookSecretsDir = cfg.webhookSecretsDir;
-        webhookHost = cfg.webhookHost;
-        uiBasePath = cfg.uiBasePath;
-        uiBaseUrl = "${cfg.uiScheme}://${cfg.uiHost}";
-        dbUri = cfg.dbUri;
-        gitlab = cfg.gitlab;
-        gitCredentialsFile = cfg.gitCredentialsFile;
-        gitConfigFile = cfg.gitConfigFile;
-        flakeTemplate = cfg.flakeTemplate;
-      });
+      proxySocket = "http://unix:${cfg.listenSocket}:/";
 
     in
     {
@@ -74,8 +27,15 @@ in
           description = "Path to the hostenv-provider-service source tree.";
         };
 
+        haskellDeps = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = providerService.haskellDeps;
+          description = "Haskell package names required by hostenv-provider-service.";
+        };
+
         package = lib.mkOption {
           type = lib.types.package;
+          default = serviceBin;
           defaultText = lib.literalExpression ''
             pkgs.writeShellScriptBin "hostenv-provider-service" '''
               exec ''${pkgs.haskellPackages.ghcWithPackages [ ... ]}/bin/runghc -i''${config.services.hostenv-provider.source} ''${config.services.hostenv-provider.source}/Main.hs
@@ -116,7 +76,7 @@ in
 
         uiBasePath = lib.mkOption {
           type = lib.types.str;
-          default = "/dashboard";
+          default = "/ui";
           description = "Base path for the admin UI.";
         };
 
@@ -138,32 +98,16 @@ in
           description = "PostgreSQL connection string for the provider UI.";
         };
 
-        gitlab = {
-          enable = lib.mkEnableOption "Gitlab OAuth support";
+        gitlabOAuthSecretsFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = "Path to a secrets file containing GitLab OAuth client_id/client_secret.";
+        };
 
-          oAuthSecretsFile = lib.mkOption {
-            type = lib.types.str;
-            default = "/run/secrets/${config.hostenv.userName}/gitlab_oauth";
-            description = "Path to a secrets file containing GitLab OAuth client_id/client_secret.";
-          };
-
-          hosts = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
-            default = [ "gitlab.com" ];
-            description = "Allowed GitLab hosts for OAuth.";
-          };
-
-          tokenEncryptionKeyFile = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-            description = "Path to a key file used to encrypt persisted GitLab OAuth tokens.";
-          };
-
-          deployTokenTtlMinutes = lib.mkOption {
-            type = lib.types.int;
-            default = 60;
-            description = "Requested lifetime (in minutes) for per-deploy GitLab project access tokens.";
-          };
+        gitlabHosts = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ "gitlab.com" ];
+          description = "Allowed GitLab hosts for OAuth.";
         };
 
         gitCredentialsFile = lib.mkOption {
@@ -198,22 +142,6 @@ in
       };
 
       config = lib.mkIf cfg.enable {
-        services.postgresql = {
-          enable = lib.mkDefault true;
-          user = lib.mkDefault config.hostenv.userName;
-          dataDir = lib.mkDefault "${config.hostenv.dataDir}/postgresql";
-          runtimeDir = lib.mkDefault config.hostenv.runtimeDir;
-          ensureDatabases = lib.mkDefault [ "hostenv-provider" ];
-          ensureUsers = lib.mkDefault [
-            {
-              name = config.hostenv.userName;
-              ensurePermissions = {
-                "hostenv-provider" = "ALL PRIVILEGES";
-              };
-            }
-          ];
-        };
-
         services.nginx.enable = lib.mkDefault true;
         services.nginx.virtualHosts = {
           "${cfg.webhookHost}" = {
@@ -238,8 +166,7 @@ in
         systemd.services.hostenv-provider = {
           description = "Hostenv provider webhook service";
           wantedBy = [ "default.target" ];
-          wants = lib.optional config.services.postgresql.enable "postgresql.service";
-          after = [ "network.target" ] ++ lib.optional config.services.postgresql.enable "postgresql.service";
+          after = [ "network.target" ];
           restartIfChanged = false;
           path = [
             pkgs.coreutils
@@ -250,8 +177,33 @@ in
             pkgs.openssh
             ghc
           ];
+          environment =
+            {
+              XDG_DATA_HOME = config.hostenv.dataDir;
+              HOSTENV_PROVIDER_DATA_DIR = cfg.dataDir;
+              HOSTENV_PROVIDER_REPO_SOURCE = toString cfg.repoSource;
+              HOSTENV_PROVIDER_FLAKE_ROOT = cfg.flakeRoot;
+              HOSTENV_PROVIDER_LISTEN_SOCKET = cfg.listenSocket;
+              HOSTENV_PROVIDER_WEBHOOK_HOST = cfg.webhookHost;
+              HOSTENV_PROVIDER_UI_BASE_PATH = cfg.uiBasePath;
+              HOSTENV_PROVIDER_UI_BASE_URL = "${cfg.uiScheme}://${cfg.uiHost}";
+              HOSTENV_PROVIDER_DB_URI = cfg.dbUri;
+              HOSTENV_PROVIDER_GITLAB_HOSTS = lib.concatStringsSep "," cfg.gitlabHosts;
+              HOSTENV_PROVIDER_GIT_CREDENTIALS_FILE = cfg.gitCredentialsFile;
+              HOSTENV_PROVIDER_GIT_CONFIG_FILE = cfg.gitConfigFile;
+              HOSTENV_PROVIDER_FLAKE_TEMPLATE = cfg.flakeTemplate;
+            }
+            // lib.optionalAttrs (cfg.webhookSecretFile != null) {
+              HOSTENV_PROVIDER_WEBHOOK_SECRET_FILE = cfg.webhookSecretFile;
+            }
+            // lib.optionalAttrs (cfg.webhookSecretsDir != null) {
+              HOSTENV_PROVIDER_WEBHOOK_SECRETS_DIR = cfg.webhookSecretsDir;
+            }
+            // lib.optionalAttrs (cfg.gitlabOAuthSecretsFile != null) {
+              HOSTENV_PROVIDER_GITLAB_SECRETS_FILE = cfg.gitlabOAuthSecretsFile;
+            };
           serviceConfig = {
-            ExecStart = "${cfg.package}/bin/hostenv-provider-service --config ${configFile}";
+            ExecStart = "${cfg.package}/bin/hostenv-provider-service";
             WorkingDirectory = cfg.dataDir;
             Restart = "on-failure";
             RestartSec = "5s";
