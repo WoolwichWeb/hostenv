@@ -20,7 +20,7 @@
             ({ ... }: {
               hostenv = {
                 organisation = "demo";
-                project = "drupal";
+                project = "app";
                 hostenvHostname = "demo.hostenv.test";
                 root = import ../source.nix { inherit pkgs; };
                 backupsRepoHost = "/mnt/hostenv-shared/backups";

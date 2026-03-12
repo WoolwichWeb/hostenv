@@ -15,6 +15,7 @@ nix flake init -t gitlab:woolwichweb/hostenv#provider
 ```
 
 This creates the basic provider structure including:
+
 - `flake.nix` with hostenv provider module
 - `nodes/sample/` directory as a template for node configurations
 - `.gitignore` for generated files
@@ -22,6 +23,7 @@ This creates the basic provider structure including:
 ### Step 2: Configure your nodes
 
 1. Copy the sample node configuration for each server:
+
    ```bash
    cp -r nodes/sample nodes/<node-name>
    ```
@@ -75,6 +77,7 @@ Deploy to your nodes using your chosen deployment method (see Architecture secti
 ### Secrets file (`secrets/provider.yaml`)
 
 Created automatically on first devshell entry with:
+
 - An ephemeral age key for encryption
 - Empty structure ready for your secrets
 
@@ -141,7 +144,7 @@ The bundle `generated/{plan.json,state.json,flake.nix}` is the auditable snapsho
     deploy = {
       enable = true;
       # providerApiBaseUrl and nodeAuthTokenFile are required when provider-service
-      # is not enabled. When provider.service points to an environment with
+      # is not enabled. When provider.serviceResolution points to an environment with
       # services.hostenv-provider.enable = true, these defaults are derived
       # automatically from the service configuration.
       providerApiBaseUrl = "https://hostenv.example.com";

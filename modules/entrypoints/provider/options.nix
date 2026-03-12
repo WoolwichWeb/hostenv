@@ -1,7 +1,6 @@
 { inputs, lib, config, ... }:
 let
   inherit (lib) mkOption types;
-  hostenvLib = config.flake.lib.hostenv;
   providerNixosModules = [
     config.flake.modules.nixos."provider-deploy"
     config.flake.modules.nixos.provider-common
@@ -10,6 +9,7 @@ let
     config.flake.modules.nixos.nginx-tuning
     config.flake.modules.nixos.monitoring
   ];
+  libHostenv = config.flake.lib.hostenv;
 
   providerNixosSystem =
     { config
@@ -46,8 +46,8 @@ let
       packages = pkgs.${system};
       envUsers = builtins.attrNames envsForNode;
 
-      hostenvEnvModule = {
-        hostenv = {
+      providerPlanModule = {
+        provider.plan = {
           environments = envsForNode;
           defaultEnvironment = plan.defaultEnvironment or "main";
         };
@@ -67,9 +67,7 @@ let
 
       sopsSecrets = userInfo:
         let
-          hostPkgs = pkgs.${localSystem};
-          readYaml = hostenvLib.readYaml;
-          sopsKeys = readYaml hostPkgs secretsPath;
+          sopsKeys = libHostenv.readYaml pkgs.${localSystem} secretsPath;
           keysByEnv =
             if builtins.hasAttr "__hostenv_selected_keys" sopsKeys
               && builtins.isAttrs sopsKeys.__hostenv_selected_keys
@@ -82,43 +80,43 @@ let
             (environmentWith name).hostenv.organisation
             + "_" + (environmentWith name).hostenv.project;
           envOnly = packages.lib.filterAttrs (name: _: builtins.elem name envUsers) userInfo.users.users;
-          providerService = userInfo.provider.service or null;
-          providerConfigured = providerService != null;
-          providerCacheServerEnabled = userInfo.provider.cacheServer.enable or false;
           selectedServiceEnv =
-            if providerService == null then
+            let serviceResolution = userInfo.provider.serviceResolution or null;
+            in
+            if serviceResolution == null then
               null
             else
               let
                 matches = packages.lib.filterAttrs
                   (_: env:
-                    env.hostenv.organisation == providerService.organisation
-                    && env.hostenv.project == providerService.project
-                    && env.hostenv.environmentName == providerService.environmentName)
+                    env.hostenv.organisation == serviceResolution.organisation
+                    && env.hostenv.project == serviceResolution.project
+                    && env.hostenv.environmentName == serviceResolution.environmentName)
                   envsForNode;
                 values = builtins.attrValues matches;
               in
               if values == [ ] then null else builtins.head values;
-          selectedServiceUser =
-            if selectedServiceEnv == null then null else selectedServiceEnv.hostenv.userName;
           providerServiceSecrets =
-            if providerConfigured && providerCacheServerEnabled && selectedServiceUser != null then
+            if selectedServiceEnv != null && userInfo.provider.cache.enable then
+              let
+                userName = selectedServiceEnv.hostenv.userName;
+              in
               {
-                "${selectedServiceUser}/provider_node_tokens.yaml" = {
-                  owner = selectedServiceUser;
-                  group = selectedServiceUser;
-                  key = "provider_node_tokens";
+                "${userName}/provider_node_tokens.yaml" = {
+                  owner = userName;
+                  group = userName;
+                  key = "provider_node_tokens_yaml";
                   mode = "0400";
                 };
-                "${selectedServiceUser}/cache_signing_key" = {
-                  owner = selectedServiceUser;
-                  group = selectedServiceUser;
+                "${userName}/cache_signing_key" = {
+                  owner = userName;
+                  group = userName;
                   key = "cache_signing_key";
                   mode = "0400";
                 };
-                "${selectedServiceUser}/cache_auth_password" = {
-                  owner = selectedServiceUser;
-                  group = selectedServiceUser;
+                "${userName}/cache_auth_password" = {
+                  owner = userName;
+                  group = userName;
                   key = "cache_auth_password";
                   mode = "0400";
                 };
@@ -226,7 +224,7 @@ let
             ]
             ++ providerNixosModules
             ++ [
-              hostenvEnvModule
+              providerPlanModule
             ]
             ++ nodeModules
             ++ [
@@ -302,6 +300,11 @@ let
     };
 in
 {
+  # By necessity a lot of these options are duplicated here and in
+  # modules/nixos/provider-common.nix
+  # This is due to the evaluation boundary between the outer flake, plan.json,
+  # and the generated/ flake.
+  # @todo: find a clean way to obviate this code duplication.
   options.provider = {
     enable = mkOption {
       type = types.bool;
@@ -314,7 +317,9 @@ in
       default = "example.invalid";
       description = "Hostenv control-plane hostname (must be set by provider).";
     };
+
     letsEncrypt = mkOption { type = types.attrs; default = { adminEmail = "admin@example.invalid"; acceptTerms = true; }; };
+
     nixSigning = mkOption {
       type = types.submodule {
         options = {
@@ -328,6 +333,7 @@ in
       default = { };
       description = "Nix signing key configuration shared by generated plan and node configuration.";
     };
+
     deploy = mkOption {
       type = types.submodule {
         options = {
@@ -357,7 +363,8 @@ in
       default = { };
       description = "Provider-deploy settings propagated to provider nodes.";
     };
-    service = mkOption {
+
+    serviceResolution = mkOption {
       type = types.nullOr (types.submodule {
         options = {
           organisation = mkOption {
@@ -377,7 +384,8 @@ in
       default = null;
       description = "Provider environment selector used for provider-service secrets.";
     };
-    cacheServer = mkOption {
+
+    cache = mkOption {
       type = types.submodule {
         options = {
           enable = lib.mkEnableOption "provider-service cache server secret wiring";
@@ -386,17 +394,17 @@ in
       default = { };
       description = "Controls provider-service cache secret projection to the selected service environment.";
     };
+
     nodeFor = mkOption {
       type = types.attrs;
       default = { default = null; };
     };
+
     nodeSystems = mkOption {
       type = types.attrs;
       default = { };
       description = "Map of node name -> system string (e.g. x86_64-linux, aarch64-linux).";
     };
-
-
 
     nodes = mkOption {
       type = types.attrsOf (types.submodule {
@@ -404,14 +412,16 @@ in
           type = types.path;
         };
       });
-      default = {};
+      default = { };
       description = "Declarative node configuration. Each attribute defines a node with a configuration.nix path.";
     };
+
     nodeModules = mkOption {
       type = types.listOf (types.oneOf [ types.path types.str ]);
       default = [ ];
       description = "Extra NixOS modules applied to every node. Strings are paths relative to the provider root.";
     };
+
     statePath = mkOption {
       type = types.path;
       default =
@@ -419,6 +429,7 @@ in
         then inputs.self + /generated/state.json
         else builtins.throw "provider.statePath: inputs.self is required to resolve defaults; set provider.statePath explicitly.";
     };
+
     planPath = mkOption {
       type = types.path;
       default =
@@ -426,8 +437,10 @@ in
         then inputs.self + /generated/plan.json
         else builtins.throw "provider.planPath: inputs.self is required to resolve defaults; set provider.planPath explicitly.";
     };
+
     planSource = mkOption { type = types.enum [ "disk" "eval" ]; default = "eval"; };
     plan.autoInit = (lib.mkEnableOption "automatically setup necessary config for tracking state and secrets") // { default = true; };
+
     generatedFlake = mkOption {
       type = types.submodule {
         options = {
@@ -458,6 +471,7 @@ in
       default = { };
       description = "Customization for generated/flake.nix inputs and per-environment inputs.";
     };
+
     cloudflare = mkOption {
       type = types.submodule {
         options = {

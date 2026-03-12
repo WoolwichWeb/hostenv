@@ -1,20 +1,83 @@
-{ config, ... }:
+{ config, lib, ... }:
 let
-  publicEnvs = config.flake.lib.hostenv.publicEnvironments;
-  hostenvModule = config.flake.lib.hostenv.module;
-  environmentModule = config.flake.lib.hostenv.environmentModule;
+  libHostenv = config.flake.lib.hostenv;
+  # hostenvModule = config.flake.lib.hostenv.module;
+  # environmentModule = config.flake.lib.hostenv.environmentModule;
+  exportUser = user: {
+    inherit (user) email publicKeys gitlabUsername;
+  };
+
+  exportLocation = location: {
+    inherit (location) return;
+  };
+
+  exportSecurity = security: {
+    inherit (security)
+      csp
+      cspMode
+      cspReportTo
+      reportTo
+      referrerPolicy
+      xFrameOptions
+      xContentTypeOptions
+      hsts;
+  };
+
+  exportVirtualHost = virtualHost: {
+    inherit (virtualHost)
+      enableLetsEncrypt
+      allowIndexing
+      globalRedirect
+      redirectCode
+      hsts;
+
+    locations = lib.mapAttrs (_: location: exportLocation location) virtualHost.locations;
+    security = exportSecurity virtualHost.security;
+  };
+
+  exportSecrets = secrets: {
+    inherit (secrets) enable file keys providerPublicKeys;
+  };
+
+  exportHostenv = hostenv: {
+    inherit (hostenv)
+      organisation
+      project
+      environmentName
+      safeEnvironmentName
+      gitRef
+      userName
+      hostname
+      runtimeDir
+      upstreamRuntimeDir
+      dataDir
+      stateDir
+      cacheDir;
+  };
+
+  exportEnvironment = environment: {
+    inherit (environment) enable type deploymentVerification;
+
+    users = lib.mapAttrs (_: user: exportUser user) environment.users;
+    virtualHosts = lib.mapAttrs (_: virtualHost: exportVirtualHost virtualHost) environment.virtualHosts;
+    secrets = exportSecrets environment.secrets;
+    hostenv = exportHostenv environment.hostenv;
+  };
+
+  exportEnvironments = environments:
+    lib.mapAttrs (_: environment: exportEnvironment environment) environments;
+
 in
 {
   flake.modules.hostenv.environments =
     { config, lib, ... }:
     let
-      cfg = config.environments;
       forceNull = "__HOSTENV_INTERNAL_DO_NOT_CHANGE_SEMAPHORE__";
       topLevel = (config.hostenv or { }) // { secrets = config.secrets or { }; };
       types = lib.types;
-      envModule = environmentModule {
+      envModule = libHostenv.environmentModule {
         allUsers = config.allEnvironments.users;
-        inherit topLevel forceNull hostenvModule;
+        inherit topLevel forceNull; inherit (libHostenv) module;
       };
     in
     {
@@ -45,32 +108,55 @@ in
         description = "Settings applied across all environments.";
       };
 
-      # User-facing env definitions; typed against the core environment schema.
       options.environments = lib.mkOption {
         type = types.attrsOf (types.submodule envModule);
         default = { };
+        description = "Project environment definitions.";
       };
 
-      # Default environment name (user facing) – bridged into hostenv.defaultEnvironment for consumers.
       options.defaultEnvironment = lib.mkOption {
         type = types.str;
-        description = "Environment built when the default is not specified by the user.";
+        description = "Name of the default environment for the project.";
         example = "production";
         default = "main";
       };
 
-      options.hostenv.publicEnvironments = lib.mkOption {
+      options.exportedEnvironments = lib.mkOption {
         type = types.attrs;
         default = { };
         internal = true;
         description = "Sanitized, user-facing view of environments for JSON output.";
       };
 
-      # Bridge to the hostenv.* trunk used by feature modules so there is one canonical view.
-      config = {
-        hostenv.environments = lib.mkDefault cfg;
-        hostenv.defaultEnvironment = lib.mkDefault config.defaultEnvironment;
-        hostenv.publicEnvironments = lib.mkDefault (publicEnvs cfg);
-      };
+      config =
+        let
+          productionEnvs = lib.filterAttrs (_: v: (v.enable or false) && v.type == "production") config.environments;
+          productionNames = builtins.attrNames productionEnvs;
+        in
+        {
+          assertions = [
+            {
+              assertion =
+                let eval = builtins.tryEval (builtins.toJSON config.exportedEnvironments);
+                in eval.success;
+              message = ''
+                config.exportedEnvironments must be JSON-serializable.
+              '';
+            }
+            {
+              assertion = (lib.length productionNames) <= 1;
+              message = "Only one environment may have type=production (found ${toString (lib.length productionNames)}).";
+            }
+          ];
+          exportedEnvironments = exportEnvironments config.environments;
+
+          # The below does not work anymore due to an infinite recursion bug.
+          # There is a workaround: populate the default environment from a
+          # separately evaluated copy of the project's config. However, this
+          # would introduce some complexity, so it's defered for now.
+          # @todo: revisit whether the additional complexity is worth it to
+          # get this working again.
+          # defaultEnvironment = lib.mkDefault (if productionNames != [ ] then builtins.head productionNames else "main");
+        };
     };
 }

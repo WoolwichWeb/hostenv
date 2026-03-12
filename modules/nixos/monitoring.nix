@@ -3,7 +3,7 @@
   flake.modules.nixos.monitoring =
     { lib, pkgs, config, ... }:
     let
-      allEnvs = config.hostenv.environments or { };
+      allEnvs = config.provider.plan.environments or { };
       envs = lib.filterAttrs (_: env: env.enable or true) allEnvs;
     in
     {
@@ -12,13 +12,13 @@
         default = false;
         description = "Enable basic monitoring labels and exporters per environment.";
       };
-    
+
       config = lib.mkIf (envs != { } && config.hostenv.monitoring.enable) {
         services.prometheus = {
           exporters.node.enable = lib.mkDefault true;
-          scrapeConfigs = lib.mkDefault [];
+          scrapeConfigs = lib.mkDefault [ ];
         };
-    
+
         # Example: label injection for future log/metrics shipping.
         # Keep environment.variables a string->string map by serialising env metadata.
         environment.variables = {

@@ -47,9 +47,10 @@ in
         cliPkg = pkgs.haskellPackages.callCabal2nix "hostenv-provider-cli" providerRoot { };
         hostenvProviderCLI = pkgs.writeShellApplication {
           name = "hostenv-provider";
-          runtimeInputs = [ pkgs.jq pkgs.sops pkgs.yq-go pkgs.openssl ];
+          runtimeInputs = [ pkgs.jq pkgs.sops pkgs.yq-go pkgs.openssl pkgs.dnsutils ];
           text = ''
             set -euo pipefail
+            export HOSTENV_PROVIDER_DIG_PATH="${pkgs.dnsutils}/bin/dig"
             exec ${cliPkg}/bin/hostenv-provider "$@"
           '';
         };
@@ -73,7 +74,7 @@ in
               cloudflare = cfg.cloudflare;
               planSource = cfg.planSource;
               generatedFlake = cfg.generatedFlake;
-              service = cfg.service;
+              service = cfg.serviceResolution;
             };
       in
       {
@@ -99,7 +100,7 @@ in
             pkgs.age
             pkgs.jq
             pkgs.yq-go
-            pkgs.bind
+            pkgs.dnsutils
             pkgs.postgresql
             pkgs.haskellPackages.cabal-install
             pkgs.gum

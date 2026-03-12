@@ -5,7 +5,7 @@ This example prepares the static fixture layout for a local Hostenv walkthrough 
 ## What This Fixture Contains
 
 1. `demo-app-project/` - a Drupal Hostenv project adapted from the existing local migration demo.
-2. `provider-service-project/` - a separate Hostenv project that owns the selected `provider.service` environment and enables in-project provider-service deployment APIs.
+2. `provider-service-project/` - a separate Hostenv project that owns the selected `provider.serviceResolution` environment and enables in-project provider-service deployment APIs.
 3. `seed/seed.sql.gz` - the Drupal seed database used by the app fixture.
 4. `trigger-webhook.sh` - the reusable webhook helper used by the demo workflow.
 

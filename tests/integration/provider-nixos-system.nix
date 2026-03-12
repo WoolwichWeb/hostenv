@@ -5,6 +5,7 @@ let
 
   system = pkgs.stdenv.hostPlatform.system;
   envName = "acme__demo-main";
+  previewEnvName = "acme__demo-preview";
   hostName = "${envName}.hostenv.test";
   nodeName = "node-a";
   trustedSigningKey = "hostenv-provider-test-1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -26,6 +27,9 @@ let
       backups_env: "dummy"
       env_only: "env"
       env_provider_only: "provider-env-only"
+    ${previewEnvName}:
+      backups_secret: "dummy"
+      backups_env: "dummy"
     acme_demo:
       project_only: "project"
       project_provider_only: "provider-project-only"
@@ -33,6 +37,7 @@ let
       org_only: "org"
     provider_node_tokens:
       ${nodeName}: "node-token"
+    provider_node_tokens_yaml: "${nodeName}: \"node-token\""
     cache_auth_password: "cache-password"
     __hostenv_selected_keys:
       ${envName}:
@@ -57,7 +62,7 @@ let
         };
         provider = {
           nixSigning.trustedPublicKeys = [ trustedSigningKey ];
-          service = {
+          serviceResolution = {
             organisation = "acme";
             project = "demo";
             environmentName = "main";
@@ -103,6 +108,30 @@ let
           };
         };
       };
+      "${previewEnvName}" = {
+        enable = true;
+        type = "testing";
+        uid = 1002;
+        node = nodeName;
+        secrets = {
+          enable = true;
+          keys = [ ];
+        };
+        hostenv = {
+          organisation = "acme";
+          project = "demo";
+          environmentName = "preview";
+          userName = previewEnvName;
+          hostname = "${previewEnvName}.hostenv.test";
+          hostenvHostname = "hosting.test";
+          upstreamRuntimeDir = "/run/hostenv/nginx/${previewEnvName}";
+          root = "/src/demo";
+          projectSecrets = {
+            enable = true;
+            keys = [ ];
+          };
+        };
+      };
     };
     defaultEnvironment = "main";
   };
@@ -130,7 +159,7 @@ let
       nixSigning.trustedPublicKeys = [ trustedSigningKey ];
       nodeFor = { default = nodeName; };
       nodeSystems = nodeSystems;
-      service = {
+      serviceResolution = {
         organisation = "acme";
         project = "demo";
         environmentName = "main";
@@ -147,6 +176,7 @@ let
   pkgsBySystem = lib.genAttrs [ system ] (_: pkgs);
   inputsForSystem = inputs // {
     "${envName}" = envInput;
+    "${previewEnvName}" = envInput;
     parent = providerFlake;
   };
 
@@ -208,18 +238,73 @@ let
   netrcFileConfigured = (systemEval.config.nix.settings.netrc-file or "") == "/run/secrets/hostenv/cache_netrc";
   allowedUsers = systemEval.config.nix.settings.allowed-users or [ ];
   providerServiceAllowed = lib.elem envName allowedUsers;
-  secretsOk =
-    builtins.hasAttr "${envName}/backups_secret" systemEval.config.sops.secrets
-    && builtins.hasAttr "${envName}/backups_env" systemEval.config.sops.secrets
-    && builtins.hasAttr "${envName}/env_only" systemEval.config.sops.secrets
-    && builtins.hasAttr "${envName}/project_only" systemEval.config.sops.secrets
-    && systemEval.config.sops.secrets."${envName}/env_only".key == "${envName}/env_only"
-    && systemEval.config.sops.secrets."${envName}/project_only".key == "acme_demo/project_only"
-    && !(builtins.hasAttr "${envName}/org_only" systemEval.config.sops.secrets)
-    && !(builtins.hasAttr "${envName}/env_provider_only" systemEval.config.sops.secrets)
-    && !(builtins.hasAttr "${envName}/project_provider_only" systemEval.config.sops.secrets)
-    && !(builtins.hasAttr "deploy/backups_secret" systemEval.config.sops.secrets)
-    && !(builtins.hasAttr "deploy/backups_env" systemEval.config.sops.secrets);
+  previewEnvAllowed = lib.elem previewEnvName allowedUsers;
+  secretsCheck =
+    let
+      chks = [
+        {
+          name = "${envName}/backups_secret";
+          check = builtins.hasAttr "${envName}/backups_secret" systemEval.config.sops.secrets;
+        }
+        {
+          name = "${envName}/backups_env";
+          check = builtins.hasAttr "${envName}/backups_env" systemEval.config.sops.secrets;
+        }
+        {
+          name = "${envName}/env_only";
+          check = builtins.hasAttr "${envName}/env_only" systemEval.config.sops.secrets;
+        }
+        {
+          name = "${envName}/project_only";
+          check = builtins.hasAttr "${envName}/project_only" systemEval.config.sops.secrets;
+        }
+        {
+          name = systemEval.config.sops.secrets."${envName}/env_only".key;
+          check = systemEval.config.sops.secrets."${envName}/env_only".key == "${envName}/env_only";
+        }
+        {
+          name = systemEval.config.sops.secrets."${envName}/project_only".key;
+          check = systemEval.config.sops.secrets."${envName}/project_only".key == "acme_demo/project_only";
+        }
+        {
+          name = "!${envName}/org_only";
+          check = !(builtins.hasAttr "${envName}/org_only" systemEval.config.sops.secrets);
+        }
+        {
+          name = "!(${envName}/env_provider_only";
+          check = !(builtins.hasAttr "${envName}/env_provider_only" systemEval.config.sops.secrets);
+        }
+        {
+          name = "!(${envName}/project_provider_only";
+          check = !(builtins.hasAttr "${envName}/project_provider_only" systemEval.config.sops.secrets);
+        }
+        {
+          name = "!(deploy/backups_secret";
+          check = !(builtins.hasAttr "deploy/backups_secret" systemEval.config.sops.secrets);
+        }
+        {
+          name = "!(deploy/backups_env";
+          check = !(builtins.hasAttr "deploy/backups_env" systemEval.config.sops.secrets);
+        }
+        {
+          name = "${envName}/provider_node_tokens.yaml";
+          check = builtins.hasAttr "${envName}/provider_node_tokens.yaml" systemEval.config.sops.secrets;
+        }
+        {
+          name = "systemEval.config.sops.secrets.${envName}/provider_node_tokens.yaml.key";
+          check = systemEval.config.sops.secrets."${envName}/provider_node_tokens.yaml".key == "provider_node_tokens_yaml";
+        }
+      ];
+    in
+    (builtins.foldl'
+      (acc: elem:
+        acc && (
+          if elem.check
+          then elem.check
+          else builtins.trace "Check failed for '${elem.name}'" elem.check
+        ))
+      true
+      chks);
   wheelGroupExists = systemEval.config.users.groups ? wheel;
   wheelPasswordless =
     let
@@ -245,14 +330,32 @@ let
       matches = a:
         (!(a.assertion or true))
         && lib.strings.hasInfix "services.hostenv-provider.deploy.enable" (a.message or "")
-        && lib.strings.hasInfix "provider.service" (a.message or "");
-    in builtins.any matches assertions;
+        && lib.strings.hasInfix "provider.serviceResolution" (a.message or "");
+    in
+    builtins.any matches assertions;
 in
 {
   provider-nixos-system-eval =
     asserts.assertTrue "provider-nixos-system-eval"
-      (nginxOk && vhostOk && trustedPublicKeysOk && secretsOk && firewallPortsOk && deployEnabled && deployApiBaseConfigured && providerCacheFirst && requireSignedBinaries && providerServiceAllowed && netrcFileConfigured && ! systemMismatch.success)
-      "provider nixosSystem should enforce env key/userName alignment";
+      (nginxOk && vhostOk && trustedPublicKeysOk && secretsCheck && firewallPortsOk && deployEnabled && deployApiBaseConfigured && providerCacheFirst && requireSignedBinaries && providerServiceAllowed && previewEnvAllowed && netrcFileConfigured && ! systemMismatch.success)
+      ''
+        provider nixosSystem should enforce env key/userName alignment
+
+        nginxOk: ${builtins.toJSON nginxOk}
+        vhostOk: ${builtins.toJSON vhostOk}
+        trustedPublicKeysOk: ${builtins.toJSON trustedPublicKeysOk}
+        trustedPublicKeysOk: ${builtins.toJSON trustedPublicKeysOk}
+        secretsOk: ${builtins.toJSON secretsCheck}
+        firewallPortsOk: ${builtins.toJSON firewallPortsOk}
+        deployEnabled: ${builtins.toJSON deployEnabled}
+        deployApiBaseConfigured: ${builtins.toJSON deployApiBaseConfigured}
+        providerCacheFirst: ${builtins.toJSON providerCacheFirst}
+        requireSignedBinaries: ${builtins.toJSON requireSignedBinaries}
+        providerServiceAllowed: ${builtins.toJSON providerServiceAllowed}
+        previewEnvAllowed: ${builtins.toJSON previewEnvAllowed}
+        netrcFileConfigured: ${builtins.toJSON netrcFileConfigured}
+        systemMismatch.success: ${builtins.toJSON systemMismatch.success}
+      '';
   provider-nixos-system-wheel-sudo =
     asserts.assertTrue "provider-nixos-system-wheel-sudo"
       (wheelGroupExists && wheelPasswordless)
@@ -265,5 +368,5 @@ in
   provider-nixos-system-provider-service-mismatch =
     asserts.assertTrue "provider-nixos-system-provider-service-mismatch"
       (!providerServiceMismatchEval.success && providerServiceMismatchMessageOk)
-      "provider nixosSystem should reject services.hostenv-provider.deploy.enable when provider.service is unset";
+      "provider nixosSystem should reject services.hostenv-provider.deploy.enable when provider.serviceResolution is unset";
 }

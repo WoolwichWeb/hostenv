@@ -13,18 +13,6 @@
     let
       inherit (pkgs) pog;
 
-      envJsonEval = builtins.tryEval (builtins.toJSON config.hostenv.publicEnvironments);
-      envJson =
-        assert envJsonEval.success
-          || builtins.throw ''
-          hostenv: config.hostenv.publicEnvironments must be JSON-serializable.
-
-          Non-JSON data should be stored elsewhere (e.g. config.hostenv.*).
-        '';
-        envJsonEval.value;
-
-      defaultEnvName = config.defaultEnvironment or "";
-
       subCommandList = lib.attrsToList config.hostenv.subCommands;
       userFacingSubCommands = builtins.filter (cmd: !cmd.value.internal) subCommandList;
       hasSyncSecretsSubCommand = config.hostenv.subCommands ? "__sync-secrets";
@@ -92,7 +80,7 @@
           {
             name = "env";
             short = "e";
-            description = "Target environment (defaults to current branch or '${defaultEnvName}')";
+            description = "Target environment (defaults to current branch or '${config.defaultEnvironment}')";
             completion = ''"$(command -v hostenv)" environments | jq -r 'keys[]' '';
             argument = "ENV";
           }
@@ -125,10 +113,10 @@
           env_name="''${env:-$(
             git symbolic-ref -q --short HEAD 2>/dev/null || true
           )}"
-          if ${var.empty "env_name"}; then env_name="${defaultEnvName}"; fi
+          if ${var.empty "env_name"}; then env_name="${config.defaultEnvironment}"; fi
 
           # jq helpers over embedded JSON
-          env_or_null() { jq -c --arg e "$1" '.[$e] // null' <<< '${envJson}'; }
+          env_or_null() { jq -c --arg e "$1" '.[$e] // null' <<< '${builtins.toJSON config.exportedEnvironments}'; }
           env_cfg="$(env_or_null "$env_name")"
           if ${var.empty "env_cfg"} || [ "$env_cfg" == "null" ]; then
             die "Unknown environment: $env_name" 2

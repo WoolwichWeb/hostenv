@@ -3,15 +3,7 @@
   flake.modules.hostenv.tools-environments-app =
     { lib, config, pkgs, ... }:
     let
-      envJsonEval = builtins.tryEval (builtins.toJSON config.hostenv.publicEnvironments);
-      envJson =
-        assert envJsonEval.success
-          || builtins.throw ''
-          hostenv: config.hostenv.publicEnvironments must be JSON-serializable.
-
-          Non-JSON data should be stored elsewhere (e.g. config.hostenv.*).
-        '';
-        envJsonEval.value;
+      envJson = builtins.toJSON config.exportedEnvironments;
 
       envs = pkgs.writeShellScriptBin "hostenv-environments" ''
         echo '${envJson}' | ${pkgs.jq}/bin/jq

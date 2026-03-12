@@ -3,26 +3,26 @@ let
   hostenvInputs = config.flake.lib.hostenvInputs;
   # Provider-side infrastructure generator.
   providerPlan =
-{ inputs
-, system
-, lib
-, pkgs
-, hostenvHostname
-, letsEncrypt
-, nodeFor
-, nodeSystems
- , nodeModules ? [ ]
- , nixSigning ? { trustedPublicKeys = [ ]; }
- , statePath ? null
+    { inputs
+    , system
+    , lib
+    , pkgs
+    , hostenvHostname
+    , letsEncrypt
+    , nodeFor
+    , nodeSystems
+    , nodeModules ? [ ]
+    , nixSigning ? { trustedPublicKeys = [ ]; }
+    , statePath ? null
 
-, planPath ? null
-, lockPath ? null
-, cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
-, planSource ? "eval"
- , generatedFlake ? { }
- , deploy
- , service
- }:
+    , planPath ? null
+    , lockPath ? null
+    , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
+    , planSource ? "eval"
+    , generatedFlake ? { }
+    , deploy
+    , serviceResolution
+    }:
 
 
 
@@ -421,10 +421,10 @@ let
                           else envCfg;
                         hostenv = effectiveEnvCfg.hostenv;
                         isSelectedServiceEnv =
-                          service != null
-                          && orgAndProject.organisation == service.organisation
-                          && orgAndProject.project == service.project
-                          && envName == service.environmentName;
+                          serviceResolution != null
+                          && orgAndProject.organisation == serviceResolution.organisation
+                          && orgAndProject.project == serviceResolution.project
+                          && envName == serviceResolution.environmentName;
                         evaluatedProviderServiceCfg =
                           evaluatedHostenv.config.services.hostenv-provider or { };
                         serviceEnabled = evaluatedProviderServiceCfg.enable or false;
@@ -647,22 +647,22 @@ let
             allEnvs;
 
       selectedServiceMatches =
-        if service == null then
+        if serviceResolution == null then
           [ ]
         else
           lib.filter
             (env:
-              env.hostenv.organisation == service.organisation
-              && env.hostenv.project == service.project
-              && env.hostenv.environmentName == service.environmentName)
+              env.hostenv.organisation == serviceResolution.organisation
+              && env.hostenv.project == serviceResolution.project
+              && env.hostenv.environmentName == serviceResolution.environmentName)
             allEnvsWithUid;
 
       selectedServiceEnv =
-        if service == null then
+        if serviceResolution == null then
           null
         else if selectedServiceMatches == [ ] then
           builtins.throw ''
-            provider plan: provider.service points to ${service.organisation}/${service.project}/${service.environmentName}, but no matching enabled environment was found.
+            provider plan: provider.serviceResolution points to ${serviceResolution.organisation}/${serviceResolution.project}/${serviceResolution.environmentName}, but no matching enabled environment was found.
           ''
         else
           builtins.head selectedServiceMatches;
@@ -741,7 +741,11 @@ let
 
       providerCacheUrl =
         if providerServiceEnabled then
-          joinUrlPath providerApiBaseUrlDerived "cache"
+          joinUrlPath
+            (if !isNullOrEmpty deploy.providerApiBaseUrl
+            then deploy.providerApiBaseUrl
+            else providerApiBaseUrlDerived)
+            "cache"
         else
           null;
 
@@ -883,8 +887,8 @@ let
                     reconnectSeconds = deploy.reconnectSeconds;
                   }
                 else { enable = false; };
-              cacheServer = {
-                enable = service != null;
+              cache = {
+                enable = serviceResolution != null;
               };
               environments = { };
               nodes = { };
@@ -915,9 +919,8 @@ let
                         };
 
                         provider = {
-                          service = service;
+                          service = serviceResolution;
                           nixSigning.trustedPublicKeys = nixSigning.trustedPublicKeys;
-                          cacheServer.enable = service != null;
                           cache =
                             if providerServiceEnabled then
                               {

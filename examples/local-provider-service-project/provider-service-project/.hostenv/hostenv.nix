@@ -1,11 +1,5 @@
 { ... }:
 {
-  provider.service = {
-    organisation = "demo";
-    project = "provider-service";
-    environmentName = "provider-service";
-  };
-
   services.hostenv-provider = {
     enable = true;
     deploy.enable = true;
@@ -13,7 +7,7 @@
     uiBasePath = "/dashboard";
   };
 
-  environments."provider-service" = {
+  environments.main = {
     enable = true;
     type = "testing";
 

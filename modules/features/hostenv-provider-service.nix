@@ -1,7 +1,8 @@
 { inputs, config, ... }:
 let
   cfgTop = config;
-  hostenvInputs = cfgTop.flake.lib.hostenvInputs;
+  hostenvInputs = config.flake.lib.hostenvInputs;
+  libHostenv = config.flake.lib.hostenv;
   addressableContentInput =
     hostenvInputs.requireInput {
       inherit inputs;
@@ -14,20 +15,19 @@ in
     { lib, config, pkgs, ... }:
     let
       cfg = config.services.hostenv-provider;
-      enabledEnvironments = lib.filterAttrs (_: env: env.enable or true) (config.hostenv.publicEnvironments or { });
+      enabledEnvironments = lib.filterAttrs (_: env: env.enable or true) config.environments;
       enabledEnvironmentNames = lib.sort builtins.lessThan (builtins.attrNames enabledEnvironments);
-      providerServiceSelection =
-        if config ? provider then config.provider.service else null;
       selectedServiceEnv =
-        if providerServiceSelection == null then
+        if config.provider.serviceResolution == null then
           null
         else
           let
+            res = config.provider.serviceResolution;
             matches = lib.filterAttrs
               (_: env:
-                env.hostenv.organisation == providerServiceSelection.organisation
-                && env.hostenv.project == providerServiceSelection.project
-                && env.hostenv.environmentName == providerServiceSelection.environmentName)
+                env.hostenv.organisation == res.organisation
+                && env.hostenv.project == res.project
+                && env.hostenv.environmentName == res.environmentName)
               enabledEnvironments;
             values = builtins.attrValues matches;
           in
@@ -152,6 +152,8 @@ in
 
     in
     {
+      options.provider.serviceResolution = libHostenv.mkServiceResolutionOption { inherit lib; };
+
       options.services.hostenv-provider = {
         enable = lib.mkEnableOption "Hostenv provider service (webhooks + admin UI)";
 
@@ -347,15 +349,15 @@ in
                 '';
               }
               {
-                assertion = !(cfg.deploy.enable && providerServiceSelection == null);
+                assertion = !(cfg.deploy.enable && config.provider.serviceResolution == null);
                 message = ''
-                  services.hostenv-provider.deploy.enable requires provider.service to be configured.
+                  services.hostenv-provider.deploy.enable requires provider.serviceResolution to be configured.
                 '';
               }
               {
                 assertion = !(cfg.deploy.enable && !isSelectedService);
                 message = ''
-                  services.hostenv-provider.deploy.enable is only supported on the provider.service environment.
+                  services.hostenv-provider.deploy.enable is only supported on the provider.serviceResolution environment.
                 '';
               }
               {
@@ -449,7 +451,7 @@ in
               pkgs.coreutils
               pkgs.curl
               pkgs.git
-              pkgs.bind
+              pkgs.dnsutils
               pkgs.nix
               pkgs.openssh
               ghc
@@ -466,14 +468,14 @@ in
             wantedBy = [ "default.target" ];
             before = [ "harmonia.service" "nginx.service" ];
             script = ''
-              set -euo pipefail
-              umask 077
-              password="$(tr -d '\n\r' < "${cfg.cacheAuthPasswordFile}")"
-              hash="$(${pkgs.openssl}/bin/openssl passwd -apr1 "$password")"
-              cat > "${config.hostenv.runtimeDir}/cache_htpasswd" <<EOF
-cache:$hash
-EOF
-              chmod 0400 "${config.hostenv.runtimeDir}/cache_htpasswd"
+                set -euo pipefail
+                umask 077
+                password="$(tr -d '\n\r' < "${cfg.cacheAuthPasswordFile}")"
+                hash="$(${pkgs.openssl}/bin/openssl passwd -apr1 "$password")"
+                cat > "${config.hostenv.runtimeDir}/cache_htpasswd" <<EOF
+              cache:$hash
+              EOF
+                chmod 0400 "${config.hostenv.runtimeDir}/cache_htpasswd"
             '';
             serviceConfig = {
               Type = "oneshot";

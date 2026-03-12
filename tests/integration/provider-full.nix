@@ -33,9 +33,11 @@ let
         })
       ];
       eval = makeHostenv modules null;
-      sanitisedEnvs = lib.mapAttrs (_: env: env // {
-        hostenv = env.hostenv // { root = "/src/${project}"; };
-      }) eval.config.environments;
+      sanitisedEnvs = lib.mapAttrs
+        (_: env: env // {
+          hostenv = env.hostenv // { root = "/src/${project}"; };
+        })
+        eval.config.environments;
     in
     {
       eval = eval;
@@ -95,7 +97,7 @@ let
       nodeAuthTokenFiles = { };
       reconnectSeconds = 5;
     };
-    service = null;
+    serviceResolution = null;
   };
 
   planData = lib.importJSON planEval.plan;
@@ -142,10 +144,10 @@ let
       expectedUsers
     && lib.strings.hasInfix "parent = {" flakeText
     && lib.strings.hasInfix "url = \"path:..\"" flakeText
-      && lib.strings.hasInfix "hostenv = {" flakeText
-      && lib.strings.hasInfix "follows = \"parent/hostenv\"" flakeText
-      && lib.strings.hasInfix "secretsPath = ./secrets.merged.yaml;" flakeText
-      && lib.strings.hasInfix "inputs.parent.lib.provider.deployOutputs" flakeText;
+    && lib.strings.hasInfix "hostenv = {" flakeText
+    && lib.strings.hasInfix "follows = \"parent/hostenv\"" flakeText
+    && lib.strings.hasInfix "secretsPath = ./secrets.merged.yaml;" flakeText
+    && lib.strings.hasInfix "inputs.parent.lib.provider.deployOutputs" flakeText;
 in
 {
   provider_full_env_discovery =

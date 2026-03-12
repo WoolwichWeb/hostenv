@@ -21,6 +21,13 @@ NODE_B_HOST_IP="127.0.0.3"
 NODE_SSH_PORT=2222
 NODE_HTTP_PORT=8080
 PROVIDER_HTTP_PORT=18080
+PROVIDER_API_VM_GATEWAY="10.0.2.2"
+JOB_COMPLETION_TIMEOUT=600
+JOB_ACTION_TIMEOUT=1200
+PLAN_COMMAND_TIMEOUT=1800
+NIX_BUILD_TIMEOUT=3600
+FLAKE_ARCHIVE_TIMEOUT=1800
+SEED_IMPORT_TIMEOUT=1800
 
 AUTOMATED=0
 CLEANUP=0
@@ -32,8 +39,7 @@ WORKDIR=""
 PROVIDER_DIR=""
 APP_PROJECT_DIR=""
 PROVIDER_SERVICE_PROJECT_DIR=""
-HOSTENV_SOURCE_DIR=""
-SSH_DIR=""
+HOSTENV_SOURCE_DIR="" SSH_DIR=""
 SSH_KEY=""
 SSH_CONFIG=""
 SHARED_DIR=""
@@ -164,6 +170,40 @@ require_cmd() {
   command -v "$cmd" >/dev/null 2>&1 || fail "Missing '$cmd'. Run from the repo Nix environment (for example: nix develop)."
 }
 
+run_with_timeout() {
+  local timeout_seconds="$1"
+  local label="$2"
+  shift 2
+
+  if timeout --foreground "$timeout_seconds" "$@"; then
+    return 0
+  fi
+
+  local rc=$?
+  if [[ "$rc" -eq 124 ]]; then
+    fail "$label timed out after ${timeout_seconds}s"
+  fi
+  return "$rc"
+}
+
+run_with_timeout_capture() {
+  local timeout_seconds="$1"
+  local label="$2"
+  shift 2
+  local output
+
+  if output="$(timeout --foreground "$timeout_seconds" "$@")"; then
+    printf '%s\n' "$output"
+    return 0
+  fi
+
+  local rc=$?
+  if [[ "$rc" -eq 124 ]]; then
+    fail "$label timed out after ${timeout_seconds}s"
+  fi
+  return "$rc"
+}
+
 port_in_use() {
   local address="$1"
   local port="$2"
@@ -277,7 +317,7 @@ wait_for_ssh() {
   start="$(date +%s)"
 
   while true; do
-    if ssh -F "$SSH_CONFIG" -o ConnectTimeout=2 "root@${host_alias}" true >/dev/null 2>&1; then
+    if ssh -vv -F "$SSH_CONFIG" -o ConnectTimeout=2 "root@${host_alias}" true ; then
       return 0
     fi
     if (( "$(date +%s)" - start > timeout )); then
@@ -313,7 +353,7 @@ provider_user_ssh() {
   local ssh_exit
   
   while true; do
-    ssh -F "$SSH_CONFIG" "${PROVIDER_ENV_USER}@node-a.${HOSTENV_HOSTNAME}" \
+    ssh -vv -F "$SSH_CONFIG" "${PROVIDER_ENV_USER}@node-a.${HOSTENV_HOSTNAME}" \
       "set -euo pipefail; export HOME=\$HOME; export XDG_RUNTIME_DIR=/run/user/\$(id -u); export XDG_CACHE_HOME=\$HOME/.cache; export XDG_CONFIG_HOME=\$HOME/.config; export XDG_DATA_HOME=\$HOME/.local/share; export XDG_STATE_HOME=\$HOME/.local/state; ${remote_cmd}"
     ssh_exit=$?
     
@@ -458,7 +498,7 @@ LIMIT 40;
 
 SELECT 'actions' AS section, job_id, node, op, status, user_name
 FROM deploy_actions
-ORDER BY id DESC
+ORDER BY updated_at DESC, node, action_idx DESC
 LIMIT 40;
 " > "$db_log" 2>&1 || true
 
@@ -507,6 +547,76 @@ ORDER BY node, action_idx;
     printf 'node=%s\n' "$node"
     printf 'db_log=%s\n' "$db_log"
     printf 'journal_log=%s\n' "$journal_log"
+  } > "$summary_log"
+}
+
+capture_app_site_diagnostics() {
+  local label="$1"
+  local node_alias="$2"
+  local node_ip="$3"
+  local summary_log="$LOG_DIR/${label}.log"
+  local host_http_log="$LOG_DIR/${label}-host-http.log"
+  local node_http_log="$LOG_DIR/${label}-node-http.log"
+  local root_status_log="$LOG_DIR/${label}-root-status.log"
+  local app_units_log="$LOG_DIR/${label}-app-units.log"
+  local app_unit_files_log="$LOG_DIR/${label}-app-unit-files.log"
+  local app_failed_log="$LOG_DIR/${label}-app-failed.log"
+  local app_journal_log="$LOG_DIR/${label}-app-journal.log"
+  local runtime_log="$LOG_DIR/${label}-runtime.log"
+  local deploy_journal_log="$LOG_DIR/${label}-provider-deploy-journal.log"
+  local user_state_cmd
+  local host_code
+
+  user_state_cmd="$(printf '%q' "set -euo pipefail; ls -lah \$HOME; printf '\\n'; ls -lah \$HOME/.config 2>/dev/null || true; printf '\\n'; ls -lah \$HOME/.config/systemd 2>/dev/null || true; printf '\\n'; ls -lah \$HOME/.config/systemd/user 2>/dev/null || true; printf '\\n'; ls -lah \$HOME/.local/state 2>/dev/null || true; printf '\\n'; ls -lah \$HOME/.local/state/hostenv/current-state 2>/dev/null || true; printf '\\n'; ls -lah \$HOME/.local/state/hostenv/current-state/systemd 2>/dev/null || true; printf '\\n'; ls -lah \$HOME/.local/state/hostenv/current-state/systemd/user 2>/dev/null || true")"
+
+  host_code="$(http_status "$APP_VHOST" "http://${node_ip}:${NODE_HTTP_PORT}/")"
+  curl --connect-timeout 3 --max-time 10 -sS -D - -o /dev/null -H "Host: ${APP_VHOST}" "http://${node_ip}:${NODE_HTTP_PORT}/" > "$host_http_log" 2>&1 || true
+
+  ssh -F "$SSH_CONFIG" "root@${node_alias}.${HOSTENV_HOSTNAME}" \
+    "set -euo pipefail; curl --connect-timeout 3 --max-time 10 -sS -D - -o /dev/null -H 'Host: ${APP_VHOST}' 'http://127.0.0.1:${NODE_HTTP_PORT}/'" \
+    > "$node_http_log" 2>&1 || true
+
+  ssh -F "$SSH_CONFIG" "root@${node_alias}.${HOSTENV_HOSTNAME}" \
+    "systemctl --no-pager --full status nginx.service provider-deploy.service sshd.service" \
+    > "$root_status_log" 2>&1 || true
+
+  ssh -F "$SSH_CONFIG" "root@${node_alias}.${HOSTENV_HOSTNAME}" \
+    "journalctl --no-pager -b -n 200 -u provider-deploy.service" \
+    > "$deploy_journal_log" 2>&1 || true
+
+  ssh -F "$SSH_CONFIG" "${APP_ENV_USER}@${node_alias}.${HOSTENV_HOSTNAME}" \
+    "set -euo pipefail; export HOME=\$HOME; export XDG_RUNTIME_DIR=/run/user/\$(id -u); export XDG_CACHE_HOME=\$HOME/.cache; export XDG_CONFIG_HOME=\$HOME/.config; export XDG_DATA_HOME=\$HOME/.local/share; export XDG_STATE_HOME=\$HOME/.local/state; systemctl --user --no-pager --full list-units --type=service --all" \
+    > "$app_units_log" 2>&1 || true
+
+  ssh -F "$SSH_CONFIG" "${APP_ENV_USER}@${node_alias}.${HOSTENV_HOSTNAME}" \
+    "set -euo pipefail; export HOME=\$HOME; export XDG_RUNTIME_DIR=/run/user/\$(id -u); export XDG_CACHE_HOME=\$HOME/.cache; export XDG_CONFIG_HOME=\$HOME/.config; export XDG_DATA_HOME=\$HOME/.local/share; export XDG_STATE_HOME=\$HOME/.local/state; systemctl --user --no-pager --full list-unit-files" \
+    > "$app_unit_files_log" 2>&1 || true
+
+  ssh -F "$SSH_CONFIG" "${APP_ENV_USER}@${node_alias}.${HOSTENV_HOSTNAME}" \
+    "set -euo pipefail; export HOME=\$HOME; export XDG_RUNTIME_DIR=/run/user/\$(id -u); export XDG_CACHE_HOME=\$HOME/.cache; export XDG_CONFIG_HOME=\$HOME/.config; export XDG_DATA_HOME=\$HOME/.local/share; export XDG_STATE_HOME=\$HOME/.local/state; systemctl --user --no-pager --full --failed" \
+    > "$app_failed_log" 2>&1 || true
+
+  ssh -F "$SSH_CONFIG" "${APP_ENV_USER}@${node_alias}.${HOSTENV_HOSTNAME}" \
+    "set -euo pipefail; export HOME=\$HOME; export XDG_RUNTIME_DIR=/run/user/\$(id -u); export XDG_CACHE_HOME=\$HOME/.cache; export XDG_CONFIG_HOME=\$HOME/.config; export XDG_DATA_HOME=\$HOME/.local/share; export XDG_STATE_HOME=\$HOME/.local/state; journalctl --user --no-pager -b -n 200" \
+    > "$app_journal_log" 2>&1 || true
+
+  ssh -F "$SSH_CONFIG" "root@${node_alias}.${HOSTENV_HOSTNAME}" \
+    "set -euo pipefail; ls -lah '${APP_RUNTIME_DIR}'; printf '\n== runtime contents ==\n'; find '${APP_RUNTIME_DIR}' -maxdepth 2 \( -type s -o -type f \) | sort; printf '\n== user config systemd ==\n'; runuser -u '${APP_ENV_USER}' -- bash -lc ${user_state_cmd}" \
+    > "$runtime_log" 2>&1 || true
+
+  {
+    printf 'node=%s\n' "$node_alias"
+    printf 'node_ip=%s\n' "$node_ip"
+    printf 'host_http_code=%s\n' "$host_code"
+    printf 'host_http_log=%s\n' "$host_http_log"
+    printf 'node_http_log=%s\n' "$node_http_log"
+    printf 'root_status_log=%s\n' "$root_status_log"
+    printf 'app_units_log=%s\n' "$app_units_log"
+    printf 'app_unit_files_log=%s\n' "$app_unit_files_log"
+    printf 'app_failed_log=%s\n' "$app_failed_log"
+    printf 'app_journal_log=%s\n' "$app_journal_log"
+    printf 'runtime_log=%s\n' "$runtime_log"
+    printf 'provider_deploy_journal_log=%s\n' "$deploy_journal_log"
   } > "$summary_log"
 }
 
@@ -655,7 +765,7 @@ write_job_statuses_snapshot() {
   local body_file="$3"
   local sql
 
-  sql="WITH status_rows AS (SELECT DISTINCT ON (node) id AS \"eventId\", node, status, phase, message, created_at AS \"createdAt\" FROM deploy_node_events WHERE job_id = '${job_id}' ORDER BY node, id DESC) SELECT json_build_object('jobId', '${job_id}', 'node', '${node}', 'statuses', COALESCE((SELECT json_agg(row_to_json(status_rows) ORDER BY node) FROM status_rows), '[]'::json));"
+  sql="WITH status_rows AS (SELECT DISTINCT ON (node) id AS \"eventId\", node, status, phase, message, payload, created_at AS \"createdAt\" FROM deploy_node_events WHERE job_id = '${job_id}' ORDER BY node, id DESC) SELECT json_build_object('jobId', '${job_id}', 'node', '${node}', 'statuses', COALESCE((SELECT json_agg(row_to_json(status_rows) ORDER BY node) FROM status_rows), '[]'::json));"
 
   provider_db_query "$sql" > "$body_file"
 }
@@ -698,7 +808,11 @@ ensure_local_git_ref() {
 }
 
 run_provider_plan() {
-  (cd "$PROVIDER_DIR" && nix run .#hostenv-provider -- plan && nix run .#hostenv-provider -- dns-gate)
+  (
+    cd "$PROVIDER_DIR"
+    run_with_timeout "$PLAN_COMMAND_TIMEOUT" "Provider plan generation" nix run .#hostenv-provider -- plan
+    run_with_timeout "$PLAN_COMMAND_TIMEOUT" "Provider dns-gate update" nix run .#hostenv-provider -- dns-gate
+  )
 }
 
 sanitize_generated_plan() {
@@ -726,9 +840,9 @@ sign_deploy_profile() {
   local path
 
   if [[ "$profile" == "system" ]]; then
-    path="$(nix build --no-link --print-out-paths "$PROVIDER_DIR/generated/.#nixosConfigurations.${node}.config.system.build.toplevel")"
+    path="$(run_with_timeout_capture "$NIX_BUILD_TIMEOUT" "System profile build for ${node}" nix build --no-link --print-out-paths "$PROVIDER_DIR/generated/.#nixosConfigurations.${node}.config.system.build.toplevel")"
   else
-    path="$(nix build --no-link --print-out-paths "$PROVIDER_DIR/generated/.#packages.x86_64-linux.env-${profile}")"
+    path="$(run_with_timeout_capture "$NIX_BUILD_TIMEOUT" "Environment profile build for ${profile}" nix build --no-link --print-out-paths "$PROVIDER_DIR/generated/.#packages.x86_64-linux.env-${profile}")"
   fi
 
   nix store sign --key-file "$NIX_SIGNING_KEY_FILE" --recursive "$path" >/dev/null
@@ -809,6 +923,30 @@ provider_request() {
 
   args+=("$url")
   "${args[@]}" || true
+}
+
+archive_flake_inputs_to_node() {
+  local node="$1"
+  local flake_path="$2"
+  local label="$3"
+  local log_file="$LOG_DIR/${label}-${node}-flake-archive.log"
+
+  [[ -f "$flake_path/flake.nix" ]] || fail "Cannot archive flake inputs from non-flake path: $flake_path"
+
+  if ! NIX_SSHOPTS="-F $SSH_CONFIG" timeout --foreground "$FLAKE_ARCHIVE_TIMEOUT" nix flake archive --to "ssh://root@${node}.${HOSTENV_HOSTNAME}" "$flake_path" > "$log_file" 2>&1; then
+    local rc=$?
+    if [[ "$rc" -eq 124 ]]; then
+      fail "Archiving flake inputs for ${node} from ${flake_path} timed out after ${FLAKE_ARCHIVE_TIMEOUT}s. See $log_file"
+    fi
+    fail "Failed to archive flake inputs for ${node} from ${flake_path}. See $log_file"
+  fi
+}
+
+preseed_deploy_flake_inputs() {
+  local node="$1"
+
+  archive_flake_inputs_to_node "$node" "$PROVIDER_DIR" "provider-root"
+  archive_flake_inputs_to_node "$node" "$PROVIDER_DIR/generated" "provider-generated"
 }
 
 wait_for_job_action_op() {
@@ -924,6 +1062,7 @@ write_provider_flake() {
   local esc_signing_key
   local esc_node
   local esc_provider_port
+  local esc_provider_gateway
 
   esc_hostenv_source="$(escape_sed_replacement "path:${HOSTENV_SOURCE_DIR}")"
   esc_app_project_url="$(escape_sed_replacement "git+file://${APP_PROJECT_DIR}?dir=.hostenv&ref=main")"
@@ -932,6 +1071,7 @@ write_provider_flake() {
   esc_signing_key="$(escape_sed_replacement "$NIX_SIGNING_PUBLIC_KEY")"
   esc_node="$(escape_sed_replacement "$production_node")"
   esc_provider_port="$(escape_sed_replacement "$PROVIDER_HTTP_PORT")"
+  esc_provider_gateway="$(escape_sed_replacement "$PROVIDER_API_VM_GATEWAY")"
 
   cp "$PROVIDER_FLAKE_TEMPLATE" "$PROVIDER_DIR/flake.nix"
   sed -i "s|__HOSTENV_SOURCE_DIR__|${esc_hostenv_source}|g" "$PROVIDER_DIR/flake.nix"
@@ -941,6 +1081,7 @@ write_provider_flake() {
   sed -i "s|__NIX_SIGNING_PUBLIC_KEY__|${esc_signing_key}|g" "$PROVIDER_DIR/flake.nix"
   sed -i "s|__PRODUCTION_NODE__|${esc_node}|g" "$PROVIDER_DIR/flake.nix"
   sed -i "s|__PROVIDER_HTTP_PORT__|${esc_provider_port}|g" "$PROVIDER_DIR/flake.nix"
+  sed -i "s|__PROVIDER_API_VM_GATEWAY__|${esc_provider_gateway}|g" "$PROVIDER_DIR/flake.nix"
   sed -i 's|"demo__provider-service"|demo__providerservice|' "$PROVIDER_DIR/flake.nix"
   sed -i "s|project = \"provider-service\";|project = \"${PROVIDER_SERVICE_PROJECT_SELECTOR}\";|" "$PROVIDER_DIR/flake.nix"
 }
@@ -960,6 +1101,7 @@ write_node_config() {
   local esc_age_private
   local esc_ssh_public
   local esc_provider_host
+  local esc_provider_gateway
 
   esc_node="$(escape_sed_replacement "$node")"
   esc_host_ip="$(escape_sed_replacement "$host_ip")"
@@ -973,6 +1115,7 @@ write_node_config() {
   esc_age_private="$(escape_sed_replacement "$AGE_PRIVATE_KEY")"
   esc_ssh_public="$(escape_sed_replacement "$SSH_PUBLIC_KEY")"
   esc_provider_host="$(escape_sed_replacement "$PROVIDER_SERVICE_HOST")"
+  esc_provider_gateway="$(escape_sed_replacement "$PROVIDER_API_VM_GATEWAY")"
 
   mkdir -p "$PROVIDER_DIR/nodes/$node"
   cp "$NODE_CONFIG_TEMPLATE" "$PROVIDER_DIR/nodes/$node/configuration.nix"
@@ -995,7 +1138,10 @@ start_vm() {
   local vm_out="$PROVIDER_DIR/vm-$node"
   local vm_runner
 
-  (cd "$PROVIDER_DIR" && nix build "./generated#nixosConfigurations.${node}.config.system.build.vm" -o "$vm_out")
+  (
+    cd "$PROVIDER_DIR"
+    run_with_timeout "$NIX_BUILD_TIMEOUT" "VM build for ${node}" nix build "./generated#nixosConfigurations.${node}.config.system.build.vm" -o "$vm_out"
+  )
   vm_runner="$(find_vm_runner "$vm_out")"
 
   (cd "$PROVIDER_DIR" && "$vm_runner" > "$LOG_DIR/${node}.log" 2>&1) &
@@ -1006,7 +1152,25 @@ start_vm() {
 }
 
 start_provider_http_bridge() {
-  return 0
+  local provider_service_socket="${PROVIDER_RUNTIME_DIR}/hostenv-provider.sock"
+  
+  # Start socat to expose the Unix socket on TCP for VM access
+  socat TCP-LISTEN:"$PROVIDER_HTTP_PORT",bind=0.0.0.0,fork,reuseaddr TCP:127.0.0.2:${NODE_HTTP_PORT} > "$LOG_DIR/provider-socat.log" 2>&1 &
+  PROVIDER_BRIDGE_PID="$!"
+  printf '%s\n' "$PROVIDER_BRIDGE_PID" > "$PIDS_DIR/provider-socat.pid"
+  
+  # Wait for the TCP port to be listening
+  local start
+  start="$(date +%s)"
+  while true; do
+    if port_in_use "0.0.0.0" "$PROVIDER_HTTP_PORT"; then
+      return 0
+    fi
+    if (( "$(date +%s)" - start >= 30 )); then
+      return 1
+    fi
+    sleep 1
+  done
 }
 
 bootstrap_provider_service_environment() {
@@ -1014,7 +1178,7 @@ bootstrap_provider_service_environment() {
   local provider_socket
   local bootstrap_log="$EVIDENCE_DIR/provider-service-project-phase-c-bootstrap.log"
   local bootstrap_status
-  profile_path="$(nix build --no-link --print-out-paths "$PROVIDER_DIR/generated/.#packages.x86_64-linux.env-${PROVIDER_ENV_USER}")"
+  profile_path="$(run_with_timeout_capture "$NIX_BUILD_TIMEOUT" "Provider-service environment build" nix build --no-link --print-out-paths "$PROVIDER_DIR/generated/.#packages.x86_64-linux.env-${PROVIDER_ENV_USER}")"
   provider_socket="${PROVIDER_RUNTIME_DIR}/hostenv-provider.sock"
 
   {
@@ -1060,6 +1224,11 @@ bootstrap_provider_service_environment() {
     fail "Provider-service socket did not appear at $provider_socket. See $LOG_DIR/provider-service-bootstrap.log, $LOG_DIR/provider-service-user-status.log, and $LOG_DIR/provider-service-user-journal.log"
   fi
 
+  if ! start_provider_http_bridge; then
+    capture_provider_bootstrap_diagnostics "$provider_socket" "$bootstrap_log"
+    fail "Provider HTTP bridge failed to start. See $LOG_DIR/provider-socat.log"
+  fi
+
   if ! seed_app_project_webhook; then
     capture_provider_bootstrap_diagnostics "$provider_socket" "$bootstrap_log"
     fail "Provider-service webhook seed failed. See $LOG_DIR/provider-service-webhook-seed.log"
@@ -1067,11 +1236,11 @@ bootstrap_provider_service_environment() {
 }
 
 run_seed_import() {
-  (
-    cd "$APP_PROJECT_DIR/.hostenv"
-    pv ./seed.sql.gz | gunzip -c | ssh -F "$SSH_CONFIG" "${APP_ENV_USER}@node-a.${HOSTENV_HOSTNAME}" \
-      "set -euo pipefail; db_bin=\$(command -v mariadb || command -v mysql || echo /run/current-system/sw/bin/mysql); \"\$db_bin\" --socket='${APP_RUNTIME_DIR}/mysql.sock' --user='${APP_ENV_USER}' --database=drupal"
-  )
+  run_with_timeout "$SEED_IMPORT_TIMEOUT" "Seed import" bash -lc '
+    set -euo pipefail
+    cd "$1"
+    pv ./seed.sql.gz | gunzip -c | ssh -F "$2" "$3" "set -euo pipefail; db_bin=\$(command -v mariadb || command -v mysql || echo /run/current-system/sw/bin/mysql); \"\$db_bin\" --socket=\"$4\" --user=\"$5\" --database=drupal"
+  ' _ "$APP_PROJECT_DIR/.hostenv" "$SSH_CONFIG" "${APP_ENV_USER}@node-a.${HOSTENV_HOSTNAME}" "${APP_RUNTIME_DIR}/mysql.sock" "$APP_ENV_USER"
 }
 
 record_phase_a_evidence() {
@@ -1176,6 +1345,7 @@ record_node_job_evidence() {
     printf 'job_id=%s\n' "$job_id"
     printf 'node=%s\n' "$node"
     printf 'final_state=%s\n' "$(jq -r --arg node "$node" '.statuses[]? | select(.node == $node and .phase == "intent") | .status' "$statuses_json" | tail -n1)"
+    printf 'latest_status=%s\n' "$(jq -c '.statuses[-1] // null' "$statuses_json")"
     printf 'actions=%s\n' "$(jq -c '[.actions[]? | {node, op, user, status}]' "$actions_json")"
     printf 'statuses=%s\n' "$(jq -c '.statuses' "$statuses_json")"
   } > "$file"
@@ -1216,7 +1386,7 @@ record_cache_client_evidence() {
 }
 
 prepare_workspace() {
-  WORKDIR="$(mktemp -d /tmp/hostenv-local-provider-service-demo-XXXXXX)"
+  WORKDIR="$(mktemp -d /var/tmp/hostenv-local-provider-service-demo-XXXXXX)"
   PROVIDER_DIR="$WORKDIR/provider"
   APP_PROJECT_DIR="$WORKDIR/demo-app-project"
   PROVIDER_SERVICE_PROJECT_DIR="$WORKDIR/provider-service-project"
@@ -1233,6 +1403,13 @@ prepare_workspace() {
   mkdir -p "$PROVIDER_DIR/secrets" "$PROVIDER_DIR/generated"
   chmod 700 "$SSH_DIR"
   chmod 0777 "$SHARED_DIR" "$SHARED_DIR/backups"
+
+  # Create disk-backed temp directory for nix/mktemp operations
+  local temp_dir="$WORKDIR/tmp"
+  mkdir -p "$temp_dir"
+  export TMPDIR="$temp_dir"
+  export TMP="$temp_dir"
+  export TEMP="$temp_dir"
 
   cp -a "$APP_FIXTURE_DIR/." "$APP_PROJECT_DIR/"
   cp -a "$PROVIDER_SERVICE_FIXTURE_DIR/." "$PROVIDER_SERVICE_PROJECT_DIR/"
@@ -1265,22 +1442,11 @@ prepare_workspace() {
   cat > "$PROVIDER_SERVICE_PROJECT_DIR/.hostenv/hostenv.nix" <<EOF_PROVIDER_SERVICE_HOSTENV
 { lib, ... }:
 {
-  options.provider.service = lib.mkOption {
-    type = lib.types.nullOr (lib.types.submodule {
-      options = {
-        organisation = lib.mkOption { type = lib.types.str; };
-        project = lib.mkOption { type = lib.types.str; };
-        environmentName = lib.mkOption { type = lib.types.str; };
-      };
-    });
-    default = null;
-  };
-
   config = {
     defaultEnvironment = "provider-service";
     hostenv.gitRef = "main";
 
-    provider.service = {
+    provider.serviceResolution = {
       organisation = "demo";
       project = "${PROVIDER_SERVICE_PROJECT_SELECTOR}";
       environmentName = "provider-service";
@@ -1356,10 +1522,16 @@ prepare_initial_plan() {
   write_node_config "node-b" "$NODE_B_HOST_IP"
   commit_provider_sources
 
-  (cd "$PROVIDER_DIR" && nix run .#hostenv-provider -- cache-secrets)
+  (
+    cd "$PROVIDER_DIR"
+    run_with_timeout "$PLAN_COMMAND_TIMEOUT" "Provider cache secret generation" nix run .#hostenv-provider -- cache-secrets
+  )
   run_provider_plan
   sanitize_generated_plan
-  (cd "$PROVIDER_DIR" && nix run .#hostenv-provider -- node-tokens)
+  (
+    cd "$PROVIDER_DIR"
+    run_with_timeout "$PLAN_COMMAND_TIMEOUT" "Provider node token generation" nix run .#hostenv-provider -- node-tokens
+  )
   refresh_merged_provider_secrets
   commit_generated
 
@@ -1382,6 +1554,8 @@ bring_up_nodes_and_bootstrap_provider() {
   local readiness_code
   readiness_code="$(http_status "$PROVIDER_VHOST" "http://${NODE_A_HOST_IP}:${NODE_HTTP_PORT}/api/deploy-jobs/next?node=node-a" -H "Authorization: Bearer ${NODE_A_AUTH_TOKEN}")"
   [[ "$readiness_code" =~ ^(200|404)$ ]] || fail "Provider-service HTTP readiness probe failed (HTTP $readiness_code)"
+
+  preseed_deploy_flake_inputs "node-a"
 }
 
 deploy_app_to_node_a() {
@@ -1390,12 +1564,19 @@ deploy_app_to_node_a() {
   NODE_A_JOB_ID="$(trigger_app_webhook_deploy "$sha")"
   [[ -n "$NODE_A_JOB_ID" ]] || fail "Missing node-a job id"
 
-  if ! wait_for_job_action_op "$NODE_A_JOB_ID" "node-a" "$NODE_A_AUTH_TOKEN" "activate" 900; then
+  if ! wait_for_job_action_op "$NODE_A_JOB_ID" "node-a" "$NODE_A_AUTH_TOKEN" "activate" "$JOB_ACTION_TIMEOUT"; then
     wait_for_job_action_op "$NODE_A_JOB_ID" "node-a" "$NODE_A_AUTH_TOKEN" "reload" 180 || fail "No activate/reload action for node-a"
   fi
 
-  wait_for_provider_job_completion "$NODE_A_JOB_ID" "node-a" "$NODE_A_AUTH_TOKEN" 1800 || fail "Node-a deployment job failed"
-  wait_for_site_ready "$NODE_A_HOST_IP" 1200 || fail "Node-a site did not become ready"
+  if ! wait_for_provider_job_completion "$NODE_A_JOB_ID" "node-a" "$NODE_A_AUTH_TOKEN" "$JOB_COMPLETION_TIMEOUT"; then
+    record_node_job_evidence "phase-e-node-a-job" "$NODE_A_JOB_ID" "node-a" "$NODE_A_AUTH_TOKEN"
+    fail "Node-a deployment job failed"
+  fi
+  if ! wait_for_site_ready "$NODE_A_HOST_IP" 1200; then
+    capture_provider_job_diagnostics "$NODE_A_JOB_ID" "node-a" "job-status-timeout-${NODE_A_JOB_ID}-node-a"
+    capture_app_site_diagnostics "node-a-site-timeout" "node-a" "$NODE_A_HOST_IP"
+    fail "Node-a site did not become ready. See $LOG_DIR/node-a-site-timeout.log"
+  fi
   record_node_job_evidence "phase-e-node-a-job" "$NODE_A_JOB_ID" "node-a" "$NODE_A_AUTH_TOKEN"
 }
 
@@ -1405,7 +1586,10 @@ prepare_migration_plan() {
   commit_provider_sources
   run_provider_plan
   sanitize_generated_plan
-  (cd "$PROVIDER_DIR" && nix run .#hostenv-provider -- node-tokens)
+  (
+    cd "$PROVIDER_DIR"
+    run_with_timeout "$PLAN_COMMAND_TIMEOUT" "Provider node token regeneration" nix run .#hostenv-provider -- node-tokens
+  )
   refresh_merged_provider_secrets
   commit_generated
 
@@ -1419,6 +1603,9 @@ prepare_migration_plan() {
   sign_deploy_profile "node-b" "system"
   sign_deploy_profile "node-b" "$APP_ENV_USER"
   start_vm "node-b"
+
+  preseed_deploy_flake_inputs "node-a"
+  preseed_deploy_flake_inputs "node-b"
 }
 
 migrate_app_to_node_b() {
@@ -1428,11 +1615,20 @@ migrate_app_to_node_b() {
   NODE_B_JOB_ID="$(trigger_app_webhook_deploy "$sha")"
   [[ -n "$NODE_B_JOB_ID" ]] || fail "Missing node-b migration job id"
 
-  wait_for_job_action_op "$NODE_B_JOB_ID" "node-a" "$NODE_A_AUTH_TOKEN" "backup" 900 || fail "No backup action for node-a"
-  wait_for_job_action_op "$NODE_B_JOB_ID" "node-b" "$NODE_B_AUTH_TOKEN" "restore" 900 || fail "No restore action for node-b"
-  wait_for_provider_job_completion "$NODE_B_JOB_ID" "node-a" "$NODE_A_AUTH_TOKEN" 1800 || fail "Node-a migration status failed"
-  wait_for_provider_job_completion "$NODE_B_JOB_ID" "node-b" "$NODE_B_AUTH_TOKEN" 1800 || fail "Node-b migration status failed"
-  wait_for_site_ready "$NODE_B_HOST_IP" 1200 || fail "Node-b site did not become ready"
+  wait_for_job_action_op "$NODE_B_JOB_ID" "node-a" "$NODE_A_AUTH_TOKEN" "backup" "$JOB_ACTION_TIMEOUT" || fail "No backup action for node-a"
+  wait_for_job_action_op "$NODE_B_JOB_ID" "node-b" "$NODE_B_AUTH_TOKEN" "restore" "$JOB_ACTION_TIMEOUT" || fail "No restore action for node-b"
+  if ! wait_for_provider_job_completion "$NODE_B_JOB_ID" "node-a" "$NODE_A_AUTH_TOKEN" "$JOB_COMPLETION_TIMEOUT"; then
+    record_node_job_evidence "phase-e-migration-job" "$NODE_B_JOB_ID" "node-a" "$NODE_A_AUTH_TOKEN"
+    fail "Node-a migration status failed"
+  fi
+  if ! wait_for_provider_job_completion "$NODE_B_JOB_ID" "node-b" "$NODE_B_AUTH_TOKEN" "$JOB_COMPLETION_TIMEOUT"; then
+    record_node_job_evidence "phase-e-migration-job" "$NODE_B_JOB_ID" "node-b" "$NODE_B_AUTH_TOKEN"
+    fail "Node-b migration status failed"
+  fi
+  if ! wait_for_site_ready "$NODE_B_HOST_IP" 1200; then
+    capture_app_site_diagnostics "node-b-site-timeout" "node-b" "$NODE_B_HOST_IP"
+    fail "Node-b site did not become ready. See $LOG_DIR/node-b-site-timeout.log"
+  fi
   marker_present_on_node "node-b.${HOSTENV_HOSTNAME}" || fail "Migration marker not found on node-b"
 
   record_node_job_evidence "phase-e-migration-job" "$NODE_B_JOB_ID" "node-a" "$NODE_A_AUTH_TOKEN"

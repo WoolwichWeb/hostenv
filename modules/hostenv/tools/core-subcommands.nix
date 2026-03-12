@@ -3,17 +3,7 @@
   flake.modules.hostenv.tools-core-subcommands =
     { lib, config, pkgs, ... }:
     let
-      envJson =
-        let
-          env = builtins.tryEval (builtins.toJSON config.hostenv.publicEnvironments);
-        in
-        assert env.success
-          || builtins.throw ''
-          hostenv: config.hostenv.publicEnvironments must be JSON-serializable.
-
-          Non-JSON data should be stored elsewhere (e.g. config.hostenv.*).
-        '';
-        env.value;
+      envJson = builtins.toJSON config.exportedEnvironments;
       projectSecretsJson =
         let
           projectSecrets = config.secrets or { };
@@ -21,7 +11,7 @@
         in
         assert eval.success
           || builtins.throw ''
-          hostenv: secrets configuration must be JSON-serializable.
+          config.secrets configuration must be JSON-serializable.
         '';
         eval.value;
       gitlabCfg = config.services.hostenv-provider.gitlab;

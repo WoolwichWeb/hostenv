@@ -15,14 +15,6 @@
       inputs.flake-parts.follows = "flake-parts";
     };
 
-    # Keep the underscore alias visible for later test assertions, while the
-    # hyphenated project input remains the evaluated Hostenv project name that
-    # matches provider-service-project/.hostenv/hostenv.nix.
-    demo__provider_service = {
-      url = "__PROVIDER_SERVICE_PROJECT_URL__";
-      flake = false;
-    };
-
     "demo__provider-service" = {
       url = "__PROVIDER_SERVICE_PROJECT_URL__";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -30,7 +22,6 @@
       inputs.flake-parts.follows = "flake-parts";
     };
 
-    drupal-main-2855093.follows = "demo__app";
   };
 
   outputs = inputs@{ flake-parts, hostenv, ... }:
@@ -70,12 +61,14 @@
           development = "node-a";
         };
         service = {
+          enable = true;
           organisation = "demo";
           project = "provider-service";
-          environmentName = "provider-service";
+          environmentName = "main";
         };
         deploy = {
           enable = true;
+          providerApiBaseUrl = "http://provider.demo.hostenv.test:__PROVIDER_HTTP_PORT__";
           reconnectSeconds = 5;
         };
         planSource = "eval";

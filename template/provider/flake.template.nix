@@ -32,7 +32,7 @@
         #   nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
         # };
         # Note: cache client configuration is automatic when provider-service
-        # is enabled (provider.service points to an environment with
+        # is enabled (provider.serviceResolution points to an environment with
         # services.hostenv-provider.enable = true).
       };
     };
