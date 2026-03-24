@@ -117,7 +117,7 @@ in
               (config.provider.nixSigning.trustedPublicKeys ++ cacheKey)
             );
 
-          settings.require-signed-binaries = lib.mkIf cacheCfg.enable true;
+          settings.require-sigs = lib.mkIf cacheCfg.enable true;
           settings.substituters = lib.mkIf cacheCfg.enable (lib.mkBefore [ cacheCfg.url ]);
           settings.netrc-file = lib.mkIf (cacheCfg.enable && cacheCfg.netrcFile != null && cacheCfg.netrcFile != "") cacheCfg.netrcFile;
           settings.allowed-users =
@@ -226,9 +226,9 @@ in
               esac
               mkdir -p "$(dirname "${cacheCfg.netrcFile}")"
               cat > "${cacheCfg.netrcFile}" <<EOF
-              machine $cache_host
-              login cache
-              password $password
+            machine $cache_host
+            login cache
+            password $password
             EOF
               chown root:root "${cacheCfg.netrcFile}"
               chmod 0400 "${cacheCfg.netrcFile}"

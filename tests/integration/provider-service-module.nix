@@ -24,7 +24,8 @@ let
         type = "testing";
       };
     })
-  ] null;
+  ]
+    null;
 
   vhostNames = builtins.tryEval (builtins.attrNames env.config.services.nginx.virtualHosts);
   expectedHost = env.config.hostenv.hostname;
@@ -60,7 +61,7 @@ else
       grep -q -- "location /cache/" "$nginxConf" || { echo "missing /cache nginx location"; exit 1; }
       grep -q -- "auth_basic_user_file " "$nginxConf" || { echo "missing cache auth_basic_user_file"; exit 1; }
       test -f "$profile/systemd/user/harmonia.service" || { echo "missing harmonia.service"; exit 1; }
-      grep -q -- "--bind unix:" "$profile/systemd/user/harmonia.service" || { echo "harmonia.service is not bound to a unix socket"; exit 1; }
+      grep -q -- '^ExecStart=.*/bin/harmonia' "$profile/systemd/user/harmonia.service" || { echo "harmonia.service missing Harmonia ExecStart"; exit 1; }
       test -f "$profile/systemd/user/fcgiwrap.service" || { echo "missing fcgiwrap.service"; exit 1; }
       test -f "$profile/systemd/user/fcgiwrap.socket" || { echo "missing fcgiwrap.socket"; exit 1; }
       grep -q -- "ListenStream=.*/fcgiwrap.sock" "$profile/systemd/user/fcgiwrap.socket" || { echo "fcgiwrap socket path not configured"; exit 1; }

@@ -611,7 +611,7 @@ runWebhookWith notifyStage runner loadPlan cfg ref = do
   step StageSyncRepo (CommandSpec "git" ["pull", "--rebase", "--autostash"] (cfg.whWorkDir)) >>= \case
     Left err -> pure (Left err)
     Right _ ->
-      step StageUpdateFlake (CommandSpec "nix" ["flake", "update", inputName] (cfg.whWorkDir)) >>= \case
+      step StageUpdateFlake (CommandSpec "nix" ["flake", "update", "hostenv", inputName] (cfg.whWorkDir)) >>= \case
         Left err -> pure (Left err)
         Right _ ->
           step StagePlan (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] (cfg.whWorkDir)) >>= \case

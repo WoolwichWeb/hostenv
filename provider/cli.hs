@@ -115,7 +115,8 @@ digRRRaw :: Maybe Text -> Text -> Text -> IO [Text]
 digRRRaw mNameserver name rr = do
     let serverArgs = maybe [] (\nameserver -> ["@" <> T.unpack nameserver]) mNameserver
     let args = serverArgs <> ["+short", T.unpack name, T.unpack rr]
-    (code, out, _err) <- readProcessWithExitCode "dig" args ""
+    digCmd <- getDigCommand
+    (code, out, _err) <- readProcessWithExitCode digCmd args ""
     case code of
         ExitFailure _ -> pure []
         ExitSuccess ->
@@ -123,6 +124,13 @@ digRRRaw mNameserver name rr = do
                 filter (not . T.null) $
                     map (stripDot . T.toLower . T.strip . T.pack) $
                         lines out
+  where
+    getDigCommand :: IO String
+    getDigCommand = do
+        mPath <- Env.lookupEnv "HOSTENV_PROVIDER_DIG_PATH"
+        case mPath of
+            Just path -> pure path
+            Nothing -> pure "dig"
 
 zoneCandidates :: Text -> [Text]
 zoneCandidates name =

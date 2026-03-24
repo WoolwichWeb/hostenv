@@ -153,12 +153,12 @@ pkgs.writeShellApplication {
 
     require_match '^substituters = .*/cache .*cache\.nixos\.org/?( .*)?$' "$cache_client_node_a_log"
     require_match '^trusted-public-keys = .*hostenv-demo-local:.*$' "$cache_client_node_a_log"
-    require_match '^require-signed-binaries = true$' "$cache_client_node_a_log"
+    require_match '^require-sigs = true$' "$cache_client_node_a_log"
     require_match '^netrc-file = /run/hostenv/provider-cache\.netrc$' "$cache_client_node_a_log"
 
     require_match '^substituters = .*/cache .*cache\.nixos\.org/?( .*)?$' "$cache_client_node_b_log"
     require_match '^trusted-public-keys = .*hostenv-demo-local:.*$' "$cache_client_node_b_log"
-    require_match '^require-signed-binaries = true$' "$cache_client_node_b_log"
+    require_match '^require-sigs = true$' "$cache_client_node_b_log"
     require_match '^netrc-file = /run/hostenv/provider-cache\.netrc$' "$cache_client_node_b_log"
 
     printf '[provider-service-project-test] %s\n' "PASS provider-service project demo verified" | tee -a "$log_file"

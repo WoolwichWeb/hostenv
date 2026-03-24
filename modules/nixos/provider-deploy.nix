@@ -4,6 +4,45 @@
     { config, lib, pkgs, ... }:
     let
       cfg = config.services.provider-deploy;
+      runAsUserScript = pkgs.writeShellApplication {
+        name = "provider-deploy-run-as-user";
+        runtimeInputs = [ pkgs.coreutils pkgs.shadow pkgs.bash ];
+        text = ''
+          set -euo pipefail
+
+          user_name="$1"
+          shift
+
+          user_uid="$(id -u "$user_name")"
+          user_home="$(getent passwd "$user_name" | cut -d: -f6)"
+
+          if [ -z "$user_home" ]; then
+            echo "provider-deploy: could not determine home for user $user_name" >&2
+            exit 1
+          fi
+
+          printf 'provider-deploy: run-as-user prepared user=%s uid=%s home=%s runtime_dir=%s config_dir=%s\n' \
+            "$user_name" "$user_uid" "$user_home" "/run/user/$user_uid" "$user_home/.config" >&2
+
+          systemctl start "user@$user_uid.service"
+          for _ in $(seq 1 30); do
+            if [ -S "/run/user/$user_uid/systemd/private" ] || [ -S "/run/user/$user_uid/bus" ]; then
+              break
+            fi
+            sleep 1
+          done
+
+          printf 'provider-deploy: run-as-user sockets user=%s systemd_private=%s dbus_bus=%s\n' \
+            "$user_name" \
+            "$([ -S "/run/user/$user_uid/systemd/private" ] && printf yes || printf no)" \
+            "$([ -S "/run/user/$user_uid/bus" ] && printf yes || printf no)" >&2
+
+          exec runuser -u "$user_name" -- env \
+            XDG_RUNTIME_DIR="/run/user/$user_uid" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$user_uid/bus" \
+            "$@"
+        '';
+      };
       agentScript = pkgs.writeShellApplication {
         name = "provider-deploy-agent";
         runtimeInputs = [ pkgs.coreutils pkgs.curl pkgs.jq pkgs.nix pkgs.util-linux pkgs.shadow pkgs.websocat ];
@@ -119,14 +158,38 @@
             local phase="$3"
             local message="$4"
             local payload_json="$5"
+            local request_body=""
+            local attempt=1
+            local max_attempts=6
+            local rc=0
 
-            curl -fsS \
-              --config "$auth_cfg" \
-              --max-time 20 \
-              --header "Content-Type: application/json" \
-              --request POST \
-              --data "$(jq -cn --arg node "$node_name" --arg status "$status" --arg phase "$phase" --arg message "$message" --argjson payload "$payload_json" '{node:$node,status:$status,phase:$phase,message:$message,payload:$payload}')" \
-              "$api_base/api/deploy-jobs/$job_id/events" >/dev/null
+            request_body="$(jq -cn --arg node "$node_name" --arg status "$status" --arg phase "$phase" --arg message "$message" --argjson payload "$payload_json" '{node:$node,status:$status,phase:$phase,message:$message,payload:$payload}')"
+
+            while true; do
+              if curl -fsS \
+                --config "$auth_cfg" \
+                --max-time 20 \
+                --header "Content-Type: application/json" \
+                --request POST \
+                --data "$request_body" \
+                "$api_base/api/deploy-jobs/$job_id/events" >/dev/null; then
+                printf 'provider-deploy: posted event job=%s status=%s phase=%s\n' \
+                  "$job_id" "$status" "$phase" >&2
+                return 0
+              fi
+
+              rc=$?
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                printf 'provider-deploy: failed to post event job=%s status=%s phase=%s attempts=%s\n' \
+                  "$job_id" "$status" "$phase" "$attempt" >&2
+                return "$rc"
+              fi
+
+              printf 'provider-deploy: retrying event post job=%s status=%s phase=%s attempt=%s/%s\n' \
+                "$job_id" "$status" "$phase" "$attempt" "$max_attempts" >&2
+              attempt=$((attempt + 1))
+              sleep "$reconnect_seconds"
+            done
           }
 
           post_event_with_command() {
@@ -177,7 +240,8 @@
               return 1
             fi
             auth_message="$(jq -cn --arg node "$node_name" --arg token "$token" '{type:"auth",node:$node,token:$token}')"
-            if (env HOSTENV_WS_AUTH_MESSAGE="$auth_message" sh -c 'printf "%s\n" "$HOSTENV_WS_AUTH_MESSAGE"; tail -f /dev/null' | websocat "$ws_url" 2>/dev/null | while IFS= read -r line; do
+            # shellcheck disable=SC2016
+            if (env HOSTENV_WS_AUTH_MESSAGE="$auth_message" ${pkgs.bash}/bin/sh -c 'printf "%s\n" "$HOSTENV_WS_AUTH_MESSAGE"; tail -f /dev/null' | websocat "$ws_url" 2>/dev/null | while IFS= read -r line; do
               payload="$(jq -c 'select(type=="object" and .type=="deploy_job" and (.jobId // "") != "" and .intent != null) | {jobId,commitSha,node,intent,actions}' <<<"$line" 2>/dev/null || true)"
               if [ -z "$payload" ]; then
                 continue
@@ -217,7 +281,7 @@
 
           run_cmd_cancelable() {
             local job_id="$1"
-            local description="$2"
+            local _description="$2"
             shift 2
             local child
             local checks=0
@@ -278,10 +342,10 @@
             fi
 
             if [ -n "$store_path" ]; then
-              if ! run_cmd_cancelable "$job_id" "realise-$op-$user_name" nix store realise "$store_path"; then
+              if ! run_cmd_cancelable "$job_id" "realise-$op-$user_name" nix-store --realise "$store_path"; then
                 return $?
               fi
-              if ! run_cmd_cancelable "$job_id" "set-profile-$user_name" runuser -u "$user_name" -- nix-env -p "$profile" --set "$store_path"; then
+              if ! run_cmd_cancelable "$job_id" "set-profile-$user_name" ${runAsUserScript}/bin/provider-deploy-run-as-user "$user_name" nix-env -p "$profile" --set "$store_path"; then
                 return $?
               fi
             fi
@@ -294,6 +358,9 @@
               return 3
             fi
 
+            printf 'provider-deploy: resolved action executable job=%s op=%s user=%s exec_path=%s profile=%s\n' \
+              "$job_id" "$op" "$user_name" "$exec_path" "$profile" >&2
+
             if [ "$op" = "restore" ] && [ -n "$source_node" ]; then
               local snapshot_tmp
               local snapshot_payload_file
@@ -303,7 +370,7 @@
               if [ "$snapshot_code" = "200" ]; then
                 snapshot_payload_file="$(mktemp)"
                 jq -c '.payload // {}' "$snapshot_tmp" > "$snapshot_payload_file"
-                if ! run_cmd_cancelable "$job_id" "$op-$user_name" timeout "$action_timeout" runuser -u "$user_name" -- env HOSTENV_RESTORE_SNAPSHOT_FILE="$snapshot_payload_file" HOSTENV_MIGRATIONS="$migrations_csv" "$exec_path"; then
+                if ! run_cmd_cancelable "$job_id" "$op-$user_name" timeout "$action_timeout" ${runAsUserScript}/bin/provider-deploy-run-as-user "$user_name" env HOSTENV_RESTORE_SNAPSHOT_FILE="$snapshot_payload_file" HOSTENV_MIGRATIONS="$migrations_csv" "$exec_path"; then
                   rc=$?
                   rm -f "$snapshot_payload_file"
                   rm -f "$snapshot_tmp"
@@ -318,8 +385,58 @@
               return 0
             fi
 
-            if ! run_cmd_cancelable "$job_id" "$op-$user_name" timeout "$action_timeout" runuser -u "$user_name" -- "$exec_path"; then
+            if ! run_cmd_cancelable "$job_id" "$op-$user_name" timeout "$action_timeout" ${runAsUserScript}/bin/provider-deploy-run-as-user "$user_name" "$exec_path"; then
               return $?
+            fi
+
+            if [ -n "$store_path" ] && [ -d "$store_path/systemd/user" ]; then
+              local default_wants_dir="$store_path/systemd/user/default.target.wants"
+              local -a default_wanted_units=()
+              local unit_path
+
+              if [ -d "$default_wants_dir" ]; then
+                for unit_path in "$default_wants_dir"/*; do
+                  [ -e "$unit_path" ] || continue
+                  default_wanted_units+=("$(basename "$unit_path")")
+                done
+              fi
+
+              # shellcheck disable=SC2016
+              if ! run_cmd_cancelable "$job_id" "verify-$op-$user_name" timeout "$action_timeout" ${runAsUserScript}/bin/provider-deploy-run-as-user "$user_name" env HOSTENV_SYSTEMCTL_BIN="${pkgs.systemd}/bin/systemctl" ${pkgs.bash}/bin/bash -lc '
+                set -euo pipefail
+
+                if [ ! -L "$XDG_CONFIG_HOME/systemd" ]; then
+                  echo "provider-deploy: expected $XDG_CONFIG_HOME/systemd to be a symlink after activation" >&2
+                  exit 1
+                fi
+
+                if [ ! -d "$XDG_CONFIG_HOME/systemd/user" ]; then
+                  echo "provider-deploy: expected $XDG_CONFIG_HOME/systemd/user to exist after activation" >&2
+                  exit 1
+                fi
+
+                if [ ! -L "$XDG_STATE_HOME/hostenv/current-state/systemd" ]; then
+                  echo "provider-deploy: expected $XDG_STATE_HOME/hostenv/current-state/systemd to be a symlink after activation" >&2
+                  exit 1
+                fi
+
+                "$HOSTENV_SYSTEMCTL_BIN" --user daemon-reload
+                "$HOSTENV_SYSTEMCTL_BIN" --user reset-failed || true
+
+                if [ "$#" -gt 0 ]; then
+                  "$HOSTENV_SYSTEMCTL_BIN" --user start "$@"
+                fi
+
+                for unit_name in "$@"; do
+                  load_state="$("$HOSTENV_SYSTEMCTL_BIN" --user show -p LoadState --value "$unit_name")"
+                  if [ "$load_state" != "loaded" ]; then
+                    echo "provider-deploy: unit $unit_name has unexpected LoadState=$load_state" >&2
+                    exit 1
+                  fi
+                done
+              ' _ "''${default_wanted_units[@]}"; then
+                return $?
+              fi
             fi
 
             if [ -n "$store_path" ] && { [ "$op" = "activate" ] || [ "$op" = "reload" ] || [ "$op" = "restore" ] || [ "$op" = "backup" ]; }; then
@@ -332,6 +449,10 @@
             local job_id
             local commit_sha
             local system_path
+            local action_count
+            local top_level_action_count
+            local intent_actions_json
+            local top_level_actions_json
 
             job_id="$(jq -r '.jobId // empty' <<<"$job_json")"
             commit_sha="$(jq -r '.commitSha // empty' <<<"$job_json")"
@@ -342,8 +463,12 @@
             local current_signature
             current_signature="$(job_signature "$job_json")"
 
-            local action_count
             action_count="$(jq '.intent.actions | length' <<<"$job_json")"
+            top_level_action_count="$(jq '(.actions // []) | length' <<<"$job_json")"
+            intent_actions_json="$(jq -c '.intent.actions // []' <<<"$job_json")"
+            top_level_actions_json="$(jq -c '.actions // []' <<<"$job_json")"
+            printf 'provider-deploy: received job=%s commit=%s system_path=%s intent_action_count=%s top_level_action_count=%s intent_actions=%s top_level_actions=%s\n' \
+              "$job_id" "$commit_sha" "$system_path" "$action_count" "$top_level_action_count" "$intent_actions_json" "$top_level_actions_json" >&2
             if [ -z "$system_path" ] && [ "$action_count" -eq 0 ]; then
               ensure_state_file
               tmp="$(mktemp)"
@@ -356,7 +481,7 @@
 
             if [ -n "$system_path" ]; then
               post_event "$job_id" "running" "system" "Switching system profile" "{}" || true
-              if ! run_cmd_cancelable "$job_id" "system-realise" nix store realise "$system_path"; then
+              if ! run_cmd_cancelable "$job_id" "system-realise" nix-store --realise "$system_path"; then
                 rc=$?
                 if [ "$rc" -eq 99 ] || [ "$rc" -eq 98 ]; then
                   post_event_with_command "$job_id" "failed" "intent" "Superseded by newer job" '{"reason":"superseded","step":"system-realise"}' || true
@@ -387,6 +512,7 @@
                 return "$rc"
               fi
               post_event_with_command "$job_id" "success" "system" "System switch complete" '{"step":"system-switch"}' || true
+              printf 'provider-deploy: system switch complete job=%s action_count=%s\n' "$job_id" "$action_count" >&2
               mark_system_state "$system_path"
               cleanup_command_files
             fi
@@ -409,8 +535,12 @@
               to_node="$(jq -r '.toNode // empty' <<<"$action")"
               migrations_csv="$(jq -r '(.migrations // []) | map(tostring) | join(",")' <<<"$action")"
 
+              printf 'provider-deploy: preparing action job=%s idx=%s op=%s user=%s store_path=%s source=%s target=%s\n' \
+                "$job_id" "$idx" "$op" "$user_name" "$store_path" "$source_node" "$to_node" >&2
+
               if [ -z "$op" ] || [ -z "$user_name" ]; then
                 post_event "$job_id" "failed" "intent" "Malformed action payload" "{}" || true
+                printf 'provider-deploy: malformed action payload job=%s idx=%s raw=%s\n' "$job_id" "$idx" "$action" >&2
                 return 1
               fi
 
@@ -429,6 +559,7 @@
                 else
                   post_event_with_command "$job_id" "failed" "$op" "Action failed" "$(jq -cn --arg op "$op" '{op:$op}')" || true
                 fi
+                printf 'provider-deploy: action failed job=%s idx=%s op=%s user=%s rc=%s\n' "$job_id" "$idx" "$op" "$user_name" "$rc" >&2
                 cleanup_command_files
                 return "$rc"
               fi
@@ -438,10 +569,12 @@
               else
                 post_event_with_command "$job_id" "success" "$op" "Action complete" "$(jq -cn --arg user "$user_name" --arg op "$op" '{user:$user,op:$op}')" || true
               fi
+              printf 'provider-deploy: action succeeded job=%s idx=%s op=%s user=%s\n' "$job_id" "$idx" "$op" "$user_name" >&2
               cleanup_command_files
               idx=$((idx + 1))
             done
 
+            printf 'provider-deploy: all actions complete job=%s action_count=%s\n' "$job_id" "$action_count" >&2
             post_event "$job_id" "success" "intent" "Deploy job complete" "{}" || true
             ensure_state_file
             tmp="$(mktemp)"
@@ -508,6 +641,8 @@
       };
 
       config = lib.mkIf cfg.enable {
+        security.pam.services.runuser.setEnvironment = lib.mkForce true;
+
         assertions = [
           {
             assertion = cfg.providerApiBaseUrl != "";

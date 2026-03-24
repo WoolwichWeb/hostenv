@@ -60,8 +60,9 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Time (UTCTime, addUTCTime, getCurrentTime)
-import Database.PostgreSQL.Simple (Binary (..), Connection, In (..), Only (..), Query, close, connectPostgreSQL, execute, execute_, query, query_)
+import Database.PostgreSQL.Simple (Binary (..), Connection, Only (..), Query, close, connectPostgreSQL, execute, execute_, query, query_)
 import Database.PostgreSQL.Simple.FromRow (FromRow (..), field)
+import Database.PostgreSQL.Simple.Types (PGArray(..))
 import Data.Maybe (listToMaybe, mapMaybe)
 import Network.Wai (Request)
 import qualified Network.Wai as Wai
@@ -564,54 +565,53 @@ loadLatestDeployIntentForNode cfg nodeName =
       listToMaybe rows >>= \(jobId, commitSha, payloadText) ->
         (\payload -> (jobId, commitSha, payload)) <$> decodeJsonText payloadText
 
-applyDeployActionEvent :: AppConfig -> Text -> Text -> Text -> Maybe Text -> Maybe Text -> IO ()
+applyDeployActionEvent :: AppConfig -> Text -> Text -> Text -> Maybe Text -> Maybe Text -> IO Int64
 applyDeployActionEvent cfg jobId nodeName rawStatus rawPhase mMessage =
   withDb cfg $ \conn -> do
     let status = T.toLower (T.strip rawStatus)
         phase = fmap (T.toLower . T.strip) rawPhase
         message = fmap T.strip mMessage >>= \msg -> if msg == "" then Nothing else Just msg
     case phase of
-      Nothing -> pure ()
-      Just "" -> pure ()
+      Nothing -> pure 0
+      Just "" -> pure 0
       Just "intent" ->
         case status of
-          "success" -> pure ()
+          "success" -> pure 0
           "failed" -> finalizeRemaining conn "failed" message
           "timed_out" -> finalizeRemaining conn "timed_out" message
-          _ -> pure ()
+          _ -> pure 0
       Just op ->
         case status of
-          "waiting" -> transitionOne conn op (In ["queued" :: Text, "running"]) "waiting" True False message
-          "running" -> transitionOne conn op (In ["queued" :: Text, "waiting"]) "running" True False message
-          "success" -> transitionOne conn op (In ["running" :: Text, "waiting", "queued"]) "success" True True message
+          "waiting" -> transitionOne conn op ["queued", "running"] "waiting" True False message
+          "running" -> transitionOne conn op ["queued", "waiting"] "running" True False message
+          "success" -> transitionOne conn op ["running", "waiting", "queued"] "success" True True message
           "failed" -> failAndFinalize conn op "failed" message
           "timed_out" -> failAndFinalize conn op "timed_out" message
-          _ -> pure ()
+          _ -> pure 0
   where
-    finalizeRemaining :: Connection -> Text -> Maybe Text -> IO ()
+    finalizeRemaining :: Connection -> Text -> Maybe Text -> IO Int64
     finalizeRemaining conn finalStatus message = do
-      _ <- execute conn
+      execute conn
         "UPDATE deploy_actions SET status = ?, message = COALESCE(?, message), started_at = COALESCE(started_at, now()), finished_at = COALESCE(finished_at, now()), updated_at = now() WHERE job_id = ? AND node = ? AND status IN ('queued','waiting','running')"
         (finalStatus, message, jobId, nodeName)
-      pure ()
 
-    transitionOne :: Connection -> Text -> In [Text] -> Text -> Bool -> Bool -> Maybe Text -> IO ()
+    transitionOne :: Connection -> Text -> [Text] -> Text -> Bool -> Bool -> Maybe Text -> IO Int64
     transitionOne conn op eligibleStatuses newStatus setStarted setFinished message = do
       candidates <- query conn
-        "SELECT action_idx FROM deploy_actions WHERE job_id = ? AND node = ? AND op = ? AND status IN ? ORDER BY action_idx LIMIT 1"
-        (jobId, nodeName, op, eligibleStatuses) :: IO [Only Int]
+        "SELECT action_idx FROM deploy_actions WHERE job_id = ? AND node = ? AND op = ? AND status = ANY (?) ORDER BY action_idx LIMIT 1"
+        (jobId, nodeName, op, PGArray eligibleStatuses) :: IO [Only Int]
       case candidates of
         (Only actionIndex:_) -> do
-          _ <- execute conn
+          execute conn
             "UPDATE deploy_actions SET status = ?, message = COALESCE(?, message), started_at = CASE WHEN ? THEN COALESCE(started_at, now()) ELSE started_at END, finished_at = CASE WHEN ? THEN now() ELSE finished_at END, updated_at = now() WHERE job_id = ? AND node = ? AND action_idx = ?"
             (newStatus, message, setStarted, setFinished, jobId, nodeName, actionIndex)
-          pure ()
-        _ -> pure ()
+        _ -> pure 0
 
-    failAndFinalize :: Connection -> Text -> Text -> Maybe Text -> IO ()
+    failAndFinalize :: Connection -> Text -> Text -> Maybe Text -> IO Int64
     failAndFinalize conn op finalStatus message = do
-      transitionOne conn op (In ["running" :: Text, "waiting", "queued"]) finalStatus True True message
-      finalizeRemaining conn finalStatus message
+      firstUpdateCount <- transitionOne conn op ["running", "waiting", "queued"] finalStatus True True message
+      remainingUpdateCount <- finalizeRemaining conn finalStatus message
+      pure (firstUpdateCount + remainingUpdateCount)
 
 -- | Load deployment intentions from a node reference.
 -- For example: backend01, webserver13, and so on.

@@ -27,8 +27,8 @@ import Network.HTTP.Types (status403, status404)
 import Servant
 
 import Hostenv.Provider.Config (AppConfig(..), DeployConfig(..))
-import Hostenv.Provider.DB (loadDeployActions, loadLatestDeployIntentForNode)
-import Hostenv.Provider.DeployApi (NodeEvent, acceptsNodeEvents, backupSnapshotHandler, dispatchFingerprint, dispatchForNode, eventHandler, intentByJobHandler, intentByShaHandler, jobActionsHandler, jobStatusHandler, jobStatusesHandler, nextDeployJobHandler, shouldDispatchActions, validateIntent)
+import Hostenv.Provider.DB (loadDeployActions, loadDeployActionsByNode, loadLatestDeployIntentForNode)
+import Hostenv.Provider.DeployApi (NodeEvent, acceptsNodeEvents, backupSnapshotHandler, dispatchFingerprint, dispatchForNode, eventHandler, intentByJobHandler, intentByShaHandler, jobActionsHandler, jobStatusHandler, jobStatusesHandler, nextDeployJobHandler, shouldDispatchJob, validateIntent)
 import Hostenv.Provider.Jobs (JobRuntime, duplicateBroadcastChannel, jobSummaryStatus, loadJobById, markJobFailedFromDeploy, markJobSucceededFromDeploy, publishJobUpdate, startJobRuntime)
 import Hostenv.Provider.Repo (RepoStatus, openUnixSocket)
 import Hostenv.Provider.UI.Router (uiApp)
@@ -160,11 +160,12 @@ sendLatestDeployJob cfg nodeName connection mLastDispatchId = do
               Nothing -> pure mLastDispatchId
               Just validated -> do
                 allJobActions <- loadDeployActions cfg jobId
+                nodeActions <- loadDeployActionsByNode cfg jobId nodeName
                 case dispatchForNode validated allJobActions nodeName of
                   Nothing -> pure mLastDispatchId
                   Just (filteredIntent, filteredActions) -> do
-                    let dispatchId = dispatchFingerprint jobId filteredActions
-                    if not (shouldDispatchActions mLastDispatchId dispatchId filteredActions)
+                    let dispatchId = dispatchFingerprint jobId filteredIntent filteredActions
+                    if not (shouldDispatchJob validated nodeActions filteredActions mLastDispatchId dispatchId)
                       then pure mLastDispatchId
                       else do
                         WS.sendTextData

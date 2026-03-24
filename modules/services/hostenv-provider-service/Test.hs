@@ -27,7 +27,7 @@ import qualified Data.Map.Strict as Map
 import Hostenv.Provider.Config (AppConfig(..), DeployConfig(..), loadConfig)
 import Hostenv.Provider.Crypto
 import Hostenv.Provider.DB (DeployAction(DeployAction), OAuthCredential(..))
-import Hostenv.Provider.DeployApi (acceptsNodeEvents, dispatchFingerprint, dispatchForNode, extractBearer, normalizeStatus, shouldDispatchActions, validateIntent)
+import Hostenv.Provider.DeployApi (acceptsNodeEvents, dispatchFingerprint, dispatchForNode, extractBearer, normalizeStatus, shouldDispatchJob, shouldReturnNextJob, validateIntent)
 import Hostenv.Provider.Gitlab
   ( GitlabCredentialContext(..)
   , GitlabError(..)
@@ -61,6 +61,7 @@ main = do
   testDeployApiIntentValidation
   testDispatchForNodeMigrationSequencing
   testWebsocketDispatchFingerprinting
+  testPollingDispatchRequiresMaterializedActions
   testPlanParsing
   testNodeOrderWithMigrations
   testNodeOrderWithDnsSkipsNonMigratingEnvDiscovery
@@ -247,12 +248,44 @@ testWebsocketDispatchFingerprinting = do
         [ mkAction "node-b" 0 "restore" "queued"
         , mkAction "node-b" 1 "activate" "queued"
         ]
-      fingerprintA = dispatchFingerprint "job-1" actions
+      intentA =
+        A.object
+          [ "schemaVersion" A..= (1 :: Int)
+          , "actions" A..=
+              [ A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("restore" :: T.Text)]
+              , A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("activate" :: T.Text)]
+              ]
+          ]
+      fingerprintA = dispatchFingerprint "job-1" intentA actions
       actionsUpdated = [mkAction "node-b" 0 "restore" "success", mkAction "node-b" 1 "activate" "queued"]
-      fingerprintB = dispatchFingerprint "job-1" actionsUpdated
-  assert (shouldDispatchActions Nothing fingerprintA actions) "websocket dispatch should run on first seen payload"
-  assert (not (shouldDispatchActions (Just fingerprintA) fingerprintA actions)) "websocket dispatch should skip duplicate payload fingerprints"
-  assert (shouldDispatchActions (Just fingerprintA) fingerprintB actionsUpdated) "websocket dispatch should emit when same job id has newly executable actions"
+      intentSystemOnly =
+        A.object
+          [ "schemaVersion" A..= (1 :: Int)
+          , "systemPath" A..= ("/nix/store/system-only" :: T.Text)
+          , "actions" A..= ([] :: [A.Value])
+          ]
+      fingerprintB = dispatchFingerprint "job-1" intentA actionsUpdated
+      systemFingerprint = dispatchFingerprint "job-2" intentSystemOnly []
+  assert (shouldDispatchJob intentA actions actions Nothing fingerprintA) "websocket dispatch should run on first seen payload"
+  assert (not (shouldDispatchJob intentA actions actions (Just fingerprintA) fingerprintA)) "websocket dispatch should skip duplicate payload fingerprints"
+  assert (shouldDispatchJob intentA actionsUpdated actionsUpdated (Just fingerprintA) fingerprintB) "websocket dispatch should emit when same job id has newly executable actions"
+  assert (shouldDispatchJob intentSystemOnly [] [] Nothing systemFingerprint) "websocket dispatch should also emit system-only payloads"
+
+testPollingDispatchRequiresMaterializedActions :: IO ()
+testPollingDispatchRequiresMaterializedActions = do
+  let intentWithActivate =
+        A.object
+          [ "schemaVersion" A..= (1 :: Int)
+          , "actions" A..= [A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("activate" :: T.Text)]]
+          ]
+      t0 = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime 0)
+      queuedAction = DeployAction "node-a" 0 "activate" "alice" "queued" Nothing Nothing Nothing t0
+  assert
+    (not (shouldReturnNextJob intentWithActivate [] []))
+    "polling dispatch should wait until action rows are materialized"
+  assert
+    (shouldReturnNextJob intentWithActivate [queuedAction] [queuedAction])
+    "polling dispatch should proceed once executable action rows exist"
 
 
 testPlanParsing :: IO ()
@@ -330,7 +363,7 @@ testCommandSequence = do
       cmds <- readIORef ref
       let expected =
             [ CommandSpec "git" ["pull", "--rebase", "--autostash"] "/tmp/provider"
-            , CommandSpec "nix" ["flake", "update", "acme__site"] "/tmp/provider"
+            , CommandSpec "nix" ["flake", "update", "hostenv", "acme__site"] "/tmp/provider"
             , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] "/tmp/provider"
             , CommandSpec "nix" ["run", ".#hostenv-provider", "--", "dns-gate"] "/tmp/provider"
             , CommandSpec "git" ["add", "-A", "generated"] "/tmp/provider"

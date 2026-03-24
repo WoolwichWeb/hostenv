@@ -225,16 +225,16 @@ let
     let env = makeHostenv providerServiceMismatchModules null;
     in builtins.tryEval env.config.activate;
 
-  nginxOk = systemEval.config.services.nginx.enable == true;
+  nginxOk = systemEval.config.services.nginx.enable;
   vhostOk = builtins.hasAttr hostName systemEval.config.services.nginx.virtualHosts;
   trustedPublicKeysOk =
     let keys = systemEval.config.nix.settings.trusted-public-keys or [ ];
     in lib.elem trustedSigningKey keys && lib.elem cacheSigningKey keys;
-  deployEnabled = systemEval.config.services.provider-deploy.enable or false;
+  deployEnabled = systemEval.config.services.provider-deploy.enable;
   deployApiBaseConfigured = (systemEval.config.services.provider-deploy.providerApiBaseUrl or "") == "https://hosting.test";
   substituters = systemEval.config.nix.settings.substituters or [ ];
   providerCacheFirst = substituters != [ ] && builtins.head substituters == "https://hosting.test/cache";
-  requireSignedBinaries = systemEval.config.nix.settings.require-signed-binaries or false;
+  requireSignedBinaries = systemEval.config.nix.settings."require-sigs";
   netrcFileConfigured = (systemEval.config.nix.settings.netrc-file or "") == "/run/secrets/hostenv/cache_netrc";
   allowedUsers = systemEval.config.nix.settings.allowed-users or [ ];
   providerServiceAllowed = lib.elem envName allowedUsers;

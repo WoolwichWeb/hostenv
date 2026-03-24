@@ -20,20 +20,24 @@ module Hostenv.Provider.DeployApi
   , dispatchFingerprint
   , extractBearer
   , dispatchForNode
+  , shouldReturnNextJob
   , normalizeStatus
-  , shouldDispatchActions
+  , shouldDispatchJob
   ) where
 
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
+import qualified Data.ByteString.Lazy as BL
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Foldable (toList)
 import Data.Char (isAsciiLower, isDigit)
+import Data.Int (Int64)
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Control.Monad.IO.Class (liftIO)
 import Servant
 
@@ -184,12 +188,12 @@ nextDeployJobHandler cfg nodeName mAuth = do
               validated <- maybe (throwError err500) pure (validateIntent payload)
               allActions <- liftIO (loadDeployActions cfg jobId)
               case dispatchForNode validated allActions nodeName of
-                Nothing -> throwError err500
-                Just (filteredIntent, filteredActions) ->
-                  if null filteredActions && hasPendingActions (filter ((== nodeName) . (.node)) allActions)
-                    then throwError err404
-                    else
-                      pure
+                 Nothing -> throwError err500
+                 Just (filteredIntent, filteredActions) ->
+                   if not (shouldReturnNextJob validated (filter ((== nodeName) . (.node)) allActions) filteredActions)
+                     then throwError err404
+                     else
+                       pure
                         ( A.object
                             [ "jobId" A..= jobId
                             , "commitSha" A..= commitSha
@@ -243,7 +247,8 @@ eventHandler cfg emitUpdate recordFailure recordSuccess jobId mAuth event = do
                 then throwError err409
                 else do
                   storedEvent <- liftIO (appendDeployEvent cfg jobId nodeName statusText event.phase event.message event.payload)
-                  liftIO (applyDeployActionEvent cfg jobId nodeName statusText event.phase event.message)
+                  actionUpdateCount <- liftIO (applyDeployActionEvent cfg jobId nodeName statusText event.phase event.message)
+                  liftIO (logZeroActionProjection jobId nodeName statusText event.phase actionUpdateCount)
                   liftIO
                     ( emitUpdate
                         ( A.object
@@ -290,6 +295,16 @@ eventHandler cfg emitUpdate recordFailure recordSuccess jobId mAuth event = do
                             then liftIO (recordSuccess jobId)
                             else pure ()
                   pure NoContent
+
+logZeroActionProjection :: Text -> Text -> Text -> Maybe Text -> Int64 -> IO ()
+logZeroActionProjection jobId nodeName statusText mPhase actionUpdateCount =
+  case fmap (T.toLower . T.strip) mPhase of
+    Just "intent" -> pure ()
+    Just phaseName ->
+      if actionUpdateCount > 0 || statusText == "queued"
+        then pure ()
+        else putStrLn (T.unpack ("hostenv-provider-service: zero action rows updated for job=" <> jobId <> " node=" <> nodeName <> " phase=" <> phaseName <> " status=" <> statusText))
+    _ -> pure ()
 
 requireNodeAuth :: AppConfig -> Text -> Maybe Text -> Handler ()
 requireNodeAuth cfg nodeName mAuth =
@@ -407,6 +422,20 @@ hasPendingActions :: [DeployAction] -> Bool
 hasPendingActions actions =
   any (\action -> action.status `elem` ["queued", "waiting", "running"]) actions
 
+intentHasActions :: A.Value -> Bool
+intentHasActions value =
+  case value of
+    A.Object obj ->
+      case KM.lookup (K.fromString "actions") obj of
+        Just (A.Array arr) -> not (null arr)
+        _ -> False
+    _ -> False
+
+shouldReturnNextJob :: A.Value -> [DeployAction] -> [DeployAction] -> Bool
+shouldReturnNextJob validatedIntent nodeActions filteredActions =
+  not (null filteredActions)
+    || (not (intentHasActions validatedIntent) && not (hasPendingActions nodeActions))
+
 dispatchForNode :: A.Value -> [DeployAction] -> Text -> Maybe (A.Value, [DeployAction])
 dispatchForNode validatedIntent allActions nodeName =
   let nodeActions = filter ((== nodeName) . (.node)) allActions
@@ -415,17 +444,22 @@ dispatchForNode validatedIntent allActions nodeName =
       filteredIntent = filterIntentActionsByIndexes validatedIntent executable
    in fmap (\intent -> (intent, filteredActions)) filteredIntent
 
-dispatchFingerprint :: Text -> [DeployAction] -> Text
-dispatchFingerprint jobId actions =
-  jobId <> ":" <> T.intercalate "," (map render actions)
+dispatchFingerprint :: Text -> A.Value -> [DeployAction] -> Text
+dispatchFingerprint jobId filteredIntent actions =
+  T.intercalate ":"
+    [ jobId
+    , TE.decodeUtf8 (BL.toStrict (A.encode filteredIntent))
+    , T.intercalate "," (map render actions)
+    ]
   where
     render :: DeployAction -> Text
     render action =
       T.intercalate "/" [action.node, T.pack (show action.actionIndex), action.op, action.user, action.status]
 
-shouldDispatchActions :: Maybe Text -> Text -> [DeployAction] -> Bool
-shouldDispatchActions mLastDispatchId dispatchId filteredActions =
-  not (null filteredActions) && mLastDispatchId /= Just dispatchId
+shouldDispatchJob :: A.Value -> [DeployAction] -> [DeployAction] -> Maybe Text -> Text -> Bool
+shouldDispatchJob validatedIntent nodeActions filteredActions mLastDispatchId dispatchId =
+  shouldReturnNextJob validatedIntent nodeActions filteredActions
+    && mLastDispatchId /= Just dispatchId
 
 executableActionIndexes :: [DeployAction] -> [DeployAction] -> Set.Set Int
 executableActionIndexes nodeActions allActions =
