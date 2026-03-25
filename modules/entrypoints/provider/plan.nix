@@ -437,7 +437,7 @@ let
                                             else
                                               { };
                                         in
-                                        vhost.locations // locationDefault;
+                                        locationDefault // vhost.locations;
                                     }
                                 )
                                 filteredEnvVHosts;
