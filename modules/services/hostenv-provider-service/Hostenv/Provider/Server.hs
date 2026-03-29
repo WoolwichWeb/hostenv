@@ -28,7 +28,7 @@ import Servant
 
 import Hostenv.Provider.Config (AppConfig(..), DeployConfig(..))
 import Hostenv.Provider.DB (loadDeployActions, loadDeployActionsByNode, loadLatestDeployIntentForNode)
-import Hostenv.Provider.DeployApi (NodeEvent, acceptsNodeEvents, backupSnapshotHandler, dispatchFingerprint, dispatchForNode, eventHandler, intentByJobHandler, intentByShaHandler, jobActionsHandler, jobStatusHandler, jobStatusesHandler, nextDeployJobHandler, shouldDispatchJob, validateIntent)
+import Hostenv.Provider.DeployApi (NodeEvent, acceptsNodeEvents, backupSnapshotHandler, dispatchFingerprint, dispatchForNode, eventHandler, intentByJobHandler, intentByShaHandler, jobActionsHandler, jobStatusHandler, jobStatusesHandler, shouldDispatchJob, validateIntent)
 import Hostenv.Provider.Jobs (JobRuntime, duplicateBroadcastChannel, jobSummaryStatus, loadJobById, markJobFailedFromDeploy, markJobSucceededFromDeploy, publishJobUpdate, startJobRuntime)
 import Hostenv.Provider.Repo (RepoStatus, openUnixSocket)
 import Hostenv.Provider.UI.Router (uiApp)
@@ -67,12 +67,6 @@ type API =
       :> "deploy-jobs"
       :> Capture "jobId" Text
       :> "actions"
-      :> QueryParam' '[Required] "node" Text
-      :> Header "Authorization" Text
-      :> Get '[JSON] A.Value
-    :<|> "api"
-      :> "deploy-jobs"
-      :> "next"
       :> QueryParam' '[Required] "node" Text
       :> Header "Authorization" Text
       :> Get '[JSON] A.Value
@@ -214,7 +208,6 @@ server jobRuntime repoStatusRef cfg =
     :<|> jobStatusHandler cfg
     :<|> jobStatusesHandler cfg
     :<|> jobActionsHandler cfg
-    :<|> nextDeployJobHandler cfg
     :<|> backupSnapshotHandler cfg
     :<|> eventHandler cfg (publishJobUpdate jobRuntime) (markJobFailedFromDeploy jobRuntime) (markJobSucceededFromDeploy jobRuntime)
     :<|> intentByShaHandler cfg

@@ -55,8 +55,6 @@
           state_file="${cfg.stateFile}"
           action_timeout="${toString cfg.actionTimeoutSeconds}"
           reconnect_seconds="${toString cfg.reconnectSeconds}"
-          ws_supported=1
-
           if [ -z "$api_base" ] || [ -z "$node_name" ] || [ -z "$token_file" ]; then
             echo "provider-deploy: missing required configuration" >&2
             exit 1
@@ -203,40 +201,11 @@
             post_event "$job_id" "$status" "$phase" "$message" "$(jq -cn --argjson extra "$extra_payload" --argjson stderrSummary "$stderr_json" --argjson exitCode "$command_exit_code" '{exitCode:$exitCode,stderrSummary:$stderrSummary} + $extra')"
           }
 
-          fetch_next_job() {
-            local tmp
-            local code
-            tmp="$(mktemp)"
-            code="$(curl -sS --config "$auth_cfg" --max-time 20 --output "$tmp" --write-out '%{http_code}' "$api_base/api/deploy-jobs/next?node=$node_name" || true)"
-            case "$code" in
-              200)
-                cat "$tmp"
-                rm -f "$tmp"
-                return 0
-                ;;
-              404)
-                rm -f "$tmp"
-                return 1
-                ;;
-              *)
-                rm -f "$tmp"
-                return 2
-                ;;
-            esac
-          }
-
           run_ws_session() {
             local ws_url
             local auth_message
-            if [ "$ws_supported" -ne 1 ]; then
-              return 1
-            fi
-            if ! command -v websocat >/dev/null 2>&1; then
-              ws_supported=0
-              return 1
-            fi
             if ! ws_url="$(ws_url_for_api)"; then
-              ws_supported=0
+              echo "provider-deploy: could not derive websocket URL from providerApiBaseUrl=$api_base" >&2
               return 1
             fi
             auth_message="$(jq -cn --arg node "$node_name" --arg token "$token" '{type:"auth",node:$node,token:$token}')"
@@ -258,34 +227,11 @@
             return 1
           }
 
-          newer_job_id() {
-            local current_job_id="$1"
-            local next_json
-            local fetch_rc=0
-            if ! next_json="$(fetch_next_job)"; then
-              fetch_rc=$?
-              if [ "$fetch_rc" -eq 1 ]; then
-                printf '__JOB_GONE__\n'
-                return 0
-              fi
-              return 1
-            fi
-            local next_id
-            next_id="$(jq -r '.jobId // empty' <<<"$next_json")"
-            if [ -n "$next_id" ] && [ "$next_id" != "$current_job_id" ]; then
-              printf '%s\n' "$next_id"
-              return 0
-            fi
-            return 1
-          }
-
           run_cmd_cancelable() {
             local job_id="$1"
             local _description="$2"
             shift 2
             local child
-            local checks=0
-            local interval="${toString cfg.reconnectSeconds}"
             command_stdout_file="$(mktemp)"
             command_stderr_file="$(mktemp)"
             command_exit_code=0
@@ -295,20 +241,6 @@
 
             while kill -0 "$child" >/dev/null 2>&1; do
               sleep 1
-              checks=$((checks + 1))
-              if [ "$checks" -ge "$interval" ]; then
-                checks=0
-                if superseding="$(newer_job_id "$job_id" 2>/dev/null || true)" && [ -n "$superseding" ]; then
-                  kill -TERM -- "-$child" >/dev/null 2>&1 || true
-                  wait "$child" >/dev/null 2>&1 || true
-                  command_exit_code=99
-                  if [ "$superseding" = "__JOB_GONE__" ]; then
-                    command_exit_code=98
-                    return 98
-                  fi
-                  return 99
-                fi
-              fi
             done
 
             if wait "$child"; then
@@ -584,15 +516,6 @@
 
           while true; do
             if ! run_ws_session; then
-              next_job_json="$(fetch_next_job || true)"
-              if [ -n "$next_job_json" ]; then
-                current_job_id="$(jq -r '.jobId // empty' <<<"$next_job_json")"
-                current_signature="$(job_signature "$next_job_json")"
-                previous_signature="$(last_applied_signature)"
-                if [ -n "$current_job_id" ] && [ "$current_signature" != "$previous_signature" ]; then
-                  handle_job "$next_job_json" || true
-                fi
-              fi
               sleep "$reconnect_seconds"
             fi
           done

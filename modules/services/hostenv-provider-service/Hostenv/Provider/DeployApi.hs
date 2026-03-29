@@ -12,7 +12,6 @@ module Hostenv.Provider.DeployApi
   , jobStatusHandler
   , jobStatusesHandler
   , jobActionsHandler
-  , nextDeployJobHandler
   , backupSnapshotHandler
   , eventHandler
   , validateIntent
@@ -20,7 +19,6 @@ module Hostenv.Provider.DeployApi
   , dispatchFingerprint
   , extractBearer
   , dispatchForNode
-  , shouldReturnNextJob
   , normalizeStatus
   , shouldDispatchJob
   ) where
@@ -42,7 +40,7 @@ import Control.Monad.IO.Class (liftIO)
 import Servant
 
 import Hostenv.Provider.Config (AppConfig(..), DeployConfig(..))
-import Hostenv.Provider.DB (DeployAction(..), DeployStatus(..), appendDeployEvent, applyDeployActionEvent, deployIntentExists, loadDeployActions, loadDeployActionsByNode, loadDeployBackupSnapshot, loadDeployIntentByJob, loadDeployIntentBySha, loadDeployIntentNodes, loadDeployStatusByNode, loadDeployStatuses, loadLatestDeployIntentForNode)
+import Hostenv.Provider.DB (DeployAction(..), DeployStatus(..), appendDeployEvent, applyDeployActionEvent, deployIntentExists, loadDeployActions, loadDeployActionsByNode, loadDeployBackupSnapshot, loadDeployIntentByJob, loadDeployIntentBySha, loadDeployIntentNodes, loadDeployStatusByNode, loadDeployStatuses)
 import Hostenv.Provider.Jobs (jobSummaryStatus, loadJobById)
 
 
@@ -170,39 +168,6 @@ jobActionsHandler cfg jobId nodeName mAuth = do
             , "actions" A..= actions
             ]
         )
-
-nextDeployJobHandler :: AppConfig -> Text -> Maybe Text -> Handler A.Value
-nextDeployJobHandler cfg nodeName mAuth = do
-  requireNodeAuth cfg nodeName mAuth
-  mNext <- liftIO (loadLatestDeployIntentForNode cfg nodeName)
-  case mNext of
-    Nothing -> throwError err404
-    Just (jobId, commitSha, payload) -> do
-      mJob <- liftIO (loadJobById cfg jobId)
-      case mJob of
-        Nothing -> throwError err404
-        Just job ->
-          if not (acceptsNodeEvents (jobSummaryStatus job))
-            then throwError err404
-            else do
-              validated <- maybe (throwError err500) pure (validateIntent payload)
-              allActions <- liftIO (loadDeployActions cfg jobId)
-              case dispatchForNode validated allActions nodeName of
-                 Nothing -> throwError err500
-                 Just (filteredIntent, filteredActions) ->
-                   if not (shouldReturnNextJob validated (filter ((== nodeName) . (.node)) allActions) filteredActions)
-                     then throwError err404
-                     else
-                       pure
-                        ( A.object
-                            [ "jobId" A..= jobId
-                            , "commitSha" A..= commitSha
-                            , "node" A..= nodeName
-                            , "intent" A..= filteredIntent
-                            , "actions" A..= filteredActions
-                            ]
-                        )
-
 
 backupSnapshotHandler :: AppConfig -> Text -> Text -> Text -> Text -> Maybe Text -> Handler A.Value
 backupSnapshotHandler cfg jobId nodeName sourceNode userName mAuth = do
@@ -431,11 +396,6 @@ intentHasActions value =
         _ -> False
     _ -> False
 
-shouldReturnNextJob :: A.Value -> [DeployAction] -> [DeployAction] -> Bool
-shouldReturnNextJob validatedIntent nodeActions filteredActions =
-  not (null filteredActions)
-    || (not (intentHasActions validatedIntent) && not (hasPendingActions nodeActions))
-
 dispatchForNode :: A.Value -> [DeployAction] -> Text -> Maybe (A.Value, [DeployAction])
 dispatchForNode validatedIntent allActions nodeName =
   let nodeActions = filter ((== nodeName) . (.node)) allActions
@@ -458,7 +418,7 @@ dispatchFingerprint jobId filteredIntent actions =
 
 shouldDispatchJob :: A.Value -> [DeployAction] -> [DeployAction] -> Maybe Text -> Text -> Bool
 shouldDispatchJob validatedIntent nodeActions filteredActions mLastDispatchId dispatchId =
-  shouldReturnNextJob validatedIntent nodeActions filteredActions
+  (not (null filteredActions) || (not (intentHasActions validatedIntent) && not (hasPendingActions nodeActions)))
     && mLastDispatchId /= Just dispatchId
 
 executableActionIndexes :: [DeployAction] -> [DeployAction] -> Set.Set Int

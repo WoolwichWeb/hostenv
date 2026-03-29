@@ -27,7 +27,7 @@ import qualified Data.Map.Strict as Map
 import Hostenv.Provider.Config (AppConfig(..), DeployConfig(..), loadConfig)
 import Hostenv.Provider.Crypto
 import Hostenv.Provider.DB (DeployAction(DeployAction), OAuthCredential(..))
-import Hostenv.Provider.DeployApi (acceptsNodeEvents, dispatchFingerprint, dispatchForNode, extractBearer, normalizeStatus, shouldDispatchJob, shouldReturnNextJob, validateIntent)
+import Hostenv.Provider.DeployApi (acceptsNodeEvents, dispatchFingerprint, dispatchForNode, extractBearer, normalizeStatus, shouldDispatchJob, validateIntent)
 import Hostenv.Provider.Gitlab
   ( GitlabCredentialContext(..)
   , GitlabError(..)
@@ -61,7 +61,6 @@ main = do
   testDeployApiIntentValidation
   testDispatchForNodeMigrationSequencing
   testWebsocketDispatchFingerprinting
-  testPollingDispatchRequiresMaterializedActions
   testPlanParsing
   testNodeOrderWithMigrations
   testNodeOrderWithDnsSkipsNonMigratingEnvDiscovery
@@ -270,23 +269,6 @@ testWebsocketDispatchFingerprinting = do
   assert (not (shouldDispatchJob intentA actions actions (Just fingerprintA) fingerprintA)) "websocket dispatch should skip duplicate payload fingerprints"
   assert (shouldDispatchJob intentA actionsUpdated actionsUpdated (Just fingerprintA) fingerprintB) "websocket dispatch should emit when same job id has newly executable actions"
   assert (shouldDispatchJob intentSystemOnly [] [] Nothing systemFingerprint) "websocket dispatch should also emit system-only payloads"
-
-testPollingDispatchRequiresMaterializedActions :: IO ()
-testPollingDispatchRequiresMaterializedActions = do
-  let intentWithActivate =
-        A.object
-          [ "schemaVersion" A..= (1 :: Int)
-          , "actions" A..= [A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("activate" :: T.Text)]]
-          ]
-      t0 = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime 0)
-      queuedAction = DeployAction "node-a" 0 "activate" "alice" "queued" Nothing Nothing Nothing t0
-  assert
-    (not (shouldReturnNextJob intentWithActivate [] []))
-    "polling dispatch should wait until action rows are materialized"
-  assert
-    (shouldReturnNextJob intentWithActivate [queuedAction] [queuedAction])
-    "polling dispatch should proceed once executable action rows exist"
-
 
 testPlanParsing :: IO ()
 testPlanParsing = do
