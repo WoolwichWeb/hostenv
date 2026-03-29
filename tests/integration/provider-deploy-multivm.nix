@@ -55,7 +55,6 @@ let
         uiHost = controlHost;
         uiScheme = "http";
       };
-      services.nginx.enable = false;
       environments.${controlEnvName} = {
         enable = true;
         type = "production";
@@ -67,6 +66,7 @@ let
   controlUserName = controlEnv.config.hostenv.userName;
   controlRuntimeDir = controlEnv.config.hostenv.runtimeDir;
   controlListenSocket = controlEnv.config.services.hostenv-provider.listenSocket;
+  controlUpstreamSocket = "${controlEnv.config.hostenv.upstreamRuntimeDir}/in.sock";
   controlDbConn = "host=${controlRuntimeDir} dbname=hostenv-provider user=${controlUserName}";
   controlProviderUnit = controlEnv.config.systemd.services.hostenv-provider;
   controlPostgresUnit = controlEnv.config.systemd.services.postgresql;
@@ -173,7 +173,7 @@ let
         provider = {
           deploy = {
             enable = true;
-            providerApiBaseUrl = "http://${controlHost}:18080";
+            providerApiBaseUrl = "http://${controlHost}";
             nodeName = providerNodeName;
             nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
             reconnectSeconds = 1;
@@ -202,7 +202,6 @@ let
           enable = true;
           deploy.enable = true;
         };
-        services.nginx.enable = false;
       };
       "${targetEnvName}" = {
         enable = true;
@@ -271,16 +270,32 @@ pkgs.testers.runNixOSTest ({ ... }: {
         sops.age.keyFile = "/etc/sops/age/keys.txt";
         environment.etc."sops/age/keys.txt".text = "${ageSecretKey}\n";
         environment.etc."sops/age/keys.txt".mode = "0400";
-        environment.systemPackages = [ pkgs.postgresql pkgs.socat pkgs.websocat ];
-        networking.firewall.allowedTCPPorts = [ 18080 ];
+        environment.systemPackages = [ pkgs.postgresql pkgs.websocat ];
+        networking.firewall.allowedTCPPorts = [ 80 ];
         security.acme.acceptTerms = true;
         security.acme.defaults.email = "test@example.invalid";
         security.pam.services.runuser.setEnvironment = lib.mkForce true;
+        services.nginx.virtualHosts."${controlHost}" = {
+          enableACME = lib.mkForce false;
+          forceSSL = lib.mkForce false;
+          locations."~ ^/api/" = {
+            recommendedProxySettings = true;
+            proxyPass = lib.mkForce "http://unix:${controlUpstreamSocket}:";
+            extraConfig = lib.mkForce ''
+              proxy_connect_timeout 120s;
+              proxy_send_timeout 120s;
+              proxy_read_timeout 120s;
+              proxy_http_version 1.1;
+              proxy_set_header Upgrade $http_upgrade;
+              proxy_set_header Connection "upgrade";
+            '';
+          };
+        };
         systemd.services.control-plane-postgresql = {
           inherit (controlPostgresUnit) description path preStart script postStart restartTriggers;
           wantedBy = [ "multi-user.target" ];
           after = [ "network.target" ];
-          serviceConfig = (builtins.removeAttrs controlPostgresUnit.serviceConfig [ "ExecStart" ]) // {
+          serviceConfig = (removeAttrs controlPostgresUnit.serviceConfig [ "ExecStart" ]) // {
             User = controlUserName;
           };
         };
@@ -307,13 +322,14 @@ pkgs.testers.runNixOSTest ({ ... }: {
             RemainAfterExit = true;
           };
         };
-        systemd.services.control-plane-proxy = {
-          description = "Expose hostenv provider-service socket over TCP";
+        systemd.services.control-plane-provider-upstream = {
+          description = "Expose provider-service socket to nginx upstream runtime";
           wantedBy = [ "multi-user.target" ];
           after = [ "control-plane-provider.service" ];
           wants = [ "control-plane-provider.service" ];
           serviceConfig = {
-            ExecStart = "${pkgs.socat}/bin/socat TCP-LISTEN:18080,reuseaddr,fork UNIX-CONNECT:${controlListenSocket}";
+            ExecStartPre = "${pkgs.coreutils}/bin/rm -f ${controlUpstreamSocket}";
+            ExecStart = "${pkgs.socat}/bin/socat UNIX-LISTEN:${controlUpstreamSocket},fork,mode=0660,user=${controlUserName},group=nginx UNIX-CONNECT:${controlListenSocket}";
             Restart = "always";
             RestartSec = "1s";
           };
@@ -346,15 +362,16 @@ pkgs.testers.runNixOSTest ({ ... }: {
     controlPlane.wait_for_unit("control-plane-postgresql.service")
     controlPlane.wait_until_succeeds("test -f /run/secrets/${controlUserName}/provider_node_tokens.yaml", timeout=180)
     controlPlane.wait_for_unit("control-plane-provider.service")
-    controlPlane.wait_for_unit("control-plane-proxy.service")
+    controlPlane.wait_for_unit("control-plane-provider-upstream.service")
+    controlPlane.wait_for_unit("nginx.service")
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc 'select 1' | grep -qx 1", timeout=60)
-    controlPlane.wait_until_succeeds("printf '%s\\n' '{\"type\":\"auth\",\"node\":\"${providerNodeName}\",\"token\":\"${nodeToken}\"}' | websocat -q -n -t -1 'ws://127.0.0.1:18080/api/deploy-jobs/ws?node=${providerNodeName}' | grep -F '\"type\":\"deploy_hint\"' | grep -F '\"node\":\"${providerNodeName}\"'", timeout=180)
+    controlPlane.wait_until_succeeds("printf '%s\\n' '{\"type\":\"auth\",\"node\":\"${providerNodeName}\",\"token\":\"${nodeToken}\"}' | websocat -q -n -t -1 'ws://${controlHost}/api/deploy-jobs/ws?node=${providerNodeName}' | grep -F '\"type\":\"deploy_hint\"' | grep -F '\"node\":\"${providerNodeName}\"'", timeout=180)
     controlPlane.succeed("runuser -u ${controlUserName} -- psql '${controlDbConn}' -f ${seedSql}")
 
     providerNode.wait_for_unit("multi-user.target")
     providerNode.wait_for_unit("provider-deploy.service")
     providerNode.wait_until_succeeds("test -f /run/secrets/hostenv/provider_node_token", timeout=180)
-    providerNode.wait_until_succeeds("token=\"$(tr -d '\\n\\r' < /run/secrets/hostenv/provider_node_token)\"; printf '{\"type\":\"auth\",\"node\":\"${providerNodeName}\",\"token\":\"%s\"}\\n' \"$token\" | websocat -q -n -t -1 'ws://${controlHost}:18080/api/deploy-jobs/ws?node=${providerNodeName}' | grep -F '\"type\":\"deploy_hint\"' | grep -F '\"node\":\"${providerNodeName}\"'", timeout=180)
+    providerNode.wait_until_succeeds("token=\"$(tr -d '\\n\\r' < /run/secrets/hostenv/provider_node_token)\"; printf '{\"type\":\"auth\",\"node\":\"${providerNodeName}\",\"token\":\"%s\"}\\n' \"$token\" | websocat -q -n -t -1 'ws://${controlHost}/api/deploy-jobs/ws?node=${providerNodeName}' | grep -F '\"type\":\"deploy_hint\"' | grep -F '\"node\":\"${providerNodeName}\"'", timeout=180)
     providerNode.wait_until_succeeds("test -s /var/lib/provider-deploy/state.json", timeout=180)
 
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc \"select status from jobs where id='${jobId}'\" | grep -qx succeeded", timeout=180)
