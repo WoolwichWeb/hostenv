@@ -2,6 +2,7 @@
 let
   system = pkgs.stdenv.hostPlatform.system;
   targetEnvName = "acme__demo-main";
+  targetEnvUid = 1002;
   controlPlaneNodeName = "control-plane";
   providerNodeName = "node-a";
   controlProject = "control";
@@ -206,7 +207,7 @@ let
       "${targetEnvName}" = {
         enable = true;
         type = "production";
-        uid = 1002;
+        uid = targetEnvUid;
         node = providerNodeName;
         hostenv = {
           organisation = "acme";
@@ -344,7 +345,7 @@ pkgs.testers.runNixOSTest ({ ... }: {
         sops.age.keyFile = "/etc/sops/age/keys.txt";
         environment.etc."sops/age/keys.txt".text = "${ageSecretKey}\n";
         environment.etc."sops/age/keys.txt".mode = "0400";
-        environment.systemPackages = [ pkgs.websocat ];
+        environment.systemPackages = [ pkgs.jq pkgs.websocat ];
         security.acme.acceptTerms = true;
         security.acme.defaults.email = "test@example.invalid";
         services.nginx.virtualHosts."demo-main.hostenv.test" = {
@@ -372,10 +373,9 @@ pkgs.testers.runNixOSTest ({ ... }: {
     providerNode.wait_for_unit("provider-deploy.service")
     providerNode.wait_until_succeeds("test -f /run/secrets/hostenv/provider_node_token", timeout=180)
     providerNode.wait_until_succeeds("token=\"$(tr -d '\\n\\r' < /run/secrets/hostenv/provider_node_token)\"; printf '{\"type\":\"auth\",\"node\":\"${providerNodeName}\",\"token\":\"%s\"}\\n' \"$token\" | websocat -q -n -t -1 'ws://${controlHost}/api/deploy-jobs/ws?node=${providerNodeName}' | grep -F '\"type\":\"deploy_hint\"' | grep -F '\"node\":\"${providerNodeName}\"'", timeout=180)
-    providerNode.wait_until_succeeds("test -s /var/lib/provider-deploy/state.json", timeout=180)
-
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc \"select status from jobs where id='${jobId}'\" | grep -qx succeeded", timeout=180)
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc \"select count(*) from deploy_node_events where job_id='${jobId}' and node='${providerNodeName}' and phase='activate' and status='success'\" | grep -Ev '^0$'", timeout=180)
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc \"select count(*) from deploy_node_events where job_id='${jobId}' and node='${providerNodeName}' and phase='intent' and status='success'\" | grep -Ev '^0$'", timeout=180)
+    providerNode.wait_until_succeeds("jq -e '.lastAppliedJobId == \"${jobId}\" and .lastCommitSha == \"${commitSha}\" and .users[\"${targetEnvName}\"].storePath == \"${activateProfile}\" and (.users[\"${targetEnvName}\"].updatedAt // \"\") != \"\" and (.updatedAt // \"\") != \"\"' /var/lib/provider-deploy/state.json >/dev/null", timeout=180)
   '';
 })

@@ -60,8 +60,6 @@ let
   drupal = mkProjectInput { path = ./drupal; organisation = "acme"; project = "drupal"; };
   drupal7 = mkProjectInput { path = ./drupal7; organisation = "acme"; project = "drupal7"; };
 
-  nodesStub = pkgs.runCommand "nodes-stub" { } ''mkdir -p $out'';
-  secretsStub = pkgs.runCommand "secrets-stub" { } ''echo "{}" > $out'';
   stateStub = pkgs.writers.writeJSON "state-stub.json" { };
 
   inputsEffective = {

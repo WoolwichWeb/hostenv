@@ -45,7 +45,15 @@
       };
       agentScript = pkgs.writeShellApplication {
         name = "provider-deploy-agent";
-        runtimeInputs = [ pkgs.coreutils pkgs.curl pkgs.jq pkgs.nix pkgs.util-linux pkgs.shadow pkgs.websocat ];
+        runtimeInputs = with pkgs; [
+          coreutils
+          curl
+          jq
+          nix
+          util-linux
+          shadow
+          websocat
+        ];
         text = ''
           set -euo pipefail
 
@@ -510,10 +518,17 @@
             post_event "$job_id" "success" "intent" "Deploy job complete" "{}" || true
             ensure_state_file
             tmp="$(mktemp)"
-            jq -c --arg jobId "$job_id" --arg signature "$current_signature" --arg commitSha "$commit_sha" --arg updatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.lastAppliedJobId=$jobId | .lastAppliedSignature=$signature | .lastCommitSha=$commitSha | .updatedAt=$updatedAt' "$state_file" > "$tmp"
+            
+            # Write out deployment result to state.json.
+            local final_updated_at
+            local final_user_states
+            final_updated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            final_user_states="$(jq -c --arg updatedAt "$final_updated_at" '(.intent.actions // []) | map(select(((.op // "") == "activate") or ((.op // "") == "reload") or ((.op // "") == "restore") or ((.op // "") == "backup")) | { key: (.user // ""), value: { storePath: (.storePath // .envStorePath // .path // ""), updatedAt: $updatedAt } } | select(.key != "" and .value.storePath != "")) | from_entries' <<<"$job_json")"
+            jq -c --arg jobId "$job_id" --arg signature "$current_signature" --arg commitSha "$commit_sha" --arg updatedAt "$final_updated_at" --argjson userStates "$final_user_states" '.lastAppliedJobId=$jobId | .lastAppliedSignature=$signature | .lastCommitSha=$commitSha | .users = ((.users // {}) + $userStates) | .updatedAt=$updatedAt' "$state_file" > "$tmp"
             mv "$tmp" "$state_file"
           }
 
+          # Continuously re-connect to socket after short delay.
           while true; do
             if ! run_ws_session; then
               sleep "$reconnect_seconds"
