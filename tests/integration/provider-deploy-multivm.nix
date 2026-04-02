@@ -4,12 +4,14 @@ let
   targetEnvName = "acme__demo-main";
   targetEnvUid = 1002;
   controlPlaneNodeName = "control-plane";
+  controlUserUid = 1001;
   providerNodeName = "node-a";
   controlProject = "control";
   controlEnvName = "main";
   controlHost = "control-plane";
   nodeToken = "node-token";
-  cacheSigningKey = "hostenv-cache-test-1:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
+  cacheSigningKey = "hostenv-cache-test-1:ORzELhyTE/tAP9ArGwd69bhu2qJZ88SYdUYzJLRuEoJ8piUp+ImhwIwv+ZE9nooXRfVzfTOykSNI24PPgUufSw==";
+  cachePublicKey = "hostenv-cache-test-1:fKYlKfiJocCML/mRPZ6KF0X1c30zspEjSNuDz4FLn0s=";
   ageRecipient = "age1s4c2vcrfg4sx6knkmgyayfyvhr3plyehsaut9qpp5n9zhln56sqs8c40ap";
   ageSecretKey = "AGE-SECRET-KEY-1T98SVZ66YW95TD5JEVXAA9NGY06EZU397XXWGXA79S584NXVU8ASGQMDJD";
   jobId = "test-job-0001";
@@ -30,6 +32,7 @@ let
     cat > "$out/bin/activate" <<'EOF'
     #!${pkgs.bash}/bin/bash
     set -euo pipefail
+    touch "/home/${targetEnvName}/stuff"
     exit 0
     EOF
     chmod +x "$out/bin/activate"
@@ -65,13 +68,12 @@ let
 
   controlEnv = makeHostenv controlModules controlEnvName;
   controlUserName = controlEnv.config.hostenv.userName;
+  controlUserHome = "/home/${controlUserName}";
   controlRuntimeDir = controlEnv.config.hostenv.runtimeDir;
-  controlListenSocket = controlEnv.config.services.hostenv-provider.listenSocket;
-  controlUpstreamSocket = "${controlEnv.config.hostenv.upstreamRuntimeDir}/in.sock";
+  controlUserRuntimeDir = "/run/user/${toString controlUserUid}";
+  controlPostgresDataDir = controlEnv.config.services.postgresql.dataDir;
+  controlActivatePackage = controlEnv.config.activatePackage;
   controlDbConn = "host=${controlRuntimeDir} dbname=hostenv-provider user=${controlUserName}";
-  controlProviderUnit = controlEnv.config.systemd.services.hostenv-provider;
-  controlPostgresUnit = controlEnv.config.systemd.services.postgresql;
-  controlProviderExecStart = controlProviderUnit.serviceConfig.ExecStart;
 
   deployIntentJson = builtins.toJSON {
     schemaVersion = 1;
@@ -164,7 +166,7 @@ let
           cache = {
             enable = true;
             url = "http://${controlHost}/cache";
-            publicKey = cacheSigningKey;
+            publicKey = cachePublicKey;
             netrcFile = "/run/secrets/hostenv/cache_netrc";
           };
         };
@@ -179,7 +181,12 @@ let
             nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
             reconnectSeconds = 1;
           };
-          cache.enable = false;
+          cache = {
+            enable = true;
+            url = "http://${controlHost}/cache";
+            publicKey = cachePublicKey;
+            netrcFile = "/run/secrets/hostenv/cache_netrc";
+          };
         };
       };
     };
@@ -272,6 +279,7 @@ pkgs.testers.runNixOSTest ({ ... }: {
         environment.etc."sops/age/keys.txt".text = "${ageSecretKey}\n";
         environment.etc."sops/age/keys.txt".mode = "0400";
         environment.systemPackages = [ pkgs.postgresql pkgs.websocat ];
+        system.extraDependencies = [ activateProfile ];
         networking.firewall.allowedTCPPorts = [ 80 ];
         security.acme.acceptTerms = true;
         security.acme.defaults.email = "test@example.invalid";
@@ -279,60 +287,72 @@ pkgs.testers.runNixOSTest ({ ... }: {
         services.nginx.virtualHosts."${controlHost}" = {
           enableACME = lib.mkForce false;
           forceSSL = lib.mkForce false;
-          locations."~ ^/api/" = {
-            recommendedProxySettings = true;
-            proxyPass = lib.mkForce "http://unix:${controlUpstreamSocket}:";
-            extraConfig = lib.mkForce ''
-              proxy_connect_timeout 120s;
-              proxy_send_timeout 120s;
-              proxy_read_timeout 120s;
-              proxy_http_version 1.1;
-              proxy_set_header Upgrade $http_upgrade;
-              proxy_set_header Connection "upgrade";
-            '';
-          };
         };
-        systemd.services.control-plane-postgresql = {
-          inherit (controlPostgresUnit) description path preStart script postStart restartTriggers;
+        systemd.services.control-plane-activate = {
+          description = "Activate control-plane hostenv user environment";
           wantedBy = [ "multi-user.target" ];
           after = [ "network.target" ];
-          serviceConfig = (removeAttrs controlPostgresUnit.serviceConfig [ "ExecStart" ]) // {
-            User = controlUserName;
-          };
-        };
-        systemd.services.control-plane-provider = {
-          inherit (controlProviderUnit) description path restartIfChanged;
-          wantedBy = [ "multi-user.target" ];
-          wants = [ "control-plane-postgresql.service" ];
-          after = [ "network.target" "control-plane-postgresql.service" ];
-          serviceConfig = controlProviderUnit.serviceConfig // {
-            Environment = "HOME=/home/${controlUserName}";
-            ExecStart = controlProviderExecStart;
-            User = controlUserName;
-            WorkingDirectory = "/home/${controlUserName}";
-          };
-        };
-        systemd.services.control-plane-provider-cache-auth = {
-          inherit (controlEnv.config.systemd.services.hostenv-provider-cache-auth) description script;
-          wantedBy = [ "multi-user.target" ];
-          before = [ "control-plane-provider.service" ];
+          wants = [ "user@${toString controlUserUid}.service" ];
+          path = [ pkgs.bash pkgs.coreutils pkgs.systemd pkgs.util-linux ];
+          script = ''
+            set -euo pipefail
+
+            export HOME="${controlUserHome}"
+            export XDG_RUNTIME_DIR="${controlUserRuntimeDir}"
+            export DBUS_SESSION_BUS_ADDRESS="unix:path=${controlUserRuntimeDir}/bus"
+            export XDG_CACHE_HOME="$HOME/.cache"
+            export XDG_CONFIG_HOME="$HOME/.config"
+            export XDG_DATA_HOME="$HOME/.local/share"
+            export XDG_STATE_HOME="$HOME/.local/state"
+
+            rm -rf "${controlPostgresDataDir}"
+
+            systemctl start "user@${toString controlUserUid}.service"
+            for _ in $(seq 1 120); do
+              if [ -S "${controlUserRuntimeDir}/systemd/private" ] && [ -S "${controlUserRuntimeDir}/bus" ]; then
+                break
+              fi
+              sleep 1
+            done
+
+            if [ ! -S "${controlUserRuntimeDir}/systemd/private" ] || [ ! -S "${controlUserRuntimeDir}/bus" ]; then
+              echo "control-plane-activate: user systemd sockets did not appear for ${controlUserName}" >&2
+              exit 1
+            fi
+
+            runuser -u "${controlUserName}" -- env \
+              HOME="$HOME" \
+              XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+              DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
+              XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+              XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+              XDG_DATA_HOME="$XDG_DATA_HOME" \
+              XDG_STATE_HOME="$XDG_STATE_HOME" \
+              "${controlActivatePackage}/bin/activate" || true
+
+            runuser -u "${controlUserName}" -- env \
+              HOME="$HOME" \
+              XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+              DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
+              XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+              XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+              XDG_DATA_HOME="$XDG_DATA_HOME" \
+              XDG_STATE_HOME="$XDG_STATE_HOME" \
+              systemctl --user daemon-reload
+
+            runuser -u "${controlUserName}" -- env \
+              HOME="$HOME" \
+              XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+              DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
+              XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+              XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+              XDG_DATA_HOME="$XDG_DATA_HOME" \
+              XDG_STATE_HOME="$XDG_STATE_HOME" \
+              systemctl --user start postgresql.service hostenv-provider-cache-auth.service nginx.service harmonia.service hostenv-provider.service
+          '';
           serviceConfig = {
-            User = controlUserName;
-            Group = "users";
             Type = "oneshot";
             RemainAfterExit = true;
-          };
-        };
-        systemd.services.control-plane-provider-upstream = {
-          description = "Expose provider-service socket to nginx upstream runtime";
-          wantedBy = [ "multi-user.target" ];
-          after = [ "control-plane-provider.service" ];
-          wants = [ "control-plane-provider.service" ];
-          serviceConfig = {
-            ExecStartPre = "${pkgs.coreutils}/bin/rm -f ${controlUpstreamSocket}";
-            ExecStart = "${pkgs.socat}/bin/socat UNIX-LISTEN:${controlUpstreamSocket},fork,mode=0660,user=${controlUserName},group=nginx UNIX-CONNECT:${controlListenSocket}";
-            Restart = "always";
-            RestartSec = "1s";
           };
         };
       })
@@ -360,11 +380,10 @@ pkgs.testers.runNixOSTest ({ ... }: {
     controlPlane, providerNode = machines
 
     controlPlane.wait_for_unit("multi-user.target")
-    controlPlane.wait_for_unit("control-plane-postgresql.service")
+    controlPlane.wait_for_unit("control-plane-activate.service")
     controlPlane.wait_until_succeeds("test -f /run/secrets/${controlUserName}/provider_node_tokens.yaml", timeout=180)
-    controlPlane.wait_for_unit("control-plane-provider.service")
-    controlPlane.wait_for_unit("control-plane-provider-upstream.service")
     controlPlane.wait_for_unit("nginx.service")
+    controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- env HOME=${controlUserHome} XDG_RUNTIME_DIR=${controlUserRuntimeDir} DBUS_SESSION_BUS_ADDRESS=unix:path=${controlUserRuntimeDir}/bus XDG_CACHE_HOME=${controlUserHome}/.cache XDG_CONFIG_HOME=${controlUserHome}/.config XDG_DATA_HOME=${controlUserHome}/.local/share XDG_STATE_HOME=${controlUserHome}/.local/state systemctl --user is-active --quiet postgresql.service hostenv-provider-cache-auth.service hostenv-provider.service", timeout=300)
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc 'select 1' | grep -qx 1", timeout=60)
     controlPlane.wait_until_succeeds("printf '%s\\n' '{\"type\":\"auth\",\"node\":\"${providerNodeName}\",\"token\":\"${nodeToken}\"}' | websocat -q -n -t -1 'ws://${controlHost}/api/deploy-jobs/ws?node=${providerNodeName}' | grep -F '\"type\":\"deploy_hint\"' | grep -F '\"node\":\"${providerNodeName}\"'", timeout=180)
     controlPlane.succeed("runuser -u ${controlUserName} -- psql '${controlDbConn}' -f ${seedSql}")
@@ -372,6 +391,10 @@ pkgs.testers.runNixOSTest ({ ... }: {
     providerNode.wait_for_unit("multi-user.target")
     providerNode.wait_for_unit("provider-deploy.service")
     providerNode.wait_until_succeeds("test -f /run/secrets/hostenv/provider_node_token", timeout=180)
+    providerNode.wait_until_succeeds("test -f /run/secrets/hostenv/cache_netrc", timeout=180)
+    providerNode.wait_until_succeeds("nix show-config | grep -qx 'netrc-file = /run/secrets/hostenv/cache_netrc'", timeout=180)
+    providerNode.wait_until_succeeds("nix show-config | grep -Eq '^substituters = http://${controlHost}/cache( |$)'", timeout=180)
+    providerNode.wait_until_succeeds("curl -sf --netrc-file /run/secrets/hostenv/cache_netrc http://${controlHost}/cache/nix-cache-info >/dev/null", timeout=180)
     providerNode.wait_until_succeeds("token=\"$(tr -d '\\n\\r' < /run/secrets/hostenv/provider_node_token)\"; printf '{\"type\":\"auth\",\"node\":\"${providerNodeName}\",\"token\":\"%s\"}\\n' \"$token\" | websocat -q -n -t -1 'ws://${controlHost}/api/deploy-jobs/ws?node=${providerNodeName}' | grep -F '\"type\":\"deploy_hint\"' | grep -F '\"node\":\"${providerNodeName}\"'", timeout=180)
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc \"select status from jobs where id='${jobId}'\" | grep -qx succeeded", timeout=180)
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc \"select count(*) from deploy_node_events where job_id='${jobId}' and node='${providerNodeName}' and phase='activate' and status='success'\" | grep -Ev '^0$'", timeout=180)

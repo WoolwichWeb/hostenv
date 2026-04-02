@@ -6,36 +6,36 @@
       cfg = config.services.provider-deploy;
       runAsUserScript = pkgs.writeShellApplication {
         name = "provider-deploy-run-as-user";
-        runtimeInputs = [ pkgs.coreutils pkgs.shadow pkgs.bash ];
+        runtimeInputs = with pkgs; [ coreutils shadow bash getent ];
         text = ''
           set -euo pipefail
 
-          user_name="$1"
-          shift
+              user_name="$1"
+              shift
 
-          user_uid="$(id -u "$user_name")"
-          user_home="$(getent passwd "$user_name" | cut -d: -f6)"
+              user_uid="$(id -u "$user_name")"
+              user_home="$(getent passwd "$user_name" | cut -d: -f6)"
 
-          if [ -z "$user_home" ]; then
-            echo "provider-deploy: could not determine home for user $user_name" >&2
-            exit 1
-          fi
+              if [ -z "$user_home" ]; then
+                echo "provider-deploy: could not determine home for user $user_name" >&2
+                exit 1
+              fi
 
-          printf 'provider-deploy: run-as-user prepared user=%s uid=%s home=%s runtime_dir=%s config_dir=%s\n' \
-            "$user_name" "$user_uid" "$user_home" "/run/user/$user_uid" "$user_home/.config" >&2
+              printf 'provider-deploy: run-as-user prepared user=%s uid=%s home=%s runtime_dir=%s config_dir=%s\n' \
+                "$user_name" "$user_uid" "$user_home" "/run/user/$user_uid" "$user_home/.config" >&2
 
-          systemctl start "user@$user_uid.service"
-          for _ in $(seq 1 30); do
-            if [ -S "/run/user/$user_uid/systemd/private" ] || [ -S "/run/user/$user_uid/bus" ]; then
-              break
-            fi
-            sleep 1
-          done
+              systemctl start "user@$user_uid.service"
+              for _ in $(seq 1 30); do
+                if [ -S "/run/user/$user_uid/systemd/private" ] || [ -S "/run/user/$user_uid/bus" ]; then
+                  break
+                fi
+                sleep 1
+              done
 
-          printf 'provider-deploy: run-as-user sockets user=%s systemd_private=%s dbus_bus=%s\n' \
-            "$user_name" \
-            "$([ -S "/run/user/$user_uid/systemd/private" ] && printf yes || printf no)" \
-            "$([ -S "/run/user/$user_uid/bus" ] && printf yes || printf no)" >&2
+              printf 'provider-deploy: run-as-user sockets user=%s systemd_private=%s dbus_bus=%s\n' \
+                "$user_name" \
+                "$([ -S "/run/user/$user_uid/systemd/private" ] && printf yes || printf no)" \
+                "$([ -S "/run/user/$user_uid/bus" ] && printf yes || printf no)" >&2
 
           exec runuser -u "$user_name" -- env \
             XDG_RUNTIME_DIR="/run/user/$user_uid" \
@@ -82,6 +82,7 @@
           event_stderr_max_lines=25
           command_stderr_file=""
           command_stdout_file=""
+          command_description=""
           command_exit_code=0
 
           ensure_state_file() {
@@ -132,6 +133,7 @@
             if [ -n "$command_stderr_file" ]; then rm -f "$command_stderr_file"; fi
             command_stdout_file=""
             command_stderr_file=""
+            command_description=""
           }
 
           ensure_state_file
@@ -240,6 +242,7 @@
             local _description="$2"
             shift 2
             local child
+            command_description="$_description"
             command_stdout_file="$(mktemp)"
             command_stderr_file="$(mktemp)"
             command_exit_code=0
@@ -269,24 +272,44 @@
             local migrations_csv="$7"
             local phase="$op"
             local profile="/nix/var/nix/profiles/per-user/$user_name/profile"
+            local profile_dir="/nix/var/nix/profiles/per-user/$user_name"
             local exec_path=""
+            local rc=0
 
             if ! is_safe_atom "$user_name"; then
+              command_description="validate-$op-$user_name"
               return 3
             fi
             if [ -n "$source_node" ] && ! is_safe_atom "$source_node"; then
+              command_description="validate-$op-$user_name"
               return 3
             fi
             if [ -n "$to_node" ] && ! is_safe_atom "$to_node"; then
+              command_description="validate-$op-$user_name"
               return 3
             fi
 
             if [ -n "$store_path" ]; then
-              if ! run_cmd_cancelable "$job_id" "realise-$op-$user_name" nix-store --realise "$store_path"; then
-                return $?
+              run_cmd_cancelable "$job_id" "realise-$op-$user_name" nix-store --realise "$store_path"
+              rc=$?
+              if [ "$rc" -ne 0 ]; then
+                return "$rc"
               fi
-              if ! run_cmd_cancelable "$job_id" "set-profile-$user_name" ${runAsUserScript}/bin/provider-deploy-run-as-user "$user_name" nix-env -p "$profile" --set "$store_path"; then
-                return $?
+              mkdir -p "$profile_dir"
+              chown "$user_name" "$profile_dir"
+              run_cmd_cancelable "$job_id" "set-profile-$user_name" ${runAsUserScript}/bin/provider-deploy-run-as-user "$user_name" nix-env -p "$profile" --set "$store_path"
+              rc=$?
+              if [ "$rc" -ne 0 ]; then
+                echo "Command:"
+                echo "    ${runAsUserScript}/bin/provider-deploy-run-as-user $user_name nix-env -p $profile --set $store_path"
+                echo "Got return code: '$rc' instead of '0'"
+                echo "stdout:"
+                cat "$command_stdout_file"
+                echo "---------"
+                echo "stderr:"
+                cat "$command_stderr_file"
+                echo "========="
+                return "$rc"
               fi
             fi
 
@@ -295,6 +318,7 @@
             elif [ -n "$store_path" ] && [ -x "$store_path/bin/$op" ]; then
               exec_path="$store_path/bin/$op"
             else
+              command_description="resolve-exec-$op-$user_name"
               return 3
             fi
 
@@ -310,14 +334,16 @@
               if [ "$snapshot_code" = "200" ]; then
                 snapshot_payload_file="$(mktemp)"
                 jq -c '.payload // {}' "$snapshot_tmp" > "$snapshot_payload_file"
-                if ! run_cmd_cancelable "$job_id" "$op-$user_name" timeout "$action_timeout" ${runAsUserScript}/bin/provider-deploy-run-as-user "$user_name" env HOSTENV_RESTORE_SNAPSHOT_FILE="$snapshot_payload_file" HOSTENV_MIGRATIONS="$migrations_csv" "$exec_path"; then
-                  rc=$?
+                run_cmd_cancelable "$job_id" "$op-$user_name" timeout "$action_timeout" ${runAsUserScript}/bin/provider-deploy-run-as-user "$user_name" env HOSTENV_RESTORE_SNAPSHOT_FILE="$snapshot_payload_file" HOSTENV_MIGRATIONS="$migrations_csv" "$exec_path"
+                rc=$?
+                if [ "$rc" -ne 0 ]; then
                   rm -f "$snapshot_payload_file"
                   rm -f "$snapshot_tmp"
                   return "$rc"
                 fi
                 rm -f "$snapshot_payload_file"
               else
+                command_description="fetch-snapshot-$op-$user_name"
                 rm -f "$snapshot_tmp"
                 return 4
               fi
@@ -325,8 +351,10 @@
               return 0
             fi
 
-            if ! run_cmd_cancelable "$job_id" "$op-$user_name" timeout "$action_timeout" ${runAsUserScript}/bin/provider-deploy-run-as-user "$user_name" "$exec_path"; then
-              return $?
+            run_cmd_cancelable "$job_id" "$op-$user_name" timeout "$action_timeout" ${runAsUserScript}/bin/provider-deploy-run-as-user "$user_name" "$exec_path"
+            rc=$?
+            if [ "$rc" -ne 0 ]; then
+              return "$rc"
             fi
 
             if [ -n "$store_path" ] && [ -d "$store_path/systemd/user" ]; then
@@ -342,7 +370,7 @@
               fi
 
               # shellcheck disable=SC2016
-              if ! run_cmd_cancelable "$job_id" "verify-$op-$user_name" timeout "$action_timeout" ${runAsUserScript}/bin/provider-deploy-run-as-user "$user_name" env HOSTENV_SYSTEMCTL_BIN="${pkgs.systemd}/bin/systemctl" ${pkgs.bash}/bin/bash -lc '
+              run_cmd_cancelable "$job_id" "verify-$op-$user_name" timeout "$action_timeout" ${runAsUserScript}/bin/provider-deploy-run-as-user "$user_name" env HOSTENV_SYSTEMCTL_BIN="${pkgs.systemd}/bin/systemctl" ${pkgs.bash}/bin/bash -lc '
                 set -euo pipefail
 
                 if [ ! -L "$XDG_CONFIG_HOME/systemd" ]; then
@@ -374,8 +402,10 @@
                     exit 1
                   fi
                 done
-              ' _ "''${default_wanted_units[@]}"; then
-                return $?
+              ' _ "''${default_wanted_units[@]}"
+              rc=$?
+              if [ "$rc" -ne 0 ]; then
+                return "$rc"
               fi
             fi
 
@@ -421,8 +451,9 @@
 
             if [ -n "$system_path" ]; then
               post_event "$job_id" "running" "system" "Switching system profile" "{}" || true
-              if ! run_cmd_cancelable "$job_id" "system-realise" nix-store --realise "$system_path"; then
-                rc=$?
+              run_cmd_cancelable "$job_id" "system-realise" nix-store --realise "$system_path"
+              rc=$?
+              if [ "$rc" -ne 0 ]; then
                 if [ "$rc" -eq 99 ] || [ "$rc" -eq 98 ]; then
                   post_event_with_command "$job_id" "failed" "intent" "Superseded by newer job" '{"reason":"superseded","step":"system-realise"}' || true
                 else
@@ -431,8 +462,9 @@
                 cleanup_command_files
                 return "$rc"
               fi
-              if ! run_cmd_cancelable "$job_id" "system-set" nix-env -p /nix/var/nix/profiles/system --set "$system_path"; then
-                rc=$?
+              run_cmd_cancelable "$job_id" "system-set" nix-env -p /nix/var/nix/profiles/system --set "$system_path"
+              rc=$?
+              if [ "$rc" -ne 0 ]; then
                 if [ "$rc" -eq 99 ] || [ "$rc" -eq 98 ]; then
                   post_event_with_command "$job_id" "failed" "intent" "Superseded by newer job" '{"reason":"superseded","step":"system-set"}' || true
                 else
@@ -441,8 +473,9 @@
                 cleanup_command_files
                 return "$rc"
               fi
-              if ! run_cmd_cancelable "$job_id" "system-switch" "$system_path/bin/switch-to-configuration" switch; then
-                rc=$?
+              run_cmd_cancelable "$job_id" "system-switch" "$system_path/bin/switch-to-configuration" switch
+              rc=$?
+              if [ "$rc" -ne 0 ]; then
                 if [ "$rc" -eq 99 ] || [ "$rc" -eq 98 ]; then
                   post_event_with_command "$job_id" "failed" "intent" "Superseded by newer job" '{"reason":"superseded","step":"system-switch"}' || true
                 else
@@ -486,20 +519,22 @@
 
               post_event "$job_id" "running" "$op" "Running action $op for $user_name" "{}" || true
 
-              if ! run_profile_action "$job_id" "$op" "$user_name" "$store_path" "$source_node" "$to_node" "$migrations_csv"; then
-                rc=$?
+              run_profile_action "$job_id" "$op" "$user_name" "$store_path" "$source_node" "$to_node" "$migrations_csv"
+              rc=$?
+              if [ "$rc" -ne 0 ]; then
+                failed_step="''${command_description:-$op}"
                 if [ "$rc" -eq 99 ] || [ "$rc" -eq 98 ]; then
-                  post_event_with_command "$job_id" "failed" "intent" "Superseded by newer job" "$(jq -cn --arg reason superseded --arg op "$op" '{reason:$reason,op:$op}')" || true
+                  post_event_with_command "$job_id" "failed" "intent" "Superseded by newer job during $failed_step" "$(jq -cn --arg reason superseded --arg op "$op" --arg step "$failed_step" '{reason:$reason,op:$op,step:$step}')" || true
                 elif [ "$rc" -eq 124 ]; then
-                  post_event_with_command "$job_id" "timed_out" "$op" "Action timed out" "$(jq -cn --arg op "$op" '{op:$op}')" || true
+                  post_event_with_command "$job_id" "timed_out" "$op" "Action timed out during $failed_step" "$(jq -cn --arg op "$op" --arg step "$failed_step" '{op:$op,step:$step}')" || true
                 elif [ "$rc" -eq 4 ]; then
-                  post_event_with_command "$job_id" "failed" "$op" "Restore snapshot unavailable" "$(jq -cn --arg op "$op" '{op:$op}')" || true
+                  post_event_with_command "$job_id" "failed" "$op" "Restore snapshot unavailable during $failed_step" "$(jq -cn --arg op "$op" --arg step "$failed_step" '{op:$op,step:$step}')" || true
                 elif [ "$rc" -eq 3 ]; then
-                  post_event_with_command "$job_id" "failed" "$op" "Action executable not found" "$(jq -cn --arg op "$op" '{op:$op}')" || true
+                  post_event_with_command "$job_id" "failed" "$op" "Action executable not found during $failed_step" "$(jq -cn --arg op "$op" --arg step "$failed_step" '{op:$op,step:$step}')" || true
                 else
-                  post_event_with_command "$job_id" "failed" "$op" "Action failed" "$(jq -cn --arg op "$op" '{op:$op}')" || true
+                  post_event_with_command "$job_id" "failed" "$op" "Action failed during $failed_step" "$(jq -cn --arg op "$op" --arg step "$failed_step" '{op:$op,step:$step}')" || true
                 fi
-                printf 'provider-deploy: action failed job=%s idx=%s op=%s user=%s rc=%s\n' "$job_id" "$idx" "$op" "$user_name" "$rc" >&2
+                printf 'provider-deploy: action failed job=%s idx=%s op=%s user=%s step=%s rc=%s\n' "$job_id" "$idx" "$op" "$user_name" "$failed_step" "$rc" >&2
                 cleanup_command_files
                 return "$rc"
               fi

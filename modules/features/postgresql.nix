@@ -183,7 +183,14 @@
           preStart = ''
             mkdir -p "${cfg.dataDir}"
             mkdir -p "${cfg.runtimeDir}"
-            if [ ! -e "${cfg.dataDir}/PG_VERSION" ]; then
+
+            if [ -e "${cfg.dataDir}/PG_VERSION" ] && [ ! -e "${cfg.dataDir}/global/pg_control" ]; then
+              echo "resetting partial cluster in ${cfg.dataDir}" >&2
+              mv "${cfg.dataDir}" "${cfg.dataDir}.broken-review-then-delete"
+              mkdir -p "${cfg.dataDir}"
+            fi
+
+            if [ ! -e "${cfg.dataDir}/PG_VERSION" ] || [ ! -e "${cfg.dataDir}/global/pg_control" ]; then
               ${cfg.package}/bin/initdb -D "${cfg.dataDir}" --auth=peer --username="${cfg.user}"
               touch "${cfg.dataDir}/postgresql_init"
             fi

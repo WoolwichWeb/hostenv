@@ -4,10 +4,10 @@
     { lib, config, pkgs, ... }:
     let
       cfg = config.services.harmonia;
-      providerServiceEnabled = config.services.hostenv-provider.enable or false;
-      enabled = cfg.enable || providerServiceEnabled;
+      format = pkgs.formats.toml { };
+      configFile = format.generate "harmonia.toml" cfg.settings;
       vhostName =
-        if providerServiceEnabled
+        if config.services.hostenv-provider.enable
         then config.services.hostenv-provider.webhookHost
         else config.hostenv.hostname;
       proxySocket = "http://unix:${cfg.socketPath}:";
@@ -35,10 +35,10 @@
           description = "Unix socket path for Harmonia HTTP traffic.";
         };
 
-        signingKeyFile = lib.mkOption {
-          type = lib.types.str;
-          default = "/run/secrets/${config.hostenv.userName}/cache_signing_key";
-          description = "Path to Harmonia private signing key.";
+        signKeyPaths = lib.mkOption {
+          type = lib.types.listOf lib.types.path;
+          default = [ "/run/secrets/${config.hostenv.userName}/cache_signing_key" ];
+          description = "Paths to the signing keys to use for signing the cache";
         };
 
         htpasswdFile = lib.mkOption {
@@ -47,20 +47,14 @@
           description = "Optional htpasswd file path used by nginx for /cache auth.";
         };
 
-        extraArgs = lib.mkOption {
-          type = lib.types.listOf lib.types.str;
-          default = [ ];
-          description = "Extra command-line arguments passed to Harmonia.";
-        };
 
-        fcgiwrapSocketPath = lib.mkOption {
-          type = lib.types.str;
-          default = "${config.hostenv.runtimeDir}/fcgiwrap.sock";
-          description = "Unix socket path for fcgiwrap helper service.";
+        settings = lib.mkOption {
+          type = lib.types.submodule { freeformType = format.type; };
+          description = "Settings to merge with the default configuration";
         };
       };
 
-      config = lib.mkIf enabled {
+      config = lib.mkIf (cfg.enable || config.services.hostenv-provider.enable) {
         services.nginx.enable = lib.mkDefault true;
         services.nginx.virtualHosts.${vhostName}.locations."/cache/" = {
           recommendedProxySettings = true;
@@ -71,34 +65,27 @@
           '';
         };
 
+        services.harmonia.settings = builtins.mapAttrs (_: v: lib.mkDefault v) ({
+          bind = "unix:${cfg.socketPath}";
+          workers = 4;
+          max_connection_rate = 256;
+          priority = 50;
+        });
+
         systemd.services.harmonia = {
           description = "Harmonia binary cache service";
           wantedBy = [ "default.target" ];
           after = [ "network.target" ];
-          serviceConfig = {
-            ExecStart =
-              "${cfg.package}/bin/harmonia --bind unix:${cfg.socketPath} --sign-key-path ${cfg.signingKeyFile}"
-              + lib.optionalString (cfg.extraArgs != [ ])
-              (" " + lib.escapeShellArgs cfg.extraArgs);
-            Restart = "on-failure";
-            RestartSec = "5s";
+          environment = {
+            NIX_REMOTE = "daemon";
+            LIBEV_FLAGS = "4"; # go ahead and mandate epoll(2)
+            CONFIG_FILE = lib.mkIf (configFile != null) configFile;
+            SIGN_KEY_PATHS = lib.concatStringsSep " " cfg.signKeyPaths;
+            RUST_LOG = "actix_web=debug";
+            RUST_BACKTRACE = "1";
           };
-        };
-
-        systemd.sockets.fcgiwrap = {
-          wantedBy = [ "sockets.target" ];
-          socketConfig = {
-            ListenStream = cfg.fcgiwrapSocketPath;
-            SocketMode = "0600";
-          };
-        };
-
-        systemd.services.fcgiwrap = {
-          description = "fcgiwrap helper";
-          after = [ "fcgiwrap.socket" ];
-          requires = [ "fcgiwrap.socket" ];
           serviceConfig = {
-            ExecStart = "${pkgs.fcgiwrap}/bin/fcgiwrap -f -s unix:${cfg.fcgiwrapSocketPath}";
+            ExecStart = "${cfg.package}/bin/harmonia";
             Restart = "on-failure";
             RestartSec = "5s";
           };

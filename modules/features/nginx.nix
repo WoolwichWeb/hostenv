@@ -241,7 +241,12 @@ in
     
             include ${cfg.package}/conf/fastcgi.conf;
             include ${cfg.package}/conf/uwsgi_params;
-    
+
+            map $http_upgrade $connection_upgrade {
+              default upgrade;
+              ''' close;
+            }
+
             fastcgi_buffers 16 16k;
             fastcgi_buffer_size 32k;
             client_max_body_size ${cfg.clientMaxBodySize};

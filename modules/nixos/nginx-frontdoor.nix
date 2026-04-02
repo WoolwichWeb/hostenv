@@ -81,6 +81,7 @@
             "/" = {
               recommendedProxySettings = true;
               proxyPass = "http://${name}_upstream";
+              proxyWebsockets = true;
             };
           };
           normalizeVhost = vhostName: vhost:
