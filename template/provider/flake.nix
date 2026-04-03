@@ -60,7 +60,7 @@
         #   configuration = ./nodes/${node}/configuration.nix;
         # });
 
-        # Enable provider-deploy node agent wiring.
+        # Enable hostenv-deploy-agent node agent wiring.
         deploy = {
           enable = true;
           providerApiBaseUrl = "https://hosting.example.com";

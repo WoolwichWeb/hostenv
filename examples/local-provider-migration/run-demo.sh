@@ -21,7 +21,7 @@ set -euo pipefail
 # 1. Reads your project's hostenv.nix configuration
 # 2. Generates a deployment plan (plan.json) describing what should run where
 # 3. Accepts webhook calls when you push changes
-# 4. Orchestrates deployments across nodes using provider-deploy (the node agent)
+# 4. Orchestrates deployments across nodes using hostenv-deploy-agent (the node agent)
 #
 # DEMO OVERVIEW:
 # This demo creates TWO local VMs (node-a and node-b) and demonstrates:
@@ -665,7 +665,7 @@ resolve_provider_service_bin() {
 # 1. Runs a PostgreSQL database for state
 # 2. Exposes a Unix socket API (we bridge to HTTP with socat)
 # 3. Accepts webhooks to create deploy jobs
-# 4. Serves per-node action APIs that provider-deploy polls
+# 4. Serves per-node action APIs that hostenv-deploy-agent polls
 #
 # CONFIGURATION:
 # - dataDir: Where the provider keeps its files
@@ -1152,7 +1152,7 @@ prepare_baseline_node_b() {
 # This simulates a production deployment:
 # 1. Send webhook to trigger deploy job
 # 2. Wait for provider-service to schedule activation action
-# 3. Trigger provider-deploy refresh to apply the deployment
+# 3. Trigger hostenv-deploy-agent refresh to apply the deployment
 # 4. Wait for job completion
 # 5. Verify the site responds to HTTP
 #
@@ -1186,7 +1186,7 @@ deploy_to_node_a() {
 # 2. Send webhook to create migration job
 # 3. Wait for backup action on node-a
 # 4. Wait for restore action on node-b
-# 5. Trigger provider-deploy on both nodes
+# 5. Trigger hostenv-deploy-agent on both nodes
 # 6. Verify migration marker is present
 #
 # THE MIGRATION FLOW:

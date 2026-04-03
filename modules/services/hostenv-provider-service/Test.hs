@@ -26,8 +26,8 @@ import System.IO (hClose, openTempFile)
 import qualified Data.Map.Strict as Map
 import Hostenv.Provider.Config (AppConfig(..), DeployConfig(..), loadConfig)
 import Hostenv.Provider.Crypto
-import Hostenv.Provider.DB (DeployAction(DeployAction), OAuthCredential(..))
-import Hostenv.Provider.DeployApi (acceptsNodeEvents, dispatchFingerprint, dispatchForNode, extractBearer, normalizeStatus, shouldDispatchJob, validateIntent)
+import Hostenv.Provider.DB (DeployAction(DeployAction), OAuthCredential(..), deployActionId, selectDeployActionIndex)
+import Hostenv.Provider.DeployApi (NodeEvent, ProjectedNodeEvent(..), acceptsNodeEvents, dispatchFingerprint, dispatchForNode, dispatchStableId, extractBearer, isValidDeployWsAuth, normalizeStatus, projectNodeEvent, shouldDispatchJob, validateIntent)
 import Hostenv.Provider.Gitlab
   ( GitlabCredentialContext(..)
   , GitlabError(..)
@@ -59,7 +59,10 @@ main = do
   testDeployApiStatusNormalization
   testDeployApiEventAcceptance
   testDeployApiIntentValidation
+  testDeployWsAuthCompatibility
   testDispatchForNodeMigrationSequencing
+  testDeployDeliveryIdentity
+  testEventProjectionBehavior
   testWebsocketDispatchFingerprinting
   testPlanParsing
   testNodeOrderWithMigrations
@@ -155,6 +158,36 @@ testDeployApiIntentValidation = do
   assert (validateIntent invalidUser == Nothing) "validateIntent should reject blank user names"
   assert (validateIntent invalidOp == Nothing) "validateIntent should reject unknown action ops"
 
+testDeployWsAuthCompatibility :: IO ()
+testDeployWsAuthCompatibility = do
+  let cfg =
+        (mkRepoConfig "/tmp/hostenv-provider-auth")
+          { appDeploy =
+              DeployConfig
+                { enable = True
+                , nodeAuthTokens = Map.fromList [("node-a", "secret-token")]
+                }
+          }
+      legacyPayload =
+        A.encode
+          (A.object ["node" A..= ("node-a" :: T.Text), "token" A..= ("secret-token" :: T.Text)])
+      richerPayload =
+        A.encode
+          ( A.object
+              [ "type" A..= ("auth" :: T.Text)
+              , "protocol" A..= ("haskell-agent/v1" :: T.Text)
+              , "auth" A..=
+                  A.object
+                    [ "node" A..= ("node-a" :: T.Text)
+                    , "token" A..= ("secret-token" :: T.Text)
+                    ]
+              , "dispatch" A..= A.object ["lastSeen" A..= ("dispatch-1" :: T.Text)]
+              ]
+          )
+  assert (isValidDeployWsAuth cfg "node-a" legacyPayload) "websocket auth should keep accepting the legacy auth payload"
+  assert (isValidDeployWsAuth cfg "node-a" richerPayload) "websocket auth should accept richer nested auth payloads"
+  assert (not (isValidDeployWsAuth cfg "node-b" richerPayload)) "websocket auth should still reject mismatched node auth"
+
 testDispatchForNodeMigrationSequencing :: IO ()
 testDispatchForNodeMigrationSequencing = do
   let sourceIntent =
@@ -176,6 +209,7 @@ testDispatchForNodeMigrationSequencing = do
       t0 = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime 0)
       mkAction nodeName actionIndexVal opVal statusVal =
         DeployAction
+          "job-1"
           nodeName
           actionIndexVal
           opVal
@@ -188,7 +222,8 @@ testDispatchForNodeMigrationSequencing = do
       sourceQueued = [mkAction "node-a" 0 "backup" "queued", mkAction "node-a" 1 "deactivate" "queued"]
       destinationQueued = [mkAction "node-b" 0 "restore" "queued", mkAction "node-b" 1 "activate" "queued"]
       allQueued = sourceQueued <> destinationQueued
-      opNames = map (\(DeployAction _ _ opVal _ _ _ _ _ _) -> opVal)
+      opNames = map getOp
+      getOp (DeployAction _ _ _ opVal _ _ _ _ _ _) = opVal
 
   case dispatchForNode sourceIntent allQueued "node-a" of
     Nothing -> assert False "dispatchForNode should return filtered source payload"
@@ -234,6 +269,7 @@ testWebsocketDispatchFingerprinting = do
   let t0 = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime 0)
       mkAction nodeName actionIndexVal opVal statusVal =
         DeployAction
+          "job-1"
           nodeName
           actionIndexVal
           opVal
@@ -269,6 +305,99 @@ testWebsocketDispatchFingerprinting = do
   assert (not (shouldDispatchJob intentA actions actions (Just fingerprintA) fingerprintA)) "websocket dispatch should skip duplicate payload fingerprints"
   assert (shouldDispatchJob intentA actionsUpdated actionsUpdated (Just fingerprintA) fingerprintB) "websocket dispatch should emit when same job id has newly executable actions"
   assert (shouldDispatchJob intentSystemOnly [] [] Nothing systemFingerprint) "websocket dispatch should also emit system-only payloads"
+
+testDeployDeliveryIdentity :: IO ()
+testDeployDeliveryIdentity = do
+  let t0 = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime 0)
+      mkAction statusVal =
+        DeployAction
+          "job-1"
+          "node-b"
+          0
+          "restore"
+          "alice"
+          statusVal
+          Nothing
+          Nothing
+          Nothing
+          t0
+      intent =
+        A.object
+          [ "schemaVersion" A..= (1 :: Int)
+          , "actions" A..=
+              [ A.object
+                  [ "user" A..= ("alice" :: T.Text)
+                  , "op" A..= ("restore" :: T.Text)
+                  ]
+              ]
+          ]
+      queuedAction = mkAction "queued"
+      runningAction = mkAction "running"
+      stableQueued = dispatchStableId "job-1" "node-b" intent [queuedAction]
+      stableRunning = dispatchStableId "job-1" "node-b" intent [runningAction]
+      fingerprintQueued = dispatchFingerprint "job-1" intent [queuedAction]
+      fingerprintRunning = dispatchFingerprint "job-1" intent [runningAction]
+  assert (stableQueued == stableRunning) "dispatchStableId should stay fixed across action status changes"
+  assert (fingerprintQueued /= fingerprintRunning) "dispatchFingerprint should continue tracking mutable delivery changes"
+  case A.toJSON queuedAction of
+    A.Object obj ->
+      assert
+        (KM.lookup (K.fromString "actionId") obj == Just (A.String (deployActionId queuedAction)))
+        "deploy actions should include a stable actionId field"
+    _ -> assert False "deploy action should encode to a JSON object"
+
+testEventProjectionBehavior :: IO ()
+testEventProjectionBehavior = do
+  let t0 = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime 0)
+      action0 =
+        DeployAction
+          "job-1"
+          "node-b"
+          0
+          "restore"
+          "alice"
+          "queued"
+          Nothing
+          Nothing
+          Nothing
+          t0
+      action1 =
+        DeployAction
+          "job-1"
+          "node-b"
+          1
+          "restore"
+          "alice"
+          "queued"
+          Nothing
+          Nothing
+          Nothing
+          t0
+      richerEventValue =
+        A.object
+          [ "node" A..= ("node-b" :: T.Text)
+          , "payload" A..=
+              A.object
+                [ "status" A..= ("running" :: T.Text)
+                , "phase" A..= ("restore" :: T.Text)
+                , "message" A..= ("restoring backup" :: T.Text)
+                , "dispatchId" A..= ("dispatch-1" :: T.Text)
+                , "actionId" A..= deployActionId action1
+                ]
+          ]
+  case A.fromJSON richerEventValue of
+    A.Error err -> assert False ("failed to decode richer node event: " <> err)
+    A.Success event -> do
+      let ProjectedNodeEvent projectedNodeValue projectedStatusValue projectedPhaseValue projectedMessageValue projectedActionIdValue projectedDispatchIdValue = projectNodeEvent (event :: NodeEvent)
+      assert (projectedNodeValue == "node-b") "event projection should preserve the node identity"
+      assert (projectedStatusValue == "running") "event projection should accept payload-only status fields"
+      assert (projectedPhaseValue == Just "restore") "event projection should accept payload-only phase fields"
+      assert (projectedMessageValue == Just "restoring backup") "event projection should accept payload-only message fields"
+      assert (projectedDispatchIdValue == Just "dispatch-1") "event projection should retain dispatch identity"
+      assert (projectedActionIdValue == Just (deployActionId action1)) "event projection should retain action identity"
+      assert
+        (selectDeployActionIndex "job-1" "node-b" "restore" ["queued", "waiting", "running"] projectedActionIdValue [action0, action1] == Just 1)
+        "event projection should target the identified action row before falling back to phase order"
 
 testPlanParsing :: IO ()
 testPlanParsing = do

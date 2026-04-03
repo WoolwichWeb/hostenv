@@ -12,6 +12,7 @@ module Hostenv.Provider.Config
   , UserConfig(..)
   , loadConfig
   , hasGitlabAuth
+  , lookupDeployNodeAuthToken
   , appWorkDir
   , resolvePath
   , uiPath
@@ -346,3 +347,7 @@ hasGitlabAuth cfg =
   case cfg.appGitlabSecrets of
     Just _ -> True
     Nothing -> False
+
+lookupDeployNodeAuthToken :: AppConfig -> Text -> Maybe Text
+lookupDeployNodeAuthToken cfg nodeName =
+  Map.lookup (T.strip nodeName) cfg.appDeploy.nodeAuthTokens

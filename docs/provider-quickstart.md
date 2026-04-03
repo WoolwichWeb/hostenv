@@ -89,7 +89,7 @@ Created as `{}` if missing. This tracks deployment state across runs.
 
 ### Provider node tokens
 
-If using provider-deploy for deployment, the devshell prompts to generate node authentication tokens. This replaces manual token setup.
+If using hostenv-deploy-agent for deployment, the devshell prompts to generate node authentication tokens. This replaces manual token setup.
 
 ## Architecture
 

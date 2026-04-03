@@ -199,7 +199,7 @@ still working on improvements to Provider support.
 
 6. **Deploy**
 
-  Deployments are driven by provider-deploy nodes consuming deploy intents
+  Deployments are driven by hostenv-deploy-agent nodes consuming deploy intents
   produced by the provider service. Ensure `provider.deploy.*` is configured
   and the provider webhook service is running.
 

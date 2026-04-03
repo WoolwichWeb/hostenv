@@ -181,8 +181,11 @@ pkgs.testers.runNixOSTest ({ ... }: {
   testScript = ''
     machine.wait_for_unit("multi-user.target")
     machine.wait_for_unit("nginx.service")
-    machine.wait_for_unit("provider-deploy.service")
+    machine.wait_for_unit("hostenv-deploy-agent.service")
     machine.wait_for_unit("hostenv-provider-cache-netrc.service")
+
+    machine.succeed("systemctl cat hostenv-deploy-agent.service | grep '^ExecStart=' | grep -F '/bin/hostenv-deploy-agent --config '")
+    machine.succeed("config_path=$(systemctl cat hostenv-deploy-agent.service | grep '^ExecStart=' | grep -o '/nix/store/[^ ]*hostenv-deploy-agent-config.json'); test -n \"$config_path\"; grep -Eq '\"providerApiBaseUrl\"[[:space:]]*:[[:space:]]*\"https://hosting.test\"' \"$config_path\"; grep -Eq '\"nodeAuthTokenFile\"[[:space:]]*:[[:space:]]*\"/run/secrets/hostenv/provider_node_token\"' \"$config_path\"; grep -Eq '\"nodeName\"[[:space:]]*:[[:space:]]*\"node-a\"' \"$config_path\"; grep -Eq '\"stateFile\"[[:space:]]*:[[:space:]]*\"/var/lib/hostenv-deploy-agent/state.json\"' \"$config_path\"; grep -Eq '\"actionTimeoutSeconds\"[[:space:]]*:[[:space:]]*1800' \"$config_path\"; grep -Eq '\"reconnectSeconds\"[[:space:]]*:[[:space:]]*5' \"$config_path\"")
 
     machine.wait_until_succeeds("test -f /run/secrets/${envName}/project_only", timeout=180)
     machine.wait_until_succeeds("test -f /run/secrets/${envName}/env_only", timeout=180)

@@ -577,11 +577,11 @@ capture_app_site_diagnostics() {
     > "$node_http_log" 2>&1 || true
 
   ssh -F "$SSH_CONFIG" "root@${node_alias}.${HOSTENV_HOSTNAME}" \
-    "systemctl --no-pager --full status nginx.service provider-deploy.service sshd.service" \
+    "systemctl --no-pager --full status nginx.service hostenv-deploy-agent.service sshd.service" \
     > "$root_status_log" 2>&1 || true
 
   ssh -F "$SSH_CONFIG" "root@${node_alias}.${HOSTENV_HOSTNAME}" \
-    "journalctl --no-pager -b -n 200 -u provider-deploy.service" \
+    "journalctl --no-pager -b -n 200 -u hostenv-deploy-agent.service" \
     > "$deploy_journal_log" 2>&1 || true
 
   ssh -F "$SSH_CONFIG" "${APP_ENV_USER}@${node_alias}.${HOSTENV_HOSTNAME}" \
@@ -1418,8 +1418,8 @@ prepare_workspace() {
   rm -rf "$HOSTENV_SOURCE_DIR/.git" "$HOSTENV_SOURCE_DIR/.direnv" "$HOSTENV_SOURCE_DIR/result" "$HOSTENV_SOURCE_DIR"/result-*
   rm -f "$HOSTENV_SOURCE_DIR/hostenv-demo"
   sed -i 's/settings\.require-signed-binaries/settings.require-sigs/' "$HOSTENV_SOURCE_DIR/modules/nixos/provider-common.nix"
-  sed -i '/if (env HOSTENV_WS_AUTH_MESSAGE=/i\            # shellcheck disable=SC2016' "$HOSTENV_SOURCE_DIR/modules/nixos/provider-deploy.nix"
-  sed -i '/local description="\$2"/i\            # shellcheck disable=SC2034' "$HOSTENV_SOURCE_DIR/modules/nixos/provider-deploy.nix"
+            sed -i '/if (env HOSTENV_WS_AUTH_MESSAGE=/i\            # shellcheck disable=SC2016' "$HOSTENV_SOURCE_DIR/modules/nixos/hostenv-deploy-agent.nix"
+            sed -i '/local description="\$2"/i\            # shellcheck disable=SC2034' "$HOSTENV_SOURCE_DIR/modules/nixos/hostenv-deploy-agent.nix"
   cp "$SEED_SOURCE" "$APP_PROJECT_DIR/.hostenv/seed.sql.gz"
 
   ssh-keygen -q -t ed25519 -N "" -f "$SSH_KEY"

@@ -10,10 +10,8 @@ module Hostenv.Provider.Server (
 
 import Control.Concurrent.STM (atomically, readTChan)
 import qualified Data.Aeson as A
-import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
 import Data.IORef (IORef, newIORef)
-import qualified Data.Map.Strict as Map
 import Data.Tagged (Tagged (..))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -26,9 +24,9 @@ import Network.Wai.Handler.WebSockets (websocketsOr)
 import qualified Network.WebSockets as WS
 import Servant
 
-import Hostenv.Provider.Config (AppConfig (..), DeployConfig (..))
+import Hostenv.Provider.Config (AppConfig (..))
 import Hostenv.Provider.DB (loadDeployActions, loadDeployActionsByNode, loadLatestDeployIntentForNode)
-import Hostenv.Provider.DeployApi (NodeEvent, acceptsNodeEvents, backupSnapshotHandler, dispatchFingerprint, dispatchForNode, eventHandler, intentByJobHandler, intentByShaHandler, jobActionsHandler, jobStatusHandler, jobStatusesHandler, shouldDispatchJob, validateIntent)
+import Hostenv.Provider.DeployApi (NodeEvent, acceptsNodeEvents, backupSnapshotHandler, dispatchFingerprint, dispatchForNode, dispatchStableId, eventHandler, intentByJobHandler, intentByShaHandler, isValidDeployWsAuth, jobActionsHandler, jobStatusHandler, jobStatusesHandler, shouldDispatchJob, validateIntent)
 import Hostenv.Provider.Jobs (JobRuntime, duplicateBroadcastChannel, jobSummaryStatus, loadJobById, markJobFailedFromDeploy, markJobSucceededFromDeploy, publishJobUpdate, startJobRuntime)
 import Hostenv.Provider.Repo (RepoStatus, openUnixSocket)
 import Hostenv.Provider.UI.Router (uiApp)
@@ -144,18 +142,18 @@ deploySocketServer :: JobRuntime -> AppConfig -> Text -> WS.ServerApp
 deploySocketServer runtime cfg nodeName pending = do
     connection <- WS.acceptRequest pending
     firstMessage <- WS.receiveData connection
-    if not (isValidWsAuth cfg nodeName firstMessage)
+    if not (isValidDeployWsAuth cfg nodeName firstMessage)
         then WS.sendClose connection ("forbidden" :: Text)
         else do
-            initialDispatchId <- sendLatestDeployJob cfg nodeName connection Nothing
+            initialDispatchFingerprint <- sendLatestDeployJob cfg nodeName connection Nothing
             WS.sendTextData connection (A.encode (A.object ["type" A..= ("deploy_hint" :: Text), "node" A..= nodeName]))
             channel <- duplicateBroadcastChannel runtime
-            let loop mLastDispatchId = do
+            let loop mLastDispatchFingerprint = do
                     _ <- atomically (readTChan channel)
-                    nextDispatchId <- sendLatestDeployJob cfg nodeName connection mLastDispatchId
+                    nextDispatchFingerprint <- sendLatestDeployJob cfg nodeName connection mLastDispatchFingerprint
                     WS.sendTextData connection (A.encode (A.object ["type" A..= ("deploy_hint" :: Text), "node" A..= nodeName]))
-                    loop nextDispatchId
-            loop initialDispatchId
+                    loop nextDispatchFingerprint
+            loop initialDispatchFingerprint
 
 sendLatestDeployJob :: AppConfig -> Text -> WS.Connection -> Maybe Text -> IO (Maybe Text)
 sendLatestDeployJob cfg nodeName connection mLastDispatchId = do
@@ -177,8 +175,9 @@ sendLatestDeployJob cfg nodeName connection mLastDispatchId = do
                                 case dispatchForNode validated allJobActions nodeName of
                                     Nothing -> pure mLastDispatchId
                                     Just (filteredIntent, filteredActions) -> do
-                                        let dispatchId = dispatchFingerprint jobId filteredIntent filteredActions
-                                        if not (shouldDispatchJob validated nodeActions filteredActions mLastDispatchId dispatchId)
+                                        let dispatchFingerprintValue = dispatchFingerprint jobId filteredIntent filteredActions
+                                            dispatchId = dispatchStableId jobId nodeName filteredIntent filteredActions
+                                        if not (shouldDispatchJob validated nodeActions filteredActions mLastDispatchId dispatchFingerprintValue)
                                             then pure mLastDispatchId
                                             else do
                                                 WS.sendTextData
@@ -186,15 +185,16 @@ sendLatestDeployJob cfg nodeName connection mLastDispatchId = do
                                                     ( A.encode
                                                         ( A.object
                                                             [ "type" A..= ("deploy_job" :: Text)
+                                                            , "dispatchId" A..= dispatchId
                                                             , "jobId" A..= jobId
                                                             , "commitSha" A..= commitSha
                                                             , "node" A..= nodeName
                                                             , "intent" A..= filteredIntent
                                                             , "actions" A..= filteredActions
-                                                            ]
-                                                        )
+                                                             ]
+                                                         )
                                                     )
-                                                pure (Just dispatchId)
+                                                pure (Just dispatchFingerprintValue)
 
 requestedNode :: Wai.Request -> Maybe Text
 requestedNode req =
@@ -206,19 +206,6 @@ requestedNode req =
                     let txt = T.strip decoded
                      in if txt == "" then Nothing else Just txt
         _ -> Nothing
-
-isValidWsAuth :: AppConfig -> Text -> BL.ByteString -> Bool
-isValidWsAuth cfg nodeName rawMessage =
-    case A.decode rawMessage of
-        Just (A.Object obj) ->
-            case (KM.lookup "token" obj, KM.lookup "node" obj) of
-                (Just (A.String supplied), Just (A.String suppliedNode))
-                    | suppliedNode == nodeName ->
-                        case Map.lookup nodeName cfg.appDeploy.nodeAuthTokens of
-                            Just expected -> expected == T.strip supplied
-                            Nothing -> False
-                _ -> False
-        _ -> False
 
 server :: JobRuntime -> IORef RepoStatus -> AppConfig -> Server API
 server jobRuntime repoStatusRef cfg =

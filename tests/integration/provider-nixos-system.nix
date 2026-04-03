@@ -230,8 +230,8 @@ let
   trustedPublicKeysOk =
     let keys = systemEval.config.nix.settings.trusted-public-keys or [ ];
     in lib.elem trustedSigningKey keys && lib.elem cacheSigningKey keys;
-  deployEnabled = systemEval.config.services.provider-deploy.enable;
-  deployApiBaseConfigured = (systemEval.config.services.provider-deploy.providerApiBaseUrl or "") == "https://hosting.test";
+  deployEnabled = systemEval.config.services.hostenv-deploy-agent.enable;
+  deployApiBaseConfigured = (systemEval.config.services.hostenv-deploy-agent.providerApiBaseUrl or "") == "https://hosting.test";
   substituters = systemEval.config.nix.settings.substituters or [ ];
   providerCacheFirst = substituters != [ ] && builtins.head substituters == "https://hosting.test/cache";
   requireSignedBinaries = systemEval.config.nix.settings."require-sigs";

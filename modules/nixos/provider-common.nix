@@ -35,7 +35,7 @@ in
         serviceResolution = libHostenv.mkServiceResolutionOption { inherit lib; };
 
         deploy = {
-          enable = lib.mkEnableOption "provider-deploy node agent";
+          enable = lib.mkEnableOption "hostenv-deploy-agent node agent";
 
           providerApiBaseUrl = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
@@ -46,19 +46,19 @@ in
           nodeAuthTokenFile = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
-            description = "Bearer token file used by provider-deploy.";
+            description = "Bearer token file used by hostenv-deploy-agent.";
           };
 
           nodeName = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
-            description = "Logical node identity used by provider-deploy.";
+            description = "Logical node identity used by hostenv-deploy-agent.";
           };
 
           reconnectSeconds = lib.mkOption {
             type = lib.types.int;
             default = 5;
-            description = "Backoff delay between provider-deploy reconnects.";
+            description = "Backoff delay between hostenv-deploy-agent reconnects.";
           };
         };
 
@@ -211,7 +211,7 @@ in
         systemd.services.hostenv-provider-cache-netrc = lib.mkIf cacheCfg.enable {
           description = "Render provider cache netrc from password secret";
           wantedBy = [ "multi-user.target" ];
-          before = [ "provider-deploy.service" "nix-daemon.service" ];
+          before = [ "hostenv-deploy-agent.service" "nix-daemon.service" ];
           script = ''
               set -euo pipefail
               umask 077
@@ -239,7 +239,7 @@ in
           };
         };
 
-        services.provider-deploy = lib.mkIf deployCfg.enable {
+        services.hostenv-deploy-agent = lib.mkIf deployCfg.enable {
           enable = true;
           providerApiBaseUrl = deployCfg.providerApiBaseUrl;
           nodeAuthTokenFile = deployCfg.nodeAuthTokenFile;

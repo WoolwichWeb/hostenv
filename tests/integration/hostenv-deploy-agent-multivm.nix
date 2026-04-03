@@ -27,7 +27,7 @@ let
   };
   compiledProviderServicePackage = providerHaskellPackages.callCabal2nix "hostenv-provider-service" providerServiceSrc { };
 
-  activateProfile = pkgs.runCommand "provider-deploy-test-profile" { } ''
+  activateProfile = pkgs.runCommand "hostenv-deploy-agent-test-profile" { } ''
     mkdir -p "$out/bin"
     cat > "$out/bin/activate" <<'EOF'
     #!${pkgs.bash}/bin/bash
@@ -92,7 +92,7 @@ let
     storePath = toString activateProfile;
   };
 
-  seedSql = pkgs.writeText "provider-deploy-multivm-seed.sql" ''
+  seedSql = pkgs.writeText "hostenv-deploy-agent-multivm-seed.sql" ''
     INSERT INTO jobs (id, kind, status, payload, created_at, started_at, waiting_at)
     VALUES ('${jobId}', 'deploy', 'waiting', '{}'::jsonb, now(), now(), now());
 
@@ -103,7 +103,7 @@ let
     VALUES ('${jobId}', '${providerNodeName}', 0, 'activate', '${targetEnvName}', $$${deployActionJson}$$::jsonb, 'queued', 'Queued action activate for ${targetEnvName}', NULL, NULL, now(), now());
   '';
 
-  nodesPath = pkgs.runCommand "provider-deploy-multivm-nodes-stub" { } ''
+  nodesPath = pkgs.runCommand "hostenv-deploy-agent-multivm-nodes-stub" { } ''
     mkdir -p "$out/${providerNodeName}" "$out/${controlPlaneNodeName}"
     cat > "$out/${providerNodeName}/configuration.nix" <<'EOF'
     { ... }: {
@@ -119,7 +119,7 @@ let
     EOF
   '';
 
-  secretsFixture = pkgs.runCommand "provider-deploy-multivm-secrets" { nativeBuildInputs = [ pkgs.sops ]; } ''
+  secretsFixture = pkgs.runCommand "hostenv-deploy-agent-multivm-secrets" { nativeBuildInputs = [ pkgs.sops ]; } ''
     set -euo pipefail
     mkdir -p "$out"
     cat > "$out/plain.yaml" <<'EOF'
@@ -389,7 +389,7 @@ pkgs.testers.runNixOSTest ({ ... }: {
     controlPlane.succeed("runuser -u ${controlUserName} -- psql '${controlDbConn}' -f ${seedSql}")
 
     providerNode.wait_for_unit("multi-user.target")
-    providerNode.wait_for_unit("provider-deploy.service")
+    providerNode.wait_for_unit("hostenv-deploy-agent.service")
     providerNode.wait_until_succeeds("test -f /run/secrets/hostenv/provider_node_token", timeout=180)
     providerNode.wait_until_succeeds("test -f /run/secrets/hostenv/cache_netrc", timeout=180)
     providerNode.wait_until_succeeds("nix show-config | grep -qx 'netrc-file = /run/secrets/hostenv/cache_netrc'", timeout=180)
@@ -399,6 +399,6 @@ pkgs.testers.runNixOSTest ({ ... }: {
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc \"select status from jobs where id='${jobId}'\" | grep -qx succeeded", timeout=180)
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc \"select count(*) from deploy_node_events where job_id='${jobId}' and node='${providerNodeName}' and phase='activate' and status='success'\" | grep -Ev '^0$'", timeout=180)
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc \"select count(*) from deploy_node_events where job_id='${jobId}' and node='${providerNodeName}' and phase='intent' and status='success'\" | grep -Ev '^0$'", timeout=180)
-    providerNode.wait_until_succeeds("jq -e '.lastAppliedJobId == \"${jobId}\" and .lastCommitSha == \"${commitSha}\" and .users[\"${targetEnvName}\"].storePath == \"${activateProfile}\" and (.users[\"${targetEnvName}\"].updatedAt // \"\") != \"\" and (.updatedAt // \"\") != \"\"' /var/lib/provider-deploy/state.json >/dev/null", timeout=180)
+    providerNode.wait_until_succeeds("jq -e '.lastAppliedJobId == \"${jobId}\" and .lastCommitSha == \"${commitSha}\" and .users[\"${targetEnvName}\"].storePath == \"${activateProfile}\" and (.users[\"${targetEnvName}\"].updatedAt // \"\") != \"\" and (.updatedAt // \"\") != \"\"' /var/lib/hostenv-deploy-agent/state.json >/dev/null", timeout=180)
   '';
 })

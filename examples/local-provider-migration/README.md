@@ -24,7 +24,7 @@ This demo uses the modern provider-service architecture:
                                               │
                                               │ deploy intent
                                               ▼
-┌─────────────────┐ provider-deploy ┌──────────────────┐
+┌─────────────────┐ hostenv-deploy-agent ┌──────────────────┐
 │     node-a      │ <────────────── │  plan.json       │
 │  (NixOS VM)     │   actions       │  (environment    │
 └─────────────────┘                 │   placement)     │
@@ -38,7 +38,7 @@ The modern deployment flow works like this:
 1. **Plan Generation**: The provider evaluates project flakes and generates `generated/plan.json` with environment placements.
 2. **Webhook Trigger**: A POST to `/webhook/<projectHash>` starts the deployment pipeline.
 3. **Deploy Intent Creation**: The provider-service creates a deploy intent record with actions for each affected node.
-4. **Node Actions**: Each node executes provider-deploy actions and reports status.
+4. **Node Actions**: Each node executes hostenv-deploy-agent actions and reports status.
 5. **Status Reporting**: The activation script reports job status back to the provider-service API.
 
 ### Webhook Mechanism
@@ -61,7 +61,7 @@ The webhook handler:
 
 ### Provider-deploy Integration
 
-Nodes use provider-deploy for action-based deployment:
+Nodes use hostenv-deploy-agent for action-based deployment:
 
 - Polls the provider Git repository for changes
 - Runs the activation script on new commits

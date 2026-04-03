@@ -30,6 +30,9 @@ module Hostenv.Provider.DB
   , saveDeployActions
   , applyDeployActionEvent
   , DeployAction(..)
+  , deployActionId
+  , deployActionIndexFromId
+  , selectDeployActionIndex
   , loadDeployActions
   , loadDeployActionsByNode
   , loadLatestDeployIntentForNode
@@ -62,7 +65,6 @@ import qualified Data.Text.Encoding as TE
 import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 import Database.PostgreSQL.Simple (Binary (..), Connection, Only (..), Query, close, connectPostgreSQL, execute, execute_, query, query_)
 import Database.PostgreSQL.Simple.FromRow (FromRow (..), field)
-import Database.PostgreSQL.Simple.Types (PGArray(..))
 import Data.Maybe (listToMaybe, mapMaybe)
 import Network.Wai (Request)
 import qualified Network.Wai as Wai
@@ -199,7 +201,8 @@ instance A.ToJSON DeployStatus where
       ]
 
 data DeployAction = DeployAction
-  { node :: Text
+  { jobId :: Text
+  , node :: Text
   , actionIndex :: Int
   , op :: Text
   , user :: Text
@@ -222,11 +225,14 @@ instance FromRow DeployAction where
       <*> field
       <*> field
       <*> field
+      <*> field
 
 instance A.ToJSON DeployAction where
   toJSON action =
     A.object
-      [ "node" A..= action.node
+      [ "jobId" A..= action.jobId
+      , "actionId" A..= deployActionId action
+      , "node" A..= action.node
       , "actionIndex" A..= action.actionIndex
       , "op" A..= action.op
       , "user" A..= action.user
@@ -236,6 +242,45 @@ instance A.ToJSON DeployAction where
       , "finishedAt" A..= action.finishedAt
       , "updatedAt" A..= action.updatedAt
       ]
+
+deployActionId :: DeployAction -> Text
+deployActionId action =
+  T.intercalate "/"
+    [ action.jobId
+    , action.node
+    , T.pack (show action.actionIndex)
+    ]
+
+deployActionIndexFromId :: Text -> Text -> Text -> Maybe Int
+deployActionIndexFromId expectedJobId expectedNode rawActionId =
+  case T.splitOn "/" (T.strip rawActionId) of
+    [jobIdVal, nodeVal, actionIndexVal]
+      | jobIdVal == expectedJobId && nodeVal == expectedNode ->
+          case reads (T.unpack actionIndexVal) of
+            [(parsedIndex, "")] | parsedIndex >= 0 -> Just parsedIndex
+            _ -> Nothing
+    _ -> Nothing
+
+selectDeployActionIndex :: Text -> Text -> Text -> [Text] -> Maybe Text -> [DeployAction] -> Maybe Int
+selectDeployActionIndex expectedJobId expectedNode opName eligibleStatuses mActionId actions =
+  case mActionId >>= deployActionIndexFromId expectedJobId expectedNode of
+    Just targetedIndex
+      | any (matchesActionIndex targetedIndex) actions -> Just targetedIndex
+    _ -> fallbackIndex
+  where
+    matches :: DeployAction -> Bool
+    matches action =
+      action.jobId == expectedJobId
+        && action.node == expectedNode
+        && action.op == opName
+        && action.status `elem` eligibleStatuses
+
+    matchesActionIndex :: Int -> DeployAction -> Bool
+    matchesActionIndex targetedIndex action =
+      matches action && action.actionIndex == targetedIndex
+
+    fallbackIndex :: Maybe Int
+    fallbackIndex = listToMaybe [action.actionIndex | action <- actions, matches action]
 
 data StoredOAuthCredentialRow = StoredOAuthCredentialRow
   { host :: Text
@@ -545,14 +590,14 @@ loadDeployActions :: AppConfig -> Text -> IO [DeployAction]
 loadDeployActions cfg jobId =
   withDb cfg $ \conn ->
     query conn
-      "SELECT node, action_idx, op, user_name, status, message, started_at, finished_at, updated_at FROM deploy_actions WHERE job_id = ? ORDER BY node, action_idx"
+      "SELECT job_id, node, action_idx, op, user_name, status, message, started_at, finished_at, updated_at FROM deploy_actions WHERE job_id = ? ORDER BY node, action_idx"
       (Only jobId)
 
 loadDeployActionsByNode :: AppConfig -> Text -> Text -> IO [DeployAction]
 loadDeployActionsByNode cfg jobId nodeName =
   withDb cfg $ \conn ->
     query conn
-      "SELECT node, action_idx, op, user_name, status, message, started_at, finished_at, updated_at FROM deploy_actions WHERE job_id = ? AND node = ? ORDER BY action_idx"
+      "SELECT job_id, node, action_idx, op, user_name, status, message, started_at, finished_at, updated_at FROM deploy_actions WHERE job_id = ? AND node = ? ORDER BY action_idx"
       (jobId, nodeName)
 
 loadLatestDeployIntentForNode :: AppConfig -> Text -> IO (Maybe (Text, Text, A.Value))
@@ -565,8 +610,8 @@ loadLatestDeployIntentForNode cfg nodeName =
       listToMaybe rows >>= \(jobId, commitSha, payloadText) ->
         (\payload -> (jobId, commitSha, payload)) <$> decodeJsonText payloadText
 
-applyDeployActionEvent :: AppConfig -> Text -> Text -> Text -> Maybe Text -> Maybe Text -> IO Int64
-applyDeployActionEvent cfg jobId nodeName rawStatus rawPhase mMessage =
+applyDeployActionEvent :: AppConfig -> Text -> Text -> Text -> Maybe Text -> Maybe Text -> Maybe Text -> IO Int64
+applyDeployActionEvent cfg jobId nodeName rawStatus rawPhase mMessage mActionId =
   withDb cfg $ \conn -> do
     let status = T.toLower (T.strip rawStatus)
         phase = fmap (T.toLower . T.strip) rawPhase
@@ -597,11 +642,11 @@ applyDeployActionEvent cfg jobId nodeName rawStatus rawPhase mMessage =
 
     transitionOne :: Connection -> Text -> [Text] -> Text -> Bool -> Bool -> Maybe Text -> IO Int64
     transitionOne conn op eligibleStatuses newStatus setStarted setFinished message = do
-      candidates <- query conn
-        "SELECT action_idx FROM deploy_actions WHERE job_id = ? AND node = ? AND op = ? AND status = ANY (?) ORDER BY action_idx LIMIT 1"
-        (jobId, nodeName, op, PGArray eligibleStatuses) :: IO [Only Int]
-      case candidates of
-        (Only actionIndex:_) -> do
+      nodeActions <- query conn
+        "SELECT job_id, node, action_idx, op, user_name, status, message, started_at, finished_at, updated_at FROM deploy_actions WHERE job_id = ? AND node = ? ORDER BY action_idx"
+        (jobId, nodeName) :: IO [DeployAction]
+      case selectDeployActionIndex jobId nodeName op eligibleStatuses mActionId nodeActions of
+        Just actionIndex -> do
           execute conn
             "UPDATE deploy_actions SET status = ?, message = COALESCE(?, message), started_at = CASE WHEN ? THEN COALESCE(started_at, now()) ELSE started_at END, finished_at = CASE WHEN ? THEN now() ELSE finished_at END, updated_at = now() WHERE job_id = ? AND node = ? AND action_idx = ?"
             (newStatus, message, setStarted, setFinished, jobId, nodeName, actionIndex)

@@ -324,7 +324,7 @@ in
         };
 
         deploy = {
-          enable = lib.mkEnableOption "provider-deploy metadata and node callback APIs";
+          enable = lib.mkEnableOption "hostenv-deploy-agent metadata and node callback APIs";
 
           nodeAuthTokensFile = lib.mkOption {
             type = lib.types.nullOr lib.types.str;

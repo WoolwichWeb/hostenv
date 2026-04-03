@@ -40,7 +40,7 @@
           4. Generate deployment files:
              nix run .#hostenv-provider -- plan
 
-          5. Deploy to your nodes using provider-deploy or your preferred deployment method
+          5. Deploy to your nodes using hostenv-deploy-agent or your preferred deployment method
 
           For more information, see:
           https://gitlab.com/woolwichweb/hostenv/-/blob/main/README.md

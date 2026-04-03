@@ -2,7 +2,7 @@
 let
   inherit (lib) mkOption types;
   providerNixosModules = [
-    config.flake.modules.nixos."provider-deploy"
+    config.flake.modules.nixos."hostenv-deploy-agent"
     config.flake.modules.nixos.provider-common
     config.flake.modules.nixos.hostenv-top-level
     config.flake.modules.nixos.nginx-frontdoor
@@ -337,7 +337,7 @@ in
     deploy = mkOption {
       type = types.submodule {
         options = {
-          enable = lib.mkEnableOption "provider-deploy node agent";
+          enable = lib.mkEnableOption "hostenv-deploy-agent node agent";
           providerApiBaseUrl = mkOption {
             type = types.nullOr types.str;
             default = null;
@@ -346,12 +346,12 @@ in
           nodeAuthTokenFile = mkOption {
             type = types.nullOr types.str;
             default = null;
-            description = "Default path for node bearer token used in provider-deploy requests.";
+            description = "Default path for node bearer token used in hostenv-deploy-agent requests.";
           };
           nodeAuthTokenFiles = mkOption {
             type = types.attrsOf types.str;
             default = { };
-            description = "Optional map of node name -> provider-deploy bearer token file path.";
+            description = "Optional map of node name -> hostenv-deploy-agent bearer token file path.";
           };
           reconnectSeconds = mkOption {
             type = types.int;

@@ -645,7 +645,7 @@ let
       assertDeployApiBase =
         if deploy.enable && isNullOrEmpty effectiveDeployProviderApiBaseUrl then
           builtins.throw ''
-            provider plan: provider-deploy is enabled but provider.deploy.providerApiBaseUrl is empty.
+            provider plan: hostenv-deploy-agent is enabled but provider.deploy.providerApiBaseUrl is empty.
           ''
         else
           true;
@@ -655,7 +655,7 @@ let
           && isNullOrEmpty effectiveDeployNodeAuthTokenFile
           && (deploy.nodeAuthTokenFiles == { } || builtins.attrNames deploy.nodeAuthTokenFiles == [ ]) then
           builtins.throw ''
-            provider plan: provider-deploy is enabled but provider.deploy.nodeAuthTokenFile is empty.
+            provider plan: hostenv-deploy-agent is enabled but provider.deploy.nodeAuthTokenFile is empty.
           ''
         else
           true;
