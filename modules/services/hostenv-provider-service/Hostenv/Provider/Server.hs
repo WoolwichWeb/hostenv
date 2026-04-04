@@ -21,7 +21,7 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.Foldable (toList)
 import Data.IORef (IORef, newIORef)
-import Data.Maybe (catMaybes, fromMaybe)
+import Data.Maybe (catMaybes)
 import Data.Tagged (Tagged (..))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -38,7 +38,7 @@ import Servant
 
 import Hostenv.Provider.Config (AppConfig (..))
 import Hostenv.Provider.DB (deployActionId, loadDeployActions, loadDeployActionsByNode, loadLatestDeployIntentForNode)
-import Hostenv.Provider.DeployApi (NodeEvent(..), acceptsNodeEvents, backupSnapshotHandler, buildDeployJobEnvelope, currentDispatchIdFor, dispatchFingerprint, dispatchForNode, dispatchStableId, eventHandler, intentByJobHandler, intentByShaHandler, isValidDeployWsAuth, jobActionsHandler, jobStatusHandler, jobStatusesHandler, processNodeEvent, shouldDispatchJob, validateIntent)
+import Hostenv.Provider.DeployApi (NodeEvent(..), acceptsNodeEvents, backupSnapshotHandler, buildDeployJobEnvelope, dispatchFingerprint, dispatchForNode, dispatchStableId, eventHandler, intentByJobHandler, intentByShaHandler, isValidDeployWsAuth, jobActionsHandler, jobStatusHandler, jobStatusesHandler, processNodeEvent, shouldDispatchJob, validateIntent)
 import Hostenv.Provider.Jobs (JobRuntime, duplicateBroadcastChannel, jobSummaryStatus, loadJobById, markJobFailedFromDeploy, markJobSucceededFromDeploy, publishJobUpdate, startJobRuntime)
 import Hostenv.Provider.Logging (ProviderLogFields(..), ProviderSeverity (..), logProviderEvent, providerLogFields)
 import Hostenv.Provider.Repo (RepoStatus, openUnixSocket)
@@ -507,10 +507,7 @@ sendLatestDeployJob cfg requestId nodeName sendValue mLastDispatchId = do
                                         pure mLastDispatchId
                                     Just (filteredIntent, filteredActions) -> do
                                         let dispatchFingerprintValue = dispatchFingerprint jobId filteredIntent filteredActions
-                                            dispatchId =
-                                                fromMaybe
-                                                    (dispatchStableId jobId nodeName filteredIntent filteredActions)
-                                                    (currentDispatchIdFor jobId nodeName validated allJobActions)
+                                            dispatchId = dispatchStableId jobId nodeName filteredIntent filteredActions
                                         if not (shouldDispatchJob validated nodeActions filteredActions mLastDispatchId dispatchFingerprintValue)
                                             then do
                                                 logDispatchSkip requestId (Just jobId) nodeName (Just dispatchId) Nothing (dispatchSkipReason mLastDispatchId dispatchFingerprintValue)

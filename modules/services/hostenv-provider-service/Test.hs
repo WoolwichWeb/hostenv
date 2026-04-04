@@ -107,7 +107,7 @@ main = do
   testBackupSnapshotLookupChecksumMismatch
   testBackupSnapshotResponseShape
   testWebsocketDispatchFingerprinting
-  testDispatchIdentityUsesCanonicalNodeActions
+  testDispatchIdentityUsesDispatchedSubset
   testPlanParsing
   testNodeOrderWithMigrations
   testNodeOrderWithDnsSkipsNonMigratingEnvDiscovery
@@ -585,8 +585,8 @@ testDeployDeliveryIdentity = do
         "deploy actions should include a stable actionId field"
     _ -> assert False "deploy action should encode to a JSON object"
 
-testDispatchIdentityUsesCanonicalNodeActions :: IO ()
-testDispatchIdentityUsesCanonicalNodeActions = do
+testDispatchIdentityUsesDispatchedSubset :: IO ()
+testDispatchIdentityUsesDispatchedSubset = do
   let t0 = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime 0)
       action0 =
         DeployAction
@@ -621,15 +621,15 @@ testDispatchIdentityUsesCanonicalNodeActions = do
               , A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("reload" :: T.Text)]
               ]
           ]
-      canonicalDispatchId = currentDispatchIdFor "job-1" "node-b" intent allActions
+      currentDispatchId = currentDispatchIdFor "job-1" "node-b" intent allActions
   case dispatchForNode intent allActions "node-b" of
     Nothing -> assert False "dispatchForNode should produce a dispatchable subset"
     Just (filteredIntent, filteredActions) -> do
       let filteredDispatchId = dispatchStableId "job-1" "node-b" filteredIntent filteredActions
-          expectedCanonicalDispatchId = dispatchStableId "job-1" "node-b" intent allActions
+          fullNodeDispatchId = dispatchStableId "job-1" "node-b" intent allActions
       assert (filteredActions == [action0]) "only the first queued action should be dispatchable initially"
-      assert (canonicalDispatchId == Just expectedCanonicalDispatchId) "currentDispatchIdFor should use the full canonical node action set"
-      assert (canonicalDispatchId /= Just filteredDispatchId) "canonical dispatch identity should differ from the filtered dispatch payload when later actions are still queued"
+      assert (currentDispatchId == Just filteredDispatchId) "currentDispatchIdFor should match the dispatched subset identity"
+      assert (currentDispatchId /= Just fullNodeDispatchId) "current dispatch identity should not hash queued but not yet dispatched actions"
 
 testNodeEventProtocolRoundTrip :: IO ()
 testNodeEventProtocolRoundTrip = do

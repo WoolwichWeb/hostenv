@@ -675,10 +675,13 @@ loadCurrentDispatchId cfg jobId nodeName = do
 
 currentDispatchIdFor :: Text -> Text -> A.Value -> [DeployAction] -> Maybe Text
 currentDispatchIdFor jobId nodeName validatedIntent allActions =
-  let nodeActions = filter ((== nodeName) . (.node)) allActions
-   in if null nodeActions && not (intentHasActions validatedIntent)
+  case dispatchForNode validatedIntent allActions nodeName of
+    Just (filteredIntent, filteredActions) ->
+      Just (dispatchStableId jobId nodeName filteredIntent filteredActions)
+    Nothing ->
+      if intentHasActions validatedIntent
         then Nothing
-        else Just (dispatchStableId jobId nodeName validatedIntent nodeActions)
+        else Just (dispatchStableId jobId nodeName validatedIntent [])
 
 executableActionIndexes :: [DeployAction] -> [DeployAction] -> Set.Set Int
 executableActionIndexes nodeActions allActions =
