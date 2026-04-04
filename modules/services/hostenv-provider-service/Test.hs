@@ -108,6 +108,7 @@ main = do
   testBackupSnapshotResponseShape
   testWebsocketDispatchFingerprinting
   testDispatchIdentityUsesDispatchedSubset
+  testActionlessIntentKeepsDispatchIdentity
   testPlanParsing
   testNodeOrderWithMigrations
   testNodeOrderWithDnsSkipsNonMigratingEnvDiscovery
@@ -630,6 +631,20 @@ testDispatchIdentityUsesDispatchedSubset = do
       assert (filteredActions == [action0]) "only the first queued action should be dispatchable initially"
       assert (currentDispatchId == Just filteredDispatchId) "currentDispatchIdFor should match the dispatched subset identity"
       assert (currentDispatchId /= Just fullNodeDispatchId) "current dispatch identity should not hash queued but not yet dispatched actions"
+
+testActionlessIntentKeepsDispatchIdentity :: IO ()
+testActionlessIntentKeepsDispatchIdentity = do
+  let intent =
+        A.object
+          [ "schemaVersion" A..= (1 :: Int)
+          , "systemPath" A..= ("/nix/store/system-only" :: T.Text)
+          , "actions" A..= ([] :: [A.Value])
+          ]
+      expectedDispatchId = dispatchStableId "job-1" "node-b" intent []
+      currentDispatchId = currentDispatchIdFor "job-1" "node-b" intent []
+      intakeDecision = classifyProjectedNodeEvent False currentDispatchId Nothing expectedDispatchId "success"
+  assert (currentDispatchId == Just expectedDispatchId) "actionless deploy intents should still keep a current dispatch identity"
+  assert (intakeDecision == AcceptProjectedNodeEvent) "actionless deploy callbacks should be accepted when they report the current dispatch id"
 
 testNodeEventProtocolRoundTrip :: IO ()
 testNodeEventProtocolRoundTrip = do
