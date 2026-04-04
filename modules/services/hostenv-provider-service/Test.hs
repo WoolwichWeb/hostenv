@@ -45,6 +45,7 @@ import Hostenv.Provider.Logging (ProviderLogFields(..), ProviderSeverity(..), pr
 import Hostenv.Provider.PrevNodeDiscovery
 import Hostenv.Provider.Repo (RepoStatus(..), ensureGitConfig, ensureProviderRepo, isAuthFailure)
 import Hostenv.Provider.Service
+import Hostenv.Provider.Server (wsNodeEventMatchesAuthenticatedNode)
 import Hostenv.Provider.Webhook (chooseFinalResult, persistIntentsActionsAndPushWith, shouldWaitForCallbacks)
 
 assert :: Bool -> String -> IO ()
@@ -95,6 +96,7 @@ main = do
   testStructuredNodeEventLogShape
   testStructuredWebhookBoundaryLogShape
   testDeployWsAuthFinalShape
+  testWsNodeEventAuthenticatedNodeBoundary
   testDispatchForNodeMigrationSequencing
   testDeployDeliveryIdentity
   testNodeEventProtocolRoundTrip
@@ -105,6 +107,7 @@ main = do
   testBackupSnapshotLookupChecksumMismatch
   testBackupSnapshotResponseShape
   testWebsocketDispatchFingerprinting
+  testDispatchIdentityUsesCanonicalNodeActions
   testPlanParsing
   testNodeOrderWithMigrations
   testNodeOrderWithDnsSkipsNonMigratingEnvDiscovery
@@ -371,6 +374,47 @@ testDeployWsAuthFinalShape = do
   assert (not (isValidDeployWsAuth cfg "node-a" missingTokenPayload)) "websocket auth should require the final auth token field"
   assert (not (isValidDeployWsAuth cfg "node-b" finalPayload)) "websocket auth should still reject mismatched node auth"
 
+testWsNodeEventAuthenticatedNodeBoundary :: IO ()
+testWsNodeEventAuthenticatedNodeBoundary = do
+  let matchingEventValue =
+        A.object
+          [ "version" A..= (1 :: Int)
+          , "kind" A..= ("progress" :: T.Text)
+          , "messageId" A..= ("msg-progress-1" :: T.Text)
+          , "timestamp" A..= ("2026-04-03T13:00:00Z" :: T.Text)
+          , "jobId" A..= ("job-1" :: T.Text)
+          , "dispatchId" A..= ("dispatch-1" :: T.Text)
+          , "actionId" A..= Just ("job-1:node-a:0" :: T.Text)
+          , "node" A..= ("node-a" :: T.Text)
+          , "payload" A..=
+              A.object
+                [ "status" A..= ("running" :: T.Text)
+                , "phase" A..= ("restore" :: T.Text)
+                ]
+          ]
+      mismatchedEventValue =
+        A.object
+          [ "version" A..= (1 :: Int)
+          , "kind" A..= ("progress" :: T.Text)
+          , "messageId" A..= ("msg-progress-2" :: T.Text)
+          , "timestamp" A..= ("2026-04-03T13:00:01Z" :: T.Text)
+          , "jobId" A..= ("job-1" :: T.Text)
+          , "dispatchId" A..= ("dispatch-1" :: T.Text)
+          , "actionId" A..= Just ("job-1:node-a:0" :: T.Text)
+          , "node" A..= ("node-b" :: T.Text)
+          , "payload" A..=
+              A.object
+                [ "status" A..= ("running" :: T.Text)
+                , "phase" A..= ("restore" :: T.Text)
+                ]
+          ]
+  case (A.eitherDecode (A.encode matchingEventValue), A.eitherDecode (A.encode mismatchedEventValue)) of
+    (Right matchingEvent, Right mismatchedEvent) -> do
+      assert (wsNodeEventMatchesAuthenticatedNode "node-a" (matchingEvent :: NodeEvent)) "websocket node events should accept the authenticated node"
+      assert (not (wsNodeEventMatchesAuthenticatedNode "node-a" (mismatchedEvent :: NodeEvent))) "websocket node events should reject cross-node submissions"
+    (Left err, _) -> assert False ("failed to decode matching websocket node event fixture: " <> err)
+    (_, Left err) -> assert False ("failed to decode mismatched websocket node event fixture: " <> err)
+
 testDispatchForNodeMigrationSequencing :: IO ()
 testDispatchForNodeMigrationSequencing = do
   let sourceIntent =
@@ -540,6 +584,52 @@ testDeployDeliveryIdentity = do
         (KM.lookup (K.fromString "actionId") obj == Just (A.String (deployActionId queuedAction)))
         "deploy actions should include a stable actionId field"
     _ -> assert False "deploy action should encode to a JSON object"
+
+testDispatchIdentityUsesCanonicalNodeActions :: IO ()
+testDispatchIdentityUsesCanonicalNodeActions = do
+  let t0 = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime 0)
+      action0 =
+        DeployAction
+          "job-1"
+          "node-b"
+          0
+          "activate"
+          "alice"
+          "queued"
+          Nothing
+          Nothing
+          Nothing
+          t0
+      action1 =
+        DeployAction
+          "job-1"
+          "node-b"
+          1
+          "reload"
+          "alice"
+          "queued"
+          Nothing
+          Nothing
+          Nothing
+          t0
+      allActions = [action0, action1]
+      intent =
+        A.object
+          [ "schemaVersion" A..= (1 :: Int)
+          , "actions" A..=
+              [ A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("activate" :: T.Text)]
+              , A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("reload" :: T.Text)]
+              ]
+          ]
+      canonicalDispatchId = currentDispatchIdFor "job-1" "node-b" intent allActions
+  case dispatchForNode intent allActions "node-b" of
+    Nothing -> assert False "dispatchForNode should produce a dispatchable subset"
+    Just (filteredIntent, filteredActions) -> do
+      let filteredDispatchId = dispatchStableId "job-1" "node-b" filteredIntent filteredActions
+          expectedCanonicalDispatchId = dispatchStableId "job-1" "node-b" intent allActions
+      assert (filteredActions == [action0]) "only the first queued action should be dispatchable initially"
+      assert (canonicalDispatchId == Just expectedCanonicalDispatchId) "currentDispatchIdFor should use the full canonical node action set"
+      assert (canonicalDispatchId /= Just filteredDispatchId) "canonical dispatch identity should differ from the filtered dispatch payload when later actions are still queued"
 
 testNodeEventProtocolRoundTrip :: IO ()
 testNodeEventProtocolRoundTrip = do

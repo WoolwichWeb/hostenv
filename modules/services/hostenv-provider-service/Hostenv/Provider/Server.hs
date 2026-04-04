@@ -6,6 +6,7 @@
 module Hostenv.Provider.Server (
     runServer,
     app,
+    wsNodeEventMatchesAuthenticatedNode,
 ) where
 
 import Control.Concurrent.Async (waitAnyCatchCancel, withAsync)
@@ -20,7 +21,7 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.Foldable (toList)
 import Data.IORef (IORef, newIORef)
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.Tagged (Tagged (..))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -37,7 +38,7 @@ import Servant
 
 import Hostenv.Provider.Config (AppConfig (..))
 import Hostenv.Provider.DB (deployActionId, loadDeployActions, loadDeployActionsByNode, loadLatestDeployIntentForNode)
-import Hostenv.Provider.DeployApi (NodeEvent(..), acceptsNodeEvents, backupSnapshotHandler, buildDeployJobEnvelope, dispatchFingerprint, dispatchForNode, dispatchStableId, eventHandler, intentByJobHandler, intentByShaHandler, isValidDeployWsAuth, jobActionsHandler, jobStatusHandler, jobStatusesHandler, processNodeEvent, shouldDispatchJob, validateIntent)
+import Hostenv.Provider.DeployApi (NodeEvent(..), acceptsNodeEvents, backupSnapshotHandler, buildDeployJobEnvelope, currentDispatchIdFor, dispatchFingerprint, dispatchForNode, dispatchStableId, eventHandler, intentByJobHandler, intentByShaHandler, isValidDeployWsAuth, jobActionsHandler, jobStatusHandler, jobStatusesHandler, processNodeEvent, shouldDispatchJob, validateIntent)
 import Hostenv.Provider.Jobs (JobRuntime, duplicateBroadcastChannel, jobSummaryStatus, loadJobById, markJobFailedFromDeploy, markJobSucceededFromDeploy, publishJobUpdate, startJobRuntime)
 import Hostenv.Provider.Logging (ProviderLogFields(..), ProviderSeverity (..), logProviderEvent, providerLogFields)
 import Hostenv.Provider.Repo (RepoStatus, openUnixSocket)
@@ -331,8 +332,30 @@ runDeployWsDispatcher runtime cfg requestId nodeName outboundQueue inboundQueue 
                             loop nextDispatchId True
                         DeployWsNodeEvent event -> do
                             let NodeEvent { jobId = eventJobId } = event
-                            _ <- processNodeEvent cfg (publishJobUpdate runtime) (markJobFailedFromDeploy runtime) (markJobSucceededFromDeploy runtime) eventJobId event
-                            loop mLastDispatchId isResumed
+                                eventNode = T.strip event.node
+                            if not (wsNodeEventMatchesAuthenticatedNode nodeName event)
+                                then do
+                                    logProviderEvent
+                                        ( (providerLogFields "deploy_node_event_intake" ProviderSeverityWarn)
+                                            { entryRequestId = Just requestId
+                                            , entryJobId = Just eventJobId
+                                            , entryNode = if eventNode == "" then Nothing else Just eventNode
+                                            , entryDispatchId = Just event.dispatchId
+                                            , entryActionId = event.actionId
+                                            , entryPhase = event.phase
+                                            , entryStatus = nonBlankText event.status
+                                            , entryProtocolVersion = Just 1
+                                            , entryDecision = Just "reject"
+                                            , entryReason = Just "websocket_node_mismatch"
+                                            }
+                                        )
+                                        [ "connection_node" A..= nodeName
+                                        , "event_message_id" A..= event.messageId
+                                        ]
+                                    loop mLastDispatchId isResumed
+                                else do
+                                    _ <- processNodeEvent cfg (publishJobUpdate runtime) (markJobFailedFromDeploy runtime) (markJobSucceededFromDeploy runtime) eventJobId event
+                                    loop mLastDispatchId isResumed
                         DeployWsClientMessage kindText mMessageId -> do
                             logProviderEvent
                                 ( (providerLogFields "deploy_ws_client_message" ProviderSeverityInfo)
@@ -484,7 +507,10 @@ sendLatestDeployJob cfg requestId nodeName sendValue mLastDispatchId = do
                                         pure mLastDispatchId
                                     Just (filteredIntent, filteredActions) -> do
                                         let dispatchFingerprintValue = dispatchFingerprint jobId filteredIntent filteredActions
-                                            dispatchId = dispatchStableId jobId nodeName filteredIntent filteredActions
+                                            dispatchId =
+                                                fromMaybe
+                                                    (dispatchStableId jobId nodeName filteredIntent filteredActions)
+                                                    (currentDispatchIdFor jobId nodeName validated allJobActions)
                                         if not (shouldDispatchJob validated nodeActions filteredActions mLastDispatchId dispatchFingerprintValue)
                                             then do
                                                 logDispatchSkip requestId (Just jobId) nodeName (Just dispatchId) Nothing (dispatchSkipReason mLastDispatchId dispatchFingerprintValue)
@@ -640,6 +666,15 @@ dispatchSkipReason mLastDispatchId dispatchFingerprintValue =
 requestedNode :: Wai.Request -> Maybe Text
 requestedNode req =
     queryTextParam "node" req
+
+wsNodeEventMatchesAuthenticatedNode :: Text -> NodeEvent -> Bool
+wsNodeEventMatchesAuthenticatedNode authenticatedNode event =
+    T.strip authenticatedNode == T.strip event.node
+
+nonBlankText :: Text -> Maybe Text
+nonBlankText raw =
+    let trimmed = T.strip raw
+     in if trimmed == "" then Nothing else Just trimmed
 
 server :: JobRuntime -> IORef RepoStatus -> AppConfig -> Server API
 server jobRuntime repoStatusRef cfg =
