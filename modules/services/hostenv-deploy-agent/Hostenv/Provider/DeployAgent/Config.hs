@@ -1,3 +1,5 @@
+-- | Default configuration and config file loading functions.
+
 module Hostenv.Provider.DeployAgent.Config
   ( AgentConfig(..)
   , defaultEventStderrMaxLines

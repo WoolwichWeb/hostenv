@@ -26,8 +26,8 @@ import System.IO (hClose, openTempFile)
 import qualified Data.Map.Strict as Map
 import Hostenv.Provider.Config (AppConfig(..), DeployConfig(..), loadConfig)
 import Hostenv.Provider.Crypto
-import Hostenv.Provider.DB (DeployAction(DeployAction), OAuthCredential(..), deployActionId, selectDeployActionIndex)
-import Hostenv.Provider.DeployApi (NodeEvent, ProjectedNodeEvent(..), acceptsNodeEvents, dispatchFingerprint, dispatchForNode, dispatchStableId, extractBearer, isValidDeployWsAuth, normalizeStatus, projectNodeEvent, shouldDispatchJob, validateIntent)
+import Hostenv.Provider.DB (DeployAction(DeployAction), DeployBackupSnapshotLookup(..), DeployBackupSnapshotMetadata(..), OAuthCredential(..), buildDeployBackupSnapshotMetadata, classifyDeployBackupSnapshotRows, deployActionId, selectDeployActionIndex)
+import Hostenv.Provider.DeployApi (NodeEvent, NodeEventIntakeDecision(..), ProjectedNodeEvent(..), acceptsNodeEvents, backupSnapshotResponseValue, buildDeployJobEnvelope, classifyProjectedNodeEvent, currentDispatchIdFor, dispatchFingerprint, dispatchForNode, dispatchStableId, extractBearer, isValidDeployWsAuth, normalizeStatus, projectNodeEvent, shouldDispatchJob, validateIntent)
 import Hostenv.Provider.Gitlab
   ( GitlabCredentialContext(..)
   , GitlabError(..)
@@ -41,6 +41,7 @@ import Hostenv.Provider.Gitlab
   , renderGitlabError
   , renderUserIdMismatchMessage
   )
+import Hostenv.Provider.Logging (ProviderLogFields(..), ProviderSeverity(..), providerLogFields, providerLogValue)
 import Hostenv.Provider.PrevNodeDiscovery
 import Hostenv.Provider.Repo (RepoStatus(..), ensureGitConfig, ensureProviderRepo, isAuthFailure)
 import Hostenv.Provider.Service
@@ -51,6 +52,35 @@ assert cond msg = unless cond $ do
   putStrLn ("FAIL: " <> msg)
   exitFailure
 
+testTimestamp :: UTCTime
+testTimestamp = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime 0)
+
+assertStructuredLogShape :: A.Value -> [(String, Maybe A.Value)] -> IO ()
+assertStructuredLogShape value expectations =
+  case value of
+    A.Object obj -> do
+      let requiredFields =
+            [ "event"
+            , "severity"
+            , "request_id"
+            , "job_id"
+            , "node"
+            , "dispatch_id"
+            , "action_id"
+            , "phase"
+            , "status"
+            , "protocol_version"
+            , "decision"
+            , "reason"
+            ]
+      assert (all (\fieldName -> KM.member (K.fromString fieldName) obj) requiredFields) "structured deploy logs should include all required stable fields"
+      assert (not (KM.member (K.fromString "headers") obj)) "structured deploy logs should not contain raw header dumps"
+      assert (not (KM.member (K.fromString "token") obj)) "structured deploy logs should not contain token fields"
+      mapM_
+        (\(fieldName, expectedValue) -> assert (KM.lookup (K.fromString fieldName) obj == expectedValue) ("unexpected structured log field: " <> fieldName))
+        expectations
+    _ -> assert False "structured deploy log should encode to an object"
+
 main :: IO ()
 main = do
   testGitHubSig
@@ -59,10 +89,21 @@ main = do
   testDeployApiStatusNormalization
   testDeployApiEventAcceptance
   testDeployApiIntentValidation
-  testDeployWsAuthCompatibility
+  testDeployApiIntentValidationEdgeCases
+  testStructuredWsAuthLogShape
+  testStructuredDispatchLogShape
+  testStructuredNodeEventLogShape
+  testStructuredWebhookBoundaryLogShape
+  testDeployWsAuthFinalShape
   testDispatchForNodeMigrationSequencing
   testDeployDeliveryIdentity
+  testNodeEventProtocolRoundTrip
   testEventProjectionBehavior
+  testProjectedNodeEventIntake
+  testBackupSnapshotLookupMissing
+  testBackupSnapshotLookupMalformed
+  testBackupSnapshotLookupChecksumMismatch
+  testBackupSnapshotResponseShape
   testWebsocketDispatchFingerprinting
   testPlanParsing
   testNodeOrderWithMigrations
@@ -158,8 +199,137 @@ testDeployApiIntentValidation = do
   assert (validateIntent invalidUser == Nothing) "validateIntent should reject blank user names"
   assert (validateIntent invalidOp == Nothing) "validateIntent should reject unknown action ops"
 
-testDeployWsAuthCompatibility :: IO ()
-testDeployWsAuthCompatibility = do
+testDeployApiIntentValidationEdgeCases :: IO ()
+testDeployApiIntentValidationEdgeCases = do
+  let validIntent =
+        A.object
+          [ "schemaVersion" A..= (1 :: Int)
+          , "actions" A..=
+              [ A.object
+                  [ "user" A..= ("alice" :: T.Text)
+                  , "op" A..= ("restore" :: T.Text)
+                  , "fromNode" A..= ("node-a" :: T.Text)
+                  , "toNode" A..= ("node-b" :: T.Text)
+                  , "migrations" A..= ["db-migrate" :: T.Text, "search.v2" :: T.Text]
+                  ]
+              ]
+          ]
+      invalidFromNode =
+        A.object
+          [ "schemaVersion" A..= (1 :: Int)
+          , "actions" A..= [A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("restore" :: T.Text), "fromNode" A..= ("Node-A" :: T.Text)]]
+          ]
+      invalidMigration =
+        A.object
+          [ "schemaVersion" A..= (1 :: Int)
+          , "actions" A..= [A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("restore" :: T.Text), "migrations" A..= [A.Number 1]]]
+          ]
+  assert (validateIntent validIntent == Just validIntent) "validateIntent should accept safe node and migration identifiers"
+  assert (validateIntent invalidFromNode == Nothing) "validateIntent should reject unsafe fromNode values"
+  assert (validateIntent invalidMigration == Nothing) "validateIntent should reject non-text migration entries"
+
+testStructuredWsAuthLogShape :: IO ()
+testStructuredWsAuthLogShape =
+  assertStructuredLogShape
+    ( providerLogValue
+        testTimestamp
+        ( (providerLogFields "deploy_ws_auth" ProviderSeverityInfo)
+            { entryRequestId = Just "req-1"
+            , entryNode = Just "node-a"
+            , entryProtocolVersion = Just 1
+            , entryDecision = Just "accept"
+            , entryReason = Just "authenticated"
+            }
+        )
+        []
+    )
+    [ ("event", Just (A.String "deploy_ws_auth"))
+    , ("severity", Just (A.String "info"))
+    , ("request_id", Just (A.String "req-1"))
+    , ("node", Just (A.String "node-a"))
+    , ("protocol_version", Just (A.Number 1))
+    , ("decision", Just (A.String "accept"))
+    , ("reason", Just (A.String "authenticated"))
+    , ("job_id", Just A.Null)
+    ]
+
+testStructuredDispatchLogShape :: IO ()
+testStructuredDispatchLogShape =
+  assertStructuredLogShape
+    ( providerLogValue
+        testTimestamp
+        ( (providerLogFields "deploy_dispatch" ProviderSeverityInfo)
+            { entryRequestId = Just "req-2"
+            , entryJobId = Just "job-1"
+            , entryNode = Just "node-b"
+            , entryDispatchId = Just "dispatch-1"
+            , entryProtocolVersion = Just 1
+            , entryDecision = Just "skip"
+            , entryReason = Just "unchanged_dispatch"
+            }
+        )
+        ["action_count" A..= (0 :: Int)]
+    )
+    [ ("event", Just (A.String "deploy_dispatch"))
+    , ("job_id", Just (A.String "job-1"))
+    , ("dispatch_id", Just (A.String "dispatch-1"))
+    , ("decision", Just (A.String "skip"))
+    , ("reason", Just (A.String "unchanged_dispatch"))
+    ]
+
+testStructuredNodeEventLogShape :: IO ()
+testStructuredNodeEventLogShape =
+  assertStructuredLogShape
+    ( providerLogValue
+        testTimestamp
+        ( (providerLogFields "deploy_node_event_intake" ProviderSeverityWarn)
+            { entryJobId = Just "job-1"
+            , entryNode = Just "node-b"
+            , entryDispatchId = Just "dispatch-1"
+            , entryActionId = Just "job-1:node-b:0"
+            , entryPhase = Just "restore"
+            , entryStatus = Just "running"
+            , entryProtocolVersion = Just 1
+            , entryDecision = Just "ignore"
+            , entryReason = Just "stale_dispatch"
+            }
+        )
+        ["action_row_update_count" A..= (0 :: Int)]
+    )
+    [ ("event", Just (A.String "deploy_node_event_intake"))
+    , ("action_id", Just (A.String "job-1:node-b:0"))
+    , ("phase", Just (A.String "restore"))
+    , ("status", Just (A.String "running"))
+    , ("decision", Just (A.String "ignore"))
+    , ("reason", Just (A.String "stale_dispatch"))
+    ]
+
+testStructuredWebhookBoundaryLogShape :: IO ()
+testStructuredWebhookBoundaryLogShape =
+  assertStructuredLogShape
+    ( providerLogValue
+        testTimestamp
+        ( (providerLogFields "webhook_persist_intents" ProviderSeverityInfo)
+            { entryJobId = Just "job-1"
+            , entryPhase = Just "persist_intents"
+            , entryDecision = Just "accept"
+            , entryReason = Just "persisted"
+            }
+        )
+        [ "commit_sha" A..= ("abc123" :: T.Text)
+        , "node_count" A..= (2 :: Int)
+        ]
+    )
+    [ ("event", Just (A.String "webhook_persist_intents"))
+    , ("job_id", Just (A.String "job-1"))
+    , ("phase", Just (A.String "persist_intents"))
+    , ("decision", Just (A.String "accept"))
+    , ("reason", Just (A.String "persisted"))
+    , ("request_id", Just A.Null)
+    ]
+
+testDeployWsAuthFinalShape :: IO ()
+testDeployWsAuthFinalShape = do
   let cfg =
         (mkRepoConfig "/tmp/hostenv-provider-auth")
           { appDeploy =
@@ -171,22 +341,35 @@ testDeployWsAuthCompatibility = do
       legacyPayload =
         A.encode
           (A.object ["node" A..= ("node-a" :: T.Text), "token" A..= ("secret-token" :: T.Text)])
-      richerPayload =
+      finalPayload =
         A.encode
           ( A.object
-              [ "type" A..= ("auth" :: T.Text)
-              , "protocol" A..= ("haskell-agent/v1" :: T.Text)
-              , "auth" A..=
+              [ "version" A..= (1 :: Int)
+              , "kind" A..= ("auth" :: T.Text)
+              , "messageId" A..= ("msg-auth-1" :: T.Text)
+              , "timestamp" A..= ("2026-04-03T13:00:00Z" :: T.Text)
+              , "node" A..= ("node-a" :: T.Text)
+              , "payload" A..=
                   A.object
-                    [ "node" A..= ("node-a" :: T.Text)
-                    , "token" A..= ("secret-token" :: T.Text)
+                    [ "token" A..= ("secret-token" :: T.Text)
                     ]
-              , "dispatch" A..= A.object ["lastSeen" A..= ("dispatch-1" :: T.Text)]
               ]
           )
-  assert (isValidDeployWsAuth cfg "node-a" legacyPayload) "websocket auth should keep accepting the legacy auth payload"
-  assert (isValidDeployWsAuth cfg "node-a" richerPayload) "websocket auth should accept richer nested auth payloads"
-  assert (not (isValidDeployWsAuth cfg "node-b" richerPayload)) "websocket auth should still reject mismatched node auth"
+      missingTokenPayload =
+        A.encode
+          ( A.object
+              [ "version" A..= (1 :: Int)
+              , "kind" A..= ("auth" :: T.Text)
+              , "messageId" A..= ("msg-auth-2" :: T.Text)
+              , "timestamp" A..= ("2026-04-03T13:00:00Z" :: T.Text)
+              , "node" A..= ("node-a" :: T.Text)
+              , "payload" A..= A.object []
+              ]
+          )
+  assert (not (isValidDeployWsAuth cfg "node-a" legacyPayload)) "websocket auth should reject legacy auth payloads"
+  assert (isValidDeployWsAuth cfg "node-a" finalPayload) "websocket auth should accept only the final protocol envelope"
+  assert (not (isValidDeployWsAuth cfg "node-a" missingTokenPayload)) "websocket auth should require the final auth token field"
+  assert (not (isValidDeployWsAuth cfg "node-b" finalPayload)) "websocket auth should still reject mismatched node auth"
 
 testDispatchForNodeMigrationSequencing :: IO ()
 testDispatchForNodeMigrationSequencing = do
@@ -337,14 +520,56 @@ testDeployDeliveryIdentity = do
       stableRunning = dispatchStableId "job-1" "node-b" intent [runningAction]
       fingerprintQueued = dispatchFingerprint "job-1" intent [queuedAction]
       fingerprintRunning = dispatchFingerprint "job-1" intent [runningAction]
+      deployJobEnvelope = buildDeployJobEnvelope t0 "msg-dispatch-1" "job-1" "abc123" "node-b" stableQueued intent [queuedAction]
   assert (stableQueued == stableRunning) "dispatchStableId should stay fixed across action status changes"
   assert (fingerprintQueued /= fingerprintRunning) "dispatchFingerprint should continue tracking mutable delivery changes"
+  assert
+    ( currentDispatchIdFor "job-1" "node-b" intent [queuedAction]
+        == currentDispatchIdFor "job-1" "node-b" intent [runningAction]
+    )
+    "current dispatch identity should stay fixed across action status changes"
+  case deployJobEnvelope of
+    A.Object obj -> do
+      assert (KM.lookup (K.fromString "kind") obj == Just (A.String "deploy_job")) "deploy job should use the final protocol kind field"
+      assert (KM.lookup (K.fromString "dispatchId") obj == Just (A.String stableQueued)) "deploy job should include dispatch identity at the envelope level"
+      assert (not (KM.member (K.fromString "type") obj)) "deploy job should not emit the legacy type field"
+    _ -> assert False "deploy job envelope should encode to a JSON object"
   case A.toJSON queuedAction of
     A.Object obj ->
       assert
         (KM.lookup (K.fromString "actionId") obj == Just (A.String (deployActionId queuedAction)))
         "deploy actions should include a stable actionId field"
     _ -> assert False "deploy action should encode to a JSON object"
+
+testNodeEventProtocolRoundTrip :: IO ()
+testNodeEventProtocolRoundTrip = do
+  mapM_ roundTrip ["progress", "action_result"]
+  where
+    roundTrip kindValue = do
+      let eventValue =
+            A.object
+              [ "version" A..= (1 :: Int)
+              , "kind" A..= kindValue
+              , "messageId" A..= ("msg-progress-1" :: T.Text)
+              , "timestamp" A..= ("2026-04-03T13:00:00Z" :: T.Text)
+              , "jobId" A..= ("job-1" :: T.Text)
+              , "dispatchId" A..= ("dispatch-1" :: T.Text)
+              , "actionId" A..= Just ("job-1/node-b/1" :: T.Text)
+              , "node" A..= ("node-b" :: T.Text)
+              , "payload" A..=
+                  A.object
+                    [ "status" A..= ("running" :: T.Text)
+                    , "phase" A..= ("restore" :: T.Text)
+                    , "message" A..= ("restoring backup" :: T.Text)
+                    ]
+              ]
+      case A.eitherDecode (A.encode eventValue) of
+        Left err -> assert False ("node event round-trip failed: " <> err)
+        Right decoded -> do
+          let projected = projectNodeEvent decoded
+          assert (A.toJSON (decoded :: NodeEvent) == eventValue) ("node events should round-trip for kind " <> T.unpack kindValue)
+          assert (projected.projectedDispatchId == Just "dispatch-1") "round-tripped node events should preserve dispatch identity"
+          assert (projected.projectedActionId == Just "job-1/node-b/1") "round-tripped node events should preserve action identity"
 
 testEventProjectionBehavior :: IO ()
 testEventProjectionBehavior = do
@@ -375,14 +600,34 @@ testEventProjectionBehavior = do
           t0
       richerEventValue =
         A.object
-          [ "node" A..= ("node-b" :: T.Text)
+          [ "version" A..= (1 :: Int)
+          , "kind" A..= ("progress" :: T.Text)
+          , "messageId" A..= ("msg-progress-1" :: T.Text)
+          , "timestamp" A..= ("2026-04-03T13:00:00Z" :: T.Text)
+          , "jobId" A..= ("job-1" :: T.Text)
+          , "dispatchId" A..= ("dispatch-1" :: T.Text)
+          , "actionId" A..= deployActionId action1
+          , "node" A..= ("node-b" :: T.Text)
           , "payload" A..=
               A.object
                 [ "status" A..= ("running" :: T.Text)
                 , "phase" A..= ("restore" :: T.Text)
                 , "message" A..= ("restoring backup" :: T.Text)
-                , "dispatchId" A..= ("dispatch-1" :: T.Text)
-                , "actionId" A..= deployActionId action1
+                ]
+          ]
+      missingActionIdValue =
+        A.object
+          [ "version" A..= (1 :: Int)
+          , "kind" A..= ("progress" :: T.Text)
+          , "messageId" A..= ("msg-progress-2" :: T.Text)
+          , "timestamp" A..= ("2026-04-03T13:00:00Z" :: T.Text)
+          , "jobId" A..= ("job-1" :: T.Text)
+          , "dispatchId" A..= ("dispatch-1" :: T.Text)
+          , "node" A..= ("node-b" :: T.Text)
+          , "payload" A..=
+              A.object
+                [ "status" A..= ("running" :: T.Text)
+                , "phase" A..= ("restore" :: T.Text)
                 ]
           ]
   case A.fromJSON richerEventValue of
@@ -396,8 +641,126 @@ testEventProjectionBehavior = do
       assert (projectedDispatchIdValue == Just "dispatch-1") "event projection should retain dispatch identity"
       assert (projectedActionIdValue == Just (deployActionId action1)) "event projection should retain action identity"
       assert
-        (selectDeployActionIndex "job-1" "node-b" "restore" ["queued", "waiting", "running"] projectedActionIdValue [action0, action1] == Just 1)
-        "event projection should target the identified action row before falling back to phase order"
+        (selectDeployActionIndex "job-1" "node-b" "activate" ["success"] projectedActionIdValue [action0, action1] == Just 1)
+        "event projection should target the identified action row by actionId only"
+  case A.fromJSON missingActionIdValue of
+    A.Error err -> assert False ("failed to decode missing-action-id node event: " <> err)
+    A.Success event -> do
+      let projected = projectNodeEvent (event :: NodeEvent)
+      assert (projected.projectedActionId == Nothing) "event projection should expose missing action identity"
+      assert
+        (selectDeployActionIndex "job-1" "node-b" "restore" ["queued", "waiting", "running"] projected.projectedActionId [action0, action1] == Nothing)
+        "event projection should reject action updates that omit actionId"
+
+testProjectedNodeEventIntake :: IO ()
+testProjectedNodeEventIntake = do
+  let t0 = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime 0)
+      queuedAction =
+        DeployAction
+          "job-1"
+          "node-b"
+          1
+          "restore"
+          "alice"
+          "queued"
+          Nothing
+          Nothing
+          Nothing
+          t0
+      runningAction =
+        DeployAction
+          "job-1"
+          "node-b"
+          1
+          "restore"
+          "alice"
+          "running"
+          Nothing
+          Nothing
+          Nothing
+          t0
+  assert
+    ( classifyProjectedNodeEvent True (Just "dispatch-1") (Just runningAction) "dispatch-1" "running"
+        == IgnoreDuplicateProjectedNodeEvent
+    )
+    "same-dispatch same-action same-status events should be accepted as no-op duplicates"
+  assert
+    ( classifyProjectedNodeEvent True (Just "dispatch-2") (Just queuedAction) "dispatch-1" "running"
+        == IgnoreStaleProjectedNodeEvent
+    )
+    "stale dispatch replays should be ignored safely"
+  assert
+    ( classifyProjectedNodeEvent True (Just "dispatch-1") Nothing "dispatch-1" "running"
+        == RejectUnknownProjectedNodeEvent
+    )
+    "unknown action identities should still be rejected"
+  assert
+    ( classifyProjectedNodeEvent True (Just "dispatch-1") (Just queuedAction) "dispatch-1" "running"
+        == AcceptProjectedNodeEvent
+    )
+    "new same-dispatch action status transitions should still be accepted"
+
+testBackupSnapshotLookupMissing :: IO ()
+testBackupSnapshotLookupMissing =
+  assert
+    (classifyDeployBackupSnapshotRows [] == DeployBackupSnapshotMissing)
+    "snapshot lookup should surface missing snapshots explicitly"
+
+testBackupSnapshotLookupMalformed :: IO ()
+testBackupSnapshotLookupMalformed =
+  assert
+    (classifyDeployBackupSnapshotRows [A.object ["snapshotMetadata" A..= buildDeployBackupSnapshotMetadata (A.object ["snapshots" A..= A.object []])]] == DeployBackupSnapshotMalformed)
+    "snapshot lookup should reject malformed stored payloads"
+
+testBackupSnapshotLookupChecksumMismatch :: IO ()
+testBackupSnapshotLookupChecksumMismatch =
+  assert
+    (classifyDeployBackupSnapshotRows [storedPayload] == DeployBackupSnapshotMalformed)
+    "snapshot lookup should reject checksum mismatches"
+  where
+    payload = A.object ["snapshots" A..= A.object ["db" A..= ("snapshot-1" :: T.Text)]]
+    metadata = buildDeployBackupSnapshotMetadata payload
+    storedPayload =
+      A.object
+        [ "user" A..= ("alice" :: T.Text)
+        , "op" A..= ("backup" :: T.Text)
+        , "snapshotPayload" A..= payload
+        , "snapshotMetadata" A..=
+            A.object
+              [ "size" A..= metadata.snapshotSize
+              , "checksum" A..= ("deadbeef" :: T.Text)
+              , "contentType" A..= metadata.snapshotContentType
+              , "schemaVersion" A..= metadata.snapshotSchemaVersion
+              ]
+        ]
+
+testBackupSnapshotResponseShape :: IO ()
+testBackupSnapshotResponseShape =
+  case classifyDeployBackupSnapshotRows [storedPayload] of
+    DeployBackupSnapshotAvailable snapshot ->
+      assert
+        ( backupSnapshotResponseValue "job-1" "node-b" "node-a" "alice" snapshot
+            == A.object
+              [ "jobId" A..= ("job-1" :: T.Text)
+              , "node" A..= ("node-b" :: T.Text)
+              , "sourceNode" A..= ("node-a" :: T.Text)
+              , "user" A..= ("alice" :: T.Text)
+              , "metadata" A..= metadata
+              , "payload" A..= payload
+              ]
+        )
+        "snapshot handler should return explicit metadata alongside payload"
+    _ -> assert False "valid stored snapshot should decode"
+  where
+    payload = A.object ["snapshots" A..= A.object ["db" A..= ("snapshot-1" :: T.Text)]]
+    metadata = buildDeployBackupSnapshotMetadata payload
+    storedPayload =
+      A.object
+        [ "user" A..= ("alice" :: T.Text)
+        , "op" A..= ("backup" :: T.Text)
+        , "snapshotPayload" A..= payload
+        , "snapshotMetadata" A..= metadata
+        ]
 
 testPlanParsing :: IO ()
 testPlanParsing = do

@@ -31,6 +31,7 @@ common common-settings
     memory,
     network-uri,
     process,
+    stm,
     text,
     time,
     unix,

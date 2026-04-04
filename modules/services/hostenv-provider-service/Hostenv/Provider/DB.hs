@@ -33,11 +33,17 @@ module Hostenv.Provider.DB
   , deployActionId
   , deployActionIndexFromId
   , selectDeployActionIndex
+  , loadDeployActionById
   , loadDeployActions
   , loadDeployActionsByNode
   , loadLatestDeployIntentForNode
   , DeployStatus(..)
   , loadDeployStatuses
+  , DeployBackupSnapshot(..)
+  , DeployBackupSnapshotLookup(..)
+  , DeployBackupSnapshotMetadata(..)
+  , buildDeployBackupSnapshotMetadata
+  , classifyDeployBackupSnapshotRows
   , loadDeployBackupSnapshot
   , loadDeployStatusByNode
   , loadDeployEventsSince
@@ -49,9 +55,11 @@ module Hostenv.Provider.DB
   ) where
 
 import Control.Monad (forM_, unless, when)
+import Crypto.Hash (Digest, SHA256, hash)
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
+import qualified Data.ByteArray.Encoding as BAE
 import qualified Data.ByteString as BS
 import Data.ByteString.Builder (toLazyByteString)
 import qualified Data.ByteString.Lazy as BL
@@ -240,12 +248,47 @@ instance A.ToJSON DeployAction where
       , "message" A..= action.message
       , "startedAt" A..= action.startedAt
       , "finishedAt" A..= action.finishedAt
-      , "updatedAt" A..= action.updatedAt
+       , "updatedAt" A..= action.updatedAt
+       ]
+
+data DeployBackupSnapshotMetadata = DeployBackupSnapshotMetadata
+  { snapshotSize :: Int64
+  , snapshotChecksum :: Text
+  , snapshotContentType :: Text
+  , snapshotSchemaVersion :: Int
+  } deriving (Eq, Show)
+
+instance A.FromJSON DeployBackupSnapshotMetadata where
+  parseJSON = A.withObject "DeployBackupSnapshotMetadata" $ \obj ->
+    DeployBackupSnapshotMetadata
+      <$> obj A..: "size"
+      <*> obj A..: "checksum"
+      <*> obj A..: "contentType"
+      <*> obj A..: "schemaVersion"
+
+instance A.ToJSON DeployBackupSnapshotMetadata where
+  toJSON metadata =
+    A.object
+      [ "size" A..= metadata.snapshotSize
+      , "checksum" A..= metadata.snapshotChecksum
+      , "contentType" A..= metadata.snapshotContentType
+      , "schemaVersion" A..= metadata.snapshotSchemaVersion
       ]
+
+data DeployBackupSnapshot = DeployBackupSnapshot
+  { snapshotMetadata :: DeployBackupSnapshotMetadata
+  , snapshotPayload :: A.Value
+  } deriving (Eq, Show)
+
+data DeployBackupSnapshotLookup
+  = DeployBackupSnapshotMissing
+  | DeployBackupSnapshotMalformed
+  | DeployBackupSnapshotAvailable DeployBackupSnapshot
+  deriving (Eq, Show)
 
 deployActionId :: DeployAction -> Text
 deployActionId action =
-  T.intercalate "/"
+  T.intercalate ":"
     [ action.jobId
     , action.node
     , T.pack (show action.actionIndex)
@@ -253,7 +296,7 @@ deployActionId action =
 
 deployActionIndexFromId :: Text -> Text -> Text -> Maybe Int
 deployActionIndexFromId expectedJobId expectedNode rawActionId =
-  case T.splitOn "/" (T.strip rawActionId) of
+  case T.splitOn ":" (T.strip rawActionId) of
     [jobIdVal, nodeVal, actionIndexVal]
       | jobIdVal == expectedJobId && nodeVal == expectedNode ->
           case reads (T.unpack actionIndexVal) of
@@ -266,21 +309,21 @@ selectDeployActionIndex expectedJobId expectedNode opName eligibleStatuses mActi
   case mActionId >>= deployActionIndexFromId expectedJobId expectedNode of
     Just targetedIndex
       | any (matchesActionIndex targetedIndex) actions -> Just targetedIndex
-    _ -> fallbackIndex
+    _ -> Nothing
   where
-    matches :: DeployAction -> Bool
-    matches action =
-      action.jobId == expectedJobId
-        && action.node == expectedNode
-        && action.op == opName
-        && action.status `elem` eligibleStatuses
-
     matchesActionIndex :: Int -> DeployAction -> Bool
     matchesActionIndex targetedIndex action =
-      matches action && action.actionIndex == targetedIndex
+      action.jobId == expectedJobId
+        && action.node == expectedNode
+        && action.actionIndex == targetedIndex
 
-    fallbackIndex :: Maybe Int
-    fallbackIndex = listToMaybe [action.actionIndex | action <- actions, matches action]
+    _ = opName
+    _ = eligibleStatuses
+
+loadDeployActionById :: AppConfig -> Text -> Text -> Text -> IO (Maybe DeployAction)
+loadDeployActionById cfg expectedJobId expectedNode rawActionId =
+  withDb cfg $ \conn ->
+    loadDeployActionByIdConn conn expectedJobId expectedNode rawActionId
 
 data StoredOAuthCredentialRow = StoredOAuthCredentialRow
   { host :: Text
@@ -363,9 +406,13 @@ ensureSchema cfg = withDb cfg $ \conn -> do
         , "CREATE INDEX IF NOT EXISTS deploy_intents_commit_node_idx ON deploy_intents (commit_sha, node, created_at DESC);"
         , "CREATE TABLE IF NOT EXISTS deploy_actions (job_id TEXT NOT NULL, node TEXT NOT NULL, action_idx INTEGER NOT NULL, op TEXT NOT NULL, user_name TEXT NOT NULL, action JSONB NOT NULL, status TEXT NOT NULL, message TEXT, started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (job_id, node, action_idx));"
         , "CREATE INDEX IF NOT EXISTS deploy_actions_job_node_idx ON deploy_actions (job_id, node, action_idx);"
-        , "CREATE TABLE IF NOT EXISTS deploy_node_events (id BIGSERIAL PRIMARY KEY, job_id TEXT NOT NULL, node TEXT NOT NULL, status TEXT NOT NULL, phase TEXT, message TEXT, payload JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT now());"
-        , "CREATE INDEX IF NOT EXISTS deploy_node_events_job_idx ON deploy_node_events (job_id, created_at DESC);"
-        ]
+         , "CREATE TABLE IF NOT EXISTS deploy_node_events (id BIGSERIAL PRIMARY KEY, job_id TEXT NOT NULL, node TEXT NOT NULL, dispatch_id TEXT, action_id TEXT, status TEXT NOT NULL, phase TEXT, message TEXT, payload JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT now());"
+         , "ALTER TABLE deploy_node_events ADD COLUMN IF NOT EXISTS dispatch_id TEXT;"
+         , "ALTER TABLE deploy_node_events ADD COLUMN IF NOT EXISTS action_id TEXT;"
+         , "CREATE INDEX IF NOT EXISTS deploy_node_events_job_idx ON deploy_node_events (job_id, created_at DESC);"
+         , "CREATE INDEX IF NOT EXISTS deploy_node_events_dispatch_action_idx ON deploy_node_events (job_id, node, dispatch_id, action_id);"
+         , "CREATE UNIQUE INDEX IF NOT EXISTS deploy_node_events_identity_unique ON deploy_node_events (job_id, node, dispatch_id, COALESCE(action_id, ''), status, COALESCE(phase, '')) WHERE dispatch_id IS NOT NULL;"
+         ]
   forM_ migrations (execute_ conn)
 
 normalizeIdentity :: Text -> Text
@@ -625,13 +672,13 @@ applyDeployActionEvent cfg jobId nodeName rawStatus rawPhase mMessage mActionId 
           "failed" -> finalizeRemaining conn "failed" message
           "timed_out" -> finalizeRemaining conn "timed_out" message
           _ -> pure 0
-      Just op ->
+      Just _ ->
         case status of
-          "waiting" -> transitionOne conn op ["queued", "running"] "waiting" True False message
-          "running" -> transitionOne conn op ["queued", "waiting"] "running" True False message
-          "success" -> transitionOne conn op ["running", "waiting", "queued"] "success" True True message
-          "failed" -> failAndFinalize conn op "failed" message
-          "timed_out" -> failAndFinalize conn op "timed_out" message
+          "waiting" -> transitionOne conn ["queued", "running"] "waiting" True False message
+          "running" -> transitionOne conn ["queued", "waiting"] "running" True False message
+          "success" -> transitionOne conn ["running", "waiting", "queued"] "success" True True message
+          "failed" -> failAndFinalize conn "failed" message
+          "timed_out" -> failAndFinalize conn "timed_out" message
           _ -> pure 0
   where
     finalizeRemaining :: Connection -> Text -> Maybe Text -> IO Int64
@@ -640,23 +687,27 @@ applyDeployActionEvent cfg jobId nodeName rawStatus rawPhase mMessage mActionId 
         "UPDATE deploy_actions SET status = ?, message = COALESCE(?, message), started_at = COALESCE(started_at, now()), finished_at = COALESCE(finished_at, now()), updated_at = now() WHERE job_id = ? AND node = ? AND status IN ('queued','waiting','running')"
         (finalStatus, message, jobId, nodeName)
 
-    transitionOne :: Connection -> Text -> [Text] -> Text -> Bool -> Bool -> Maybe Text -> IO Int64
-    transitionOne conn op eligibleStatuses newStatus setStarted setFinished message = do
-      nodeActions <- query conn
-        "SELECT job_id, node, action_idx, op, user_name, status, message, started_at, finished_at, updated_at FROM deploy_actions WHERE job_id = ? AND node = ? ORDER BY action_idx"
-        (jobId, nodeName) :: IO [DeployAction]
-      case selectDeployActionIndex jobId nodeName op eligibleStatuses mActionId nodeActions of
-        Just actionIndex -> do
+    transitionOne :: Connection -> [Text] -> Text -> Bool -> Bool -> Maybe Text -> IO Int64
+    transitionOne conn eligibleStatuses newStatus setStarted setFinished message = do
+      mAction <- loadTargetAction conn
+      case mAction of
+        Just action | action.status `elem` eligibleStatuses -> do
           execute conn
             "UPDATE deploy_actions SET status = ?, message = COALESCE(?, message), started_at = CASE WHEN ? THEN COALESCE(started_at, now()) ELSE started_at END, finished_at = CASE WHEN ? THEN now() ELSE finished_at END, updated_at = now() WHERE job_id = ? AND node = ? AND action_idx = ?"
-            (newStatus, message, setStarted, setFinished, jobId, nodeName, actionIndex)
+            (newStatus, message, setStarted, setFinished, jobId, nodeName, action.actionIndex)
         _ -> pure 0
 
-    failAndFinalize :: Connection -> Text -> Text -> Maybe Text -> IO Int64
-    failAndFinalize conn op finalStatus message = do
-      firstUpdateCount <- transitionOne conn op ["running", "waiting", "queued"] finalStatus True True message
+    failAndFinalize :: Connection -> Text -> Maybe Text -> IO Int64
+    failAndFinalize conn finalStatus message = do
+      firstUpdateCount <- transitionOne conn ["running", "waiting", "queued"] finalStatus True True message
       remainingUpdateCount <- finalizeRemaining conn finalStatus message
       pure (firstUpdateCount + remainingUpdateCount)
+
+    loadTargetAction :: Connection -> IO (Maybe DeployAction)
+    loadTargetAction conn =
+      case mActionId of
+        Nothing -> pure Nothing
+        Just actionId -> loadDeployActionByIdConn conn jobId nodeName actionId
 
 -- | Load deployment intentions from a node reference.
 -- For example: backend01, webserver13, and so on.
@@ -714,13 +765,13 @@ loadDeployStatuses cfg jobId =
       "SELECT id, node, status, phase, message, created_at FROM (SELECT DISTINCT ON (node) id, node, status, phase, message, created_at FROM deploy_node_events WHERE job_id = ? ORDER BY node, id DESC) latest ORDER BY node"
       (Only jobId)
 
-loadDeployBackupSnapshot :: AppConfig -> Text -> Text -> Text -> IO (Maybe A.Value)
+loadDeployBackupSnapshot :: AppConfig -> Text -> Text -> Text -> IO DeployBackupSnapshotLookup
 loadDeployBackupSnapshot cfg jobId sourceNode userName =
   withDb cfg $ \conn -> do
     rows <- query conn
       "SELECT payload FROM deploy_node_events WHERE job_id = ? AND node = ? AND phase = 'backup' AND status = 'success' AND payload ->> 'user' = ? ORDER BY id DESC LIMIT 1"
       (jobId, sourceNode, userName)
-    pure (listToMaybe (map fromOnly rows))
+    pure (classifyDeployBackupSnapshotRows (map fromOnly rows))
 
 loadDeployStatusByNode :: AppConfig -> Text -> Text -> IO (Maybe DeployStatus)
 loadDeployStatusByNode cfg jobId nodeName =
@@ -730,15 +781,86 @@ loadDeployStatusByNode cfg jobId nodeName =
       (jobId, nodeName)
     pure (listToMaybe rows)
 
-appendDeployEvent :: AppConfig -> Text -> Text -> Text -> Maybe Text -> Maybe Text -> Maybe A.Value -> IO DeployEvent
+appendDeployEvent :: AppConfig -> Text -> Text -> Text -> Maybe Text -> Maybe Text -> Maybe A.Value -> IO (Maybe DeployEvent)
 appendDeployEvent cfg jobId node status phase message payload =
   withDb cfg $ \conn -> do
+    let storedPayload = maybe (A.object []) id payload
+        dispatchId = payloadTextField "dispatchId" storedPayload
+        actionId = payloadTextField "actionId" storedPayload
     rows <- query conn
-      "INSERT INTO deploy_node_events (job_id, node, status, phase, message, payload) VALUES (?, ?, ?, ?, ?, ?::jsonb) RETURNING id, node, status, phase, message, payload, created_at"
-      (jobId, node, status, phase, message, encodeJsonText (maybe (A.object []) id payload))
+      "INSERT INTO deploy_node_events (job_id, node, dispatch_id, action_id, status, phase, message, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb) ON CONFLICT DO NOTHING RETURNING id, node, status, phase, message, payload, created_at"
+      (jobId, node, dispatchId, actionId, status, phase, message, encodeJsonText storedPayload)
     case rows of
-      (event:_) -> pure event
-      _ -> error "appendDeployEvent failed to return inserted row"
+      (event:_) -> pure (Just event)
+      _ -> pure Nothing
+
+loadDeployActionByIdConn :: Connection -> Text -> Text -> Text -> IO (Maybe DeployAction)
+loadDeployActionByIdConn conn expectedJobId expectedNode rawActionId =
+  case deployActionIndexFromId expectedJobId expectedNode rawActionId of
+    Nothing -> pure Nothing
+    Just actionIndex -> do
+      rows <- query conn
+        "SELECT job_id, node, action_idx, op, user_name, status, message, started_at, finished_at, updated_at FROM deploy_actions WHERE job_id = ? AND node = ? AND action_idx = ? LIMIT 1"
+        (expectedJobId, expectedNode, actionIndex)
+      pure (listToMaybe rows)
+
+payloadTextField :: Text -> A.Value -> Maybe Text
+payloadTextField fieldName value =
+  case value of
+    A.Object obj ->
+      case KM.lookup (K.fromText fieldName) obj of
+        Just (A.String txt) ->
+          let trimmed = T.strip txt
+           in if trimmed == "" then Nothing else Just trimmed
+        _ -> Nothing
+    _ -> Nothing
+
+classifyDeployBackupSnapshotRows :: [A.Value] -> DeployBackupSnapshotLookup
+classifyDeployBackupSnapshotRows values =
+  case values of
+    [] -> DeployBackupSnapshotMissing
+    (value:_) ->
+      case decodeStoredBackupSnapshot value of
+        Just snapshot -> DeployBackupSnapshotAvailable snapshot
+        Nothing -> DeployBackupSnapshotMalformed
+
+decodeStoredBackupSnapshot :: A.Value -> Maybe DeployBackupSnapshot
+decodeStoredBackupSnapshot value =
+  case value of
+    A.Object obj -> do
+      metadataValue <- KM.lookup (K.fromString "snapshotMetadata") obj
+      payloadValue <- KM.lookup (K.fromString "snapshotPayload") obj
+      expectedMetadata <-
+        case A.fromJSON metadataValue of
+          A.Error _ -> Nothing
+          A.Success metadata -> Just metadata
+      verifyStoredBackupSnapshot expectedMetadata payloadValue
+    _ -> Nothing
+
+verifyStoredBackupSnapshot :: DeployBackupSnapshotMetadata -> A.Value -> Maybe DeployBackupSnapshot
+verifyStoredBackupSnapshot expectedMetadata payloadValue
+  | expectedMetadata.snapshotContentType /= "application/json" = Nothing
+  | expectedMetadata.snapshotSchemaVersion /= 1 = Nothing
+  | expectedMetadata.snapshotSize /= actualMetadata.snapshotSize = Nothing
+  | expectedMetadata.snapshotChecksum /= actualMetadata.snapshotChecksum = Nothing
+  | otherwise = Just DeployBackupSnapshot { snapshotMetadata = expectedMetadata, snapshotPayload = payloadValue }
+  where
+    actualMetadata = buildDeployBackupSnapshotMetadata payloadValue
+
+buildDeployBackupSnapshotMetadata :: A.Value -> DeployBackupSnapshotMetadata
+buildDeployBackupSnapshotMetadata payloadValue =
+  let payloadBytes = A.encode payloadValue
+   in DeployBackupSnapshotMetadata
+        { snapshotSize = BL.length payloadBytes
+        , snapshotChecksum = sha256Hex payloadBytes
+        , snapshotContentType = "application/json"
+        , snapshotSchemaVersion = 1
+        }
+
+sha256Hex :: BL.ByteString -> Text
+sha256Hex payloadBytes =
+  let digest = hash (BL.toStrict payloadBytes) :: Digest SHA256
+   in TE.decodeUtf8 (BAE.convertToBase BAE.Base16 digest)
 
 decodeOAuthRows :: AppConfig -> [StoredOAuthCredentialRow] -> Either Text (Maybe OAuthCredential)
 decodeOAuthRows _ [] = Right Nothing

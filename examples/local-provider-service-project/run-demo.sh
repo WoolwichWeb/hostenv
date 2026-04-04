@@ -11,7 +11,7 @@ PROVIDER_SERVICE_FIXTURE_DIR="$SCRIPT_DIR/provider-service-project"
 SEED_SOURCE="$SCRIPT_DIR/seed/seed.sql.gz"
 PROVIDER_FLAKE_TEMPLATE="$SCRIPT_DIR/provider-flake.nix.tmpl"
 NODE_CONFIG_TEMPLATE="$SCRIPT_DIR/node-configuration.nix.tmpl"
-EVIDENCE_DIR="$REPO_ROOT/.sisyphus/evidence"
+EVIDENCE_DIR="$REPO_ROOT/.hostenv-test-artifacts/evidence"
 
 HOSTENV_HOSTNAME="demo.hostenv.test"
 PROVIDER_SERVICE_HOST="provider.demo.hostenv.test"

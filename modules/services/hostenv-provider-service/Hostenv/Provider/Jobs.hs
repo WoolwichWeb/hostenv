@@ -43,6 +43,7 @@ import Database.PostgreSQL.Simple.FromRow (FromRow (..), field)
 import Hostenv.Provider.Command (CommandStream (..), withCommandLineLogger)
 import Hostenv.Provider.Config (AppConfig(..))
 import Hostenv.Provider.DB (withDb)
+import Hostenv.Provider.Logging (ProviderLogFields(..), ProviderSeverity(..), logProviderEvent, providerLogFields)
 import Hostenv.Provider.Util (randomToken)
 
 data JobSummary = JobSummary
@@ -158,7 +159,11 @@ ensureJobSchema cfg = withDb cfg $ \conn -> do
         , "CREATE INDEX IF NOT EXISTS job_events_path_idx ON job_events (path);"
         ]
   mapM_ (execute_ conn) ddl
-  _ <- execute_ conn "UPDATE jobs SET status = 'failed', finished_at = now(), error_summary = COALESCE(error_summary, 'worker restarted before completion') WHERE status = 'running'"
+  recoveredCount <- execute_ conn "UPDATE jobs SET status = 'failed', finished_at = now(), error_summary = COALESCE(error_summary, 'worker restarted before completion') WHERE status = 'running'"
+  when (recoveredCount > 0) $
+    logProviderEvent
+      ((providerLogFields "job_worker_recovery" ProviderSeverityWarn) { entryStatus = Just "failed", entryDecision = Just "recover", entryReason = Just "worker_restart" })
+      ["recovered_job_count" A..= recoveredCount]
   pure ()
 
 startJobRuntime :: AppConfig -> IO JobRuntime
@@ -219,6 +224,9 @@ markJobFailedFromDeploy runtime jobId message = do
       (message, jobId)
   when (updated > 0) $ do
     finalizePendingDeployActions runtime.cfg jobId "failed" (Just message)
+    logProviderEvent
+      ((providerLogFields "deploy_job_promotion" ProviderSeverityError) { entryJobId = Just jobId, entryStatus = Just "failed", entryDecision = Just "promote", entryReason = Just "deploy_failed" })
+      ["message" A..= message]
     publishStatus runtime jobId "failed" (Just message)
 
 markJobSucceededFromDeploy :: JobRuntime -> Text -> IO ()
@@ -228,6 +236,10 @@ markJobSucceededFromDeploy runtime jobId = do
       "UPDATE jobs SET status = 'succeeded', finished_at = now(), error_summary = NULL WHERE id = ? AND status = 'waiting'"
       (Only jobId)
   when (updated > 0) $
+    logProviderEvent
+      ((providerLogFields "deploy_job_promotion" ProviderSeverityInfo) { entryJobId = Just jobId, entryStatus = Just "succeeded", entryDecision = Just "promote", entryReason = Just "deploy_succeeded" })
+      []
+      >>
     publishStatus runtime jobId "succeeded" Nothing
 
 workerLoop :: JobRuntime -> IO ()
@@ -308,6 +320,9 @@ timeoutWaitingJobs runtime = do
   mapM_
     (\jobId -> do
       finalizePendingDeployActions runtime.cfg jobId "timed_out" (Just "Timed out waiting for node callbacks")
+      logProviderEvent
+        ((providerLogFields "deploy_job_wait_timeout" ProviderSeverityWarn) { entryJobId = Just jobId, entryStatus = Just "timed_out", entryDecision = Just "timeout", entryReason = Just "node_callbacks_elapsed" })
+        ["timeout_minutes" A..= timeoutMinutes]
       publishStatus runtime jobId "failed" (Just "Timed out waiting for node callbacks")
     )
     timedOutIds
@@ -315,17 +330,27 @@ timeoutWaitingJobs runtime = do
 cleanupOldJobs :: AppConfig -> IO ()
 cleanupOldJobs cfg = withDb cfg $ \conn -> do
   let retentionDays = max 1 cfg.appJobsRetentionDays
-  _ <- execute conn
+  deletedJobs <- execute conn
     "DELETE FROM jobs WHERE finished_at IS NOT NULL AND finished_at < now() - (? * INTERVAL '1 day')"
     (Only retentionDays)
-  _ <- execute_ conn
+  deletedActions <- execute_ conn
     "DELETE FROM deploy_actions a WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = a.job_id)"
-  _ <- execute_ conn
+  deletedEvents <- execute_ conn
     "DELETE FROM deploy_node_events e WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = e.job_id)"
-  _ <- execute_ conn
+  deletedIntents <- execute_ conn
     "DELETE FROM deploy_intents i WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = i.job_id)"
-  _ <- execute_ conn
+  deletedCas <- execute_ conn
     "DELETE FROM cas_objects c WHERE NOT EXISTS (SELECT 1 FROM job_events e WHERE e.addr = c.addr)"
+  when (deletedJobs + deletedActions + deletedEvents + deletedIntents + deletedCas > 0) $
+    logProviderEvent
+      ((providerLogFields "job_cleanup" ProviderSeverityInfo) { entryDecision = Just "cleanup", entryReason = Just "retention_enforced" })
+      [ "retention_days" A..= retentionDays
+      , "deleted_jobs" A..= deletedJobs
+      , "deleted_actions" A..= deletedActions
+      , "deleted_events" A..= deletedEvents
+      , "deleted_intents" A..= deletedIntents
+      , "deleted_cas_objects" A..= deletedCas
+      ]
   pure ()
 
 markJobFailed :: JobRuntime -> Text -> Text -> IO ()

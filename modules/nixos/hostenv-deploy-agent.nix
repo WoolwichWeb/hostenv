@@ -73,6 +73,12 @@ in
           default = 1800;
           description = "Maximum seconds allowed per deploy action.";
         };
+
+        watchdogSec = lib.mkOption {
+          type = lib.types.nullOr lib.types.int;
+          default = null;
+          description = "Optional systemd watchdog interval for hostenv-deploy-agent.";
+        };
       };
 
       config = lib.mkIf cfg.enable {
@@ -95,6 +101,10 @@ in
             assertion = cfg.actionTimeoutSeconds > 0;
             message = "services.hostenv-deploy-agent.actionTimeoutSeconds must be greater than zero.";
           }
+          {
+            assertion = cfg.watchdogSec == null || cfg.watchdogSec > 0;
+            message = "services.hostenv-deploy-agent.watchdogSec must be null or greater than zero.";
+          }
         ];
 
         systemd.services.hostenv-deploy-agent = {
@@ -103,12 +113,17 @@ in
           after = [ "network-online.target" ];
           wants = [ "network-online.target" ];
           serviceConfig = {
+            Type = "notify";
+            NotifyAccess = "all";
             ExecStart = "${agentPackage}/bin/hostenv-deploy-agent --config ${agentConfigFile}";
             Restart = "always";
             RestartSec = "5s";
+            TimeoutStartSec = "0";
             DynamicUser = false;
             User = "root";
             StateDirectory = "hostenv-deploy-agent";
+          } // lib.optionalAttrs (cfg.watchdogSec != null) {
+            WatchdogSec = "${toString cfg.watchdogSec}s";
           };
         };
       };

@@ -1,16 +1,21 @@
 module Hostenv.Provider.DeployAgent.Supervisor
   ( PreparedRuntime(..)
+  , SupervisorHooks(..)
   , runBootstrap
+  , runSupervisorLoopWith
   ) where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (IOException, SomeException, try)
+import Control.Monad (when)
 import qualified Data.Aeson as A
 import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Time (UTCTime, getCurrentTime)
 import qualified Data.Text as T
+import Data.Time (defaultTimeLocale, formatTime)
 import Hostenv.Provider.DeployAgent.Config (AgentConfig(..), readNodeToken)
+import Hostenv.Provider.DeployAgent.Dispatcher (SessionRuntime(..))
 import Hostenv.Provider.DeployAgent.Executor
   ( ExecutionDeps(..)
   , JobResult(..)
@@ -21,11 +26,11 @@ import Hostenv.Provider.DeployAgent.Executor.Process
   ( ProcessResult(..)
   , runProcessIO
   )
-import Hostenv.Provider.DeployAgent.Logging (Logger, logInfo, logWarn, mkJsonLogger)
+import Hostenv.Provider.DeployAgent.Logging (Logger, logDebug, logInfo, logWarn, mkJsonLogger)
 import qualified Hostenv.Provider.DeployAgent.ProviderApi as ProviderApi
-import Hostenv.Provider.DeployAgent.Protocol (DeployJob(..))
+import Hostenv.Provider.DeployAgent.Protocol (DeployJob(..), EventStatus(..), NodeEvent(..), WsEnvelope(..), buildWsNodeEventEnvelope, eventStatusText)
 import Hostenv.Provider.DeployAgent.State (AgentState(..), ensureStateFile, loadStateFile, writeStateFile)
-import Hostenv.Provider.DeployAgent.Systemd (UserManagerBootstrap(..), bootstrapUserManager)
+import Hostenv.Provider.DeployAgent.Systemd (SystemdRuntime(..), UserManagerBootstrap(..), bootstrapUserManager, mkSystemdRuntime)
 import Hostenv.Provider.DeployAgent.Transport.WebSocket (WebSocketConfig(..), buildWebSocketConfig, runWebSocketSession)
 import Hostenv.Provider.DeployAgent.UserSession (UserIdentity(..), UserSession(..))
 import Network.HTTP.Client (newManager)
@@ -41,33 +46,44 @@ data PreparedRuntime = PreparedRuntime
   { webSocket :: WebSocketConfig
   , state :: AgentState
   }
-  deriving (Eq, Show)
+
+data SupervisorHooks = SupervisorHooks
+  { runSession :: (SessionRuntime -> DeployJob -> IO ()) -> IO ()
+  , sleepBeforeReconnect :: Int -> IO ()
+  , shouldReconnect :: Int -> Either SomeException () -> IO Bool
+  }
 
 runBootstrap :: AgentConfig -> IO ()
 runBootstrap cfg = do
   logger <- pure (stderrLogger getCurrentTime)
+  systemdRuntime <- mkSystemdRuntime logger
   token <- readNodeToken cfg
-  ensureStateFile cfg.stateFile
-  initialState <- loadStateFile cfg.stateFile
-  case buildWebSocketConfig cfg token of
+  ensureStateFile cfg.nodeName cfg.stateFile
+  initialState <- loadStateFile cfg.nodeName cfg.stateFile
+  stateRef <- newIORef initialState
+  case buildWebSocketConfig cfg token (readIORef stateRef) (\sessionId WsEnvelope { messageId = messageIdValue } -> systemdRuntime.signalReady sessionId messageIdValue) systemdRuntime.noteActivity of
     Left err -> do
       hPutStrLn stderr (T.unpack err)
       exitFailure
     Right wsConfig -> do
       manager <- newManager tlsManagerSettings
-      stateRef <- newIORef initialState
       let providerApi = ProviderApi.buildProviderApi logger manager cfg token
           runtime = PreparedRuntime { webSocket = wsConfig, state = initialState }
           deps = buildExecutionDeps logger cfg stateRef providerApi
           AgentState { updatedAt = stateUpdatedAt } = initialState
-      logInfo logger "supervisor" "provider deploy agent runtime prepared" ["websocketUrl" A..= wsConfig.url, "node" A..= cfg.nodeName, "stateFile" A..= cfg.stateFile, "stateUpdatedAt" A..= stateUpdatedAt]
-      runSupervisorLoop logger deps cfg runtime
+      logInfo logger "supervisor" "runtime_prepared"
+        [ "websocket_url" A..= wsConfig.url
+        , "node" A..= cfg.nodeName
+        , "state_file" A..= cfg.stateFile
+        , "state_updated_at" A..= stateUpdatedAt
+        ]
+      systemdRuntime.withWatchdogSupport (runSupervisorLoop logger deps cfg runtime)
 
 buildExecutionDeps :: Logger -> AgentConfig -> IORef AgentState -> ProviderApi.ProviderApi -> ExecutionDeps
 buildExecutionDeps logger cfg stateRef providerApi =
   ExecutionDeps
     { logger
-    , emitEvent = providerApi.postEvent
+    , emitEvent = \_ _ -> pure ()
     , fetchSnapshot = providerApi.fetchSnapshot
     , resolveUser = resolveUserIdentity
     , ensureUserSession = ensureUserSessionReady logger
@@ -80,26 +96,112 @@ buildExecutionDeps logger cfg stateRef providerApi =
     }
 
 runSupervisorLoop :: Logger -> ExecutionDeps -> AgentConfig -> PreparedRuntime -> IO ()
-runSupervisorLoop logger deps cfg runtime = do
-  result <- try (runWebSocketSession logger runtime.webSocket handleJob) :: IO (Either SomeException ())
-  case result of
-    Left err ->
-      logWarn logger "supervisor" "websocket session ended" ["reason" A..= show err, "reconnectSeconds" A..= cfg.reconnectSeconds]
-    Right () ->
-      logWarn logger "supervisor" "websocket session completed unexpectedly" ["reconnectSeconds" A..= cfg.reconnectSeconds]
-  threadDelay (cfg.reconnectSeconds * 1000000)
-  runSupervisorLoop logger deps cfg runtime
+runSupervisorLoop logger deps cfg runtime =
+  runSupervisorLoopWith logger deps cfg runtime (defaultSupervisorHooks logger runtime)
+
+runSupervisorLoopWith :: Logger -> ExecutionDeps -> AgentConfig -> PreparedRuntime -> SupervisorHooks -> IO ()
+runSupervisorLoopWith logger deps cfg _runtime hooks = go 1
   where
-    handleJob job = do
+    go attempt = do
+      result <- try (hooks.runSession handleJob) :: IO (Either SomeException ())
+      logSessionEnd result
+      reconnect <- hooks.shouldReconnect attempt result
+      when reconnect do
+        logInfo logger "supervisor" "session_reconnect_scheduled"
+          [ "attempt" A..= attempt
+          , "backoff_seconds" A..= cfg.reconnectSeconds
+          ]
+        hooks.sleepBeforeReconnect cfg.reconnectSeconds
+        go (attempt + 1)
+
+    handleJob sessionRuntime job = do
       let DeployJob { jobId = jobIdValue } = job
-      outcome <- executeJob deps cfg job
+      let sessionDeps =
+            deps
+              { emitEvent = \eventJobId event -> do
+                  deps.emitEvent eventJobId event
+                  emitEventOverSession logger deps.currentTime sessionRuntime job eventJobId event
+              }
+      outcome <- executeJob sessionDeps cfg job
       case outcome of
         JobSucceeded _ ->
-          logInfo logger "supervisor" "deploy job finished" ["jobId" A..= jobIdValue, "result" A..= ("success" :: T.Text)]
+          logInfo logger "supervisor" "deploy_job_finished"
+            [ "job_id" A..= jobIdValue
+            , "dispatch_id" A..= job.dispatchId
+            , "result" A..= ("success" :: T.Text)
+            ]
         JobSkipped reason ->
-          logInfo logger "supervisor" "deploy job skipped" ["jobId" A..= jobIdValue, "reason" A..= reason]
+          logInfo logger "supervisor" "deploy_job_skipped"
+            [ "job_id" A..= jobIdValue
+            , "dispatch_id" A..= job.dispatchId
+            , "reason" A..= reason
+            ]
         JobFailed FailureClassification { phase = failurePhase, message = failureMessage } ->
-          logWarn logger "supervisor" "deploy job failed" ["jobId" A..= jobIdValue, "phase" A..= failurePhase, "message" A..= failureMessage]
+          logWarn logger "supervisor" "deploy_job_failed"
+            [ "job_id" A..= jobIdValue
+            , "dispatch_id" A..= job.dispatchId
+            , "phase" A..= failurePhase
+            , "error_class" A..= failurePhase
+            , "failure_message" A..= failureMessage
+            ]
+
+    logSessionEnd result =
+      case result of
+        Left err ->
+          logWarn logger "supervisor" "session_ended"
+            [ "reason" A..= show err
+            , "backoff_seconds" A..= cfg.reconnectSeconds
+            , "error_class" A..= ("session_exception" :: T.Text)
+            ]
+        Right () ->
+          logWarn logger "supervisor" "session_completed_unexpectedly"
+            [ "backoff_seconds" A..= cfg.reconnectSeconds
+            , "error_class" A..= ("unexpected_session_completion" :: T.Text)
+            ]
+
+defaultSupervisorHooks :: Logger -> PreparedRuntime -> SupervisorHooks
+defaultSupervisorHooks logger runtime =
+  SupervisorHooks
+    { runSession = runWebSocketSession logger runtime.webSocket
+    , sleepBeforeReconnect = \seconds -> threadDelay (seconds * 1000000)
+    , shouldReconnect = \_ _ -> pure True
+    }
+
+emitEventOverSession :: Logger -> IO UTCTime -> SessionRuntime -> DeployJob -> T.Text -> NodeEvent -> IO ()
+emitEventOverSession logger nowIO sessionRuntime job _jobId event = do
+  let SessionRuntime { sessionId = sessionIdValue, sendJson = sendJsonValue } = sessionRuntime
+  now <- nowIO
+  let timestamp = T.pack (formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now)
+      messageId = buildEventMessageId job event timestamp
+      envelope = buildWsNodeEventEnvelope event.node job.jobId job.dispatchId messageId timestamp event
+  logDebug logger "transport.websocket" "deploy_event_enqueued"
+    [ "session_id" A..= sessionIdValue
+    , "message_id" A..= messageId
+    , "job_id" A..= job.jobId
+    , "dispatch_id" A..= job.dispatchId
+    , "action_id" A..= event.actionId
+    , "kind" A..= eventKindText event
+    , "phase" A..= event.phase
+    , "status" A..= eventStatusText event.status
+    ]
+  sendJsonValue envelope
+
+buildEventMessageId :: DeployJob -> NodeEvent -> T.Text -> T.Text
+buildEventMessageId job event timestamp =
+  T.map normalize (eventKindText event <> ":" <> event.node <> ":" <> job.jobId <> ":" <> timestamp)
+  where
+    normalize ':' = '-'
+    normalize c = c
+
+eventKindText :: NodeEvent -> T.Text
+eventKindText event =
+  case event.status of
+    EventRunning -> "progress"
+    EventQueued -> "progress"
+    EventWaiting -> "progress"
+    EventSuccess -> "action_result"
+    EventFailed -> "action_result"
+    EventTimedOut -> "action_result"
 
 persistState :: IORef AgentState -> FilePath -> AgentState -> IO ()
 persistState stateRef path state = do
@@ -134,7 +236,10 @@ ensureUserSessionReady logger session = do
       socketReady <- anySocket socketPaths
       if socketReady
         then do
-          logInfo logger "supervisor" "user manager ready" ["user" A..= userName, "runtimeDir" A..= runtimeDirValue]
+          logInfo logger "supervisor" "user_manager_ready"
+            [ "user" A..= userName
+            , "runtime_dir" A..= runtimeDirValue
+            ]
           pure Nothing
         else
           if attemptsRemaining <= 0

@@ -23,6 +23,7 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
+import Data.Aeson.Types (Pair)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.List (nub, sort)
 import qualified Data.Map.Strict as Map
@@ -48,6 +49,7 @@ import Hostenv.Provider.DB (DeployCredential(..), appendDeployEvent, loadDeployC
 import Hostenv.Provider.Gitlab (GitlabDeployToken(..), NixGitlabTokenType(..), appendNixAccessTokenConfig, createProjectDeployToken, ensureProjectCredential, renderGitlabError, revokeProjectToken)
 import Hostenv.Provider.Http (ErrorResponse(..), errorWithBody)
 import Hostenv.Provider.Jobs (JobLogger(..), JobOutcome(..), JobRuntime, NewJob(..), enqueueJob)
+import Hostenv.Provider.Logging (ProviderLogFields(..), ProviderSeverity(..), logProviderEvent, providerLogFields)
 import Hostenv.Provider.Repo (RepoStatus(..))
 import Hostenv.Provider.Service
   ( CommandError(..)
@@ -125,6 +127,7 @@ webhookHandler runtime repoStatusRef cfg hash mHubSig mGitlabToken rawBody = do
 runWebhookDeployJob :: AppConfig -> Text -> ProjectRef -> JobLogger -> IO (Either Text JobOutcome)
 runWebhookDeployJob cfg hash projectRef logger = do
   logger.logInfo ("Running webhook deployment for hash " <> hash)
+  logWebhookBoundary logger.jobId ProviderSeverityInfo Nothing "webhook_job_started" "accept" "job_started" ["project_hash" A..= hash]
   logger.logInfo "webhook stage: load_project_credential"
   deployCredResult <- withDb cfg (\conn -> loadDeployCredentialByHash cfg conn hash)
   case deployCredResult of
@@ -188,10 +191,23 @@ runWebhookDeployJob cfg hash projectRef logger = do
               let baseCommitSha = okResult.commitSha
               let updateStatus = okResult.updateStatus
               let intents = okResult.intents
+              logWebhookBoundary
+                logger.jobId
+                ProviderSeverityInfo
+                (Just (renderWebhookStage StageResolveNodes))
+                "webhook_pipeline_resolved"
+                "accept"
+                "pipeline_ready"
+                [ "commit_sha" A..= baseCommitSha
+                , "node_count" A..= length okResult.nodes
+                , "intent_count" A..= length intents
+                , "update_status" A..= renderWebhookUpdateStatus updateStatus
+                ]
               let DeployConfig deployEnabled _ = cfg.appDeploy
               let shouldWait = shouldWaitForCallbacks updateStatus deployEnabled intents
               let pushCommittedUpdate = do
                     pushResult <- runCommandWithSupersedeGuard cfg envVars logger.jobId hash (CommandSpec "git" ["push"] webhookCfg.whWorkDir)
+                    logWebhookCommandResult logger.jobId (renderWebhookStage StageFinalizeRepo) "webhook_push" pushResult
                     pure
                       ( case pushResult of
                           Left cmdErr -> Left (renderWebhookError (WebhookCommandError StageFinalizeRepo cmdErr))
@@ -209,7 +225,19 @@ runWebhookDeployJob cfg hash projectRef logger = do
                       commitResult <- commitPreparedUpdate cfg envVars webhookCfg logger.jobId hash projectRef
                       case commitResult of
                         Left err -> pure (Left err)
-                        Right commitSha ->
+                        Right commitSha -> do
+                          logWebhookBoundary
+                            logger.jobId
+                            ProviderSeverityInfo
+                            (Just (renderWebhookStage StageFinalizeRepo))
+                            "webhook_commit_selected"
+                            "accept"
+                            "commit_created"
+                            [ "commit_sha" A..= commitSha
+                            , "intent_count" A..= length intents
+                            , "system_artifact_count" A..= Map.size artifacts.systemPaths
+                            , "environment_artifact_count" A..= Map.size artifacts.envPaths
+                            ]
                           if shouldWait
                             then do
                               case renderPayloadsWithArtifacts commitSha artifacts intents of
@@ -217,9 +245,18 @@ runWebhookDeployJob cfg hash projectRef logger = do
                                 Right payloads -> do
                                   persistAndPushResult <-
                                     persistIntentsActionsAndPushWith
-                                      (saveDeployIntents cfg logger.jobId commitSha payloads)
-                                      (saveDeployActions cfg logger.jobId payloads)
-                                      (forM_ intents (\intent -> appendDeployEvent cfg logger.jobId intent.node "queued" (Just "intent") (Just "Deploy intent queued") Nothing >> pure ()))
+                                      (do
+                                          saveDeployIntents cfg logger.jobId commitSha payloads
+                                          logWebhookBoundary logger.jobId ProviderSeverityInfo (Just "persist_intents") "webhook_persist_intents" "accept" "persisted" ["node_count" A..= length payloads, "commit_sha" A..= commitSha]
+                                      )
+                                      (do
+                                          saveDeployActions cfg logger.jobId payloads
+                                          logWebhookBoundary logger.jobId ProviderSeverityInfo (Just "persist_actions") "webhook_persist_actions" "accept" "persisted" ["node_count" A..= length payloads]
+                                      )
+                                      (do
+                                          forM_ intents (\intent -> appendDeployEvent cfg logger.jobId intent.node "queued" (Just "intent") (Just "Deploy intent queued") Nothing >> pure ())
+                                          logWebhookBoundary logger.jobId ProviderSeverityInfo (Just "persist_events") "webhook_queue_events" "accept" "queued_events_created" ["node_count" A..= length intents]
+                                      )
                                       pushCommittedUpdate
                                   case persistAndPushResult of
                                     Left err -> pure (Left err)
@@ -265,6 +302,15 @@ buildArtifactsForIntents cfg logger envVars webhookCfg jobId hash intents = do
       case changedNodeNamesResult of
         Left err -> pure (Left err)
         Right changedNodeNames -> do
+          logWebhookBoundary
+            jobId
+            ProviderSeverityInfo
+            (Just (renderWebhookStage StageFinalizeRepo))
+            "webhook_build_scope"
+            "accept"
+            "nodes_resolved"
+            [ "node_count" A..= length changedNodeNames
+            ]
           nodePairsResult <-
             mapM
               (\nodeName ->
@@ -293,6 +339,17 @@ buildArtifactsForIntents cfg logger envVars webhookCfg jobId hash intents = do
                 Left err -> pure (Left err)
                 Right envPairs -> do
                   let builtStorePaths = map snd (nodePairs ++ envPairs)
+                  logWebhookBoundary
+                    jobId
+                    ProviderSeverityInfo
+                    (Just (renderWebhookStage StageFinalizeRepo))
+                    "webhook_build_artifacts"
+                    "accept"
+                    "artifacts_built"
+                    [ "node_count" A..= length nodePairs
+                    , "environment_count" A..= length envPairs
+                    , "store_path_count" A..= length builtStorePaths
+                    ]
                   signResult <- maybeSignArtifacts cfg logger envVars webhookCfg jobId hash builtStorePaths
                   case signResult of
                     Left err -> pure (Left err)
@@ -419,15 +476,20 @@ buildAttrOutPathWithGuard cfg envVars webhookCfg jobId hash attrRef = do
     Left err -> pure (Left err)
     Right () -> do
       commandResult <- runCancelableBuildCommand cfg envVars jobId hash (CommandSpec "nix" ["build", "--no-link", "--print-out-paths", attrRef] webhookCfg.whWorkDir)
-      pure
-        ( case commandResult of
-            Left err -> Left (renderWebhookError (WebhookCommandError StageFinalizeRepo err))
-            Right output ->
-              let paths = filter (\line -> line /= "") (map T.strip (T.lines output.outStdout))
-               in case paths of
-                    (storePath:_) -> Right storePath
-                    [] -> Left ("nix build produced no output paths for " <> attrRef)
-        )
+      pure =<<
+        case commandResult of
+          Left err -> do
+            logWebhookBoundary jobId ProviderSeverityError (Just (renderWebhookStage StageFinalizeRepo)) "webhook_build_artifact" "reject" "command_failed" ["attr_ref" A..= attrRef]
+            pure (Left (renderWebhookError (WebhookCommandError StageFinalizeRepo err)))
+          Right output ->
+            let paths = filter (\line -> line /= "") (map T.strip (T.lines output.outStdout))
+             in case paths of
+                  (storePath:_) -> do
+                    logWebhookBoundary jobId ProviderSeverityInfo (Just (renderWebhookStage StageFinalizeRepo)) "webhook_build_artifact" "accept" "build_succeeded" ["attr_ref" A..= attrRef, "store_path" A..= storePath]
+                    pure (Right storePath)
+                  [] -> do
+                    logWebhookBoundary jobId ProviderSeverityError (Just (renderWebhookStage StageFinalizeRepo)) "webhook_build_artifact" "reject" "missing_output_path" ["attr_ref" A..= attrRef]
+                    pure (Left ("nix build produced no output paths for " <> attrRef))
 
 maybeSignArtifacts :: AppConfig -> JobLogger -> [(Text, Text)] -> WebhookConfig -> Text -> Text -> [Text] -> IO (Either Text ())
 maybeSignArtifacts cfg logger envVars webhookCfg jobId hash storePaths = do
@@ -436,23 +498,33 @@ maybeSignArtifacts cfg logger envVars webhookCfg jobId hash storePaths = do
     Left err -> pure (Left err)
     Right () -> do
       if null storePaths
-        then pure (Right ())
+        then do
+          logWebhookBoundary jobId ProviderSeverityInfo (Just (renderWebhookStage StageFinalizeRepo)) "webhook_sign_artifacts" "skip" "no_store_paths" []
+          pure (Right ())
         else do
           let signingRequired = cfg.appDeploy.enable
           currentUser <- lookupEnv "USER"
           case currentUser of
             Nothing ->
               if signingRequired
-                then pure (Left "cache signing is required but USER is unset")
-                else pure (Right ())
+                then do
+                  logWebhookBoundary jobId ProviderSeverityError (Just (renderWebhookStage StageFinalizeRepo)) "webhook_sign_artifacts" "reject" "missing_user" []
+                  pure (Left "cache signing is required but USER is unset")
+                else do
+                  logWebhookBoundary jobId ProviderSeverityInfo (Just (renderWebhookStage StageFinalizeRepo)) "webhook_sign_artifacts" "skip" "signing_disabled" []
+                  pure (Right ())
             Just userName -> do
               let keyPath = "/run/secrets/" <> userName <> "/cache_signing_key"
               keyExists <- doesFileExist keyPath
               if not keyExists
                 then
                   if signingRequired
-                    then pure (Left ("cache signing key not found at " <> T.pack keyPath))
-                    else pure (Right ())
+                    then do
+                      logWebhookBoundary jobId ProviderSeverityError (Just (renderWebhookStage StageFinalizeRepo)) "webhook_sign_artifacts" "reject" "missing_signing_key" ["key_path" A..= keyPath]
+                      pure (Left ("cache signing key not found at " <> T.pack keyPath))
+                    else do
+                      logWebhookBoundary jobId ProviderSeverityInfo (Just (renderWebhookStage StageFinalizeRepo)) "webhook_sign_artifacts" "skip" "signing_disabled" []
+                      pure (Right ())
                 else do
                   logger.logInfo "webhook stage: sign_artifacts"
                   signResults <-
@@ -463,11 +535,14 @@ maybeSignArtifacts cfg logger envVars webhookCfg jobId hash storePaths = do
                           cfg
                           envVars
                           (CommandSpec "nix" ["store", "sign", "--key-file", T.pack keyPath, "--recursive", storePath] webhookCfg.whWorkDir))
-                  pure
-                    ( case [err | Left err <- signResults] of
-                        (firstErr:_) -> Left (renderWebhookError (WebhookCommandError StageFinalizeRepo firstErr))
-                        [] -> Right ()
-                    )
+                  let signOutcome =
+                        case [err | Left err <- signResults] of
+                          (firstErr:_) -> Left (renderWebhookError (WebhookCommandError StageFinalizeRepo firstErr))
+                          [] -> Right ()
+                  case signOutcome of
+                    Left _ -> logWebhookBoundary jobId ProviderSeverityError (Just (renderWebhookStage StageFinalizeRepo)) "webhook_sign_artifacts" "reject" "signing_failed" ["store_path_count" A..= length storePaths]
+                    Right () -> logWebhookBoundary jobId ProviderSeverityInfo (Just (renderWebhookStage StageFinalizeRepo)) "webhook_sign_artifacts" "accept" "signing_succeeded" ["store_path_count" A..= length storePaths]
+                  pure signOutcome
 
 addGcRoots :: AppConfig -> Text -> Text -> [(Text, Text)] -> [(Text, Text)] -> IO (Either Text ())
 addGcRoots cfg jobId hash systemPairs envPairs = do
@@ -740,3 +815,27 @@ renderWebhookError err =
       "webhook stage " <> renderWebhookStage stage <> " failed: " <> msg
     WebhookCommandError stage cmdErr ->
       "webhook stage " <> renderWebhookStage stage <> " failed: " <> commandErrorText cmdErr
+
+logWebhookBoundary :: Text -> ProviderSeverity -> Maybe Text -> Text -> Text -> Text -> [Pair] -> IO ()
+logWebhookBoundary jobId severity mPhase eventName decisionText reasonText extras =
+  logProviderEvent
+    ( (providerLogFields eventName severity)
+        { entryJobId = Just jobId
+        , entryPhase = mPhase
+        , entryDecision = Just decisionText
+        , entryReason = Just reasonText
+        }
+    )
+    extras
+
+logWebhookCommandResult :: Text -> Text -> Text -> Either CommandError CommandOutput -> IO ()
+logWebhookCommandResult jobId phaseName eventName result =
+  case result of
+    Left _ -> logWebhookBoundary jobId ProviderSeverityError (Just phaseName) eventName "reject" "command_failed" []
+    Right _ -> logWebhookBoundary jobId ProviderSeverityInfo (Just phaseName) eventName "accept" "command_succeeded" []
+
+renderWebhookUpdateStatus :: WebhookUpdateStatus -> Text
+renderWebhookUpdateStatus updateStatus =
+  case updateStatus of
+    WebhookUpdateCommitted -> "committed"
+    WebhookUpdateNoop -> "noop"

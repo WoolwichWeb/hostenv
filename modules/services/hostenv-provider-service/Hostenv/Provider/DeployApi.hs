@@ -1,26 +1,33 @@
 {-# LANGUAGE NoFieldSelectors #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Hostenv.Provider.DeployApi
   ( NodeEvent(..)
   , ProjectedNodeEvent(..)
+  , NodeEventIntakeDecision(..)
   , DeployUpdateEmitter
   , DeployFailureRecorder
   , DeploySuccessRecorder
+  , buildDeployJobEnvelope
   , intentByJobHandler
   , intentByShaHandler
   , jobStatusHandler
   , jobStatusesHandler
   , jobActionsHandler
   , backupSnapshotHandler
-  , eventHandler
-  , validateIntent
+    , eventHandler
+    , processNodeEvent
+    , validateIntent
   , acceptsNodeEvents
-  , dispatchFingerprint
-  , dispatchStableId
-  , extractBearer
+    , dispatchFingerprint
+    , dispatchStableId
+    , currentDispatchIdFor
+    , extractBearer
   , dispatchForNode
+  , backupSnapshotResponseValue
+  , classifyProjectedNodeEvent
   , projectNodeEvent
   , isValidDeployWsAuth
   , normalizeStatus
@@ -28,32 +35,43 @@ module Hostenv.Provider.DeployApi
   ) where
 
 import qualified Data.Aeson as A
+import Data.Aeson.Types (Parser)
+import Data.Aeson.Types (Pair)
+import Crypto.Hash (Digest, SHA256, hash)
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
+import qualified Data.ByteArray.Encoding as BAE
 import qualified Data.ByteString.Lazy as BL
-import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Foldable (toList)
 import Data.Char (isAsciiLower, isDigit)
-import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import Data.Time (UTCTime)
 import Control.Monad.IO.Class (liftIO)
 import Servant
 
 import Hostenv.Provider.Config (AppConfig(..), lookupDeployNodeAuthToken)
-import Hostenv.Provider.DB (DeployAction(..), DeployStatus(..), appendDeployEvent, applyDeployActionEvent, deployActionId, deployIntentExists, loadDeployActions, loadDeployActionsByNode, loadDeployBackupSnapshot, loadDeployIntentByJob, loadDeployIntentBySha, loadDeployIntentNodes, loadDeployStatusByNode, loadDeployStatuses)
+import Hostenv.Provider.DB (DeployAction(..), DeployBackupSnapshot(..), DeployBackupSnapshotLookup(..), DeployBackupSnapshotMetadata(..), DeployEvent(..), DeployStatus(..), appendDeployEvent, applyDeployActionEvent, deployActionId, deployIntentExists, loadDeployActionById, loadDeployActions, loadDeployActionsByNode, loadDeployBackupSnapshot, loadDeployIntentByJob, loadDeployIntentBySha, loadDeployIntentNodes, loadDeployStatusByNode, loadDeployStatuses)
 import Hostenv.Provider.Jobs (jobSummaryStatus, loadJobById)
+import Hostenv.Provider.Logging (ProviderLogFields(..), ProviderSeverity(..), logProviderEvent, providerLogFields)
 
 
 data NodeEvent = NodeEvent
-  { node :: Text
+  { kind :: Text
+  , messageId :: Text
+  , timestamp :: Text
+  , jobId :: Text
+  , dispatchId :: Text
+  , actionId :: Maybe Text
+  , node :: Text
   , status :: Text
   , phase :: Maybe Text
   , message :: Maybe Text
-  , payload :: Maybe A.Value
+  , payload :: A.Value
   } deriving (Eq, Show)
 
 data ProjectedNodeEvent = ProjectedNodeEvent
@@ -65,36 +83,53 @@ data ProjectedNodeEvent = ProjectedNodeEvent
   , projectedDispatchId :: Maybe Text
   } deriving (Eq, Show)
 
+data NodeEventIntakeDecision
+  = AcceptProjectedNodeEvent
+  | IgnoreDuplicateProjectedNodeEvent
+  | IgnoreStaleProjectedNodeEvent
+  | RejectUnknownProjectedNodeEvent
+  deriving (Eq, Show)
+
 instance A.FromJSON NodeEvent where
   parseJSON = A.withObject "NodeEvent" $ \o -> do
-    payloadValue <- o A..:? "payload"
-    rawStatus <- o A..:? "status"
-    rawPhase <- o A..:? "phase"
-    rawMessage <- o A..:? "message"
+    version <- o A..: "version"
+    if version /= (1 :: Int)
+      then fail "unsupported deploy protocol version"
+      else pure ()
+    kindText <- requiredNonBlankText "kind" o
+    if kindText `notElem` allowedNodeEventKinds
+      then fail "unsupported deploy event kind"
+      else pure ()
+    messageIdText <- requiredNonBlankText "messageId" o
+    timestampText <- requiredNonBlankText "timestamp" o
+    jobIdText <- requiredNonBlankText "jobId" o
+    dispatchIdText <- requiredNonBlankText "dispatchId" o
+    nodeText <- requiredNonBlankText "node" o
+    payloadValue <- requiredObjectField "payload" o
+    actionIdText <- optionalNonBlankText "actionId" o
     let statusText =
           fromMaybe
             "running"
             ( firstNonBlankText
-                [ rawStatus
-                , payloadTextAtPath ["status"] payloadValue
-                , payloadTextAtPath ["event", "status"] payloadValue
+                [ payloadTextAtPath ["status"] (Just payloadValue)
                 ]
             )
         phaseText =
           firstNonBlankText
-            [ rawPhase
-            , payloadTextAtPath ["phase"] payloadValue
-            , payloadTextAtPath ["action", "phase"] payloadValue
+            [ payloadTextAtPath ["phase"] (Just payloadValue)
             ]
         messageText =
           firstNonBlankText
-            [ rawMessage
-            , payloadTextAtPath ["message"] payloadValue
-            , payloadTextAtPath ["event", "message"] payloadValue
-            , payloadTextAtPath ["detail"] payloadValue
+            [ payloadTextAtPath ["message"] (Just payloadValue)
             ]
     NodeEvent
-      <$> o A..: "node"
+      <$> pure kindText
+      <*> pure messageIdText
+      <*> pure timestampText
+      <*> pure jobIdText
+      <*> pure dispatchIdText
+      <*> pure actionIdText
+      <*> pure nodeText
       <*> pure statusText
       <*> pure phaseText
       <*> pure messageText
@@ -103,12 +138,34 @@ instance A.FromJSON NodeEvent where
 instance A.ToJSON NodeEvent where
   toJSON event =
     A.object
-      [ "node" A..= event.node
-      , "status" A..= event.status
-      , "phase" A..= event.phase
-      , "message" A..= event.message
+      [ "version" A..= (1 :: Int)
+      , "kind" A..= event.kind
+      , "messageId" A..= event.messageId
+      , "timestamp" A..= event.timestamp
+      , "jobId" A..= event.jobId
+      , "dispatchId" A..= event.dispatchId
+      , "actionId" A..= event.actionId
+      , "node" A..= event.node
       , "payload" A..= event.payload
       ]
+
+buildDeployJobEnvelope :: UTCTime -> Text -> Text -> Text -> Text -> Text -> A.Value -> [DeployAction] -> A.Value
+buildDeployJobEnvelope timestampText messageIdText jobIdText commitSha nodeName dispatchIdText filteredIntent filteredActions =
+  A.object
+    [ "version" A..= (1 :: Int)
+    , "kind" A..= ("deploy_job" :: Text)
+    , "messageId" A..= messageIdText
+    , "timestamp" A..= timestampText
+    , "node" A..= nodeName
+    , "jobId" A..= jobIdText
+    , "dispatchId" A..= dispatchIdText
+    , "payload" A..=
+        A.object
+          [ "commitSha" A..= commitSha
+          , "intent" A..= filteredIntent
+          , "actions" A..= filteredActions
+          ]
+    ]
 
 payloadTextAtPath :: [Text] -> Maybe A.Value -> Maybe Text
 payloadTextAtPath path = (>>= valueTextAtPath path)
@@ -233,105 +290,202 @@ jobActionsHandler cfg jobId nodeName mAuth = do
 backupSnapshotHandler :: AppConfig -> Text -> Text -> Text -> Text -> Maybe Text -> Handler A.Value
 backupSnapshotHandler cfg jobId nodeName sourceNode userName mAuth = do
   requireNodeAuth cfg nodeName mAuth
+  liftIO
+    ( logProviderEvent
+        ( (providerLogFields "deploy_backup_snapshot" ProviderSeverityInfo)
+            { entryJobId = Just jobId
+            , entryNode = Just nodeName
+            , entryPhase = Just "backup"
+            , entryDecision = Just "lookup"
+            , entryReason = Just "snapshot_requested"
+            }
+        )
+        [ "source_node" A..= sourceNode
+        , "snapshot_user" A..= userName
+        ]
+    )
   hasIntent <- liftIO (deployIntentExists cfg jobId nodeName)
   if not hasIntent
     then throwError err404
     else do
-      payload <- liftIO (loadDeployBackupSnapshot cfg jobId sourceNode userName)
-      case payload of
-        Nothing -> throwError err404
-        Just snapshot ->
-          pure
-            ( A.object
-                [ "jobId" A..= jobId
-                , "node" A..= nodeName
-                , "sourceNode" A..= sourceNode
-                , "user" A..= userName
-                , "payload" A..= snapshot
+      snapshotLookup <- liftIO (loadDeployBackupSnapshot cfg jobId sourceNode userName)
+      case snapshotLookup of
+        DeployBackupSnapshotMissing -> do
+          liftIO
+            ( logProviderEvent
+                ( (providerLogFields "deploy_backup_snapshot" ProviderSeverityWarn)
+                    { entryJobId = Just jobId
+                    , entryNode = Just nodeName
+                    , entryPhase = Just "backup"
+                    , entryDecision = Just "reject"
+                    , entryReason = Just "missing"
+                    }
+                )
+                [ "source_node" A..= sourceNode
+                , "snapshot_user" A..= userName
                 ]
             )
+          throwError err404
+        DeployBackupSnapshotMalformed -> do
+          liftIO
+            ( logProviderEvent
+                ( (providerLogFields "deploy_backup_snapshot" ProviderSeverityError)
+                    { entryJobId = Just jobId
+                    , entryNode = Just nodeName
+                    , entryPhase = Just "backup"
+                    , entryDecision = Just "reject"
+                    , entryReason = Just "malformed"
+                    }
+                )
+                [ "source_node" A..= sourceNode
+                , "snapshot_user" A..= userName
+                ]
+            )
+          throwError err500
+        DeployBackupSnapshotAvailable snapshot@DeployBackupSnapshot { snapshotMetadata = DeployBackupSnapshotMetadata { snapshotChecksum = checksum } } -> do
+          liftIO
+            ( logProviderEvent
+                ( (providerLogFields "deploy_backup_snapshot" ProviderSeverityInfo)
+                    { entryJobId = Just jobId
+                    , entryNode = Just nodeName
+                    , entryPhase = Just "backup"
+                    , entryDecision = Just "accept"
+                    , entryReason = Just "available"
+                    }
+                )
+                [ "source_node" A..= sourceNode
+                , "snapshot_user" A..= userName
+                , "checksum" A..= checksum
+                ]
+            )
+          pure
+            (backupSnapshotResponseValue jobId nodeName sourceNode userName snapshot)
+
+backupSnapshotResponseValue :: Text -> Text -> Text -> Text -> DeployBackupSnapshot -> A.Value
+backupSnapshotResponseValue jobId nodeName sourceNode userName snapshot =
+  A.object
+    [ "jobId" A..= jobId
+    , "node" A..= nodeName
+    , "sourceNode" A..= sourceNode
+    , "user" A..= userName
+    , "metadata" A..= snapshot.snapshotMetadata
+    , "payload" A..= snapshot.snapshotPayload
+    ]
 
 eventHandler :: AppConfig -> DeployUpdateEmitter -> DeployFailureRecorder -> DeploySuccessRecorder -> Text -> Maybe Text -> NodeEvent -> Handler NoContent
 eventHandler cfg emitUpdate recordFailure recordSuccess jobId mAuth event = do
-  let projectedEvent = projectNodeEvent event
-  let nodeName = projectedEvent.projectedNode
-  let statusText = normalizeStatus projectedEvent.projectedStatus
-  if nodeName == ""
-    then throwError err400
-    else if statusText == ""
-      then throwError err400
-    else do
-      requireNodeAuth cfg nodeName mAuth
-      hasIntent <- liftIO (deployIntentExists cfg jobId nodeName)
-      if not hasIntent
-        then throwError err404
-        else do
-          mJob <- liftIO (loadJobById cfg jobId)
-          case mJob of
-            Nothing -> throwError err404
-            Just job ->
-              if not (acceptsNodeEvents (jobSummaryStatus job))
-                then throwError err409
-                else do
-                  storedEvent <- liftIO (appendDeployEvent cfg jobId nodeName statusText projectedEvent.projectedPhase projectedEvent.projectedMessage event.payload)
-                  actionUpdateCount <- liftIO (applyDeployActionEvent cfg jobId nodeName statusText projectedEvent.projectedPhase projectedEvent.projectedMessage projectedEvent.projectedActionId)
-                  liftIO (logZeroActionProjection jobId nodeName statusText projectedEvent.projectedPhase actionUpdateCount)
-                  liftIO
-                    ( emitUpdate
-                        ( A.object
-                            [ "type" A..= ("deploy_event" :: Text)
-                            , "jobId" A..= jobId
-                            , "event" A..= storedEvent
-                            ]
-                        )
-                    )
-                  latestStatuses <- liftIO (loadDeployStatuses cfg jobId)
-                  latestActions <- liftIO (loadDeployActions cfg jobId)
-                  liftIO
-                    ( emitUpdate
-                        ( A.object
-                            [ "type" A..= ("deploy_status" :: Text)
-                            , "jobId" A..= jobId
-                            , "statuses" A..= latestStatuses
-                            ]
-                        )
-                    )
-                  liftIO
-                    ( emitUpdate
-                        ( A.object
-                            [ "type" A..= ("deploy_actions" :: Text)
-                            , "jobId" A..= jobId
-                            , "actions" A..= latestActions
-                            ]
-                        )
-                    )
-                  if statusText == "failed" || statusText == "timed_out"
-                    then liftIO (recordFailure jobId (renderFailureMessage nodeName statusText projectedEvent.projectedMessage))
-                    else
-                      if statusText /= "success"
-                        then pure ()
-                        else do
-                          intentNodes <- liftIO (loadDeployIntentNodes cfg jobId)
-                          let latestByNode = Map.fromList [(nodeVal, (statusVal, phaseVal)) | DeployStatus _ nodeVal statusVal phaseVal _ _ <- latestStatuses]
-                              nodeComplete nodeVal = Map.lookup nodeVal latestByNode == Just ("success" :: Text, Just ("intent" :: Text))
-                              actionSucceeded :: DeployAction -> Bool
-                              actionSucceeded action = action.status == ("success" :: Text)
-                              allActionsSucceeded = all actionSucceeded latestActions
-                              allSucceeded = not (null intentNodes) && all nodeComplete intentNodes && allActionsSucceeded
-                          if allSucceeded
-                            then liftIO (recordSuccess jobId)
-                            else pure ()
-                  pure NoContent
+  let nodeName = (projectNodeEvent event).projectedNode
+  requireNodeAuth cfg nodeName mAuth
+  result <- liftIO (processNodeEvent cfg emitUpdate recordFailure recordSuccess jobId event)
+  either throwError pure result
 
-logZeroActionProjection :: Text -> Text -> Text -> Maybe Text -> Int64 -> IO ()
-logZeroActionProjection jobId nodeName statusText mPhase actionUpdateCount =
-  case fmap (T.toLower . T.strip) mPhase of
-    Just "intent" -> pure ()
-    Just phaseName ->
-      if actionUpdateCount > 0 || statusText == "queued"
-        then pure ()
-        else putStrLn (T.unpack ("hostenv-provider-service: zero action rows updated for job=" <> jobId <> " node=" <> nodeName <> " phase=" <> phaseName <> " status=" <> statusText))
-    _ -> pure ()
+processNodeEvent :: AppConfig -> DeployUpdateEmitter -> DeployFailureRecorder -> DeploySuccessRecorder -> Text -> NodeEvent -> IO (Either ServerError NoContent)
+processNodeEvent cfg emitUpdate recordFailure recordSuccess jobId event = do
+  let projectedEvent = projectNodeEvent event
+      nodeName = projectedEvent.projectedNode
+      statusText = normalizeStatus projectedEvent.projectedStatus
+      actionTargetRequired = actionIdRequiredForPhase projectedEvent.projectedPhase || isJust projectedEvent.projectedActionId
+      reject severity decisionReason serverError extras = do
+        logNodeEventOutcome (nodeEventLogFields jobId projectedEvent statusText severity) "reject" decisionReason extras
+        pure (Left serverError)
+      ignore decisionReason extras = do
+        logNodeEventOutcome (nodeEventLogFields jobId projectedEvent statusText ProviderSeverityInfo) "ignore" decisionReason extras
+        pure (Right NoContent)
+      acceptStored actionUpdateCount storedEvent latestStatuses latestActions = do
+        let DeployEvent eventId _ _ _ _ _ _ = storedEvent
+        logNodeEventOutcome
+          (nodeEventLogFields jobId projectedEvent statusText ProviderSeverityInfo)
+          "accept"
+          "stored"
+          [ "action_row_update_count" A..= actionUpdateCount
+          , "deploy_event_id" A..= eventId
+          ]
+        emitUpdate (A.object ["type" A..= ("deploy_event" :: Text), "jobId" A..= jobId, "event" A..= storedEvent])
+        emitUpdate (A.object ["type" A..= ("deploy_status" :: Text), "jobId" A..= jobId, "statuses" A..= latestStatuses])
+        emitUpdate (A.object ["type" A..= ("deploy_actions" :: Text), "jobId" A..= jobId, "actions" A..= latestActions])
+        if statusText == "failed" || statusText == "timed_out"
+          then recordFailure jobId (renderFailureMessage nodeName statusText projectedEvent.projectedMessage)
+          else
+            if statusText /= "success"
+              then pure ()
+              else do
+                intentNodes <- loadDeployIntentNodes cfg jobId
+                let latestByNode = Map.fromList [(nodeVal, (statusVal, phaseVal)) | DeployStatus _ nodeVal statusVal phaseVal _ _ <- latestStatuses]
+                    nodeComplete nodeVal = Map.lookup nodeVal latestByNode == Just ("success" :: Text, Just ("intent" :: Text))
+                    actionSucceeded :: DeployAction -> Bool
+                    actionSucceeded action = action.status == ("success" :: Text)
+                    allActionsSucceeded = all actionSucceeded latestActions
+                    allSucceeded = not (null intentNodes) && all nodeComplete intentNodes && allActionsSucceeded
+                if allSucceeded
+                  then recordSuccess jobId
+                  else pure ()
+        pure (Right NoContent)
+
+  if nodeName == ""
+    then reject ProviderSeverityWarn "blank_node" err400 []
+    else if T.strip event.jobId /= jobId
+      then reject ProviderSeverityWarn "job_id_mismatch" err400 []
+      else if statusText == ""
+        then reject ProviderSeverityWarn "invalid_status" err400 []
+        else if actionTargetRequired && projectedEvent.projectedActionId == Nothing
+          then reject ProviderSeverityWarn "missing_action_id" err400 []
+          else do
+            hasIntent <- deployIntentExists cfg jobId nodeName
+            if not hasIntent
+              then reject ProviderSeverityWarn "missing_intent" err404 []
+              else do
+                mJob <- loadJobById cfg jobId
+                case mJob of
+                  Nothing -> reject ProviderSeverityWarn "missing_job" err404 []
+                  Just job ->
+                    if not (acceptsNodeEvents (jobSummaryStatus job))
+                      then reject ProviderSeverityWarn "job_not_waiting" err409 ["job_status" A..= jobSummaryStatus job]
+                      else do
+                        targetAction <-
+                          case projectedEvent.projectedActionId of
+                            Nothing -> pure Nothing
+                            Just actionId -> loadDeployActionById cfg jobId nodeName actionId
+                        currentDispatchId <- loadCurrentDispatchId cfg jobId nodeName
+                        case classifyProjectedNodeEvent actionTargetRequired currentDispatchId targetAction event.dispatchId statusText of
+                          RejectUnknownProjectedNodeEvent -> reject ProviderSeverityWarn "unknown_action" err404 []
+                          IgnoreDuplicateProjectedNodeEvent -> ignore "duplicate_status" ["action_row_update_count" A..= (0 :: Int)]
+                          IgnoreStaleProjectedNodeEvent -> ignore "stale_dispatch" ["current_dispatch_id" A..= currentDispatchId]
+                          AcceptProjectedNodeEvent -> do
+                            actionUpdateCount <- applyDeployActionEvent cfg jobId nodeName statusText projectedEvent.projectedPhase projectedEvent.projectedMessage projectedEvent.projectedActionId
+                            let actionProjectionExpected = isJust projectedEvent.projectedActionId
+                            if actionProjectionExpected && actionUpdateCount == 0
+                              then ignore "no_action_rows_updated" ["action_row_update_count" A..= actionUpdateCount]
+                              else do
+                                let storedPayload = attachProjectedIdentity projectedEvent event.payload
+                                mStoredEvent <- appendDeployEvent cfg jobId nodeName statusText projectedEvent.projectedPhase projectedEvent.projectedMessage (Just storedPayload)
+                                case mStoredEvent of
+                                  Nothing -> ignore "duplicate_event" ["action_row_update_count" A..= actionUpdateCount]
+                                  Just storedEvent -> do
+                                    latestStatuses <- loadDeployStatuses cfg jobId
+                                    latestActions <- loadDeployActions cfg jobId
+                                    acceptStored actionUpdateCount storedEvent latestStatuses latestActions
+
+nodeEventLogFields :: Text -> ProjectedNodeEvent -> Text -> ProviderSeverity -> ProviderLogFields
+nodeEventLogFields jobId projectedEvent statusText severity =
+  (providerLogFields "deploy_node_event_intake" severity)
+    { entryJobId = Just jobId
+    , entryNode = normalizeText projectedEvent.projectedNode
+    , entryDispatchId = projectedEvent.projectedDispatchId
+    , entryActionId = projectedEvent.projectedActionId
+    , entryPhase = projectedEvent.projectedPhase
+    , entryStatus = normalizeText statusText
+    , entryProtocolVersion = Just 1
+    }
+
+logNodeEventOutcome :: ProviderLogFields -> Text -> Text -> [Pair] -> IO ()
+logNodeEventOutcome fields decisionText reasonText extras =
+  logProviderEvent
+    ( fields
+        { entryDecision = Just decisionText
+        , entryReason = Just reasonText
+        }
+    )
+    extras
 
 requireNodeAuth :: AppConfig -> Text -> Maybe Text -> Handler ()
 requireNodeAuth cfg nodeName mAuth =
@@ -479,8 +633,12 @@ dispatchFingerprint jobId filteredIntent actions =
 
 dispatchStableId :: Text -> Text -> A.Value -> [DeployAction] -> Text
 dispatchStableId jobId nodeName filteredIntent actions =
-  TE.decodeUtf8
-    ( BL.toStrict
+  "dispatch-"
+    <> TE.decodeUtf8
+      (BAE.convertToBase BAE.Base16 (hash payload :: Digest SHA256))
+  where
+    payload =
+      BL.toStrict
         ( A.encode
             ( A.object
                 [ "jobId" A..= jobId
@@ -490,12 +648,37 @@ dispatchStableId jobId nodeName filteredIntent actions =
                 ]
             )
         )
-    )
 
 shouldDispatchJob :: A.Value -> [DeployAction] -> [DeployAction] -> Maybe Text -> Text -> Bool
 shouldDispatchJob validatedIntent nodeActions filteredActions mLastDispatchId dispatchId =
   (not (null filteredActions) || (not (intentHasActions validatedIntent) && not (hasPendingActions nodeActions)))
     && mLastDispatchId /= Just dispatchId
+
+classifyProjectedNodeEvent :: Bool -> Maybe Text -> Maybe DeployAction -> Text -> Text -> NodeEventIntakeDecision
+classifyProjectedNodeEvent actionTargetRequired mCurrentDispatchId mTargetAction incomingDispatchId incomingStatus
+  | actionTargetRequired && mTargetAction == Nothing = RejectUnknownProjectedNodeEvent
+  | mCurrentDispatchId /= Just (T.strip incomingDispatchId) = IgnoreStaleProjectedNodeEvent
+  | maybe False (sameStatus incomingStatus) mTargetAction = IgnoreDuplicateProjectedNodeEvent
+  | otherwise = AcceptProjectedNodeEvent
+  where
+    sameStatus :: Text -> DeployAction -> Bool
+    sameStatus statusText action = normalizeStatus action.status == normalizeStatus statusText
+
+loadCurrentDispatchId :: AppConfig -> Text -> Text -> IO (Maybe Text)
+loadCurrentDispatchId cfg jobId nodeName = do
+  mIntent <- loadDeployIntentByJob cfg jobId nodeName
+  case mIntent >>= validateIntent of
+    Nothing -> pure Nothing
+    Just validatedIntent -> do
+      allActions <- loadDeployActions cfg jobId
+      pure (currentDispatchIdFor jobId nodeName validatedIntent allActions)
+
+currentDispatchIdFor :: Text -> Text -> A.Value -> [DeployAction] -> Maybe Text
+currentDispatchIdFor jobId nodeName validatedIntent allActions =
+  let nodeActions = filter ((== nodeName) . (.node)) allActions
+   in if null nodeActions && not (intentHasActions validatedIntent)
+        then Nothing
+        else Just (dispatchStableId jobId nodeName validatedIntent nodeActions)
 
 executableActionIndexes :: [DeployAction] -> [DeployAction] -> Set.Set Int
 executableActionIndexes nodeActions allActions =
@@ -559,58 +742,116 @@ filterIntentActionsByIndexes value allowedIndexes =
 
 projectNodeEvent :: NodeEvent -> ProjectedNodeEvent
 projectNodeEvent event =
-  let payloadValue = event.payload
-   in ProjectedNodeEvent
-        { projectedNode = T.strip event.node
-        , projectedStatus =
-            fromMaybe
-              "running"
-              ( firstNonBlankText
-                  [ Just event.status
-                  , payloadTextAtPath ["status"] payloadValue
-                  , payloadTextAtPath ["event", "status"] payloadValue
-                  ]
-              )
-        , projectedPhase =
-            firstNonBlankText
-              [ event.phase
-              , payloadTextAtPath ["phase"] payloadValue
-              , payloadTextAtPath ["action", "phase"] payloadValue
-              ]
-        , projectedMessage =
-            firstNonBlankText
-              [ event.message
-              , payloadTextAtPath ["message"] payloadValue
-              , payloadTextAtPath ["event", "message"] payloadValue
-              , payloadTextAtPath ["detail"] payloadValue
-              ]
-        , projectedActionId =
-            firstNonBlankText
-              [ payloadTextAtPath ["actionId"] payloadValue
-              , payloadTextAtPath ["action_id"] payloadValue
-              , payloadTextAtPath ["action", "id"] payloadValue
-              ]
-        , projectedDispatchId =
-            firstNonBlankText
-              [ payloadTextAtPath ["dispatchId"] payloadValue
-              , payloadTextAtPath ["dispatch_id"] payloadValue
-              , payloadTextAtPath ["dispatch", "id"] payloadValue
-              ]
-        }
+  ProjectedNodeEvent
+    { projectedNode = T.strip event.node
+    , projectedStatus = T.strip event.status
+    , projectedPhase = normalizeMaybeText event.phase
+    , projectedMessage = normalizeMaybeText event.message
+    , projectedActionId = normalizeMaybeText event.actionId
+    , projectedDispatchId = Just (T.strip event.dispatchId)
+    }
 
 isValidDeployWsAuth :: AppConfig -> Text -> BL.ByteString -> Bool
 isValidDeployWsAuth cfg nodeName rawMessage =
-  case A.decode rawMessage of
-    Just (A.Object obj) ->
-      case (lookupAuthField [["token"], ["auth", "token"]] obj, lookupAuthField [["node"], ["auth", "node"]] obj) of
-        (Just suppliedToken, Just suppliedNode)
-          | suppliedNode == T.strip nodeName ->
-              case lookupDeployNodeAuthToken cfg nodeName of
-                Just expected -> expected == suppliedToken
-                Nothing -> False
-        _ -> False
+  case A.decode rawMessage >>= decodeDeployWsAuth of
+    Just auth
+      | auth.authNode == T.strip nodeName ->
+          case lookupDeployNodeAuthToken cfg nodeName of
+            Just expected -> expected == auth.authToken
+            Nothing -> False
     _ -> False
 
-lookupAuthField :: [[Text]] -> KM.KeyMap A.Value -> Maybe Text
-lookupAuthField paths obj =
-  firstNonBlankText [valueTextAtPath path (A.Object obj) | path <- paths]
+allowedNodeEventKinds :: [Text]
+allowedNodeEventKinds = ["progress", "action_result"]
+
+data DeployWsAuth = DeployWsAuth
+  { authNode :: Text
+  , authToken :: Text
+  }
+
+decodeDeployWsAuth :: A.Value -> Maybe DeployWsAuth
+decodeDeployWsAuth = \case
+  A.Object obj -> do
+    version <- lookupIntField "version" obj
+    if version /= 1
+      then Nothing
+      else do
+        kindText <- lookupRequiredTextField "kind" obj
+        if kindText /= "auth"
+          then Nothing
+          else do
+            _ <- lookupRequiredTextField "messageId" obj
+            _ <- lookupRequiredTextField "timestamp" obj
+            nodeName <- lookupRequiredTextField "node" obj
+            payloadObj <- lookupObjectField "payload" obj
+            tokenText <- lookupRequiredTextField "token" payloadObj
+            pure DeployWsAuth { authNode = nodeName, authToken = tokenText }
+  _ -> Nothing
+
+requiredNonBlankText :: Text -> KM.KeyMap A.Value -> Parser Text
+requiredNonBlankText fieldName obj =
+  case lookupRequiredTextField fieldName obj of
+    Just value -> pure value
+    Nothing -> fail ("missing or invalid field: " <> T.unpack fieldName)
+
+requiredObjectField :: Text -> KM.KeyMap A.Value -> Parser A.Value
+requiredObjectField fieldName obj =
+  case lookupObjectField fieldName obj of
+    Just payloadValue -> pure (A.Object payloadValue)
+    Nothing -> fail ("missing or invalid object field: " <> T.unpack fieldName)
+
+lookupObjectField :: Text -> KM.KeyMap A.Value -> Maybe (KM.KeyMap A.Value)
+lookupObjectField fieldName obj =
+  case KM.lookup (K.fromText fieldName) obj of
+    Just (A.Object payloadObj) -> Just payloadObj
+    _ -> Nothing
+
+lookupRequiredTextField :: Text -> KM.KeyMap A.Value -> Maybe Text
+lookupRequiredTextField fieldName obj =
+  case KM.lookup (K.fromText fieldName) obj of
+    Just (A.String value) ->
+      let trimmed = T.strip value
+       in if trimmed == "" then Nothing else Just trimmed
+    _ -> Nothing
+
+optionalNonBlankText :: Text -> KM.KeyMap A.Value -> Parser (Maybe Text)
+optionalNonBlankText fieldName obj =
+  case KM.lookup (K.fromText fieldName) obj of
+    Nothing -> pure Nothing
+    Just A.Null -> pure Nothing
+    Just (A.String value) -> pure (normalizeMaybeText (Just value))
+    _ -> fail ("invalid text field: " <> T.unpack fieldName)
+
+normalizeMaybeText :: Maybe Text -> Maybe Text
+normalizeMaybeText = (>>= normalizeText)
+
+normalizeText :: Text -> Maybe Text
+normalizeText raw =
+  let trimmed = T.strip raw
+   in if trimmed == "" then Nothing else Just trimmed
+
+lookupIntField :: Text -> KM.KeyMap A.Value -> Maybe Int
+lookupIntField fieldName obj =
+  case KM.lookup (K.fromText fieldName) obj of
+    Just (A.Number value) -> Just (round value)
+    _ -> Nothing
+
+actionIdRequiredForPhase :: Maybe Text -> Bool
+actionIdRequiredForPhase mPhase =
+  case fmap (T.toLower . T.strip) mPhase of
+    Just phaseName -> phaseName `elem` allowedOps
+    _ -> False
+
+attachProjectedIdentity :: ProjectedNodeEvent -> A.Value -> A.Value
+attachProjectedIdentity projectedEvent payloadValue =
+  case payloadValue of
+    A.Object payloadObj ->
+      A.Object
+        ( addOptionalTextField "actionId" projectedEvent.projectedActionId
+            (addOptionalTextField "dispatchId" projectedEvent.projectedDispatchId payloadObj)
+        )
+    _ -> payloadValue
+
+addOptionalTextField :: Text -> Maybe Text -> KM.KeyMap A.Value -> KM.KeyMap A.Value
+addOptionalTextField _ Nothing obj = obj
+addOptionalTextField fieldName (Just value) obj = KM.insert (K.fromText fieldName) (A.String value) obj

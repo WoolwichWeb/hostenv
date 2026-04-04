@@ -16,7 +16,7 @@ let
     cat > "$out/${nodeName}/configuration.nix" <<'EOF'
     { ... }: {
       system.stateVersion = "24.11";
-      networking.hostName = "node-a";
+      networking.hostName = "${nodeName}";
     }
     EOF
   '';
@@ -79,7 +79,7 @@ let
           };
           deploy = {
             enable = true;
-            providerApiBaseUrl = "https://hosting.test";
+            providerApiBaseUrl = "http://hosting.test:18080";
             nodeName = nodeName;
             nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
             reconnectSeconds = 5;
@@ -164,7 +164,7 @@ let
       };
       deploy = {
         enable = true;
-        providerApiBaseUrl = "https://hosting.test";
+        providerApiBaseUrl = "http://hosting.test:18080";
         nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
         reconnectSeconds = 5;
       };
@@ -191,14 +191,74 @@ in
 pkgs.testers.runNixOSTest ({ ... }: {
   name = "provider-service-runtime";
 
-  nodes.machine = {
+  nodes."${hostName}" = {
     imports = systemEval._module.args.modules ++ [
       ({ lib, ... }: {
         sops.age.keyFile = "/etc/sops/age/keys.txt";
         environment.etc."sops/age/keys.txt".text = "${ageSecretKey}\n";
         environment.etc."sops/age/keys.txt".mode = "0400";
+        environment.systemPackages = [ pkgs.jq ];
         security.acme.acceptTerms = true;
         security.acme.defaults.email = "test@example.invalid";
+        networking.extraHosts = ''
+          127.0.0.1 hosting.test
+        '';
+        systemd.services.mock-hostenv-provider = {
+          description = "Mock hostenv deploy websocket endpoint";
+          wantedBy = [ "multi-user.target" ];
+          before = [ "hostenv-deploy-agent.service" ];
+          serviceConfig = {
+            ExecStart =
+              let
+                python = pkgs.python3.withPackages (ps: [ ps.websockets ]);
+                script = pkgs.writeText "mock-hostenv-provider.py" ''
+                  import asyncio
+                  import json
+                  from pathlib import Path
+                  import websockets
+
+                  LOG_DIR = Path("/run/mock-hostenv-provider")
+                  LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+                  next_connection_id = 0
+
+                  def auth_ok(connection_id):
+                      return json.dumps({
+                          "version": 1,
+                          "kind": "auth_ok",
+                          "messageId": f"msg-auth-ok-{connection_id}",
+                          "timestamp": "2026-04-03T13:00:00Z",
+                          "node": "node-a",
+                          "payload": {},
+                      })
+
+                  async def handler(websocket):
+                      global next_connection_id
+                      next_connection_id += 1
+                      connection_id = next_connection_id
+
+                      auth_payload = await websocket.recv()
+                      (LOG_DIR / f"auth-{connection_id}.json").write_text(auth_payload)
+                      await websocket.send(auth_ok(connection_id))
+
+                      resume_payload = await websocket.recv()
+                      (LOG_DIR / f"resume-{connection_id}.json").write_text(resume_payload)
+                      await websocket.wait_closed()
+
+                  async def main():
+                      async with websockets.serve(handler, "127.0.0.1", 18080):
+                          await asyncio.Future()
+
+                  asyncio.run(main())
+                '';
+              in
+              "${python}/bin/python ${script}";
+            Restart = "always";
+            RestartSec = "1s";
+            DynamicUser = false;
+            User = "root";
+          };
+        };
         services.nginx.virtualHosts.${hostName} = {
           enableACME = lib.mkForce false;
           forceSSL = lib.mkForce false;
@@ -214,11 +274,15 @@ pkgs.testers.runNixOSTest ({ ... }: {
 
   testScript = ''
     machine.wait_for_unit("multi-user.target")
+    machine.wait_for_unit("mock-hostenv-provider.service")
     machine.wait_for_unit("hostenv-deploy-agent.service")
     machine.wait_for_unit("hostenv-provider-cache-netrc.service")
+    machine.wait_until_succeeds("test -f /run/mock-hostenv-provider/auth-1.json && test -f /run/mock-hostenv-provider/resume-1.json", timeout=180)
 
     machine.succeed("systemctl cat hostenv-deploy-agent.service | grep '^ExecStart=' | grep -F '/bin/hostenv-deploy-agent --config '")
-    machine.succeed("config_path=$(systemctl cat hostenv-deploy-agent.service | grep '^ExecStart=' | grep -o '/nix/store/[^ ]*hostenv-deploy-agent-config.json'); test -n \"$config_path\"; grep -Eq '\"providerApiBaseUrl\"[[:space:]]*:[[:space:]]*\"https://hosting.test\"' \"$config_path\"; grep -Eq '\"nodeAuthTokenFile\"[[:space:]]*:[[:space:]]*\"/run/secrets/hostenv/provider_node_token\"' \"$config_path\"; grep -Eq '\"nodeName\"[[:space:]]*:[[:space:]]*\"node-a\"' \"$config_path\"; grep -Eq '\"stateFile\"[[:space:]]*:[[:space:]]*\"/var/lib/hostenv-deploy-agent/state.json\"' \"$config_path\"; grep -Eq '\"actionTimeoutSeconds\"[[:space:]]*:[[:space:]]*1800' \"$config_path\"; grep -Eq '\"reconnectSeconds\"[[:space:]]*:[[:space:]]*5' \"$config_path\"")
+    machine.succeed("config_path=$(systemctl cat hostenv-deploy-agent.service | grep '^ExecStart=' | grep -o '/nix/store/[^ ]*hostenv-deploy-agent-config.json'); test -n \"$config_path\"; grep -Eq '\"providerApiBaseUrl\"[[:space:]]*:[[:space:]]*\"http://hosting.test:18080\"' \"$config_path\"; grep -Eq '\"nodeAuthTokenFile\"[[:space:]]*:[[:space:]]*\"/run/secrets/hostenv/provider_node_token\"' \"$config_path\"; grep -Eq '\"nodeName\"[[:space:]]*:[[:space:]]*\"node-a\"' \"$config_path\"; grep -Eq '\"stateFile\"[[:space:]]*:[[:space:]]*\"/var/lib/hostenv-deploy-agent/state.json\"' \"$config_path\"; grep -Eq '\"actionTimeoutSeconds\"[[:space:]]*:[[:space:]]*1800' \"$config_path\"; grep -Eq '\"reconnectSeconds\"[[:space:]]*:[[:space:]]*5' \"$config_path\"")
+    machine.succeed("jq -e '.kind == \"auth\" and .version == 1 and .node == \"node-a\" and .payload.token == \"node-token\"' /run/mock-hostenv-provider/auth-1.json >/dev/null")
+    machine.succeed("jq -e '.kind == \"resume\" and .version == 1 and .node == \"node-a\" and .payload.journalVersion == 1 and .payload.current == null' /run/mock-hostenv-provider/resume-1.json >/dev/null")
 
     machine.wait_until_succeeds("test -f /run/secrets/${envName}/env_only", timeout=180)
     machine.wait_until_succeeds("test -f /run/secrets/${previewEnvName}/env_only", timeout=180)

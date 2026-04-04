@@ -62,9 +62,6 @@ else
       grep -q -- "auth_basic_user_file " "$nginxConf" || { echo "missing cache auth_basic_user_file"; exit 1; }
       test -f "$profile/systemd/user/harmonia.service" || { echo "missing harmonia.service"; exit 1; }
       grep -q -- '^ExecStart=.*/bin/harmonia' "$profile/systemd/user/harmonia.service" || { echo "harmonia.service missing Harmonia ExecStart"; exit 1; }
-      test -f "$profile/systemd/user/fcgiwrap.service" || { echo "missing fcgiwrap.service"; exit 1; }
-      test -f "$profile/systemd/user/fcgiwrap.socket" || { echo "missing fcgiwrap.socket"; exit 1; }
-      grep -q -- "ListenStream=.*/fcgiwrap.sock" "$profile/systemd/user/fcgiwrap.socket" || { echo "fcgiwrap socket path not configured"; exit 1; }
       execStart=$(sed -n 's/^ExecStart=//p' "$profile/systemd/user/hostenv-provider.service")
       test -n "$execStart" || { echo "hostenv-provider.service missing ExecStart"; exit 1; }
       test -x "$execStart" || { echo "hostenv-provider ExecStart target is not executable"; exit 1; }

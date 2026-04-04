@@ -1,120 +1,158 @@
 module Hostenv.Provider.DeployAgent.ProviderApi
   ( ProviderApi(..)
+  , SnapshotDocument(..)
+  , SnapshotFetchFailure(..)
+  , SnapshotMetadata(..)
+  , SnapshotRequest(..)
   , buildProviderApi
-  , eventUrl
+  , buildSnapshotMetadata
+  , decodeSnapshotResponse
   , snapshotUrl
   ) where
 
-import Control.Concurrent (threadDelay)
+import Crypto.Hash (Digest, SHA256, hash)
 import Control.Exception (try)
 import qualified Data.Aeson as A
 import qualified Data.Aeson.KeyMap as KM
+import qualified Data.ByteArray.Encoding as BAE
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
+import Data.Int (Int64)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Hostenv.Provider.DeployAgent.Config (AgentConfig(..))
-import Hostenv.Provider.DeployAgent.Executor (SnapshotRequest(..))
 import Hostenv.Provider.DeployAgent.Logging (Logger, logDebug, logWarn)
-import Hostenv.Provider.DeployAgent.Protocol (NodeEvent(..))
 import Network.HTTP.Client
   ( HttpException
   , Manager
-  , Request(method, requestBody, requestHeaders, responseTimeout)
-  , RequestBody(RequestBodyLBS)
+  , Request(method, requestHeaders, responseTimeout)
   , Response(responseBody, responseStatus)
   , httpLbs
   , parseRequest
   , responseTimeoutMicro
   )
-import Network.HTTP.Types.Header (HeaderName, hAuthorization, hContentType)
+import Network.HTTP.Types.Header (HeaderName, hAuthorization)
 import Network.HTTP.Types.Status (statusCode)
 import Network.HTTP.Types.URI (urlEncode)
 
+data SnapshotRequest = SnapshotRequest
+  { jobId :: T.Text
+  , sourceNode :: T.Text
+  , user :: T.Text
+  }
+  deriving (Eq, Show)
+
+data SnapshotMetadata = SnapshotMetadata
+  { snapshotSize :: Int64
+  , snapshotChecksum :: T.Text
+  , snapshotContentType :: T.Text
+  , snapshotSchemaVersion :: Int
+  }
+  deriving (Eq, Show)
+
+instance A.FromJSON SnapshotMetadata where
+  parseJSON = A.withObject "SnapshotMetadata" $ \obj ->
+    SnapshotMetadata
+      <$> obj A..: "size"
+      <*> obj A..: "checksum"
+      <*> obj A..: "contentType"
+      <*> obj A..: "schemaVersion"
+
+instance A.ToJSON SnapshotMetadata where
+  toJSON metadata =
+    A.object
+      [ "size" A..= metadata.snapshotSize
+      , "checksum" A..= metadata.snapshotChecksum
+      , "contentType" A..= metadata.snapshotContentType
+      , "schemaVersion" A..= metadata.snapshotSchemaVersion
+      ]
+
+data SnapshotDocument = SnapshotDocument
+  { snapshotMetadata :: SnapshotMetadata
+  , snapshotPayload :: A.Value
+  , snapshotBytes :: BL.ByteString
+  }
+  deriving (Eq, Show)
+
+data SnapshotFetchFailure
+  = SnapshotMissing
+  | SnapshotMalformed T.Text
+  | SnapshotIntegrityFailure SnapshotMetadata SnapshotMetadata
+  deriving (Eq, Show)
+
 data ProviderApi = ProviderApi
-  { postEvent :: T.Text -> NodeEvent -> IO ()
-  , fetchSnapshot :: SnapshotRequest -> IO (Maybe A.Value)
+  { fetchSnapshot :: SnapshotRequest -> IO (Either SnapshotFetchFailure SnapshotDocument)
   }
 
 buildProviderApi :: Logger -> Manager -> AgentConfig -> T.Text -> ProviderApi
 buildProviderApi logger manager cfg token =
   ProviderApi
-    { postEvent = postEventIO logger manager cfg token
-    , fetchSnapshot = fetchSnapshotIO logger manager cfg token
+    { fetchSnapshot = fetchSnapshotIO logger manager cfg token
     }
 
-postEventIO :: Logger -> Manager -> AgentConfig -> T.Text -> T.Text -> NodeEvent -> IO ()
-postEventIO logger manager cfg token jobId event = attempt 1
-  where
-    maxAttempts = 6 :: Int
-    requestBodyValue = A.encode event
-    attempt currentAttempt = do
-      request <- eventRequest cfg token jobId requestBodyValue
+fetchSnapshotIO :: Logger -> Manager -> AgentConfig -> T.Text -> SnapshotRequest -> IO (Either SnapshotFetchFailure SnapshotDocument)
+fetchSnapshotIO logger manager cfg token snapshotRequest = do
+  let url = snapshotUrl cfg.providerApiBaseUrl cfg.nodeName snapshotRequest
+  logDebug logger "provider-api" "snapshot_requested"
+    [ "job_id" A..= snapshotRequest.jobId
+    , "source_node" A..= snapshotRequest.sourceNode
+    , "user" A..= snapshotRequest.user
+    ]
+  if not (usesHttpScheme url)
+    then do
+      logWarn logger "provider-api" "snapshot_request_rejected"
+        [ "job_id" A..= snapshotRequest.jobId
+        , "source_node" A..= snapshotRequest.sourceNode
+        , "user" A..= snapshotRequest.user
+        , "snapshot_url" A..= url
+        , "error_class" A..= ("invalid_snapshot_url" :: T.Text)
+        ]
+      pure (Left (SnapshotMalformed "snapshot url must use http or https"))
+    else do
+      request <- snapshotRequestIO token url
       result <- tryHttp (httpLbs request manager)
       case result of
+        Left _httpErr -> do
+          logWarn logger "provider-api" "snapshot_request_failed"
+            [ "job_id" A..= snapshotRequest.jobId
+            , "source_node" A..= snapshotRequest.sourceNode
+            , "user" A..= snapshotRequest.user
+            , "error_class" A..= ("http_exception" :: T.Text)
+            ]
+          pure (Left SnapshotMissing)
         Right response
-          | isSuccess response ->
-              logDebug logger "provider-api" "posted deploy event" ["jobId" A..= jobId, "status" A..= event.status, "phase" A..= event.phase]
-        Right response
-          | currentAttempt >= maxAttempts ->
-              logWarn logger "provider-api" "event post failed after retries" ["jobId" A..= jobId, "attempts" A..= currentAttempt, "httpStatus" A..= statusCode response.responseStatus]
-          | otherwise -> retry currentAttempt
-        Left _httpErr
-          | currentAttempt >= maxAttempts ->
-              logWarn logger "provider-api" "event post raised http exception" ["jobId" A..= jobId, "attempts" A..= currentAttempt]
-          | otherwise -> retry currentAttempt
-    retry currentAttempt = do
-      logWarn logger "provider-api" "retrying deploy event post" ["jobId" A..= jobId, "attempt" A..= currentAttempt, "maxAttempts" A..= maxAttempts]
-      sleepReconnect cfg.reconnectSeconds
-      attempt (currentAttempt + 1)
+          | statusCode response.responseStatus /= 200 -> do
+              logDebug logger "provider-api" "snapshot_unavailable"
+                [ "job_id" A..= snapshotRequest.jobId
+                , "http_status" A..= statusCode response.responseStatus
+                , "source_node" A..= snapshotRequest.sourceNode
+                , "user" A..= snapshotRequest.user
+                ]
+              pure (Left SnapshotMissing)
+          | otherwise ->
+              case decodeSnapshotResponse (statusCode response.responseStatus) response.responseBody of
+                Left failure -> do
+                  logSnapshotFetchFailure logger snapshotRequest failure
+                  pure (Left failure)
+                Right snapshot -> do
+                  logDebug logger "provider-api" "snapshot_available"
+                    [ "job_id" A..= snapshotRequest.jobId
+                    , "source_node" A..= snapshotRequest.sourceNode
+                    , "user" A..= snapshotRequest.user
+                    , "size" A..= snapshot.snapshotMetadata.snapshotSize
+                    , "checksum" A..= snapshot.snapshotMetadata.snapshotChecksum
+                    ]
+                  pure (Right snapshot)
 
-fetchSnapshotIO :: Logger -> Manager -> AgentConfig -> T.Text -> SnapshotRequest -> IO (Maybe A.Value)
-fetchSnapshotIO logger manager cfg token snapshotRequest = do
-  request <- snapshotRequestIO cfg token snapshotRequest
-  result <- tryHttp (httpLbs request manager)
-  case result of
-    Left _httpErr -> do
-      logWarn logger "provider-api" "snapshot request failed" ["jobId" A..= snapshotRequest.jobId, "sourceNode" A..= snapshotRequest.sourceNode, "user" A..= snapshotRequest.user]
-      pure Nothing
-    Right response
-      | statusCode response.responseStatus /= 200 -> do
-          logDebug logger "provider-api" "snapshot unavailable" ["jobId" A..= snapshotRequest.jobId, "httpStatus" A..= statusCode response.responseStatus, "sourceNode" A..= snapshotRequest.sourceNode, "user" A..= snapshotRequest.user]
-          pure Nothing
-      | otherwise ->
-          case A.decode response.responseBody of
-            Just (A.Object obj) ->
-              case lookupPayload obj of
-                Just payload -> pure (Just payload)
-                Nothing -> do
-                  logWarn logger "provider-api" "snapshot payload missing" ["jobId" A..= snapshotRequest.jobId, "sourceNode" A..= snapshotRequest.sourceNode, "user" A..= snapshotRequest.user]
-                  pure Nothing
-            _ -> do
-              logWarn logger "provider-api" "snapshot response was not valid json" ["jobId" A..= snapshotRequest.jobId, "sourceNode" A..= snapshotRequest.sourceNode, "user" A..= snapshotRequest.user]
-              pure Nothing
-
-eventRequest :: AgentConfig -> T.Text -> T.Text -> BL.ByteString -> IO Request
-eventRequest cfg token jobId body = do
-  request0 <- parseRequest (T.unpack (eventUrl cfg.providerApiBaseUrl jobId))
-  pure
-    request0
-      { method = "POST"
-      , requestHeaders = jsonHeaders token
-      , requestBody = RequestBodyLBS body
-      , responseTimeout = responseTimeoutMicro (20 * 1000000)
-      }
-
-snapshotRequestIO :: AgentConfig -> T.Text -> SnapshotRequest -> IO Request
-snapshotRequestIO cfg token snapshotRequest = do
-  request0 <- parseRequest (T.unpack (snapshotUrl cfg.providerApiBaseUrl cfg.nodeName snapshotRequest))
+snapshotRequestIO :: T.Text -> T.Text -> IO Request
+snapshotRequestIO token snapshotRequestUrl = do
+  request0 <- parseRequest (T.unpack snapshotRequestUrl)
   pure
     request0
       { method = "GET"
       , requestHeaders = authHeaders token
       , responseTimeout = responseTimeoutMicro (20 * 1000000)
       }
-
-eventUrl :: T.Text -> T.Text -> T.Text
-eventUrl apiBase jobId = trimTrailingSlash apiBase <> "/api/deploy-jobs/" <> jobId <> "/events"
 
 snapshotUrl :: T.Text -> T.Text -> SnapshotRequest -> T.Text
 snapshotUrl apiBase nodeName snapshotRequest =
@@ -128,9 +166,6 @@ snapshotUrl apiBase nodeName snapshotRequest =
     <> "&user="
     <> encodeQueryValue snapshotRequest.user
 
-jsonHeaders :: T.Text -> [(HeaderName, BS.ByteString)]
-jsonHeaders token = (hContentType, "application/json") : authHeaders token
-
 authHeaders :: T.Text -> [(HeaderName, BS.ByteString)]
 authHeaders token = [(hAuthorization, "Bearer " <> TE.encodeUtf8 token)]
 
@@ -140,16 +175,84 @@ trimTrailingSlash = T.dropWhileEnd (== '/')
 encodeQueryValue :: T.Text -> T.Text
 encodeQueryValue = TE.decodeUtf8 . urlEncode True . TE.encodeUtf8
 
-lookupPayload :: A.Object -> Maybe A.Value
-lookupPayload = KM.lookup "payload"
+decodeSnapshotResponse :: Int -> BL.ByteString -> Either SnapshotFetchFailure SnapshotDocument
+decodeSnapshotResponse httpStatus rawBody
+  | httpStatus /= 200 = Left SnapshotMissing
+  | otherwise =
+      case A.decode rawBody of
+        Just (A.Object obj) -> do
+          metadataValue <- maybe (Left (SnapshotMalformed "snapshot metadata missing")) Right (KM.lookup "metadata" obj)
+          payloadValue <- maybe (Left (SnapshotMalformed "snapshot payload missing")) Right (KM.lookup "payload" obj)
+          expectedMetadata <-
+            case A.fromJSON metadataValue of
+              A.Error err -> Left (SnapshotMalformed (T.pack err))
+              A.Success metadata -> Right metadata
+          verifySnapshotDocument expectedMetadata payloadValue
+        Just _ -> Left (SnapshotMalformed "snapshot response must be a json object")
+        Nothing -> Left (SnapshotMalformed "snapshot response was not valid json")
 
-isSuccess :: Response body -> Bool
-isSuccess response =
-  let code = statusCode response.responseStatus
-   in code >= 200 && code < 300
+buildSnapshotMetadata :: A.Value -> SnapshotMetadata
+buildSnapshotMetadata payload =
+  let payloadBytes = A.encode payload
+   in SnapshotMetadata
+        { snapshotSize = BL.length payloadBytes
+        , snapshotChecksum = sha256Hex payloadBytes
+        , snapshotContentType = "application/json"
+        , snapshotSchemaVersion = 1
+        }
 
-sleepReconnect :: Int -> IO ()
-sleepReconnect seconds = threadDelay (seconds * 1000000)
+verifySnapshotDocument :: SnapshotMetadata -> A.Value -> Either SnapshotFetchFailure SnapshotDocument
+verifySnapshotDocument expectedMetadata payloadValue
+  | expectedMetadata.snapshotContentType /= "application/json" = Left (SnapshotMalformed "snapshot contentType must be application/json")
+  | expectedMetadata.snapshotSchemaVersion /= 1 = Left (SnapshotMalformed "snapshot schemaVersion must be 1")
+  | expectedMetadata.snapshotSize /= actualMetadata.snapshotSize = Left (SnapshotIntegrityFailure expectedMetadata actualMetadata)
+  | expectedMetadata.snapshotChecksum /= actualMetadata.snapshotChecksum = Left (SnapshotIntegrityFailure expectedMetadata actualMetadata)
+  | otherwise =
+      Right
+        SnapshotDocument
+          { snapshotMetadata = expectedMetadata
+          , snapshotPayload = payloadValue
+          , snapshotBytes = payloadBytes
+          }
+  where
+    payloadBytes = A.encode payloadValue
+    actualMetadata = buildSnapshotMetadata payloadValue
+
+logSnapshotFetchFailure :: Logger -> SnapshotRequest -> SnapshotFetchFailure -> IO ()
+logSnapshotFetchFailure logger snapshotRequest = \case
+  SnapshotMissing ->
+    logDebug logger "provider-api" "snapshot_unavailable"
+      [ "job_id" A..= snapshotRequest.jobId
+      , "source_node" A..= snapshotRequest.sourceNode
+      , "user" A..= snapshotRequest.user
+      ]
+  SnapshotMalformed reason ->
+    logWarn logger "provider-api" "snapshot_payload_malformed"
+      [ "job_id" A..= snapshotRequest.jobId
+      , "source_node" A..= snapshotRequest.sourceNode
+      , "user" A..= snapshotRequest.user
+      , "error_class" A..= ("snapshot_malformed" :: T.Text)
+      , "reason" A..= reason
+      ]
+  SnapshotIntegrityFailure expectedMetadata actualMetadata ->
+    logWarn logger "provider-api" "snapshot_integrity_failed"
+      [ "job_id" A..= snapshotRequest.jobId
+      , "source_node" A..= snapshotRequest.sourceNode
+      , "user" A..= snapshotRequest.user
+      , "error_class" A..= ("integrity_check_failed" :: T.Text)
+      , "expected_metadata" A..= expectedMetadata
+      , "actual_metadata" A..= actualMetadata
+      ]
+
+usesHttpScheme :: T.Text -> Bool
+usesHttpScheme url =
+  let lower = T.toLower url
+   in "http://" `T.isPrefixOf` lower || "https://" `T.isPrefixOf` lower
+
+sha256Hex :: BL.ByteString -> T.Text
+sha256Hex payloadBytes =
+  let digest = hash (BL.toStrict payloadBytes) :: Digest SHA256
+   in TE.decodeUtf8 (BAE.convertToBase BAE.Base16 digest)
 
 tryHttp :: IO a -> IO (Either HttpException a)
 tryHttp = try

@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
-EVIDENCE_DIR="$REPO_ROOT/.sisyphus/evidence"
+EVIDENCE_DIR="$REPO_ROOT/.hostenv-test-artifacts/evidence"
 
 WORKDIR=""
 COMMIT_SHA=""

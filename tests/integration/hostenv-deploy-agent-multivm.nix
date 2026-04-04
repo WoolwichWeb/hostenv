@@ -79,6 +79,7 @@ let
     schemaVersion = 1;
     actions = [
       {
+        actionId = "${jobId}:${providerNodeName}:0";
         user = targetEnvName;
         op = "activate";
         storePath = toString activateProfile;
@@ -87,6 +88,7 @@ let
   };
 
   deployActionJson = builtins.toJSON {
+    actionId = "${jobId}:${providerNodeName}:0";
     user = targetEnvName;
     op = "activate";
     storePath = toString activateProfile;
@@ -385,7 +387,7 @@ pkgs.testers.runNixOSTest ({ ... }: {
     controlPlane.wait_for_unit("nginx.service")
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- env HOME=${controlUserHome} XDG_RUNTIME_DIR=${controlUserRuntimeDir} DBUS_SESSION_BUS_ADDRESS=unix:path=${controlUserRuntimeDir}/bus XDG_CACHE_HOME=${controlUserHome}/.cache XDG_CONFIG_HOME=${controlUserHome}/.config XDG_DATA_HOME=${controlUserHome}/.local/share XDG_STATE_HOME=${controlUserHome}/.local/state systemctl --user is-active --quiet postgresql.service hostenv-provider-cache-auth.service hostenv-provider.service", timeout=300)
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc 'select 1' | grep -qx 1", timeout=60)
-    controlPlane.wait_until_succeeds("printf '%s\\n' '{\"type\":\"auth\",\"node\":\"${providerNodeName}\",\"token\":\"${nodeToken}\"}' | websocat -q -n -t -1 'ws://${controlHost}/api/deploy-jobs/ws?node=${providerNodeName}' | grep -F '\"type\":\"deploy_hint\"' | grep -F '\"node\":\"${providerNodeName}\"'", timeout=180)
+    controlPlane.wait_until_succeeds("printf '%s\\n' '{\"version\":1,\"kind\":\"auth\",\"messageId\":\"msg-auth-smoke\",\"timestamp\":\"2026-04-03T13:00:00Z\",\"node\":\"${providerNodeName}\",\"payload\":{\"token\":\"${nodeToken}\"}}' | websocat -q -n -t -1 'ws://${controlHost}/api/deploy-jobs/ws?node=${providerNodeName}' | grep -F '\"kind\":\"auth_ok\"' | grep -F '\"node\":\"${providerNodeName}\"'", timeout=180)
     controlPlane.succeed("runuser -u ${controlUserName} -- psql '${controlDbConn}' -f ${seedSql}")
 
     providerNode.wait_for_unit("multi-user.target")
@@ -395,10 +397,10 @@ pkgs.testers.runNixOSTest ({ ... }: {
     providerNode.wait_until_succeeds("nix show-config | grep -qx 'netrc-file = /run/secrets/hostenv/cache_netrc'", timeout=180)
     providerNode.wait_until_succeeds("nix show-config | grep -Eq '^substituters = http://${controlHost}/cache( |$)'", timeout=180)
     providerNode.wait_until_succeeds("curl -sf --netrc-file /run/secrets/hostenv/cache_netrc http://${controlHost}/cache/nix-cache-info >/dev/null", timeout=180)
-    providerNode.wait_until_succeeds("token=\"$(tr -d '\\n\\r' < /run/secrets/hostenv/provider_node_token)\"; printf '{\"type\":\"auth\",\"node\":\"${providerNodeName}\",\"token\":\"%s\"}\\n' \"$token\" | websocat -q -n -t -1 'ws://${controlHost}/api/deploy-jobs/ws?node=${providerNodeName}' | grep -F '\"type\":\"deploy_hint\"' | grep -F '\"node\":\"${providerNodeName}\"'", timeout=180)
+    providerNode.wait_until_succeeds("token=\"$(tr -d '\\n\\r' < /run/secrets/hostenv/provider_node_token)\"; printf '{\"version\":1,\"kind\":\"auth\",\"messageId\":\"msg-auth-node\",\"timestamp\":\"2026-04-03T13:00:00Z\",\"node\":\"${providerNodeName}\",\"payload\":{\"token\":\"%s\"}}\\n' \"$token\" | websocat -q -n -t -1 'ws://${controlHost}/api/deploy-jobs/ws?node=${providerNodeName}' | grep -F '\"kind\":\"auth_ok\"' | grep -F '\"node\":\"${providerNodeName}\"'", timeout=180)
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc \"select status from jobs where id='${jobId}'\" | grep -qx succeeded", timeout=180)
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc \"select count(*) from deploy_node_events where job_id='${jobId}' and node='${providerNodeName}' and phase='activate' and status='success'\" | grep -Ev '^0$'", timeout=180)
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc \"select count(*) from deploy_node_events where job_id='${jobId}' and node='${providerNodeName}' and phase='intent' and status='success'\" | grep -Ev '^0$'", timeout=180)
-    providerNode.wait_until_succeeds("jq -e '.lastAppliedJobId == \"${jobId}\" and .lastCommitSha == \"${commitSha}\" and .users[\"${targetEnvName}\"].storePath == \"${activateProfile}\" and (.users[\"${targetEnvName}\"].updatedAt // \"\") != \"\" and (.updatedAt // \"\") != \"\"' /var/lib/hostenv-deploy-agent/state.json >/dev/null", timeout=180)
+    providerNode.wait_until_succeeds("jq -e '.journalVersion == 1 and .node == \"${providerNodeName}\" and .current == null and .actions == {} and .users[\"${targetEnvName}\"].storePath == \"${activateProfile}\" and (.users[\"${targetEnvName}\"].updatedAt // \"\") != \"\" and (.updatedAt // \"\") != \"\"' /var/lib/hostenv-deploy-agent/state.json >/dev/null", timeout=180)
   '';
 })
