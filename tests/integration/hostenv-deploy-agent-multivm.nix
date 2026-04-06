@@ -9,6 +9,7 @@ let
   controlProject = "control";
   controlEnvName = "main";
   controlHost = "control-plane";
+  systemDeployMarker = "/var/lib/hostenv-deploy-agent-system-switched";
   nodeToken = "node-token";
   cacheSigningKey = "hostenv-cache-test-1:ORzELhyTE/tAP9ArGwd69bhu2qJZ88SYdUYzJLRuEoJ8piUp+ImhwIwv+ZE9nooXRfVzfTOykSNI24PPgUufSw==";
   cachePublicKey = "hostenv-cache-test-1:fKYlKfiJocCML/mRPZ6KF0X1c30zspEjSNuDz4FLn0s=";
@@ -36,6 +37,17 @@ let
     exit 0
     EOF
     chmod +x "$out/bin/activate"
+  '';
+
+  systemProfile = pkgs.runCommand "hostenv-deploy-agent-test-system-profile" { } ''
+    mkdir -p "$out/bin"
+    cat > "$out/bin/switch-to-configuration" <<'EOF'
+    #!${pkgs.bash}/bin/bash
+    set -euo pipefail
+    touch "${systemDeployMarker}"
+    exit 0
+    EOF
+    chmod +x "$out/bin/switch-to-configuration"
   '';
 
   controlModules = [
@@ -77,6 +89,7 @@ let
 
   deployIntentJson = builtins.toJSON {
     schemaVersion = 1;
+    systemPath = toString systemProfile;
     actions = [
       {
         actionId = "${jobId}:${providerNodeName}:0";
@@ -281,7 +294,7 @@ pkgs.testers.runNixOSTest ({ ... }: {
         environment.etc."sops/age/keys.txt".text = "${ageSecretKey}\n";
         environment.etc."sops/age/keys.txt".mode = "0400";
         environment.systemPackages = [ pkgs.postgresql pkgs.websocat ];
-        system.extraDependencies = [ activateProfile ];
+        system.extraDependencies = [ activateProfile systemProfile ];
         networking.firewall.allowedTCPPorts = [ 80 ];
         security.acme.acceptTerms = true;
         security.acme.defaults.email = "test@example.invalid";
@@ -400,7 +413,10 @@ pkgs.testers.runNixOSTest ({ ... }: {
     providerNode.wait_until_succeeds("token=\"$(tr -d '\\n\\r' < /run/secrets/hostenv/provider_node_token)\"; printf '{\"version\":1,\"kind\":\"auth\",\"messageId\":\"msg-auth-node\",\"timestamp\":\"2026-04-03T13:00:00Z\",\"node\":\"${providerNodeName}\",\"payload\":{\"token\":\"%s\"}}\\n' \"$token\" | websocat -q -n -t -1 'ws://${controlHost}/api/deploy-jobs/ws?node=${providerNodeName}' | grep -F '\"kind\":\"auth_ok\"' | grep -F '\"node\":\"${providerNodeName}\"'", timeout=180)
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc \"select status from jobs where id='${jobId}'\" | grep -qx succeeded", timeout=180)
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc \"select count(*) from deploy_node_events where job_id='${jobId}' and node='${providerNodeName}' and phase='activate' and status='success'\" | grep -Ev '^0$'", timeout=180)
+    controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc \"select count(*) from deploy_node_events where job_id='${jobId}' and node='${providerNodeName}' and phase='system' and status='success'\" | grep -Ev '^0$'", timeout=180)
     controlPlane.wait_until_succeeds("runuser -u ${controlUserName} -- psql '${controlDbConn}' -Atc \"select count(*) from deploy_node_events where job_id='${jobId}' and node='${providerNodeName}' and phase='intent' and status='success'\" | grep -Ev '^0$'", timeout=180)
-    providerNode.wait_until_succeeds("jq -e '.journalVersion == 1 and .node == \"${providerNodeName}\" and .current == null and .actions == {} and .users[\"${targetEnvName}\"].storePath == \"${activateProfile}\" and (.users[\"${targetEnvName}\"].updatedAt // \"\") != \"\" and (.updatedAt // \"\") != \"\"' /var/lib/hostenv-deploy-agent/state.json >/dev/null", timeout=180)
+    providerNode.wait_until_succeeds("test -f ${systemDeployMarker}", timeout=180)
+    providerNode.wait_until_succeeds("test -f /home/${targetEnvName}/stuff", timeout=180)
+    providerNode.wait_until_succeeds("jq -e '.journalVersion == 1 and .node == \"${providerNodeName}\" and .current == null and .actions == {} and .system.storePath == \"${systemProfile}\" and (.system.updatedAt // \"\") != \"\" and .users[\"${targetEnvName}\"].storePath == \"${activateProfile}\" and (.users[\"${targetEnvName}\"].updatedAt // \"\") != \"\" and (.updatedAt // \"\") != \"\"' /var/lib/hostenv-deploy-agent/state.json >/dev/null", timeout=180)
   '';
 })
