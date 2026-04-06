@@ -405,7 +405,7 @@ decodePlanNodes raw =
 
 loadPreviousPlanFromGit :: FilePath -> IO (Either Text (Maybe BL.ByteString))
 loadPreviousPlanFromGit workDir = do
-  result <- try (readProcessWithExitCode "git" ["-C", workDir, "show", "HEAD^:generated/plan.json"] "") :: IO (Either IOException (ExitCode, String, String))
+  result <- try (readProcessWithExitCode "git" ["-C", workDir, "show", "HEAD:generated/plan.json"] "") :: IO (Either IOException (ExitCode, String, String))
   pure
     ( case result of
         Right (ExitSuccess, stdoutText, _) -> Right (Just (BL.fromStrict (TE.encodeUtf8 (T.pack stdoutText))))

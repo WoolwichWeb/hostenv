@@ -813,7 +813,7 @@ readExistingPlan path = do
 
 readPreviousPlanFromGit :: FilePath -> IO (Maybe BL.ByteString)
 readPreviousPlanFromGit workDir = do
-  result <- try (readProcessWithExitCode "git" ["-C", workDir, "show", "HEAD^:generated/plan.json"] "") :: IO (Either IOException (ExitCode, String, String))
+  result <- try (readProcessWithExitCode "git" ["-C", workDir, "show", "HEAD:generated/plan.json"] "") :: IO (Either IOException (ExitCode, String, String))
   case result of
     Left _ -> pure Nothing
     Right (ExitSuccess, stdoutText, _) ->
