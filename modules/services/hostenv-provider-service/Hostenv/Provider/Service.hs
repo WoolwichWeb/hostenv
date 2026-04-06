@@ -773,7 +773,7 @@ writeDeployIntent cfg ref orderedNodes intentsByNode = do
   let intentDocument = renderDeployIntentDocument ref ordered
   let generatedDir = cfg.whWorkDir </> "generated"
   createDirectoryIfMissing True generatedDir
-  writeResult <- writeDeployIntentFileWithRetry (generatedDir </> "deploy-intent.json") (A.encode intentDocument)
+  writeResult <- writeDeployIntentFile (generatedDir </> "deploy-intent.json") (A.encode intentDocument)
   case writeResult of
     Left err -> pure (Left err)
     Right () -> pure (Right ordered)
@@ -822,8 +822,8 @@ readPreviousPlanFromGit workDir = do
         else pure (Just (BL.fromStrict (BSC.pack stdoutText)))
     Right _ -> pure Nothing
 
-writeDeployIntentFileWithRetry :: FilePath -> BL.ByteString -> IO (Either Text ())
-writeDeployIntentFileWithRetry path bytes = go (0 :: Int)
+writeDeployIntentFile :: FilePath -> BL.ByteString -> IO (Either Text ())
+writeDeployIntentFile path bytes = go (0 :: Int)
   where
     maxAttempts = 20
     baseDelayMicros = 100000
