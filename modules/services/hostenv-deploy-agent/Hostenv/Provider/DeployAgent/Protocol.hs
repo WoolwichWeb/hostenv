@@ -28,12 +28,13 @@ import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteArray.Encoding as BAE
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (isAsciiLower, isDigit)
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import GHC.Generics (Generic)
 import Crypto.Hash (Digest, SHA256, hash)
+import Control.Applicative ((<|>))
 
 data ActionOp
   = Activate
@@ -268,11 +269,11 @@ decodeWsEnvelopeValue = \case
   A.Object obj -> do
     version <- extractIntField "version" obj
     guard (version == 1)
-    rawKind <- extractRequiredTextField "kind" obj
+    rawKind <- extractTextField "kind" obj
     parsedKind <- parseWsMessageKind rawKind
-    messageId <- extractRequiredTextField "messageId" obj
-    timestamp <- extractRequiredTextField "timestamp" obj
-    node <- extractRequiredTextField "node" obj
+    messageId <- extractTextField "messageId" obj
+    timestamp <- extractTextField "timestamp" obj
+    node <- extractTextField "node" obj
     payload <- KM.lookup "payload" obj
     let envelope =
           WsEnvelope
@@ -293,7 +294,11 @@ decodeDeployJobPayload :: A.Value -> Maybe (Text, DeployIntent)
 decodeDeployJobPayload = \case
   A.Object obj -> do
     intentValue <- KM.lookup "intent" obj
-    parsedIntent <- decodeIntentValue intentValue
+    let fallbackActionIds =
+          case KM.lookup "actions" obj of
+            Just (A.Array values) -> map extractActionIdValue (foldr (:) [] values)
+            _ -> []
+    parsedIntent <- decodeIntentValue fallbackActionIds intentValue
     let commitSha =
           case KM.lookup "commitSha" obj of
             Just (A.String value) -> T.strip value
@@ -301,8 +306,8 @@ decodeDeployJobPayload = \case
     pure (commitSha, parsedIntent)
   _ -> Nothing
 
-decodeIntentValue :: A.Value -> Maybe DeployIntent
-decodeIntentValue = \case
+decodeIntentValue :: [Maybe Text] -> A.Value -> Maybe DeployIntent
+decodeIntentValue fallbackActionIds = \case
   A.Object obj -> do
     schema <- case KM.lookup "schemaVersion" obj of
       Just (A.Number value) -> pure (round value)
@@ -310,7 +315,7 @@ decodeIntentValue = \case
     rawActions <- case KM.lookup "actions" obj of
       Just (A.Array values) -> pure (foldr (:) [] values)
       _ -> Nothing
-    parsedActions <- traverse decodeActionValue rawActions
+    parsedActions <- sequence (zipWith decodeActionValue (fallbackActionIds <> repeat Nothing) rawActions)
     pure
       DeployIntent
         { schemaVersion = schema
@@ -320,18 +325,20 @@ decodeIntentValue = \case
         }
   _ -> Nothing
 
-decodeActionValue :: A.Value -> Maybe DeployAction
-decodeActionValue value =
+decodeActionValue :: Maybe Text -> A.Value -> Maybe DeployAction
+decodeActionValue fallbackActionId value =
   case value of
     A.Object obj -> do
-      A.String rawActionId <- KM.lookup "actionId" obj
+      rawActionId <- extractTextField "actionId" obj <|> fmap T.strip fallbackActionId
       A.String rawUser <- KM.lookup "user" obj
       A.String rawOp <- KM.lookup "op" obj
       parsedOp <- parseActionOp rawOp
+      let normalizedActionId = T.strip rawActionId
+          rawActionWithId = A.Object (KM.insert "actionId" (A.String normalizedActionId) obj)
       pure
         DeployAction
           { op = parsedOp
-          , actionId = T.strip rawActionId
+          , actionId = normalizedActionId
           , user = T.strip rawUser
           , storePath = extractTextField "storePath" obj
           , envStorePath = extractTextField "envStorePath" obj
@@ -339,9 +346,14 @@ decodeActionValue value =
           , fromNode = extractTextField "fromNode" obj
           , toNode = extractTextField "toNode" obj
           , migrations = extractTextListField "migrations" obj
-          , rawAction = value
+          , rawAction = rawActionWithId
           }
     _ -> Nothing
+
+extractActionIdValue :: A.Value -> Maybe Text
+extractActionIdValue = \case
+  A.Object obj -> extractTextField "actionId" obj
+  _ -> Nothing
 
 validateDeployJob :: DeployJob -> Maybe DeployJob
 validateDeployJob job
@@ -367,13 +379,11 @@ validateWsEnvelope envelope
   | requiresActionIdentity envelope.kind && envelope.actionId == Nothing = Nothing
   | otherwise = Just envelope
 
-actionStorePath :: DeployAction -> Text
-actionStorePath action =
-  firstNonEmpty [action.storePath, action.envStorePath, action.path]
+actionStorePath :: DeployAction -> Maybe Text
+actionStorePath action = action.storePath <|> action.envStorePath <|> action.path
 
-intentSystemPath :: DeployIntent -> Text
-intentSystemPath intent =
-  firstNonEmpty [intent.systemPath, intent.systemToplevel]
+intentSystemPath :: DeployIntent -> Maybe Text
+intentSystemPath intent = intent.systemPath <|> intent.systemToplevel
 
 jobSignature :: DeployJob -> Text
 jobSignature job =
@@ -381,7 +391,7 @@ jobSignature job =
         A.object
           [ "jobId" A..= job.jobId
           , "commitSha" A..= job.commitSha
-          , "systemPath" A..= intentSystemPath job.intent
+          , "systemPath" A..= fromMaybe "" (intentSystemPath job.intent)
           , "actions" A..= map A.toJSON job.intent.actions
           ]
       digest = hash (BL.toStrict (A.encode payload)) :: Digest SHA256
@@ -450,9 +460,6 @@ extractTextField key obj =
     Just (A.String value) | T.strip value /= "" -> Just (T.strip value)
     _ -> Nothing
 
-extractRequiredTextField :: Text -> KM.KeyMap A.Value -> Maybe Text
-extractRequiredTextField = extractTextField
-
 extractIntField :: Text -> KM.KeyMap A.Value -> Maybe Int
 extractIntField key obj =
   case KM.lookup (K.fromText key) obj of
@@ -469,15 +476,6 @@ extractTextListField key obj =
       , trimmed /= ""
       ]
     _ -> []
-
-firstNonEmpty :: [Maybe Text] -> Text
-firstNonEmpty = go
-  where
-    go [] = ""
-    go (Nothing : rest) = go rest
-    go (Just value : rest)
-      | T.strip value == "" = go rest
-      | otherwise = T.strip value
 
 requiresJobIdentity :: WsMessageKind -> Bool
 requiresJobIdentity = \case

@@ -84,6 +84,7 @@ main = do
   testWsEnvelopeRoundTrip
   testDecodeWsEnvelopeKinds
   testDecodeDeployJobMessage
+  testDecodeDeployJobMessageFallsBackToPayloadActionIds
   testDecodeDeployJobMessageRequiresDispatchId
   testDecodeWsEnvelopeRequiresActionId
   testDecodeIncomingWebSocketMessage
@@ -178,8 +179,20 @@ testDecodeDeployJobMessage = do
       case job.intent.actions of
         [action] -> do
           assert (action.actionId == "action-activate-alice") "decoded job should keep action id"
-          assert (actionStorePath action == "/nix/store/user") "action store path should fall back to envStorePath"
+          assert (actionStorePath action == Just "/nix/store/user") "action store path should fall back to envStorePath"
         _ -> assert False "decoded job should contain exactly one action"
+
+testDecodeDeployJobMessageFallsBackToPayloadActionIds :: IO ()
+testDecodeDeployJobMessageFallsBackToPayloadActionIds = do
+  let raw = A.encode (deployJobEnvelopeWithPayloadActions (Just "dispatch-1") Nothing (Just "job-1:node-a:0"))
+  case decodeDeployJobMessage raw of
+    Nothing -> assert False "deploy job websocket payload should decode when action ids are supplied by payload.actions"
+    Just job ->
+      case job.intent.actions of
+        [action] -> do
+          assert (action.actionId == "job-1:node-a:0") "decoded job should fall back to dispatched action ids"
+          assert (A.toJSON action == A.object ["op" A..= ("activate" :: Text), "user" A..= ("alice" :: Text), "envStorePath" A..= ("/nix/store/user" :: Text), "actionId" A..= ("job-1:node-a:0" :: Text)]) "fallback action id should be injected into the decoded raw action"
+        _ -> assert False "decoded job should contain exactly one action when falling back to payload.actions"
 
 testDecodeDeployJobMessageRequiresDispatchId :: IO ()
 testDecodeDeployJobMessageRequiresDispatchId = do
@@ -778,11 +791,15 @@ kindActionId = \case
 
 deployJobEnvelope :: Maybe Text -> Maybe Text -> WsEnvelope
 deployJobEnvelope dispatchId actionId =
+  deployJobEnvelopeWithPayloadActions dispatchId actionId actionId
+
+deployJobEnvelopeWithPayloadActions :: Maybe Text -> Maybe Text -> Maybe Text -> WsEnvelope
+deployJobEnvelopeWithPayloadActions dispatchId intentActionId payloadActionId =
   mkEnvelope
     WsDeployJob
     dispatchId
     Nothing
-    (A.object ["commitSha" A..= ("abc123" :: Text), "intent" A..= A.object ["schemaVersion" A..= (1 :: Int), "systemToplevel" A..= ("/nix/store/system" :: Text), "actions" A..= [A.object (["op" A..= ("activate" :: Text), "user" A..= ("alice" :: Text), "envStorePath" A..= ("/nix/store/user" :: Text)] <> maybe [] (\value -> ["actionId" A..= value]) actionId)]]])
+    (A.object ["commitSha" A..= ("abc123" :: Text), "intent" A..= A.object ["schemaVersion" A..= (1 :: Int), "systemToplevel" A..= ("/nix/store/system" :: Text), "actions" A..= [A.object (["op" A..= ("activate" :: Text), "user" A..= ("alice" :: Text), "envStorePath" A..= ("/nix/store/user" :: Text)] <> maybe [] (\value -> ["actionId" A..= value]) intentActionId)]], "actions" A..= [A.object (["op" A..= ("activate" :: Text), "user" A..= ("alice" :: Text)] <> maybe [] (\value -> ["actionId" A..= value]) payloadActionId)]])
 
 lookupTextField :: Text -> [Pair] -> Maybe Text
 lookupTextField name pairs =

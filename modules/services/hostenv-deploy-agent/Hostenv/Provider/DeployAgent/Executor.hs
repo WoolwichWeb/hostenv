@@ -83,6 +83,7 @@ import Hostenv.Provider.DeployAgent.UserSession
 import System.Directory (getTemporaryDirectory, removeFile)
 import System.FilePath ((</>))
 import System.IO (hClose, openTempFile)
+import Data.Maybe (isNothing)
 
 data ExecutionDeps = ExecutionDeps
   { logger :: Logger
@@ -114,7 +115,7 @@ executeJob deps cfg job = do
   let DeployJob { intent = DeployIntent { actions = jobActions } } = job
   case decideDispatch startedState job of
     DispatchHandle _ ->
-      if intentSystemPath job.intent == "" && null jobActions
+      if isNothing (intentSystemPath job.intent) && null jobActions
         then do
           let finalState = finalizeJobState timestamp startedState
           deps.writeState finalState
@@ -135,53 +136,52 @@ executeJob deps cfg job = do
                   pure (JobSucceeded finalState)
 
 runSystemPhase :: ExecutionDeps -> AgentConfig -> DeployJob -> Text -> AgentState -> IO (Either FailureClassification AgentState)
-runSystemPhase deps cfg job timestamp state0 = do
-  let systemPathValue = T.unpack (intentSystemPath job.intent)
-  if null systemPathValue
-    then pure (Right state0)
-    else do
-      postEvent deps cfg job Nothing EventRunning "system" "Switching system profile" (A.object [])
-      let realiseSpec =
-            ProcessSpec
-              { description = "system-realise"
-              , executable = "nix-store"
-              , arguments = ["--realise", systemPathValue]
-              , environment = []
-              , workingDirectory = Nothing
-              , timeoutSeconds = Nothing
-              }
-          setSpec =
-            ProcessSpec
-              { description = "system-set"
-              , executable = "nix-env"
-              , arguments = ["-p", "/nix/var/nix/profiles/system", "--set", systemPathValue]
-              , environment = []
-              , workingDirectory = Nothing
-              , timeoutSeconds = Nothing
-              }
-          switchSpec =
-            ProcessSpec
-              { description = "system-switch"
-              , executable = systemPathValue </> "bin" </> "switch-to-configuration"
-              , arguments = ["switch"]
-              , environment = []
-              , workingDirectory = Nothing
-              , timeoutSeconds = Nothing
-              }
-      runAndHandleSystemStep deps cfg job SystemRealise realiseSpec >>= \case
-        Left failure -> pure (Left failure)
-        Right _ ->
-          runAndHandleSystemStep deps cfg job SystemSet setSpec >>= \case
-            Left failure -> pure (Left failure)
-            Right _ ->
-              runAndHandleSystemStep deps cfg job SystemSwitch switchSpec >>= \case
-                Left failure -> pure (Left failure)
-                Right result -> do
-                  let state1 = markSystemState timestamp (T.pack systemPathValue) state0
-                      payload = buildCommandPayload 0 (trimStderrSummary cfg.eventStderrMaxLines result.stderrText) (A.object ["step" A..= ("system-switch" :: Text)])
-                  deps.writeState state1
-                  postEvent deps cfg job Nothing EventSuccess "system" "System switch complete" payload
-                  pure (Right state1)
+runSystemPhase deps cfg job timestamp state0 = case intentSystemPath job.intent of
+  Nothing -> pure (Right state0)
+  Just path -> do
+    postEvent deps cfg job Nothing EventRunning "system" "Switching system profile" (A.object [])
+    let storePath = T.unpack path
+        realiseSpec =
+          ProcessSpec
+            { description = "system-realise"
+            , executable = "nix-store"
+            , arguments = ["--realise", storePath]
+            , environment = []
+            , workingDirectory = Nothing
+            , timeoutSeconds = Nothing
+            }
+        setSpec =
+          ProcessSpec
+            { description = "system-set"
+            , executable = "nix-env"
+            , arguments = ["-p", "/nix/var/nix/profiles/system", "--set", storePath]
+            , environment = []
+            , workingDirectory = Nothing
+            , timeoutSeconds = Nothing
+            }
+        switchSpec =
+          ProcessSpec
+            { description = "system-switch"
+            , executable = storePath </> "bin" </> "switch-to-configuration"
+            , arguments = ["switch"]
+            , environment = []
+            , workingDirectory = Nothing
+            , timeoutSeconds = Nothing
+            }
+    runAndHandleSystemStep deps cfg job SystemRealise realiseSpec >>= \case
+      Left failure -> pure (Left failure)
+      Right _ ->
+        runAndHandleSystemStep deps cfg job SystemSet setSpec >>= \case
+          Left failure -> pure (Left failure)
+          Right _ ->
+            runAndHandleSystemStep deps cfg job SystemSwitch switchSpec >>= \case
+              Left failure -> pure (Left failure)
+              Right result -> do
+                let state1 = markSystemState timestamp path state0
+                    payload = buildCommandPayload 0 (trimStderrSummary cfg.eventStderrMaxLines result.stderrText) (A.object ["step" A..= ("system-switch" :: Text)])
+                deps.writeState state1
+                postEvent deps cfg job Nothing EventSuccess "system" "System switch complete" payload
+                pure (Right state1)
 
 runActionPhase :: ExecutionDeps -> AgentConfig -> DeployJob -> Text -> Either FailureClassification AgentState -> DeployAction -> IO (Either FailureClassification AgentState)
 runActionPhase deps cfg job timestamp prior action =
@@ -227,27 +227,28 @@ runActionPhase deps cfg job timestamp prior action =
                         Left (failure, verifyResult) -> do
                           postFailure deps cfg job (Just action) failure verifyResult
                           pure (Left failure)
-                        Right () -> do
-                          case buildActionSuccessPayload cfg action result of
-                            Left failure -> do
-                              postFailure deps cfg job (Just action) failure result
-                              pure (Left failure)
-                            Right payload -> do
-                              let stateBeforeReport =
-                                    if isSideEffectAction action.op
-                                      then markActionCompletedLocal timestamp action payload state1
-                                      else
-                                        if shouldMarkUserState action.op && actionStorePath action /= ""
-                                          then markUserState timestamp action.user (actionStorePath action) state1
-                                          else state1
-                              deps.writeState stateBeforeReport
-                              postEvent deps cfg job (Just action.actionId) EventSuccess opName "Action complete" payload
-                              let stateAfterReport =
-                                    if isSideEffectAction action.op
-                                      then markActionReportedFinal timestamp action.actionId stateBeforeReport
-                                      else stateBeforeReport
-                              deps.writeState stateAfterReport
-                              pure (Right stateAfterReport)
+                        Right () -> case buildActionSuccessPayload cfg action result of
+                          Left failure -> do
+                            postFailure deps cfg job (Just action) failure result
+                            pure (Left failure)
+                          Right payload -> do
+                            let stateBeforeReport =
+                                  if isSideEffectAction action.op
+                                    then markActionCompletedLocal timestamp action payload state1
+                                    else
+                                      maybe state1
+                                        (\storePath -> markUserState timestamp action.user storePath state1)
+                                        if shouldMarkUserState action.op
+                                        then actionStorePath action
+                                        else Nothing
+                            deps.writeState stateBeforeReport
+                            postEvent deps cfg job (Just action.actionId) EventSuccess opName "Action complete" payload
+                            let stateAfterReport =
+                                  if isSideEffectAction action.op
+                                    then markActionReportedFinal timestamp action.actionId stateBeforeReport
+                                    else stateBeforeReport
+                            deps.writeState stateAfterReport
+                            pure (Right stateAfterReport)
 
 runAndHandleSystemStep :: ExecutionDeps -> AgentConfig -> DeployJob -> SystemStep -> ProcessSpec -> IO (Either FailureClassification ProcessResult)
 runAndHandleSystemStep deps cfg job step spec = do
@@ -260,17 +261,17 @@ runAndHandleSystemStep deps cfg job step spec = do
           pure (Left failure)
 
 prepareAction :: ExecutionDeps -> UserSession -> DeployAction -> IO (Either (FailureClassification, ProcessResult) FilePath)
-prepareAction deps session action = do
-  let storePathValue = T.unpack (actionStorePath action)
-      UserSession { profile = profilePath } = session
-  if null storePathValue
-    then resolveExecutablePath deps session action
-    else do
-      let realiseSpec =
+prepareAction deps session action =
+  let UserSession { profile = profilePath } = session
+  in case actionStorePath action of
+    Nothing -> resolveExecutablePath deps session action
+    Just path -> do
+      let storePath = T.unpack path
+          realiseSpec =
             ProcessSpec
               { description = actionStepLabel (RealiseAction action.op action.user)
               , executable = "nix-store"
-              , arguments = ["--realise", storePathValue]
+              , arguments = ["--realise", storePath]
               , environment = []
               , workingDirectory = Nothing
               , timeoutSeconds = Nothing
@@ -288,7 +289,7 @@ prepareAction deps session action = do
                   ProcessSpec
                     { description = actionStepLabel (SetProfile action.user)
                     , executable = "nix-env"
-                    , arguments = ["-p", profilePath, "--set", storePathValue]
+                    , arguments = ["-p", profilePath, "--set", storePath]
                     , environment = []
                     , workingDirectory = Nothing
                     , timeoutSeconds = Nothing
@@ -298,15 +299,17 @@ prepareAction deps session action = do
                 else resolveExecutablePath deps session action
 
 resolveExecutablePath :: ExecutionDeps -> UserSession -> DeployAction -> IO (Either (FailureClassification, ProcessResult) FilePath)
-resolveExecutablePath deps session action = do
+resolveExecutablePath deps session action =
   let UserSession { profile = profilePath } = session
       opName = T.unpack (renderActionOp action.op)
       candidates =
-        filter (not . null)
-          [ profilePath </> "bin" </> opName
-          , let storePathValue = T.unpack (actionStorePath action)
-             in if null storePathValue then "" else storePathValue </> "bin" </> opName
+        foldl'
+          (\acc curr -> maybe acc (: acc) curr)
+          []
+          [ actionStorePath action >>= Just . (\s -> s </> "bin" </> opName) . T.unpack
+          , Just $ profilePath </> "bin" </> opName
           ]
+  in
   firstExisting deps candidates >>= \case
     Nothing -> pure (Left (classifyActionFailure action.op (ResolveExecutable action.op action.user) 3, emptyProcessResult))
     Just executablePath -> pure (Right executablePath)
@@ -370,17 +373,18 @@ runActionSpec deps session action spec = do
     else pure (Left (classifyActionFailure action.op (RunAction action.op action.user) result.exitCode, result))
 
 verifyUnitsIfNeeded :: ExecutionDeps -> AgentConfig -> UserSession -> DeployAction -> IO (Either (FailureClassification, ProcessResult) ())
-verifyUnitsIfNeeded deps cfg session action = do
-  let storePathValue = T.unpack (actionStorePath action)
-  if null storePathValue || not (shouldVerifyUnits action.op)
+verifyUnitsIfNeeded deps cfg session action = case actionStorePath action of
+  Nothing -> pure (Right ())
+  Just storePath -> if not (shouldVerifyUnits action.op)
     then pure (Right ())
     else do
-      let systemdUserDir = storePathValue </> "systemd" </> "user"
+      let storePath' = T.unpack storePath
+          systemdUserDir = storePath' </> "systemd" </> "user"
       hasSystemdUserDir <- deps.pathExists systemdUserDir
       if not hasSystemdUserDir
         then pure (Right ())
         else do
-          let wantsDir = defaultWantedUnitsDir storePathValue
+          let wantsDir = defaultWantedUnitsDir storePath'
           wantsDirExists <- deps.pathExists wantsDir
           units <- if wantsDirExists then normalizeWantedUnits <$> deps.listDirectory wantsDir else pure []
           let baseSpec = verifyUnitsSpec session units

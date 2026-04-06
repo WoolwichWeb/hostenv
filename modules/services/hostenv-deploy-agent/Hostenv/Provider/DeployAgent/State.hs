@@ -286,10 +286,9 @@ markActionCompletedLocal timestamp action payload state
         , updatedAt = timestamp
         }
   where
-    stateWithUser =
-      if shouldPersistUserPath action
-        then markUserState timestamp action.user (actionStorePath action) state
-        else state
+    stateWithUser = case actionStorePath action of
+      Nothing -> state
+      Just storePath -> markUserState timestamp action.user storePath state
     startedAtValue =
       case Map.lookup action.actionId state.actions of
         Just existing -> existing.startedAt
@@ -350,7 +349,3 @@ renderActionJournalStatus = \case
 isMatchingCurrent :: DeployJob -> AgentState -> Bool
 isMatchingCurrent job state =
   maybe False (\currentJob -> currentJob.dispatchId == job.dispatchId && currentJob.jobId == job.jobId) state.current
-
-shouldPersistUserPath :: DeployAction -> Bool
-shouldPersistUserPath action =
-  actionStorePath action /= ""
