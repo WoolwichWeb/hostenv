@@ -27,7 +27,7 @@ import qualified Data.Map.Strict as Map
 import Hostenv.Provider.Config (AppConfig(..), DeployConfig(..), loadConfig)
 import Hostenv.Provider.Crypto
 import Hostenv.Provider.DB (DeployAction(DeployAction), DeployBackupSnapshotLookup(..), DeployBackupSnapshotMetadata(..), OAuthCredential(..), buildDeployBackupSnapshotMetadata, classifyDeployBackupSnapshotRows, deployActionId, selectDeployActionIndex)
-import Hostenv.Provider.DeployApi (NodeEvent, NodeEventIntakeDecision(..), ProjectedNodeEvent(..), acceptsNodeEvents, backupSnapshotResponseValue, buildDeployJobEnvelope, classifyProjectedNodeEvent, currentDispatchIdFor, dispatchFingerprint, dispatchForNode, dispatchStableId, extractBearer, isValidDeployWsAuth, normalizeStatus, projectNodeEvent, shouldDispatchJob, validateIntent)
+import Hostenv.Provider.DeployApi (NodeEvent, NodeEventIntakeDecision(..), ProjectedNodeEvent(..), acceptsNodeEvents, backupSnapshotResponseValue, buildDeployJobEnvelope, classifyProjectedNodeEvent, currentDispatchIdFor, dispatchFingerprint, dispatchForNode, dispatchIdForEventValidation, dispatchStableId, extractBearer, isValidDeployWsAuth, normalizeStatus, projectNodeEvent, shouldDispatchJob, validateIntent)
 import Hostenv.Provider.Gitlab
   ( GitlabCredentialContext(..)
   , GitlabError(..)
@@ -109,6 +109,8 @@ main = do
   testWebsocketDispatchFingerprinting
   testDispatchIdentityUsesDispatchedSubset
   testActionlessIntentKeepsDispatchIdentity
+  testDispatchValidationPrefersPersistedSentDispatch
+  testFinalIntentSuccessAcceptsPersistedDispatch
   testPlanParsing
   testNodeOrderWithMigrations
   testNodeOrderWithDnsSkipsNonMigratingEnvDiscovery
@@ -645,6 +647,93 @@ testActionlessIntentKeepsDispatchIdentity = do
       intakeDecision = classifyProjectedNodeEvent False currentDispatchId Nothing expectedDispatchId "success"
   assert (currentDispatchId == Just expectedDispatchId) "actionless deploy intents should still keep a current dispatch identity"
   assert (intakeDecision == AcceptProjectedNodeEvent) "actionless deploy callbacks should be accepted when they report the current dispatch id"
+
+testDispatchValidationPrefersPersistedSentDispatch :: IO ()
+testDispatchValidationPrefersPersistedSentDispatch = do
+  let t0 = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime 0)
+      queuedAction :: DeployAction
+      queuedAction =
+        DeployAction
+          "job-1"
+          "node-b"
+          0
+          "activate"
+          "alice"
+          "queued"
+          Nothing
+          Nothing
+          Nothing
+          t0
+      successfulAction :: DeployAction
+      successfulAction =
+        DeployAction
+          "job-1"
+          "node-b"
+          0
+          "activate"
+          "alice"
+          "success"
+          Nothing
+          Nothing
+          Nothing
+          t0
+      mixedIntent =
+        A.object
+          [ "schemaVersion" A..= (1 :: Int)
+          , "systemPath" A..= ("/nix/store/system-profile" :: T.Text)
+          , "actions" A..=
+              [ A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("activate" :: T.Text)]
+              ]
+          ]
+      sentDispatchId = dispatchStableId "job-1" "node-b" mixedIntent [queuedAction]
+      recomputedDispatchId = currentDispatchIdFor "job-1" "node-b" mixedIntent [successfulAction]
+      expectedDispatchId = dispatchIdForEventValidation (Just sentDispatchId) recomputedDispatchId
+  assert (recomputedDispatchId /= Just sentDispatchId) "recomputed dispatch identity should shrink after the only action succeeds"
+  assert (expectedDispatchId == Just sentDispatchId) "event validation should prefer the persisted sent dispatch id over a recomputed subset id"
+  assert (dispatchIdForEventValidation Nothing recomputedDispatchId == recomputedDispatchId) "event validation should fall back to recomputed dispatch ids when no sent dispatch id exists"
+
+testFinalIntentSuccessAcceptsPersistedDispatch :: IO ()
+testFinalIntentSuccessAcceptsPersistedDispatch = do
+  let t0 = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime 0)
+      queuedAction :: DeployAction
+      queuedAction =
+        DeployAction
+          "job-1"
+          "node-b"
+          0
+          "activate"
+          "alice"
+          "queued"
+          Nothing
+          Nothing
+          Nothing
+          t0
+      successfulAction :: DeployAction
+      successfulAction =
+        DeployAction
+          "job-1"
+          "node-b"
+          0
+          "activate"
+          "alice"
+          "success"
+          Nothing
+          Nothing
+          Nothing
+          t0
+      mixedIntent =
+        A.object
+          [ "schemaVersion" A..= (1 :: Int)
+          , "systemPath" A..= ("/nix/store/system-profile" :: T.Text)
+          , "actions" A..=
+              [ A.object ["user" A..= ("alice" :: T.Text), "op" A..= ("activate" :: T.Text)]
+              ]
+          ]
+      sentDispatchId = dispatchStableId "job-1" "node-b" mixedIntent [queuedAction]
+      recomputedDispatchId = currentDispatchIdFor "job-1" "node-b" mixedIntent [successfulAction]
+      expectedDispatchId = dispatchIdForEventValidation (Just sentDispatchId) recomputedDispatchId
+      intakeDecision = classifyProjectedNodeEvent False expectedDispatchId Nothing sentDispatchId "success"
+  assert (intakeDecision == AcceptProjectedNodeEvent) "final intent success should still be accepted for the original sent dispatch after action success"
 
 testNodeEventProtocolRoundTrip :: IO ()
 testNodeEventProtocolRoundTrip = do

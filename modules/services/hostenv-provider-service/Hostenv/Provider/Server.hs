@@ -37,7 +37,7 @@ import qualified Network.WebSockets as WS
 import Servant
 
 import Hostenv.Provider.Config (AppConfig (..))
-import Hostenv.Provider.DB (deployActionId, loadDeployActions, loadDeployActionsByNode, loadLatestDeployIntentForNode)
+import Hostenv.Provider.DB (deployActionId, loadDeployActions, loadDeployActionsByNode, loadLatestDeployIntentForNode, storeLastSentDispatchId)
 import Hostenv.Provider.DeployApi (NodeEvent(..), acceptsNodeEvents, backupSnapshotHandler, buildDeployJobEnvelope, dispatchFingerprint, dispatchForNode, dispatchStableId, eventHandler, intentByJobHandler, intentByShaHandler, isValidDeployWsAuth, jobActionsHandler, jobStatusHandler, jobStatusesHandler, processNodeEvent, shouldDispatchJob, validateIntent)
 import Hostenv.Provider.Jobs (JobRuntime, duplicateBroadcastChannel, jobSummaryStatus, loadJobById, markJobFailedFromDeploy, markJobSucceededFromDeploy, publishJobUpdate, startJobRuntime)
 import Hostenv.Provider.Logging (ProviderLogFields(..), ProviderSeverity (..), logProviderEvent, providerLogFields)
@@ -312,7 +312,7 @@ runDeployWsBroadcastListener channel dispatchQueue =
 
 runDeployWsDispatcher :: JobRuntime -> AppConfig -> Text -> Text -> TQueue BL.ByteString -> TQueue DeployWsInbound -> TQueue DeployWsDispatchTrigger -> IO ()
 runDeployWsDispatcher runtime cfg requestId nodeName outboundQueue inboundQueue dispatchQueue =
-    let loop mLastDispatchId isResumed = do
+    let loop mLastDispatchFingerprint isResumed = do
             event <- atomically $ (Left <$> readTQueue inboundQueue) `orElse` (Right <$> readTQueue dispatchQueue)
             case event of
                 Left inbound ->
@@ -328,8 +328,8 @@ runDeployWsDispatcher runtime cfg requestId nodeName outboundQueue inboundQueue 
                                     }
                                 )
                                 ["message_id" A..= messageId, "payload" A..= payload]
-                            nextDispatchId <- sendLatestDeployJob cfg requestId nodeName (enqueueJson outboundQueue) Nothing
-                            loop nextDispatchId True
+                            nextDispatchFingerprint <- sendLatestDeployJob cfg requestId nodeName (enqueueJson outboundQueue) Nothing
+                            loop nextDispatchFingerprint True
                         DeployWsNodeEvent event -> do
                             let NodeEvent { jobId = eventJobId } = event
                                 eventNode = T.strip event.node
@@ -352,10 +352,10 @@ runDeployWsDispatcher runtime cfg requestId nodeName outboundQueue inboundQueue 
                                         [ "connection_node" A..= nodeName
                                         , "event_message_id" A..= event.messageId
                                         ]
-                                    loop mLastDispatchId isResumed
+                                    loop mLastDispatchFingerprint isResumed
                                 else do
                                     _ <- processNodeEvent cfg (publishJobUpdate runtime) (markJobFailedFromDeploy runtime) (markJobSucceededFromDeploy runtime) eventJobId event
-                                    loop mLastDispatchId isResumed
+                                    loop mLastDispatchFingerprint isResumed
                         DeployWsClientMessage kindText mMessageId -> do
                             logProviderEvent
                                 ( (providerLogFields "deploy_ws_client_message" ProviderSeverityInfo)
@@ -367,7 +367,7 @@ runDeployWsDispatcher runtime cfg requestId nodeName outboundQueue inboundQueue 
                                     }
                                 )
                                 (["kind" A..= kindText] <> catMaybes [fmap ("message_id" A..=) mMessageId])
-                            loop mLastDispatchId isResumed
+                            loop mLastDispatchFingerprint isResumed
                 Right DispatchTriggerBroadcast ->
                     if isResumed
                         then do
@@ -381,8 +381,8 @@ runDeployWsDispatcher runtime cfg requestId nodeName outboundQueue inboundQueue 
                                     }
                                 )
                                 []
-                            nextDispatchId <- sendLatestDeployJob cfg requestId nodeName (enqueueJson outboundQueue) mLastDispatchId
-                            loop nextDispatchId isResumed
+                            nextDispatchFingerprint <- sendLatestDeployJob cfg requestId nodeName (enqueueJson outboundQueue) mLastDispatchFingerprint
+                            loop nextDispatchFingerprint isResumed
                         else do
                             logProviderEvent
                                 ( (providerLogFields "deploy_dispatch" ProviderSeverityInfo)
@@ -394,8 +394,8 @@ runDeployWsDispatcher runtime cfg requestId nodeName outboundQueue inboundQueue 
                                     }
                                 )
                                 []
-                            loop mLastDispatchId isResumed
-     in loop Nothing False
+                            loop mLastDispatchFingerprint isResumed
+      in loop Nothing False
 
 enqueueJson :: TQueue BL.ByteString -> A.Value -> IO ()
 enqueueJson outboundQueue value =
@@ -477,41 +477,41 @@ rawPreviewField raw =
 
 
 sendLatestDeployJob :: AppConfig -> Text -> Text -> (A.Value -> IO ()) -> Maybe Text -> IO (Maybe Text)
-sendLatestDeployJob cfg requestId nodeName sendValue mLastDispatchId = do
+sendLatestDeployJob cfg requestId nodeName sendValue mLastDispatchFingerprint = do
     mLatest <- loadLatestDeployIntentForNode cfg nodeName
     case mLatest of
         Nothing -> do
             logDispatchSkip requestId Nothing nodeName Nothing Nothing "no_intent"
-            pure mLastDispatchId
+            pure mLastDispatchFingerprint
         Just (jobId, commitSha, payload) ->
             do
                 mJob <- loadJobById cfg jobId
                 case mJob of
                     Nothing -> do
                         logDispatchSkip requestId (Just jobId) nodeName Nothing Nothing "job_missing"
-                        pure mLastDispatchId
+                        pure mLastDispatchFingerprint
                     Just job | not (acceptsNodeEvents (jobSummaryStatus job)) -> do
                         logDispatchSkip requestId (Just jobId) nodeName Nothing (Just (jobSummaryStatus job)) "job_not_waiting"
-                        pure mLastDispatchId
+                        pure mLastDispatchFingerprint
                     Just _ ->
                         case validateIntent payload of
                             Nothing -> do
                                 logDispatchSkip requestId (Just jobId) nodeName Nothing Nothing "invalid_intent"
-                                pure mLastDispatchId
+                                pure mLastDispatchFingerprint
                             Just validated -> do
                                 allJobActions <- loadDeployActions cfg jobId
                                 nodeActions <- loadDeployActionsByNode cfg jobId nodeName
                                 case dispatchForNode validated allJobActions nodeName of
                                     Nothing -> do
                                         logDispatchSkip requestId (Just jobId) nodeName Nothing Nothing "node_not_targeted"
-                                        pure mLastDispatchId
+                                        pure mLastDispatchFingerprint
                                     Just (filteredIntent, filteredActions) -> do
                                         let dispatchFingerprintValue = dispatchFingerprint jobId filteredIntent filteredActions
                                             dispatchId = dispatchStableId jobId nodeName filteredIntent filteredActions
-                                        if not (shouldDispatchJob validated nodeActions filteredActions mLastDispatchId dispatchFingerprintValue)
+                                        if not (shouldDispatchJob validated nodeActions filteredActions mLastDispatchFingerprint dispatchFingerprintValue)
                                             then do
-                                                logDispatchSkip requestId (Just jobId) nodeName (Just dispatchId) Nothing (dispatchSkipReason mLastDispatchId dispatchFingerprintValue)
-                                                pure mLastDispatchId
+                                                logDispatchSkip requestId (Just jobId) nodeName (Just dispatchId) Nothing (dispatchSkipReason mLastDispatchFingerprint dispatchFingerprintValue)
+                                                pure mLastDispatchFingerprint
                                             else do
                                                 now <- getCurrentTime
                                                 sendValue
@@ -525,6 +525,7 @@ sendLatestDeployJob cfg requestId nodeName sendValue mLastDispatchId = do
                                                         filteredIntent
                                                         filteredActions
                                                     )
+                                                storeLastSentDispatchId cfg jobId nodeName dispatchId
                                                 logProviderEvent
                                                     ( (providerLogFields "deploy_dispatch" ProviderSeverityInfo)
                                                         { entryRequestId = Just requestId
@@ -655,8 +656,8 @@ logDispatchSkip requestId mJobId nodeName mDispatchId mStatus reasonText =
         []
 
 dispatchSkipReason :: Maybe Text -> Text -> Text
-dispatchSkipReason mLastDispatchId dispatchFingerprintValue =
-    if mLastDispatchId == Just dispatchFingerprintValue
+dispatchSkipReason mLastDispatchFingerprint dispatchFingerprintValue =
+    if mLastDispatchFingerprint == Just dispatchFingerprintValue
         then "unchanged_dispatch"
         else "no_dispatchable_payload"
 

@@ -22,8 +22,9 @@ module Hostenv.Provider.DeployApi
     , validateIntent
   , acceptsNodeEvents
     , dispatchFingerprint
-    , dispatchStableId
-    , currentDispatchIdFor
+  , dispatchStableId
+  , dispatchIdForEventValidation
+  , currentDispatchIdFor
     , extractBearer
   , dispatchForNode
   , backupSnapshotResponseValue
@@ -55,7 +56,7 @@ import Control.Monad.IO.Class (liftIO)
 import Servant
 
 import Hostenv.Provider.Config (AppConfig(..), lookupDeployNodeAuthToken)
-import Hostenv.Provider.DB (DeployAction(..), DeployBackupSnapshot(..), DeployBackupSnapshotLookup(..), DeployBackupSnapshotMetadata(..), DeployEvent(..), DeployStatus(..), appendDeployEvent, applyDeployActionEvent, deployActionId, deployIntentExists, loadDeployActionById, loadDeployActions, loadDeployActionsByNode, loadDeployBackupSnapshot, loadDeployIntentByJob, loadDeployIntentBySha, loadDeployIntentNodes, loadDeployStatusByNode, loadDeployStatuses)
+import Hostenv.Provider.DB (DeployAction(..), DeployBackupSnapshot(..), DeployBackupSnapshotLookup(..), DeployBackupSnapshotMetadata(..), DeployEvent(..), DeployStatus(..), appendDeployEvent, applyDeployActionEvent, deployActionId, deployIntentExists, loadDeployActionById, loadDeployActions, loadDeployActionsByNode, loadDeployBackupSnapshot, loadDeployIntentByJob, loadDeployIntentBySha, loadDeployIntentNodes, loadDeployStatusByNode, loadDeployStatuses, loadLastSentDispatchId)
 import Hostenv.Provider.Jobs (jobSummaryStatus, loadJobById)
 import Hostenv.Provider.Logging (ProviderLogFields(..), ProviderSeverity(..), logProviderEvent, providerLogFields)
 
@@ -88,6 +89,15 @@ data NodeEventIntakeDecision
   | IgnoreDuplicateProjectedNodeEvent
   | IgnoreStaleProjectedNodeEvent
   | RejectUnknownProjectedNodeEvent
+  deriving (Eq, Show)
+
+data DispatchIdentityDetails = DispatchIdentityDetails
+  { dispatchIdentityId :: Text
+  , dispatchIdentityIntentActionCount :: Int
+  , dispatchIdentityActionIds :: [Text]
+  , dispatchIdentityHasSystemPath :: Bool
+  , dispatchIdentityNodeActionStatuses :: [Text]
+  }
   deriving (Eq, Show)
 
 instance A.FromJSON NodeEvent where
@@ -445,11 +455,21 @@ processNodeEvent cfg emitUpdate recordFailure recordSuccess jobId event = do
                           case projectedEvent.projectedActionId of
                             Nothing -> pure Nothing
                             Just actionId -> loadDeployActionById cfg jobId nodeName actionId
-                        currentDispatchId <- loadCurrentDispatchId cfg jobId nodeName
-                        case classifyProjectedNodeEvent actionTargetRequired currentDispatchId targetAction event.dispatchId statusText of
+                        sentDispatchId <- loadLastSentDispatchId cfg jobId nodeName
+                        recomputedDispatchDetails <- loadCurrentDispatchIdentityDetails cfg jobId nodeName
+                        let recomputedDispatchId = fmap (.dispatchIdentityId) recomputedDispatchDetails
+                            expectedDispatchId = dispatchIdForEventValidation sentDispatchId recomputedDispatchId
+                            currentDispatchExtras =
+                              [ "incoming_dispatch_id" A..= T.strip event.dispatchId
+                              , "sent_dispatch_id" A..= sentDispatchId
+                              , "expected_dispatch_id" A..= expectedDispatchId
+                              , "recomputed_dispatch_present" A..= isJust recomputedDispatchDetails
+                              ]
+                                <> maybe [] dispatchIdentityLogFields recomputedDispatchDetails
+                        case classifyProjectedNodeEvent actionTargetRequired expectedDispatchId targetAction event.dispatchId statusText of
                           RejectUnknownProjectedNodeEvent -> reject ProviderSeverityWarn "unknown_action" err404 []
                           IgnoreDuplicateProjectedNodeEvent -> ignore "duplicate_status" ["action_row_update_count" A..= (0 :: Int)]
-                          IgnoreStaleProjectedNodeEvent -> ignore "stale_dispatch" ["current_dispatch_id" A..= currentDispatchId]
+                          IgnoreStaleProjectedNodeEvent -> ignore "stale_dispatch" currentDispatchExtras
                           AcceptProjectedNodeEvent -> do
                             actionUpdateCount <- applyDeployActionEvent cfg jobId nodeName statusText projectedEvent.projectedPhase projectedEvent.projectedMessage projectedEvent.projectedActionId
                             let actionProjectionExpected = isJust projectedEvent.projectedActionId
@@ -650,9 +670,13 @@ dispatchStableId jobId nodeName filteredIntent actions =
         )
 
 shouldDispatchJob :: A.Value -> [DeployAction] -> [DeployAction] -> Maybe Text -> Text -> Bool
-shouldDispatchJob validatedIntent nodeActions filteredActions mLastDispatchId dispatchId =
+shouldDispatchJob validatedIntent nodeActions filteredActions mLastDispatchFingerprint dispatchFingerprintValue =
   (not (null filteredActions) || (not (intentHasActions validatedIntent) && not (hasPendingActions nodeActions)))
-    && mLastDispatchId /= Just dispatchId
+    && mLastDispatchFingerprint /= Just dispatchFingerprintValue
+
+dispatchIdForEventValidation :: Maybe Text -> Maybe Text -> Maybe Text
+dispatchIdForEventValidation mSentDispatchId mRecomputedDispatchId =
+  firstNonBlank [mSentDispatchId, mRecomputedDispatchId]
 
 classifyProjectedNodeEvent :: Bool -> Maybe Text -> Maybe DeployAction -> Text -> Text -> NodeEventIntakeDecision
 classifyProjectedNodeEvent actionTargetRequired mCurrentDispatchId mTargetAction incomingDispatchId incomingStatus
@@ -666,22 +690,88 @@ classifyProjectedNodeEvent actionTargetRequired mCurrentDispatchId mTargetAction
 
 loadCurrentDispatchId :: AppConfig -> Text -> Text -> IO (Maybe Text)
 loadCurrentDispatchId cfg jobId nodeName = do
+  mDetails <- loadCurrentDispatchIdentityDetails cfg jobId nodeName
+  pure (fmap (.dispatchIdentityId) mDetails)
+
+loadCurrentDispatchIdentityDetails :: AppConfig -> Text -> Text -> IO (Maybe DispatchIdentityDetails)
+loadCurrentDispatchIdentityDetails cfg jobId nodeName = do
   mIntent <- loadDeployIntentByJob cfg jobId nodeName
   case mIntent >>= validateIntent of
     Nothing -> pure Nothing
     Just validatedIntent -> do
       allActions <- loadDeployActions cfg jobId
-      pure (currentDispatchIdFor jobId nodeName validatedIntent allActions)
+      pure (currentDispatchIdentityDetailsFor jobId nodeName validatedIntent allActions)
 
 currentDispatchIdFor :: Text -> Text -> A.Value -> [DeployAction] -> Maybe Text
 currentDispatchIdFor jobId nodeName validatedIntent allActions =
+  fmap (.dispatchIdentityId) (currentDispatchIdentityDetailsFor jobId nodeName validatedIntent allActions)
+
+currentDispatchIdentityDetailsFor :: Text -> Text -> A.Value -> [DeployAction] -> Maybe DispatchIdentityDetails
+currentDispatchIdentityDetailsFor jobId nodeName validatedIntent allActions =
   case dispatchForNode validatedIntent allActions nodeName of
     Just (filteredIntent, filteredActions) ->
-      Just (dispatchStableId jobId nodeName filteredIntent filteredActions)
+      Just (mkDispatchIdentityDetails jobId nodeName filteredIntent filteredActions nodeActions)
     Nothing ->
       if intentHasActions validatedIntent
         then Nothing
-        else Just (dispatchStableId jobId nodeName validatedIntent [])
+        else Just (mkDispatchIdentityDetails jobId nodeName validatedIntent [] nodeActions)
+  where
+    nodeActions = filter ((== nodeName) . (.node)) allActions
+
+mkDispatchIdentityDetails :: Text -> Text -> A.Value -> [DeployAction] -> [DeployAction] -> DispatchIdentityDetails
+mkDispatchIdentityDetails jobId nodeName intentValue filteredActions nodeActions =
+  DispatchIdentityDetails
+    { dispatchIdentityId = dispatchStableId jobId nodeName intentValue filteredActions
+    , dispatchIdentityIntentActionCount = intentActionCountValue intentValue
+    , dispatchIdentityActionIds = map deployActionId filteredActions
+    , dispatchIdentityHasSystemPath = intentHasSystemPath intentValue
+    , dispatchIdentityNodeActionStatuses = map renderActionStatus nodeActions
+    }
+
+dispatchIdentityLogFields :: DispatchIdentityDetails -> [Pair]
+dispatchIdentityLogFields details =
+  [ "current_dispatch_id" A..= details.dispatchIdentityId
+  , "current_dispatch_intent_action_count" A..= details.dispatchIdentityIntentActionCount
+  , "current_dispatch_action_ids" A..= details.dispatchIdentityActionIds
+  , "current_dispatch_has_system_path" A..= details.dispatchIdentityHasSystemPath
+  , "current_node_action_statuses" A..= details.dispatchIdentityNodeActionStatuses
+  ]
+
+intentActionCountValue :: A.Value -> Int
+intentActionCountValue value =
+  case value of
+    A.Object obj ->
+      case KM.lookup (K.fromString "actions") obj of
+        Just (A.Array arr) -> length arr
+        _ -> 0
+    _ -> 0
+
+intentHasSystemPath :: A.Value -> Bool
+intentHasSystemPath value =
+  case value of
+    A.Object obj ->
+      any (fieldPresent obj) ["systemPath", "systemToplevel"]
+    _ -> False
+  where
+    fieldPresent obj fieldName =
+      case KM.lookup (K.fromString fieldName) obj of
+        Just (A.String txt) -> T.strip txt /= ""
+        _ -> False
+
+renderActionStatus :: DeployAction -> Text
+renderActionStatus action =
+  T.intercalate ":" [deployActionId action, action.status]
+
+firstNonBlank :: [Maybe Text] -> Maybe Text
+firstNonBlank candidates =
+  case dropWhile isBlank candidates of
+    (Just value:_) -> Just (T.strip value)
+    _ -> Nothing
+  where
+    isBlank candidate =
+      case candidate of
+        Just value -> T.strip value == ""
+        Nothing -> True
 
 executableActionIndexes :: [DeployAction] -> [DeployAction] -> Set.Set Int
 executableActionIndexes nodeActions allActions =

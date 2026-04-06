@@ -37,6 +37,8 @@ module Hostenv.Provider.DB
   , loadDeployActions
   , loadDeployActionsByNode
   , loadLatestDeployIntentForNode
+  , loadLastSentDispatchId
+  , storeLastSentDispatchId
   , DeployStatus(..)
   , loadDeployStatuses
   , DeployBackupSnapshot(..)
@@ -412,6 +414,8 @@ ensureSchema cfg = withDb cfg $ \conn -> do
          , "CREATE INDEX IF NOT EXISTS deploy_node_events_job_idx ON deploy_node_events (job_id, created_at DESC);"
          , "CREATE INDEX IF NOT EXISTS deploy_node_events_dispatch_action_idx ON deploy_node_events (job_id, node, dispatch_id, action_id);"
          , "CREATE UNIQUE INDEX IF NOT EXISTS deploy_node_events_identity_unique ON deploy_node_events (job_id, node, dispatch_id, COALESCE(action_id, ''), status, COALESCE(phase, '')) WHERE dispatch_id IS NOT NULL;"
+         , "CREATE TABLE IF NOT EXISTS deploy_dispatch_state (job_id TEXT NOT NULL, node TEXT NOT NULL, dispatch_id TEXT NOT NULL, sent_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (job_id, node));"
+         , "CREATE INDEX IF NOT EXISTS deploy_dispatch_state_node_idx ON deploy_dispatch_state (node, updated_at DESC);"
          ]
   forM_ migrations (execute_ conn)
 
@@ -656,6 +660,22 @@ loadLatestDeployIntentForNode cfg nodeName =
     pure $
       listToMaybe rows >>= \(jobId, commitSha, payloadText) ->
         (\payload -> (jobId, commitSha, payload)) <$> decodeJsonText payloadText
+
+loadLastSentDispatchId :: AppConfig -> Text -> Text -> IO (Maybe Text)
+loadLastSentDispatchId cfg jobId nodeName =
+  withDb cfg $ \conn -> do
+    rows <- query conn
+      "SELECT dispatch_id FROM deploy_dispatch_state WHERE job_id = ? AND node = ?"
+      (jobId, nodeName)
+    pure (listToMaybe rows >>= \(Only dispatchId) -> Just dispatchId)
+
+storeLastSentDispatchId :: AppConfig -> Text -> Text -> Text -> IO ()
+storeLastSentDispatchId cfg jobId nodeName dispatchId =
+  withDb cfg $ \conn -> do
+    _ <- execute conn
+      "INSERT INTO deploy_dispatch_state (job_id, node, dispatch_id, sent_at, updated_at) VALUES (?, ?, ?, now(), now()) ON CONFLICT (job_id, node) DO UPDATE SET dispatch_id = EXCLUDED.dispatch_id, sent_at = EXCLUDED.sent_at, updated_at = now()"
+      (jobId, nodeName, dispatchId)
+    pure ()
 
 applyDeployActionEvent :: AppConfig -> Text -> Text -> Text -> Maybe Text -> Maybe Text -> Maybe Text -> IO Int64
 applyDeployActionEvent cfg jobId nodeName rawStatus rawPhase mMessage mActionId =
