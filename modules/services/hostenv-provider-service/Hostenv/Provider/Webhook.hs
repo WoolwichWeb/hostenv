@@ -50,7 +50,7 @@ import Hostenv.Provider.Gitlab (GitlabDeployToken(..), NixGitlabTokenType(..), a
 import Hostenv.Provider.Http (ErrorResponse(..), errorWithBody)
 import Hostenv.Provider.Jobs (JobLogger(..), JobOutcome(..), JobRuntime, NewJob(..), enqueueJob)
 import Hostenv.Provider.Logging (ProviderLogFields(..), ProviderSeverity(..), logProviderEvent, providerLogFields)
-import Hostenv.Provider.Repo (RepoStatus(..))
+import Hostenv.Provider.Repo (RepoStatus(..), withTempGitCredentials)
 import Hostenv.Provider.Service
   ( CommandError(..)
   , CommandSpec(..)
@@ -137,7 +137,7 @@ runWebhookDeployJob cfg hash projectRef logger = do
       case maybeCred of
         Nothing -> do
           logger.logInfo "webhook stage: execute_pipeline"
-          executePipeline existingNixConfig
+          executePipeline existingNixConfig []
         Just cred -> do
           logger.logInfo "webhook stage: refresh_project_credential"
           refreshedCredResult <- ensureProjectCredential cfg cred
@@ -145,35 +145,37 @@ runWebhookDeployJob cfg hash projectRef logger = do
             Left err -> pure (Left (renderGitlabError err))
             Right refreshedCred -> do
               let DeployCredential { host = deployHost, accessToken = deployAccessToken, repoId = deployRepoId } = refreshedCred
-              logger.logInfo "webhook stage: create_deploy_token"
-              deployTokenResult <- createProjectDeployToken cfg deployHost deployAccessToken deployRepoId
-              case deployTokenResult of
-                Left err -> pure (Left (renderGitlabError err))
-                Right deployToken -> do
-                  let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig deployHost NixGitlabPAT deployToken.value
-                  revokeErrRef <- newIORef Nothing
-                  logger.logInfo "webhook stage: execute_pipeline"
-                  pipelineResult <-
-                    executePipeline (Just scopedNixConfig)
-                      `finally` do
-                        logger.logInfo "webhook stage: revoke_deploy_token"
-                        revokeResult <- revokeProjectToken cfg deployHost deployAccessToken deployRepoId deployToken.id
-                        case revokeResult of
-                          Left msg -> writeIORef revokeErrRef (Just msg)
-                          Right _ -> pure ()
-                  revokeErr <- readIORef revokeErrRef
-                  case pipelineResult of
-                    Left err -> pure (Left err)
-                    Right outcome -> do
-                      case revokeErr of
-                        Nothing -> pure ()
-                        Just revokeMsg -> logger.logError ("failed to revoke deploy token: " <> renderGitlabError revokeMsg)
-                      pure (Right outcome)
+              withTempGitCredentials ("https://" <> deployHost) deployAccessToken $ \gitEnvVars -> do
+                logger.logInfo "webhook stage: create_deploy_token"
+                deployTokenResult <- createProjectDeployToken cfg deployHost deployAccessToken deployRepoId
+                case deployTokenResult of
+                  Left err -> pure (Left (renderGitlabError err))
+                  Right deployToken -> do
+                    let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig deployHost NixGitlabPAT deployToken.value
+                    revokeErrRef <- newIORef Nothing
+                    logger.logInfo "webhook stage: execute_pipeline"
+                    pipelineResult <-
+                      executePipeline (Just scopedNixConfig) gitEnvVars
+                        `finally` do
+                          logger.logInfo "webhook stage: revoke_deploy_token"
+                          revokeResult <- revokeProjectToken cfg deployHost deployAccessToken deployRepoId deployToken.id
+                          case revokeResult of
+                            Left msg -> writeIORef revokeErrRef (Just msg)
+                            Right _ -> pure ()
+                    revokeErr <- readIORef revokeErrRef
+                    case pipelineResult of
+                      Left err -> pure (Left err)
+                      Right outcome -> do
+                        case revokeErr of
+                          Nothing -> pure ()
+                          Just revokeMsg -> logger.logError ("failed to revoke deploy token: " <> renderGitlabError revokeMsg)
+                        pure (Right outcome)
   where
-    executePipeline :: Maybe Text -> IO (Either Text JobOutcome)
-    executePipeline mNixConfig = do
+    executePipeline :: Maybe Text -> [(Text, Text)] -> IO (Either Text JobOutcome)
+    executePipeline mNixConfig gitEnvVars = do
       let AppConfig { appWebhookConfig = webhookCfg } = cfg
-          envVars = maybe [] (\cfgText -> [("NIX_CONFIG", cfgText)]) mNixConfig
+          nixEnvVars = maybe [] (\cfgText -> [("NIX_CONFIG", cfgText)]) mNixConfig
+          envVars = gitEnvVars <> nixEnvVars
       supersededBeforePipeline <- isSupersededWebhookJob cfg logger.jobId hash
       case supersededBeforePipeline of
         Left err -> pure (Left err)

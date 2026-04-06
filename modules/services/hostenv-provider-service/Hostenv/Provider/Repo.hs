@@ -9,6 +9,7 @@ module Hostenv.Provider.Repo
   , bootstrapProviderRepo
   , pullProviderRepo
   , pullProviderRepoWithOAuth
+  , withTempGitCredentials
   , ensureGitConfig
   , openUnixSocket
   , isAuthFailure
