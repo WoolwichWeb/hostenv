@@ -3,9 +3,12 @@
 module Hostenv.Provider.UI.Helpers
   ( respondHtml
   , respondHtmlWithHeaders
+  , respondJson
+  , respondJsonWithHeaders
   , respondRedirect
   ) where
 
+import qualified Data.Aeson as A
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
 import Lucid (Html, renderBS)
@@ -23,6 +26,14 @@ respondHtml respond status body =
 respondHtmlWithHeaders :: (Wai.Response -> IO a) -> Status -> [HTTPHeader.Header] -> Html () -> IO a
 respondHtmlWithHeaders respond status headers body =
   respond (responseLBS status (("Content-Type", "text/html; charset=utf-8") : headers) (renderBS body))
+
+respondJson :: A.ToJSON body => (Wai.Response -> IO a) -> Status -> body -> IO a
+respondJson respond status body =
+  respond (responseLBS status [("Content-Type", "application/json; charset=utf-8")] (A.encode body))
+
+respondJsonWithHeaders :: A.ToJSON body => (Wai.Response -> IO a) -> Status -> [HTTPHeader.Header] -> body -> IO a
+respondJsonWithHeaders respond status headers body =
+  respond (responseLBS status (("Content-Type", "application/json; charset=utf-8") : headers) (A.encode body))
 
 respondRedirect :: (Wai.Response -> IO a) -> AppConfig -> Text -> IO a
 respondRedirect respond cfg path =

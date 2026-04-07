@@ -1,14 +1,15 @@
 { inputs, lib, config, ... }:
 let
   inherit (lib) mkOption types;
-  hostenvLib = config.flake.lib.hostenv;
   providerNixosModules = [
+    config.flake.modules.nixos."hostenv-deploy-agent"
     config.flake.modules.nixos.provider-common
     config.flake.modules.nixos.hostenv-top-level
     config.flake.modules.nixos.nginx-frontdoor
     config.flake.modules.nixos.nginx-tuning
     config.flake.modules.nixos.monitoring
   ];
+  libHostenv = config.flake.lib.hostenv;
 
   providerNixosSystem =
     { config
@@ -45,27 +46,14 @@ let
       packages = pkgs.${system};
       envUsers = builtins.attrNames envsForNode;
 
-      hostenvEnvModule = {
-        hostenv = {
+      providerPlanModule = {
+        provider.plan = {
           environments = envsForNode;
           defaultEnvironment = plan.defaultEnvironment or "main";
         };
       };
 
-      userPackages = userInfo:
-        let
-          envOnly = packages.lib.filterAttrs (name: _: builtins.elem name envUsers) userInfo.users.users;
-        in
-        {
-          users.users = packages.lib.concatMapAttrs
-            (name: _user:
-              let
-                userPackage = inputs.${name}.packages.${system}.${(environmentWith name).hostenv.environmentName};
-              in
-              { ${name}.packages = [ userPackage ]; }
-            )
-            envOnly;
-        };
+      userPackages = _userInfo: { };
 
       envUserMismatch =
         let
@@ -79,52 +67,143 @@ let
 
       sopsSecrets = userInfo:
         let
-          hostPkgs = pkgs.${localSystem};
-          readYaml = hostenvLib.readYaml;
-          sopsKeys = readYaml hostPkgs secretsPath;
+          sopsKeys = libHostenv.readYaml pkgs.${localSystem} secretsPath;
+          keysByEnv =
+            if builtins.hasAttr "__hostenv_selected_keys" sopsKeys
+              && builtins.isAttrs sopsKeys.__hostenv_selected_keys
+            then
+              sopsKeys.__hostenv_selected_keys
+            else
+              { };
           orgFromName = name: (environmentWith name).hostenv.organisation;
           orgProjectFromName = name:
             (environmentWith name).hostenv.organisation
             + "_" + (environmentWith name).hostenv.project;
           envOnly = packages.lib.filterAttrs (name: _: builtins.elem name envUsers) userInfo.users.users;
+          selectedServiceEnv =
+            let serviceResolution = userInfo.provider.serviceResolution or null;
+            in
+            if serviceResolution == null then
+              null
+            else
+              let
+                matches = packages.lib.filterAttrs
+                  (_: env:
+                    env.hostenv.organisation == serviceResolution.organisation
+                    && env.hostenv.project == serviceResolution.project
+                    && env.hostenv.environmentName == serviceResolution.environmentName)
+                  envsForNode;
+                values = builtins.attrValues matches;
+              in
+              if values == [ ] then null else builtins.head values;
+          providerServiceSecrets =
+            if selectedServiceEnv != null && userInfo.provider.cache.enable then
+              let
+                userName = selectedServiceEnv.hostenv.userName;
+              in
+              {
+                "${userName}/provider_node_tokens.yaml" = {
+                  owner = userName;
+                  group = userName;
+                  key = "provider_node_tokens_yaml";
+                  mode = "0400";
+                };
+                "${userName}/cache_signing_key" = {
+                  owner = userName;
+                  group = userName;
+                  key = "cache_signing_key";
+                  mode = "0400";
+                };
+                "${userName}/cache_auth_password" = {
+                  owner = userName;
+                  group = userName;
+                  key = "cache_auth_password";
+                  mode = "0400";
+                };
+              }
+            else
+              { };
+
+          keysForEnv = name:
+            if builtins.hasAttr name keysByEnv
+              && builtins.isAttrs keysByEnv.${name}
+            then
+              keysByEnv.${name}
+            else
+              { };
+
+          keysFromManifest = name: keyGroup:
+            let
+              envSelection = keysForEnv name;
+              raw =
+                if builtins.hasAttr keyGroup envSelection
+                then envSelection.${keyGroup}
+                else [ ];
+            in
+            if builtins.isList raw
+            then builtins.filter builtins.isString raw
+            else [ ];
+
+          effectiveKeys = name: keyGroup: secretCfg:
+            if !(secretCfg.enable or false)
+            then
+              [ ]
+            else
+              let declared = secretCfg.keys or [ ];
+              in if declared == [ ] then keysFromManifest name keyGroup else declared;
+
+          hasSecretKey = bucket: key:
+            builtins.hasAttr bucket sopsKeys
+            && builtins.isAttrs sopsKeys.${bucket}
+            && builtins.hasAttr key sopsKeys.${bucket};
+
+          resolveSecretSource = name: key:
+            let
+              projectBucket = orgProjectFromName name;
+              orgBucket = orgFromName name;
+            in
+            if hasSecretKey name key then
+              name
+            else if hasSecretKey projectBucket key then
+              projectBucket
+            else if hasSecretKey orgBucket key then
+              orgBucket
+            else
+              throw ''
+                The secrets file does not contain '${key}' for '${name}'.
+
+                From the hosting root directory, run `sops secrets/provider.yaml` and add:
+
+                - '${name}/${key}' (this environment) or
+                - '${projectBucket}/${key}' (this project) or
+                - '${orgBucket}/${key}' (this organisation).
+              '';
         in
         {
-          sops.secrets = packages.lib.concatMapAttrs
-            (
-              name: _user:
-                let
-                  name' =
-                    if builtins.hasAttr name sopsKeys
-                    then name
-                    else if builtins.hasAttr (orgProjectFromName name) sopsKeys
-                    then orgProjectFromName name
-                    else if builtins.hasAttr (orgFromName name) sopsKeys
-                    then orgFromName name
-                    else
-                      throw ''
-                        The secrets file does not contain any secrets for '${name}'
-
-                        From the hosting root directory, run `sops secrets/secrets.yaml` and add an entry for:
-
-                        - '${name}' (this environment) or
-                        - '${orgProjectFromName name}' (this project) or
-                        - '${orgFromName name}' (this organisation).
-                      '';
-                in
-                {
-                  "${name}/backups_secret" = {
-                    owner = name;
-                    group = name;
-                    key = "${name'}/backups_secret";
-                  };
-                  "${name}/backups_env" = {
-                    owner = name;
-                    group = name;
-                    key = "${name'}/backups_env";
-                  };
-                }
-            )
-            envOnly;
+          sops.secrets =
+            (packages.lib.concatMapAttrs
+              (
+                name: _user:
+                  let
+                    envCfg = environmentWith name;
+                    hostenvCfg = envCfg.hostenv or { };
+                    projectSecretKeys = effectiveKeys name "project" (hostenvCfg.projectSecrets or { });
+                    envSecretKeys = effectiveKeys name "environment" (envCfg.secrets or { });
+                    secretKeys = lib.unique ([ "backups_secret" "backups_env" ] ++ projectSecretKeys ++ envSecretKeys);
+                  in
+                  builtins.listToAttrs (map
+                    (secretKey: {
+                      name = "${name}/${secretKey}";
+                      value = {
+                        owner = name;
+                        group = name;
+                        key = "${resolveSecretSource name secretKey}/${secretKey}";
+                      };
+                    })
+                    secretKeys)
+              )
+              envOnly)
+            // providerServiceSecrets;
         };
 
     in
@@ -145,7 +224,7 @@ let
             ]
             ++ providerNixosModules
             ++ [
-              hostenvEnvModule
+              providerPlanModule
             ]
             ++ nodeModules
             ++ [
@@ -162,22 +241,14 @@ let
     { inputs
     , config
     , nixpkgs
-    , deploy-rs
-    , systems
     , localSystem
     , nodesPath
     , secretsPath
     , nodeModules ? [ ]
     , nodeSystems ? { }
-    , nodeAddresses ? { }
-    , nodeSshPorts ? { }
-    , nodeSshOpts ? { }
-    , nodeRemoteBuild ? { }
-    , nodeMagicRollback ? { }
-    , nodeAutoRollback ? { }
     }:
     let
-      forEachSystem = nixpkgs.lib.genAttrs (import systems);
+      forEachSystem = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
       pkgs = forEachSystem (system: import nixpkgs { inherit system; });
 
       nixosSystem = node: providerNixosSystem {
@@ -225,69 +296,15 @@ let
         envPkgs // nodePkgs
       );
 
-      deploy.nodes = builtins.mapAttrs
-        (node: _: {
-          # Allow local demos and non-standard network topologies to override
-          # default `<node>.<hostenvHostname>` SSH addressing.
-          hostname =
-            if builtins.hasAttr node nodeAddresses
-            then nodeAddresses.${node}
-            else node + "." + config.hostenvHostname;
-          # Keep port override and raw ssh options separate so callers can use
-          # either `nodeSshPorts` or `nodeSshOpts` without duplicating flags.
-          sshOpts =
-            let
-              portOpts =
-                if builtins.hasAttr node nodeSshPorts
-                then [ "-p" (builtins.toString nodeSshPorts.${node}) ]
-                else [ ];
-              extraOpts =
-                if builtins.hasAttr node nodeSshOpts
-                then nodeSshOpts.${node}
-                else [ ];
-            in
-            portOpts ++ extraOpts;
-          fastConnection = true;
-          remoteBuild =
-            if builtins.hasAttr node nodeRemoteBuild
-            then nodeRemoteBuild.${node}
-            else false;
-          magicRollback =
-            if builtins.hasAttr node nodeMagicRollback
-            then nodeMagicRollback.${node}
-            else true;
-          autoRollback =
-            if builtins.hasAttr node nodeAutoRollback
-            then nodeAutoRollback.${node}
-            else true;
-          profilesOrder = [ "system" ] ++ builtins.attrNames (environmentsWith node).${localSystem};
-          profiles =
-            let
-              remoteSystem = nodes.${node}.pkgs.stdenv.hostPlatform.system;
-            in
-            {
-              system = {
-                sshUser = config.deployUser or "deploy";
-                user = "root";
-                path = deploy-rs.lib.${remoteSystem}.activate.nixos nodes.${node};
-              };
-            } // builtins.mapAttrs
-              (name: environment: {
-                user = name;
-                # Environment activation must run in a real user session so
-                # systemd --user units can start reliably.
-                sshUser = name;
-                path = deploy-rs.lib.${remoteSystem}.activate.custom environment "./bin/activate";
-              })
-              (environmentsWith node).${remoteSystem};
-          checks = { };
-        })
-        config.nodes;
-
       nixosConfigurations = nodes;
     };
 in
 {
+  # By necessity a lot of these options are duplicated here and in
+  # modules/nixos/provider-common.nix
+  # This is due to the evaluation boundary between the outer flake, plan.json,
+  # and the generated/ flake.
+  # @todo: find a clean way to obviate this code duplication.
   options.provider = {
     enable = mkOption {
       type = types.bool;
@@ -300,85 +317,111 @@ in
       default = "example.invalid";
       description = "Hostenv control-plane hostname (must be set by provider).";
     };
-    deployUser = mkOption {
-      type = types.str;
-      default = "deploy";
-      description = "SSH/sudo user used for deploy-rs operations.";
-    };
+
     letsEncrypt = mkOption { type = types.attrs; default = { adminEmail = "admin@example.invalid"; acceptTerms = true; }; };
-    deployPublicKeys = mkOption { type = types.listOf types.str; default = [ ]; description = "SSH public keys for deploy user; must be set by provider."; };
+
     nixSigning = mkOption {
       type = types.submodule {
         options = {
           trustedPublicKeys = mkOption {
             type = types.listOf types.str;
             default = [ ];
-            description = "Public Nix signing keys trusted by provider nodes for deploy-rs copy checks.";
+            description = "Public Nix signing keys trusted by provider nodes.";
           };
         };
       };
       default = { };
       description = "Nix signing key configuration shared by generated plan and node configuration.";
     };
+
+    deploy = mkOption {
+      type = types.submodule {
+        options = {
+          enable = lib.mkEnableOption "hostenv-deploy-agent node agent";
+          providerApiBaseUrl = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = "Base URL for provider deploy APIs used by node workers.";
+          };
+          nodeAuthTokenFile = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = "Default path for node bearer token used in hostenv-deploy-agent requests.";
+          };
+          nodeAuthTokenFiles = mkOption {
+            type = types.attrsOf types.str;
+            default = { };
+            description = "Optional map of node name -> hostenv-deploy-agent bearer token file path.";
+          };
+          reconnectSeconds = mkOption {
+            type = types.int;
+            default = 5;
+            description = "Provider-deploy reconnect delay in seconds.";
+          };
+        };
+      };
+      default = { };
+      description = "Provider-deploy settings propagated to provider nodes.";
+    };
+
+    serviceResolution = mkOption {
+      type = types.nullOr (types.submodule {
+        options = {
+          organisation = mkOption {
+            type = types.str;
+            description = "Organisation that owns the provider-service environment.";
+          };
+          project = mkOption {
+            type = types.str;
+            description = "Project that owns the provider-service environment.";
+          };
+          environmentName = mkOption {
+            type = types.str;
+            description = "Environment name that runs the provider service and receives provider secrets.";
+          };
+        };
+      });
+      default = null;
+      description = "Provider environment selector used for provider-service secrets.";
+    };
+
+    cache = mkOption {
+      type = types.submodule {
+        options = {
+          enable = lib.mkEnableOption "provider-service cache server secret wiring";
+        };
+      };
+      default = { };
+      description = "Controls provider-service cache secret projection to the selected service environment.";
+    };
+
     nodeFor = mkOption {
       type = types.attrs;
       default = { default = null; };
     };
+
     nodeSystems = mkOption {
       type = types.attrs;
       default = { };
       description = "Map of node name -> system string (e.g. x86_64-linux, aarch64-linux).";
     };
-    nodeAddresses = mkOption {
-      type = types.attrsOf types.str;
+
+    nodes = mkOption {
+      type = types.attrsOf (types.submodule {
+        options.configuration = mkOption {
+          type = types.path;
+        };
+      });
       default = { };
-      description = "Optional map of node name -> SSH hostname/IP override for deploy-rs.";
+      description = "Declarative node configuration. Each attribute defines a node with a configuration.nix path.";
     };
-    nodeSshPorts = mkOption {
-      type = types.attrsOf types.int;
-      default = { };
-      description = "Optional map of node name -> SSH port override for deploy-rs.";
-    };
-    nodeSshOpts = mkOption {
-      type = types.attrsOf (types.listOf types.str);
-      default = { };
-      description = "Optional map of node name -> extra SSH options for deploy-rs.";
-    };
-    nodeRemoteBuild = mkOption {
-      type = types.attrsOf types.bool;
-      default = { };
-      description = "Optional map of node name -> whether deploy-rs should build on the remote host.";
-    };
-    nodeMagicRollback = mkOption {
-      type = types.attrsOf types.bool;
-      default = { };
-      description = "Optional map of node name -> deploy-rs magicRollback override.";
-    };
-    nodeAutoRollback = mkOption {
-      type = types.attrsOf types.bool;
-      default = { };
-      description = "Optional map of node name -> deploy-rs autoRollback override.";
-    };
+
     nodeModules = mkOption {
       type = types.listOf (types.oneOf [ types.path types.str ]);
       default = [ ];
       description = "Extra NixOS modules applied to every node. Strings are paths relative to the provider root.";
     };
-    statePath = mkOption {
-      type = types.path;
-      default =
-        if inputs ? self
-        then inputs.self + /generated/state.json
-        else builtins.throw "provider.statePath: inputs.self is required to resolve defaults; set provider.statePath explicitly.";
-    };
-    planPath = mkOption {
-      type = types.path;
-      default =
-        if inputs ? self
-        then inputs.self + /generated/plan.json
-        else builtins.throw "provider.planPath: inputs.self is required to resolve defaults; set provider.planPath explicitly.";
-    };
-    planSource = mkOption { type = types.enum [ "disk" "eval" ]; default = "eval"; };
+
     generatedFlake = mkOption {
       type = types.submodule {
         options = {
@@ -409,6 +452,7 @@ in
       default = { };
       description = "Customization for generated/flake.nix inputs and per-environment inputs.";
     };
+
     cloudflare = mkOption {
       type = types.submodule {
         options = {
@@ -425,8 +469,7 @@ in
     nixosModules = providerNixosModules;
     nixosSystem = providerNixosSystem;
     deployOutputs = providerDeployOutputs;
-    deployPublicKeys = config.provider.deployPublicKeys;
-    deployUser = config.provider.deployUser;
     nixSigning = config.provider.nixSigning;
+    deploy = config.provider.deploy;
   };
 }

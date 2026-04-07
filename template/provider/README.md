@@ -4,16 +4,41 @@ This template boots a provider flake that consumes hostenv projects and generate
 
 ## Quick start
 
-1. Copy this template (or `nix flake init -t gitlab:woolwichweb/hostenv#provider` once exported).
-2. If you use direnv, run `direnv allow` to load the dev shell from `.envrc`.
-3. Set `provider.hostenvHostname`, `provider.deployPublicKeys`, and your node mappings in `flake.nix`.
-4. The template ships starter node stubs:
-   - `nodes/sample/` (copy to `nodes/<node>/` and edit).
-5. Create `secrets/secrets.yaml` with `sops` (provider uses this at deploy time).
-6. Create `generated/state.json` (can be `{}` initially).
-7. Add NixOS node configs under `nodes/<node>/configuration.nix` (with `system.stateVersion`).
-8. Run `nix run .#hostenv-provider -- plan` to write `generated/{flake.nix,plan.json,state.json}`.
-9. Deploy using your tool of choice (e.g. deploy-rs) pointing at `generated/flake.nix`.
+1. Initialize the provider flake:
+
+   ```bash
+   nix flake init -t gitlab:woolwichweb/hostenv#provider
+   ```
+
+2. Configure your nodes:
+   - Copy `nodes/sample/` to `nodes/<node>/` for each server
+   - Edit `nodes/<node>/configuration.nix` (set hostname, `system.stateVersion`)
+   - Set `provider.hostenvHostname` in `flake.nix`
+
+3. Enter the devshell to auto-generate files:
+
+   ```bash
+   direnv allow  # or: nix develop
+   ```
+
+   This creates `secrets/provider.yaml`, `generated/state.json`, and generates provider node tokens if deploy is enabled.
+
+4. Generate the deployment plan:
+
+   ```bash
+   nix run .#hostenv-provider -- plan
+   ```
+
+That's it. The provider now tracks state and secrets automatically. Files that don't exist are created on first run. Provider node tokens and cache signing/auth secrets generate when you enter the devshell.
+
+## Auto-init details
+
+The provider devshell includes an auto-initialization hook that runs when you enter the shell:
+
+- **`secrets/provider.yaml`** - Created automatically with a generated age key if missing. You can rotate to proper sops recipients later.
+- **`generated/state.json`** - Created as an empty JSON object if missing.
+- **Provider node tokens** - Generated automatically when `provider.deploy.enable = true` and tokens don't exist.
+- **Cache signing/auth secrets** - Generated automatically when missing: `cache_signing_key`, `cache_auth_password`, and `generated/cache-public-key.txt`.
 
 ## Admin UI template
 
@@ -39,6 +64,5 @@ Edit `flake.template.nix` to make structural changes while keeping the marker:
 ## Customisation tips
 
 - Ensure client project inputs point at the `.hostenv` flake (e.g. `dir=.hostenv`) and export `outputs.lib.hostenv`.
-- Use `planSource = "disk"` if you want to reuse an existing plan.json without re-evaluating inputs.
 - Add extra Haskell deps for the dev shell via `provider.haskellDevPackages` (appended to `hostenv.haskell.devPackages`).
 - Add provider-specific modules under `modules/` in your repo (e.g. `modules/nixos/<aspect>.nix`) and import them alongside `hostenv.flakeModules.provider` using your preferred module loader.

@@ -1,4 +1,6 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -10,6 +12,7 @@ module Hostenv.Provider.Service
   , nodesForProject
   , projectForHash
   , projectHashFor
+  , nodesForProjectWithDnsWith
   , renderProjectInputs
   , renderFlakeTemplate
   , renderGitCredentials
@@ -20,16 +23,23 @@ module Hostenv.Provider.Service
   , CommandSpec(..)
   , CommandOutput(..)
   , CommandError(..)
-  , DeployResult(..)
+  , NodeAction(..)
+  , NodeIntent(..)
+  , WebhookUpdateStatus(..)
   , WebhookResult(..)
+  , WebhookStage(..)
+  , renderWebhookStage
   , WebhookError(..)
   , CommandRunner
   , PlanLoader
+  , StageNotifier
   , runWebhookWith
+  , renderDeployIntentDocument
   ) where
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (IOException, try)
-import Control.Monad (foldM, forM)
+import Control.Monad (forM)
 import Data.Aeson (Value (..))
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Key as K
@@ -40,17 +50,22 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (toLower)
-import Data.List (find, foldl', nub, sort, sortOn)
+import Data.Foldable (toList)
+import Data.List (foldl', intersect, isInfixOf, nub, sort, sortOn)
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
+import System.Directory (createDirectoryIfMissing, removeFile, renameFile)
+import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..), die)
+import System.FilePath ((</>))
 import System.Process (readProcessWithExitCode)
 
-import "cryptonite" Crypto.Hash (SHA256)
-import "cryptonite" Crypto.MAC.HMAC (HMAC (..), hmac)
+import "crypton" Crypto.Hash (SHA256)
+import "crypton" Crypto.MAC.HMAC (HMAC (..), hmac)
+import Hostenv.Provider.PrevNodeDiscovery qualified as PrevNode
 
 
 constantTimeEq :: BS.ByteString -> BS.ByteString -> Bool
@@ -80,6 +95,14 @@ lookupObj key obj = case KM.lookup key obj of
   Just (Object o) -> Just o
   _ -> Nothing
 
+lookupTextList :: KM.Key -> KM.KeyMap Value -> [Text]
+lookupTextList key obj = case KM.lookup key obj of
+  Just (Array arr) -> mapMaybe asText (toList arr)
+  _ -> []
+  where
+    asText (String t) = Just t
+    asText _ = Nothing
+
 nodesForProject :: Text -> Text -> BL.ByteString -> Either Text [Text]
 nodesForProject org project raw = do
   envs <- decodeEnvironments raw
@@ -108,7 +131,10 @@ nodesForProject org project raw = do
       _ -> Nothing
 
 nodesForProjectWithDns :: Text -> Text -> BL.ByteString -> IO (Either Text [Text])
-nodesForProjectWithDns org project raw = do
+nodesForProjectWithDns = nodesForProjectWithDnsWith dnsPointsTo
+
+nodesForProjectWithDnsWith :: (Text -> Text -> IO Bool) -> Text -> Text -> BL.ByteString -> IO (Either Text [Text])
+nodesForProjectWithDnsWith pointsTo org project raw = do
   case decodePlanRoot raw of
     Left err -> pure (Left err)
     Right root ->
@@ -122,10 +148,6 @@ nodesForProjectWithDns org project raw = do
                 hostenvObj <- pure (lookupObj (K.fromString "hostenv") envObj)
                 let envName = K.toText kEnv
                 let envUserName = fromMaybe envName (hostenvObj >>= lookupText (K.fromString "userName"))
-                let vhosts =
-                      case lookupObj (K.fromString "virtualHosts") envObj of
-                        Just vhostsObj -> map (K.toText . fst) (KM.toList vhostsObj)
-                        Nothing -> []
                 case hostenvObj of
                   Just hostenvObj' -> do
                     case (lookupText (K.fromString "organisation") hostenvObj', lookupText (K.fromString "project") hostenvObj') of
@@ -133,20 +155,39 @@ nodesForProjectWithDns org project raw = do
                         case lookupText (K.fromString "node") envObj of
                           Just node -> do
                             let prevNode = lookupText (K.fromString "previousNode") envObj
-                            resolvedPrev <- resolvePrevNodeFromDns hostenvHostname envUserName vhosts prevNode
-                            pure (Just (EnvNodeInfo node resolvedPrev))
+                            let migrateBackups = lookupTextList (K.fromString "migrations") envObj
+                            pure (Just (envUserName, node, prevNode, migrateBackups))
                           Nothing -> pure Nothing
                       _ -> pure Nothing
                   Nothing -> pure Nothing
               _ -> pure Nothing
-          let nodes = sort (nub (map envNode matches))
-          let deps =
-                [ (envNode info, prev)
-                | info <- matches
-                , Just prev <- [info.envPrevNode]
-                , prev /= info.envNode
-                ]
-          pure (Right (orderNodes nodes deps))
+          let rootNodeNames =
+                case lookupObj (K.fromString "nodes") root of
+                  Nothing -> []
+                  Just nodesObj -> map (K.toText . fst) (KM.toList nodesObj)
+          let discoveryNodes =
+                S.toList $
+                  S.fromList $
+                    filter (not . T.null) (rootNodeNames <> map (\(_, node, _, _) -> node) matches)
+
+          resolvedMatches <- forM matches $ \(envUserName, node, prevNode, migrateBackups) -> do
+            resolvedPrev <-
+              if null migrateBackups
+                then pure (Right prevNode)
+                else resolvePrevNodeFromDnsWith pointsTo hostenvHostname discoveryNodes envUserName node prevNode
+            pure ((\prev -> EnvNodeInfo node prev) <$> resolvedPrev)
+
+          case sequence resolvedMatches of
+            Left err -> pure (Left err)
+            Right resolvedInfos -> do
+              let nodes = sort (nub (map envNode resolvedInfos))
+              let deps =
+                    [ (envNode info, prev)
+                    | info <- resolvedInfos
+                    , Just prev <- [info.envPrevNode]
+                    , prev /= info.envNode
+                    ]
+              pure (Right (orderNodes nodes deps))
 
 data EnvNodeInfo = EnvNodeInfo
   { envNode :: Text
@@ -278,9 +319,10 @@ decodeEnvironmentsFromRoot root =
 stripDot :: Text -> Text
 stripDot = T.dropWhileEnd (== '.')
 
-digRR :: Text -> Text -> IO [Text]
-digRR name rr = do
-  let args = ["+short", T.unpack name, T.unpack rr]
+digRRRaw :: Maybe Text -> Text -> Text -> IO [Text]
+digRRRaw mNameserver name rr = do
+  let serverArgs = maybe [] (\nameserver -> ["@" <> T.unpack nameserver]) mNameserver
+  let args = serverArgs <> ["+short", T.unpack name, T.unpack rr]
   res <- try (readProcessWithExitCode "dig" args "") :: IO (Either IOException (ExitCode, String, String))
   case res of
     Left _ -> pure []
@@ -289,37 +331,86 @@ digRR name rr = do
        in pure (filter (not . T.null) (map toLine (lines out)))
     Right _ -> pure []
 
-digCNAMEs :: Text -> IO [Text]
-digCNAMEs name = digRR name "CNAME"
+zoneCandidates :: Text -> [Text]
+zoneCandidates name =
+  let labels = filter (not . T.null) (T.splitOn "." (T.toLower (stripDot name)))
+      labelCount = length labels
+      indices =
+        if labelCount < 2
+          then []
+          else [0 .. labelCount - 2]
+   in map (\idx -> T.intercalate "." (drop idx labels)) indices
 
-discoverPrevNodeFromDns :: Text -> Text -> [Text] -> IO (Maybe Text)
-discoverPrevNodeFromDns hostenvHostname envName vhosts =
-  let hostenvHost = T.toLower hostenvHostname
-      suffix = "." <> hostenvHost
-      envNameNorm = T.toLower envName
-      envHost =
-        if T.isSuffixOf suffix envNameNorm
-          then envNameNorm
-          else envNameNorm <> suffix
-      go [] = pure Nothing
-      go (vh:rest) = do
-        cn <- digCNAMEs vh
-        case find (T.isSuffixOf suffix) cn of
-          Just cname ->
-            case T.stripSuffix suffix cname of
-              Just node | node /= "" -> pure (Just node)
-              _ -> pure Nothing
-          Nothing -> go rest
-   in go (envHost : vhosts)
+findAuthoritativeNameservers :: Text -> IO [Text]
+findAuthoritativeNameservers name = go (zoneCandidates name)
+  where
+    go [] = pure []
+    go (candidate:rest) = do
+      nameservers <- digRRRaw Nothing candidate "NS"
+      if null nameservers
+        then go rest
+        else pure nameservers
 
-resolvePrevNodeFromDns :: Maybe Text -> Text -> [Text] -> Maybe Text -> IO (Maybe Text)
-resolvePrevNodeFromDns hostenvHostname envName vhosts prevNode =
+digRR :: Text -> Text -> IO [Text]
+digRR name rr = do
+  authoritativeNameservers <- findAuthoritativeNameservers name
+  case authoritativeNameservers of
+    [] -> digRRRaw Nothing name rr
+    nameservers -> do
+      answersByNameserver <- forM nameservers (\nameserver -> digRRRaw (Just nameserver) name rr)
+      let nonEmptyAnswers = filter (not . null) answersByNameserver
+      if null nonEmptyAnswers
+        then digRRRaw Nothing name rr
+        else pure (S.toList (S.fromList (concat nonEmptyAnswers)))
+
+digAddrs :: Text -> IO [Text]
+digAddrs name = do
+  a4 <- digRR name "A"
+  a6 <- digRR name "AAAA"
+  pure (a4 <> a6)
+
+dnsPointsTo :: Text -> Text -> IO Bool
+dnsPointsTo vhost expectedHost = do
+  let expectHostNorm = T.toLower expectedHost
+  cn <- digRR vhost "CNAME"
+  if expectHostNorm `elem` cn
+    then pure True
+    else do
+      expIPs <- digAddrs expectedHost
+      vhIPs <- digAddrs vhost
+      pure (not (null (expIPs `intersect` vhIPs)))
+
+resolvePrevNodeFromDns :: Maybe Text -> [Text] -> Text -> Text -> Maybe Text -> IO (Either Text (Maybe Text))
+resolvePrevNodeFromDns = resolvePrevNodeFromDnsWith dnsPointsTo
+
+resolvePrevNodeFromDnsWith :: (Text -> Text -> IO Bool) -> Maybe Text -> [Text] -> Text -> Text -> Maybe Text -> IO (Either Text (Maybe Text))
+resolvePrevNodeFromDnsWith pointsTo hostenvHostname discoveryNodes envName currentNode prevNode =
   case prevNode of
-    Just prev -> pure (Just prev)
+    Just prev -> pure (Right (Just prev))
     Nothing ->
       case hostenvHostname of
-        Nothing -> pure Nothing
-        Just host -> discoverPrevNodeFromDns host envName vhosts
+        Nothing -> pure (Right Nothing)
+        Just host -> do
+          matchedNodes <- PrevNode.discoverMatchingNodes pointsTo host envName discoveryNodes
+          let resolution = PrevNode.resolvePrevNodeFromMatches currentNode matchedNodes
+          let envHost = PrevNode.canonicalHostInDomain envName host
+          case resolution of
+            PrevNode.PrevNodeResolved node -> pure (Right (Just node))
+            PrevNode.PrevNodeSkip -> pure (Right Nothing)
+            PrevNode.PrevNodeAmbiguousFatal nodes ->
+              pure
+                ( Left
+                    ( "previous-node discovery for "
+                        <> envName
+                        <> " via "
+                        <> envHost
+                        <> " is ambiguous: matched nodes "
+                        <> T.intercalate ", " nodes
+                        <> " (current node: "
+                        <> currentNode
+                        <> "). Set previousNode explicitly."
+                    )
+                )
 
 renderProjectInputs :: [(Text, Text)] -> Text
 renderProjectInputs inputs =
@@ -408,41 +499,92 @@ data CommandError = CommandError
   } deriving (Eq, Show)
 
 
-data DeployResult = DeployResult
-  { deployNode :: Text
-  , deploySuccess :: Bool
-  , deployStdout :: Text
-  , deployStderr :: Text
+data NodeAction = NodeAction
+  { op :: Text
+  , user :: Text
+  , fromNode :: Maybe Text
+  , toNode :: Maybe Text
+  , migrations :: [Text]
   } deriving (Eq, Show)
 
-instance A.ToJSON DeployResult where
-  toJSON d =
+instance A.ToJSON NodeAction where
+  toJSON action =
     A.object
-      [ "node" A..= d.deployNode
-      , "success" A..= d.deploySuccess
-      , "stdout" A..= d.deployStdout
-      , "stderr" A..= d.deployStderr
+      [ "op" A..= action.op
+      , "user" A..= action.user
+      , "fromNode" A..= action.fromNode
+      , "toNode" A..= action.toNode
+      , "migrations" A..= action.migrations
       ]
 
+data NodeIntent = NodeIntent
+  { node :: Text
+  , actions :: [NodeAction]
+  } deriving (Eq, Show)
+
+instance A.ToJSON NodeIntent where
+  toJSON intent =
+    A.object
+      [ "node" A..= intent.node
+      , "actions" A..= intent.actions
+      ]
+
+data WebhookUpdateStatus
+  = WebhookUpdateCommitted
+  | WebhookUpdateNoop
+  deriving (Eq, Show)
+
+instance A.ToJSON WebhookUpdateStatus where
+  toJSON status =
+    case status of
+      WebhookUpdateCommitted -> A.String "committed"
+      WebhookUpdateNoop -> A.String "noop"
 
 data WebhookResult = WebhookResult
-  { webhookNodes :: [Text]
-  , webhookDeploys :: [DeployResult]
-  , webhookOk :: Bool
+  { nodes :: [Text]
+  , intents :: [NodeIntent]
+  , commitSha :: Text
+  , updateStatus :: WebhookUpdateStatus
   } deriving (Eq, Show)
 
 instance A.ToJSON WebhookResult where
   toJSON r =
     A.object
-      [ "ok" A..= r.webhookOk
-      , "nodes" A..= r.webhookNodes
-      , "deployments" A..= r.webhookDeploys
+      [ "nodes" A..= r.nodes
+      , "intents" A..= r.intents
+      , "commitSha" A..= r.commitSha
+      , "update" A..= r.updateStatus
       ]
 
 
+data WebhookStage
+  = StageSyncRepo
+  | StageUpdateFlake
+  | StagePlan
+  | StageDnsGate
+  | StageLoadPlan
+  | StageResolveNodes
+  | StageDeriveIntents
+  | StageWriteIntent
+  | StageFinalizeRepo
+  deriving (Eq, Show)
+
+renderWebhookStage :: WebhookStage -> Text
+renderWebhookStage stage =
+  case stage of
+    StageSyncRepo -> "sync_repository"
+    StageUpdateFlake -> "update_flake"
+    StagePlan -> "generate_plan"
+    StageDnsGate -> "dns_gate"
+    StageLoadPlan -> "load_plan"
+    StageResolveNodes -> "resolve_nodes"
+    StageDeriveIntents -> "derive_intents"
+    StageWriteIntent -> "write_deploy_intent"
+    StageFinalizeRepo -> "finalize_repository"
+
 data WebhookError
-  = WebhookCommandError CommandError
-  | WebhookPlanError Text
+  = WebhookCommandError WebhookStage CommandError
+  | WebhookPlanError WebhookStage Text
   deriving (Eq, Show)
 
 
@@ -450,36 +592,266 @@ type CommandRunner = CommandSpec -> IO (Either CommandError CommandOutput)
 
 type PlanLoader = IO BL.ByteString
 
-runWebhookWith :: CommandRunner -> PlanLoader -> WebhookConfig -> ProjectRef -> IO (Either WebhookError WebhookResult)
-runWebhookWith runner loadPlan cfg ref = do
+type StageNotifier = WebhookStage -> IO ()
+
+runWebhookWith :: StageNotifier -> CommandRunner -> PlanLoader -> WebhookConfig -> ProjectRef -> IO (Either WebhookError WebhookResult)
+runWebhookWith notifyStage runner loadPlan cfg ref = do
+  previousPlanOnDisk <- readExistingPlan cfg.whPlanPath
+  previousPlanFromGit <- readPreviousPlanFromGit cfg.whWorkDir
+  forceInitialIntents <- lookupEnv "HOSTENV_PROVIDER_FORCE_INITIAL_INTENTS"
+  previousIntentOnDisk <- readExistingPlan (cfg.whWorkDir </> "generated" </> "deploy-intent.json")
+  let previousPlanBaseline = case previousPlanFromGit of
+        Just planBytes -> Just planBytes
+        Nothing -> previousPlanOnDisk
+  let previousPlan =
+        if forceInitialIntents == Just "1" && previousIntentOnDisk == Nothing
+          then Nothing
+          else previousPlanBaseline
   let inputName = ref.prOrg <> "__" <> ref.prProject
-  step runner (CommandSpec "nix" ["flake", "update", inputName] (cfg.whWorkDir)) >>= \case
+  step StageSyncRepo (CommandSpec "git" ["pull", "--rebase", "--autostash"] (cfg.whWorkDir)) >>= \case
     Left err -> pure (Left err)
     Right _ ->
-      step runner (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] (cfg.whWorkDir)) >>= \case
+      step StageUpdateFlake (CommandSpec "nix" ["flake", "update", "hostenv", inputName] (cfg.whWorkDir)) >>= \case
         Left err -> pure (Left err)
         Right _ ->
-          step runner (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "dns-gate"] (cfg.whWorkDir)) >>= \case
+          step StagePlan (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "plan"] (cfg.whWorkDir)) >>= \case
             Left err -> pure (Left err)
-            Right _ -> do
-              planRaw <- loadPlan
-              nodesForProjectWithDns ref.prOrg ref.prProject planRaw >>= \case
-                Left err -> pure (Left (WebhookPlanError err))
-                Right nodes -> do
-                  deploys <- foldM (deployNode runner cfg) [] nodes
-                  let ok = all (\d -> d.deploySuccess) deploys
-                  pure (Right (WebhookResult nodes deploys ok))
+            Right _ ->
+              step StageDnsGate (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "dns-gate"] (cfg.whWorkDir)) >>= \case
+                Left err -> pure (Left err)
+                Right _ -> do
+                  notifyStage StageLoadPlan
+                  planRaw <- loadPlan
+                  notifyStage StageResolveNodes
+                  orderedNodesResult <- nodesForProjectWithDns ref.prOrg ref.prProject planRaw
+                  case orderedNodesResult of
+                    Left err -> pure (Left (WebhookPlanError StageResolveNodes err))
+                    Right orderedNodes -> do
+                      notifyStage StageDeriveIntents
+                      case deriveNodeIntents previousPlan planRaw ref of
+                        Left err -> pure (Left (WebhookPlanError StageDeriveIntents err))
+                        Right intentsByNode -> do
+                          notifyStage StageWriteIntent
+                          writeIntentResult <- writeDeployIntent cfg ref orderedNodes intentsByNode
+                          case writeIntentResult of
+                            Left err -> pure (Left (WebhookPlanError StageWriteIntent err))
+                            Right intentsOrdered -> do
+                              finalizeResult <- finalizeRepoUpdate notifyStage runner cfg ref
+                              case finalizeResult of
+                                Left err -> pure (Left err)
+                                Right (commitSha, committed) ->
+                                  let updateStatus = if committed then WebhookUpdateCommitted else WebhookUpdateNoop
+                                   in pure
+                                        ( Right
+                                            WebhookResult
+                                              { nodes = map (.node) intentsOrdered
+                                              , intents = intentsOrdered
+                                              , commitSha = commitSha
+                                              , updateStatus = updateStatus
+                                              }
+                                        )
+
   where
-    step run spec = do
-      res <- run spec
+    step stage spec = do
+      notifyStage stage
+      res <- runner spec
       case res of
-        Left e -> pure (Left (WebhookCommandError e))
+        Left e -> pure (Left (WebhookCommandError stage e))
         Right _ -> pure (Right ())
 
-    deployNode run config acc node = do
-      res <- run (CommandSpec "nix" ["run", ".#hostenv-provider", "--", "deploy", "--node", node] (config.whWorkDir))
+data EnvSnapshot = EnvSnapshot
+  { userName :: Text
+  , node :: Text
+  , migrations :: [Text]
+  , payload :: Value
+  }
+
+projectEnvironments :: ProjectRef -> BL.ByteString -> Either Text (M.Map Text EnvSnapshot)
+projectEnvironments ref raw = do
+  envs <- decodeEnvironments raw
+  pure $
+    foldl'
+      (\acc (envKey, envValue) ->
+        case extract envKey envValue of
+          Nothing -> acc
+          Just envSnapshot -> M.insert envSnapshot.userName envSnapshot acc)
+      M.empty
+      (KM.toList envs)
+  where
+    extract envKey value =
+      case value of
+        Object envObj -> do
+          hostenvObj <- lookupObj (K.fromString "hostenv") envObj
+          envOrg <- lookupText (K.fromString "organisation") hostenvObj
+          envProject <- lookupText (K.fromString "project") hostenvObj
+          if envOrg == ref.prOrg && envProject == ref.prProject
+            then do
+              envNode <- lookupText (K.fromString "node") envObj
+              let envUser = fromMaybe (K.toText envKey) (lookupText (K.fromString "userName") hostenvObj)
+              let envMigrations = lookupTextList (K.fromString "migrations") envObj
+              pure
+                EnvSnapshot
+                  { userName = envUser
+                  , node = envNode
+                  , migrations = envMigrations
+                  , payload = value
+                  }
+            else
+              Nothing
+        _ -> Nothing
+
+deriveNodeIntents :: Maybe BL.ByteString -> BL.ByteString -> ProjectRef -> Either Text (M.Map Text [NodeAction])
+deriveNodeIntents previousPlan currentPlan ref = do
+  let oldSnapshots =
+        case previousPlan of
+          Nothing -> Right M.empty
+          Just previousRaw ->
+            case projectEnvironments ref previousRaw of
+              Left _ -> Right M.empty
+              Right parsed -> Right parsed
+  oldSnapshots' <- oldSnapshots
+  newSnapshots <- projectEnvironments ref currentPlan
+  let allUsers = S.toList (S.union (M.keysSet oldSnapshots') (M.keysSet newSnapshots))
+  pure (foldl' (deriveUserActions oldSnapshots' newSnapshots) M.empty allUsers)
+
+deriveUserActions :: M.Map Text EnvSnapshot -> M.Map Text EnvSnapshot -> M.Map Text [NodeAction] -> Text -> M.Map Text [NodeAction]
+deriveUserActions oldSnapshots newSnapshots intents userName =
+  case (M.lookup userName oldSnapshots, M.lookup userName newSnapshots) of
+    (Nothing, Just newEnv) ->
+      addAction intents newEnv.node (NodeAction "activate" userName Nothing (Just newEnv.node) [])
+    (Just oldEnv, Nothing) ->
+      addAction intents oldEnv.node (NodeAction "deactivate" userName (Just oldEnv.node) Nothing [])
+    (Just oldEnv, Just newEnv) ->
+      if oldEnv.node /= newEnv.node
+        then case newEnv.migrations of
+          [] ->
+            let moved =
+                  addAction intents oldEnv.node (NodeAction "deactivate" userName (Just oldEnv.node) (Just newEnv.node) [])
+             in addAction moved newEnv.node (NodeAction "activate" userName (Just oldEnv.node) (Just newEnv.node) [])
+          migrations ->
+            let withBackup =
+                  addAction intents oldEnv.node (NodeAction "backup" userName (Just oldEnv.node) (Just newEnv.node) migrations)
+                withRestore =
+                  addAction withBackup newEnv.node (NodeAction "restore" userName (Just oldEnv.node) (Just newEnv.node) migrations)
+                withDeactivate =
+                  addAction withRestore oldEnv.node (NodeAction "deactivate" userName (Just oldEnv.node) (Just newEnv.node) migrations)
+             in addAction withDeactivate newEnv.node (NodeAction "activate" userName (Just oldEnv.node) (Just newEnv.node) migrations)
+        else if oldEnv.payload /= newEnv.payload
+          then addAction intents newEnv.node (NodeAction "reload" userName (Just newEnv.node) (Just newEnv.node) [])
+          else intents
+    (Nothing, Nothing) -> intents
+
+addAction :: M.Map Text [NodeAction] -> Text -> NodeAction -> M.Map Text [NodeAction]
+addAction intents nodeName action =
+  M.insertWith (\new old -> old <> new) nodeName [action] intents
+
+renderDeployIntentDocument :: ProjectRef -> [NodeIntent] -> A.Value
+renderDeployIntentDocument ref ordered =
+  A.object
+    [ "schemaVersion" A..= (1 :: Int)
+    , "project" A..= A.object ["org" A..= ref.prOrg, "project" A..= ref.prProject]
+    , "forceSystemRestart" A..= False
+    , "nodes" A..=
+        M.fromList
+          [ (intent.node, A.object ["schemaVersion" A..= (1 :: Int), "actions" A..= intent.actions])
+          | intent <- ordered
+          ]
+    ]
+
+writeDeployIntent
+  :: WebhookConfig
+  -> ProjectRef
+  -> [Text]
+  -> M.Map Text [NodeAction]
+  -> IO (Either Text [NodeIntent])
+writeDeployIntent cfg ref orderedNodes intentsByNode = do
+  let ordered =
+        let keys = M.keys intentsByNode
+            remaining = filter (`notElem` orderedNodes) (sort keys)
+            nodeOrder = orderedNodes <> remaining
+         in mapMaybe (\n -> fmap (\actions -> NodeIntent n actions) (M.lookup n intentsByNode)) nodeOrder
+  let intentDocument = renderDeployIntentDocument ref ordered
+  let generatedDir = cfg.whWorkDir </> "generated"
+  createDirectoryIfMissing True generatedDir
+  writeResult <- writeDeployIntentFile (generatedDir </> "deploy-intent.json") (A.encode intentDocument)
+  case writeResult of
+    Left err -> pure (Left err)
+    Right () -> pure (Right ordered)
+
+finalizeRepoUpdate :: StageNotifier -> CommandRunner -> WebhookConfig -> ProjectRef -> IO (Either WebhookError (Text, Bool))
+finalizeRepoUpdate notifyStage runner cfg ref = do
+  notifyStage StageFinalizeRepo
+  step (CommandSpec "git" ["add", "-A", "generated"] cfg.whWorkDir) >>= \case
+    Left err -> pure (Left err)
+    Right _ ->
+      step (CommandSpec "git" ["add", "-A", "flake.nix", "flake.lock"] cfg.whWorkDir) >>= \case
+        Left err -> pure (Left err)
+        Right _ -> do
+          statusResult <- runner (CommandSpec "git" ["status", "--porcelain", "--", "generated", "flake.nix", "flake.lock"] cfg.whWorkDir)
+          case statusResult of
+            Left err -> pure (Left (WebhookCommandError StageFinalizeRepo err))
+            Right statusOut -> do
+              let hasChanges = T.strip statusOut.outStdout /= ""
+              headResult <- runner (CommandSpec "git" ["rev-parse", "HEAD"] cfg.whWorkDir)
+              case headResult of
+                Left err -> pure (Left (WebhookCommandError StageFinalizeRepo err))
+                Right out ->
+                  pure (Right (T.strip out.outStdout, hasChanges))
+  where
+    step spec = do
+      res <- runner spec
       case res of
-        Right out ->
-          pure (acc ++ [DeployResult node True out.outStdout out.outStderr])
+        Left e -> pure (Left (WebhookCommandError StageFinalizeRepo e))
+        Right _ -> pure (Right ())
+
+readExistingPlan :: FilePath -> IO (Maybe BL.ByteString)
+readExistingPlan path = do
+  result <- try (BL.readFile path) :: IO (Either IOException BL.ByteString)
+  case result of
+    Left _ -> pure Nothing
+    Right bytes -> pure (Just bytes)
+
+readPreviousPlanFromGit :: FilePath -> IO (Maybe BL.ByteString)
+readPreviousPlanFromGit workDir = do
+  result <- try (readProcessWithExitCode "git" ["-C", workDir, "show", "HEAD:generated/plan.json"] "") :: IO (Either IOException (ExitCode, String, String))
+  case result of
+    Left _ -> pure Nothing
+    Right (ExitSuccess, stdoutText, _) ->
+      if null stdoutText
+        then pure Nothing
+        else pure (Just (BL.fromStrict (BSC.pack stdoutText)))
+    Right _ -> pure Nothing
+
+writeDeployIntentFile :: FilePath -> BL.ByteString -> IO (Either Text ())
+writeDeployIntentFile path bytes = go (0 :: Int)
+  where
+    maxAttempts = 20
+    baseDelayMicros = 100000
+
+    go attempt = do
+      let tmpPath = path <> ".tmp-" <> show attempt
+      writeResult <- try (BL.writeFile tmpPath bytes) :: IO (Either IOException ())
+      case writeResult of
         Left err ->
-          pure (acc ++ [DeployResult node False err.errStdout err.errStderr])
+          if attempt + 1 < maxAttempts && isRetryableWriteError err
+            then do
+              threadDelay (baseDelayMicros * (attempt + 1))
+              go (attempt + 1)
+            else pure (Left (T.pack (show err)))
+        Right () -> do
+          renameResult <- try (renameFile tmpPath path) :: IO (Either IOException ())
+          case renameResult of
+            Right () -> pure (Right ())
+            Left err -> do
+              _ <- try (removeFile tmpPath) :: IO (Either IOException ())
+              if attempt + 1 < maxAttempts && isRetryableWriteError err
+                then do
+                  threadDelay (baseDelayMicros * (attempt + 1))
+                  go (attempt + 1)
+                else pure (Left (T.pack (show err)))
+
+isRetryableWriteError :: IOException -> Bool
+isRetryableWriteError err =
+  let msg = map toLower (show err)
+      lockHints = ["resource busy", "file is locked", "text file busy"]
+   in any (`isInfixOf` msg) lockHints

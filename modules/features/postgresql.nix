@@ -5,9 +5,11 @@
     { config, lib, pkgs, ... }:
     let
       cfg = config.services.postgresql;
-    
+      unixSocketPermissions = cfg.settings.unix_socket_permissions or null;
+      escapeSqlLiteral = s: lib.replaceStrings [ "'" ] [ "''" ] s;
+
       defaultDataDir = "/home/${cfg.user}/.local/share/postgresql";
-    
+
       renderSetting = key: value:
         if builtins.isBool value then
           "${key} = ${if value then "on" else "off"}"
@@ -17,74 +19,86 @@
           "${key} = '${value}'"
         else
           "${key} = ${toString value}";
-    
+
       settingsText = lib.concatStringsSep "\n" (lib.mapAttrsToList renderSetting cfg.settings);
-    
+
       configFile = pkgs.writeText "postgresql.conf" settingsText;
-    
+
       hbaFile = pkgs.writeText "pg_hba.conf" cfg.authentication;
-    
-      ensureDbSql = lib.concatMapStrings (db: ''
-        DO $$
-        BEGIN
-          IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '${db}') THEN
-            CREATE DATABASE "${db}";
-          END IF;
-        END $$;
-      '') cfg.ensureDatabases;
-    
-      ensureUserSql = lib.concatMapStrings (u: let
-        userName = u.name;
-        perms = u.ensurePermissions or { };
-        grantSql = lib.concatMapStrings (dbName: let
-          privs = perms.${dbName};
-        in ''
-          GRANT ${privs} ON DATABASE "${dbName}" TO "${userName}";
-        '') (builtins.attrNames perms);
-      in ''
-        DO $$
-        BEGIN
-          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${userName}') THEN
-            CREATE ROLE "${userName}" LOGIN;
-          END IF;
-        END $$;
-        ${grantSql}
-      '') cfg.ensureUsers;
-    
+
+      ensureDbSql = lib.concatMapStrings
+        (db:
+          let
+            dbLiteral = escapeSqlLiteral db;
+          in
+          ''
+            SELECT format('CREATE DATABASE %I', '${dbLiteral}')
+            WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '${dbLiteral}')
+            \gexec
+          ''
+        )
+        cfg.ensureDatabases;
+
+      ensureUserSql = lib.concatMapStrings
+        (u:
+          let
+            userName = u.name;
+            perms = u.ensurePermissions or { };
+            grantSql = lib.concatMapStrings
+              (dbName:
+                let
+                  privs = perms.${dbName};
+                in
+                ''
+                  GRANT ${privs} ON DATABASE "${dbName}" TO "${userName}";
+                '')
+              (builtins.attrNames perms);
+          in
+          ''
+            DO $$
+            BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${userName}') THEN
+                CREATE ROLE "${userName}" LOGIN;
+              END IF;
+            END $$;
+            ${grantSql}
+          '')
+        cfg.ensureUsers;
+
     in
     {
       options.services.postgresql = {
         enable = lib.mkEnableOption "PostgreSQL server";
-    
+
         package = lib.mkOption {
           type = lib.types.package;
           default = pkgs.postgresql;
-          description = "Which PostgreSQL derivation to use.";
+          description = "The PostgreSQL package to use.";
         };
-    
+
         user = lib.mkOption {
           type = lib.types.str;
           description = "User account under which PostgreSQL runs.";
         };
-    
+
         dataDir = lib.mkOption {
           type = lib.types.str;
           default = defaultDataDir;
           description = "Data directory for PostgreSQL.";
         };
-    
+
         runtimeDir = lib.mkOption {
           type = lib.types.str;
           default = "${config.hostenv.runtimeRoot}/user/${cfg.user}";
           description = "Runtime directory for PostgreSQL socket files.";
         };
-    
+
         settings = lib.mkOption {
           type = lib.types.attrsOf (lib.types.oneOf [ lib.types.str lib.types.bool lib.types.int ]);
           default = { };
           description = "PostgreSQL configuration (postgresql.conf).";
         };
-    
+
         authentication = lib.mkOption {
           type = lib.types.lines;
           default = ''
@@ -92,19 +106,19 @@
           '';
           description = "pg_hba.conf contents.";
         };
-    
+
         initialScript = lib.mkOption {
           type = lib.types.nullOr lib.types.path;
           default = null;
           description = "Optional SQL script executed on first startup.";
         };
-    
+
         ensureDatabases = lib.mkOption {
           type = lib.types.listOf lib.types.str;
           default = [ ];
           description = "Databases to ensure exist.";
         };
-    
+
         ensureUsers = lib.mkOption {
           type = lib.types.listOf (lib.types.submodule {
             options = {
@@ -122,14 +136,14 @@
           default = [ ];
           description = "Users to ensure exist and permissions to grant.";
         };
-    
+
         configFile = lib.mkOption {
           type = lib.types.path;
           default = configFile;
           defaultText = ''A configuration file automatically generated by Nix.'';
           description = "Override the postgresql.conf file.";
         };
-    
+
         hbaFile = lib.mkOption {
           type = lib.types.path;
           default = hbaFile;
@@ -137,38 +151,57 @@
           description = "Override the pg_hba.conf file.";
         };
       };
-    
+
       config = lib.mkIf cfg.enable {
-        services.postgresql.settings = lib.mkMerge [
+        assertions = [
           {
-            listen_addresses = "";
-            unix_socket_directories = cfg.runtimeDir;
-            unix_socket_permissions = 770;
+            assertion =
+              unixSocketPermissions == null
+              || (
+                builtins.isInt unixSocketPermissions
+                && unixSocketPermissions >= 0
+                && unixSocketPermissions <= 511
+              );
+            message = ''
+              services.postgresql.settings.unix_socket_permissions must be an integer between 0 and 511.
+              PostgreSQL expects this setting in decimal file-mode form (e.g. use 504 for octal 0770).
+            '';
           }
-          cfg.settings
         ];
-    
+
+        services.postgresql.settings.listen_addresses = lib.mkDefault "";
+        services.postgresql.settings.unix_socket_directories = lib.mkDefault cfg.runtimeDir;
+        # 0770 in octal, expressed as decimal as expected by PostgreSQL.
+        services.postgresql.settings.unix_socket_permissions = lib.mkDefault 504;
+
         systemd.services.postgresql = {
           description = "PostgreSQL Server";
           after = [ "network.target" ];
           wantedBy = [ "default.target" ];
           restartTriggers = [ cfg.configFile cfg.hbaFile ];
-    
+
           preStart = ''
             mkdir -p "${cfg.dataDir}"
             mkdir -p "${cfg.runtimeDir}"
-            if [ ! -e "${cfg.dataDir}/PG_VERSION" ]; then
+
+            if [ -e "${cfg.dataDir}/PG_VERSION" ] && [ ! -e "${cfg.dataDir}/global/pg_control" ]; then
+              echo "resetting partial cluster in ${cfg.dataDir}" >&2
+              mv "${cfg.dataDir}" "${cfg.dataDir}.broken-review-then-delete"
+              mkdir -p "${cfg.dataDir}"
+            fi
+
+            if [ ! -e "${cfg.dataDir}/PG_VERSION" ] || [ ! -e "${cfg.dataDir}/global/pg_control" ]; then
               ${cfg.package}/bin/initdb -D "${cfg.dataDir}" --auth=peer --username="${cfg.user}"
               touch "${cfg.dataDir}/postgresql_init"
             fi
           '';
-    
+
           script = ''
             exec ${cfg.package}/bin/postgres -D "${cfg.dataDir}" \
               -c config_file="${cfg.configFile}" \
               -c hba_file="${cfg.hbaFile}"
           '';
-    
+
           postStart = ''
             for i in $(seq 1 30); do
               if [ -S "${cfg.runtimeDir}/.s.PGSQL.5432" ]; then
@@ -193,6 +226,36 @@
             rm -f "${cfg.dataDir}/postgresql_init"
           '';
         };
+
+        profile =
+          let
+            defaultDb = if lib.length cfg.ensureDatabases == 1 then builtins.head cfg.ensureDatabases else "postgres";
+
+            psqlScript = pkgs.writeShellScriptBin "psql" ''
+              export PGHOST="${cfg.runtimeDir}"
+              export PGUSER="${cfg.user}"
+              export PGDATABASE="${defaultDb}"
+              exec ${cfg.package}/bin/psql "$@"
+            '';
+
+            pgDumpScript = pkgs.writeShellScriptBin "pg_dump" ''
+              export PGHOST="${cfg.runtimeDir}"
+              export PGUSER="${cfg.user}"
+              export PGDATABASE="${defaultDb}"
+              exec ${cfg.package}/bin/pg_dump "$@"
+            '';
+
+            pgDumpAllScript = pkgs.writeShellScriptBin "pg_dumpall" ''
+              export PGHOST="${cfg.runtimeDir}"
+              export PGUSER="${cfg.user}"
+              exec ${cfg.package}/bin/pg_dumpall "$@"
+            '';
+          in
+          [
+            psqlScript
+            pgDumpScript
+            pgDumpAllScript
+          ];
       };
     }
   ;

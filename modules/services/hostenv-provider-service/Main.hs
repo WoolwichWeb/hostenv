@@ -1,21 +1,48 @@
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main where
 
-import Hostenv.Provider.Command (runCommandOrDie)
-import Hostenv.Provider.Config (appWorkDir, loadConfig)
-import Hostenv.Provider.DB (ensureSchema)
+import Control.Monad (when)
+import qualified Data.Text as T
+import Hostenv.Provider.Config (hasGitlabAuth, loadConfig)
+import Hostenv.Provider.DB (ensureSchema, syncUsers)
+import Hostenv.Provider.Jobs (ensureJobSchema)
 import Hostenv.Provider.Project (syncFlakeFromDb)
-import Hostenv.Provider.Repo (ensureGitConfig, ensureProviderRepo)
+import Hostenv.Provider.Repo (RepoStatus(..), ensureGitConfig, ensureProviderRepo)
 import Hostenv.Provider.Server (runServer)
-import Hostenv.Provider.Service (CommandSpec (..))
+import System.Environment (getArgs)
+import System.Exit (exitFailure)
+import System.IO (hPutStrLn, stderr)
 
 main :: IO ()
 main = do
-    cfg <- loadConfig
-    ensureProviderRepo cfg
+    args <- getArgs
+    configPath <- case args of
+      ["--config", path] -> pure path
+      _ -> dieWithUsage
+    cfg <- loadConfig configPath
     ensureGitConfig cfg
+    repoStatusResult <- ensureProviderRepo cfg
+    repoStatus <- case repoStatusResult of
+      Left err -> dieWith (T.unpack err)
+      Right status -> pure status
     ensureSchema cfg
-    syncFlakeFromDb cfg
-    runCommandOrDie cfg (CommandSpec "nix" ["flake", "update"] (appWorkDir cfg))
-    runServer cfg
+    ensureJobSchema cfg
+    syncUsers cfg
+    when (repoStatus == RepoReady && hasGitlabAuth cfg) $ do
+      syncResult <- syncFlakeFromDb cfg
+      case syncResult of
+        Left err -> hPutStrLn stderr ("Provider repository startup sync skipped:\n" <> T.unpack err)
+        Right _ -> pure ()
+    runServer cfg repoStatus
+
+dieWithUsage :: IO a
+dieWithUsage = do
+  hPutStrLn stderr "usage: hostenv-provider-service --config <path>"
+  exitFailure
+
+dieWith :: String -> IO a
+dieWith msg = do
+  hPutStrLn stderr msg
+  exitFailure

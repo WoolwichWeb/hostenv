@@ -10,10 +10,6 @@
       inputs.flake-parts.follows = "flake-parts";
       inputs.phps.follows = "phps";
     };
-    deploy-rs = {
-      url = "github:serokell/deploy-rs";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     sops-nix = {
       url = "github:Mic92/sops-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -49,13 +45,27 @@
 
       provider = {
         hostenvHostname = "hosting.example.com";
-        deployPublicKeys = [ "ssh-ed25519 AAAA..." ];
         nodeSystems = { default = "x86_64-linux"; };
-        nodeFor = { production = "node-a"; testing = "node-a"; development = "node-a"; };
+        nodeFor = {
+          # FIXME: Configure which environments map to which nodes
+          # production = "node-a";
+          # staging = "node-a";
+          # development = "node-a";
+        };
 
-        # Add NixOS system-level configuration that's common to all servers here:
-        # nodeModules = [ "nodes/common.nix" ];
-        planSource = "eval";
+        # Auto-discover nodes from the nodes/ directory:
+        # nodes = let
+        #   nodeDirs = builtins.attrNames (builtins.readDir ./nodes);
+        # in lib.genAttrs nodeDirs (node: {
+        #   configuration = ./nodes/${node}/configuration.nix;
+        # });
+
+        # Enable hostenv-deploy-agent node agent wiring.
+        deploy = {
+          enable = true;
+          providerApiBaseUrl = "https://hosting.example.com";
+          nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
+        };
 
         # Hostenv generates a new flake in `generated/flake.nix`, which
         # includes each project environment as a separate Flake input. These

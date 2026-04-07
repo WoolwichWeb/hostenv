@@ -23,10 +23,16 @@
 
       provider = {
         hostenvHostname = "hosting.example.com";
-        deployPublicKeys = [ "ssh-ed25519 AAAA..." ]; # replace me
         nodeSystems = { default = "x86_64-linux"; };
         nodeFor = { default = "node-a"; production = "node-a"; testing = "node-a"; development = "node-a"; };
-        planSource = "eval";
+        # deploy = {
+        #   enable = true;
+        #   providerApiBaseUrl = "https://hosting.example.com";
+        #   nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
+        # };
+        # Note: cache client configuration is automatic when provider-service
+        # is enabled (provider.serviceResolution points to an environment with
+        # services.hostenv-provider.enable = true).
       };
     };
 }

@@ -24,8 +24,8 @@
     phps = {
       url = "github:fossar/nix-phps";
     };
-    deploy-rs = {
-      url = "github:serokell/deploy-rs";
+    addressable-content = {
+      url = "gitlab:woolwichweb/addressable-content";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };

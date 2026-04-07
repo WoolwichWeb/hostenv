@@ -1,0 +1,78 @@
+cabal-version: 2.4
+name: hostenv-deploy-agent
+version: 0.1.0.0
+synopsis: Hostenv provider deploy node agent runtime
+license: LicenseRef-OtherLicense
+build-type: Simple
+
+common common-settings
+  default-language: GHC2021
+  default-extensions:
+    BlockArguments
+    DeriveGeneric
+    DuplicateRecordFields
+    LambdaCase
+    NoFieldSelectors
+    OverloadedRecordDot
+    OverloadedStrings
+  ghc-options: -Wall
+  build-depends:
+    async,
+    base >=4.14 && <5,
+    aeson,
+    bytestring,
+    containers,
+    crypton,
+    directory,
+    filepath,
+    http-client,
+    http-client-tls,
+    http-types,
+    memory,
+    network-uri,
+    process,
+    stm,
+    text,
+    time,
+    unix,
+    websockets,
+    wuss
+
+executable hostenv-deploy-agent
+  import: common-settings
+  main-is: Main.hs
+  hs-source-dirs: .
+  other-modules:
+    Hostenv.Provider.DeployAgent.Config
+    Hostenv.Provider.DeployAgent.Dispatcher
+    Hostenv.Provider.DeployAgent.Executor
+    Hostenv.Provider.DeployAgent.Executor.Classify
+    Hostenv.Provider.DeployAgent.Executor.Process
+    Hostenv.Provider.DeployAgent.Logging
+    Hostenv.Provider.DeployAgent.ProviderApi
+    Hostenv.Provider.DeployAgent.Protocol
+    Hostenv.Provider.DeployAgent.State
+    Hostenv.Provider.DeployAgent.Supervisor
+    Hostenv.Provider.DeployAgent.Systemd
+    Hostenv.Provider.DeployAgent.Transport.WebSocket
+    Hostenv.Provider.DeployAgent.UserSession
+
+test-suite hostenv-deploy-agent-tests
+  import: common-settings
+  type: exitcode-stdio-1.0
+  main-is: Test.hs
+  hs-source-dirs: .
+  other-modules:
+    Hostenv.Provider.DeployAgent.Config
+    Hostenv.Provider.DeployAgent.Dispatcher
+    Hostenv.Provider.DeployAgent.Executor
+    Hostenv.Provider.DeployAgent.Executor.Classify
+    Hostenv.Provider.DeployAgent.Executor.Process
+    Hostenv.Provider.DeployAgent.Logging
+    Hostenv.Provider.DeployAgent.ProviderApi
+    Hostenv.Provider.DeployAgent.Protocol
+    Hostenv.Provider.DeployAgent.State
+    Hostenv.Provider.DeployAgent.Supervisor
+    Hostenv.Provider.DeployAgent.Systemd
+    Hostenv.Provider.DeployAgent.Transport.WebSocket
+    Hostenv.Provider.DeployAgent.UserSession

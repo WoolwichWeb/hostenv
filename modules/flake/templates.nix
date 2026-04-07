@@ -1,4 +1,5 @@
 { inputs, lib, ... }:
+
 {
   config = lib.mkIf (!(inputs ? hostenv)) {
     flake.templates = {
@@ -19,12 +20,30 @@
         path = ../../template/provider;
         description = "Hostenv provider template";
         welcomeText = ''
-          ## Hostenv provider flake
+          ## Hostenv Provider Setup
 
-          - Set `provider.*` options in flake.nix (hostname, deploy key, nodes).
-          - Add node configs under nodes/<name>/configuration.nix.
-          - Generate plan/state: nix run .#hostenv-provider -- plan
-          - Deploy using generated/flake.nix (e.g. via deploy-rs).
+          Welcome! You've initialized a Hostenv provider flake.
+
+          Next steps:
+
+          1. Edit flake.nix to set:
+             - provider.hostenvHostname = "your-hostname.com";
+             - provider.nodeFor mappings for your environments
+
+          2. Copy nodes/sample to nodes/<your-node> and edit configuration.nix
+             - Add your server's hardware configuration
+             - Set system.stateVersion
+
+          3. Run 'direnv allow' or 'nix develop' to enter the devshell
+             - The devshell will auto-generate necessary files
+
+          4. Generate deployment files:
+             nix run .#hostenv-provider -- plan
+
+          5. Deploy to your nodes using hostenv-deploy-agent or your preferred deployment method
+
+          For more information, see:
+          https://gitlab.com/woolwichweb/hostenv/-/blob/main/README.md
         '';
       };
     };

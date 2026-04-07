@@ -33,9 +33,11 @@ let
         })
       ];
       eval = makeHostenv modules null;
-      sanitisedEnvs = lib.mapAttrs (_: env: env // {
-        hostenv = env.hostenv // { root = "/src/${project}"; };
-      }) eval.config.environments;
+      sanitisedEnvs = lib.mapAttrs
+        (_: env: env // {
+          hostenv = env.hostenv // { root = "/src/${project}"; };
+        })
+        eval.config.environments;
     in
     {
       eval = eval;
@@ -58,8 +60,6 @@ let
   drupal = mkProjectInput { path = ./drupal; organisation = "acme"; project = "drupal"; };
   drupal7 = mkProjectInput { path = ./drupal7; organisation = "acme"; project = "drupal7"; };
 
-  nodesStub = pkgs.runCommand "nodes-stub" { } ''mkdir -p $out'';
-  secretsStub = pkgs.runCommand "secrets-stub" { } ''echo "{}" > $out'';
   stateStub = pkgs.writers.writeJSON "state-stub.json" { };
 
   inputsEffective = {
@@ -79,16 +79,24 @@ let
 
   planEval = providerPlan {
     inputs = inputsEffective;
+    repoRoot = inputs.self.outPath;
     inherit pkgs lib;
     system = localSystem;
     letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-    deployPublicKeys = [ "ssh-ed25519 test" ];
     hostenvHostname = "hosting.test";
     nodeFor = { default = "node-a"; production = "node-a"; testing = "node-a"; development = "node-a"; };
     statePath = stateStub;
     lockPath = lockPath;
     nodeSystems = { };
     cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
+    deploy = {
+      enable = false;
+      providerApiBaseUrl = null;
+      nodeAuthTokenFile = null;
+      nodeAuthTokenFiles = { };
+      reconnectSeconds = 5;
+    };
+    serviceResolution = null;
   };
 
   planData = lib.importJSON planEval.plan;
@@ -97,6 +105,23 @@ let
   drupalEnvUsers = builtins.attrValues (lib.mapAttrs (_: v: v.hostenv.userName) drupal.eval.config.environments);
   drupal7EnvUsers = builtins.attrValues (lib.mapAttrs (_: v: v.hostenv.userName) drupal7.eval.config.environments);
   expectedUsers = drupalEnvUsers ++ drupal7EnvUsers;
+  drupalMainUser = drupal.eval.config.environments.main.hostenv.userName;
+  drupalMainVerification = planData.environments.${drupalMainUser}.deploymentVerification or { };
+  drupalMainHost = planData.environments.${drupalMainUser}.hostenv.hostname;
+  drupalMainChecks = drupalMainVerification.checks or [ ];
+  drupalMainCheck = if drupalMainChecks == [ ] then { } else builtins.head drupalMainChecks;
+  drupalMainConstraints = drupalMainCheck.constraints or [ ];
+  hasConstraintRule = rule: value:
+    lib.any (constraint: (constraint.rule or null) == rule && (constraint.value or null) == value) drupalMainConstraints;
+  hasDrupalGeneratorConstraint = lib.any
+    (constraint:
+      let value = constraint.value or null;
+      in
+      (constraint.rule or null) == "stdoutRegexMustMatch"
+      && builtins.isString value
+      && lib.strings.hasInfix "Generator" value
+    )
+    drupalMainConstraints;
 
   envsPresent = lib.all (u: planData.environments ? ${builtins.toString u}) expectedUsers;
   nodeUsersPresent = lib.all (u: planData.nodes."node-a".users.users ? ${builtins.toString u}) expectedUsers;
@@ -118,9 +143,10 @@ let
       expectedUsers
     && lib.strings.hasInfix "parent = {" flakeText
     && lib.strings.hasInfix "url = \"path:..\"" flakeText
-      && lib.strings.hasInfix "hostenv = {" flakeText
-      && lib.strings.hasInfix "follows = \"parent/hostenv\"" flakeText
-      && lib.strings.hasInfix "inputs.parent.lib.provider.deployOutputs" flakeText;
+    && lib.strings.hasInfix "hostenv = {" flakeText
+    && lib.strings.hasInfix "follows = \"parent/hostenv\"" flakeText
+    && lib.strings.hasInfix "secretsPath = ./secrets.merged.yaml;" flakeText
+    && lib.strings.hasInfix "inputs.parent.lib.provider.deployOutputs" flakeText;
 in
 {
   provider_full_env_discovery =
@@ -142,4 +168,23 @@ in
   provider_full_flake_inputs =
     asserts.assertTrue "provider-full-flake-inputs" flakeInputsPresent
       "generated flake should expose hostenv and per-environment inputs";
+
+  provider_full_drupal_deploy_verification =
+    let
+      request = drupalMainCheck.request or { };
+      verificationOk =
+        (drupalMainVerification.enable or false)
+        && (drupalMainVerification.enforce or false)
+        && (drupalMainCheck.type or null) == "httpHostHeaderCurl"
+        && (request.virtualHost or null) == drupalMainHost
+        && (request.path or null) == "/user/login"
+        && (request.followRedirects or false)
+        && (request.tlsMode or null) == "insecure"
+        && hasConstraintRule "allowNonZeroExitStatus" false
+        && hasConstraintRule "minHttpStatus" 200
+        && hasConstraintRule "maxHttpStatus" 299
+        && hasDrupalGeneratorConstraint;
+    in
+    asserts.assertTrue "provider-full-drupal-deploy-verification" verificationOk
+      "Drupal environments should emit default deployment verification with redirect-tolerant constraints";
 }

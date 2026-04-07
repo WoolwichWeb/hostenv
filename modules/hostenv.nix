@@ -5,10 +5,53 @@ let
 
   systems = config.systems;
 
+  mkSecretsType = lib:
+    let
+      types = lib.types;
+    in
+    types.submodule ({ ... }: {
+      options = {
+        enable = lib.mkEnableOption "secrets management using SOPS";
+
+        file = lib.mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = ''
+            Path to the SOPS secrets file.
+
+            - Relative paths will be interpreted from the project root.
+            - When null hostenv will choose a default path depending on the scope.
+          '';
+        };
+
+        keys = lib.mkOption {
+          type = types.listOf types.str;
+          default = [ ];
+          description = ''
+            Secret keys to expose under `/run/secrets/<hostenv.userName>/`.
+            Each key maps to `/run/secrets/<hostenv.userName>/<key>`.
+
+            When `enable = true` and this list is empty, hostenv exposes all keys
+            found in the scope file.
+          '';
+        };
+
+        providerPublicKeys = lib.mkOption {
+          type = types.listOf types.str;
+          default = [ ];
+          description = ''
+            Age public key recipients for the provider bridge.
+            Hostenv scaffolding uses these when generating `.sops.yaml` rules.
+          '';
+        };
+      };
+    });
+
   # Basic Hostenv configuration: paths, project hash.
   hostenvModule = { lib, config, ... }:
     let
       types = lib.types;
+      secretsType = mkSecretsType lib;
 
       # Replace non-alpha characters with a hyphen
       sanitise = str:
@@ -87,23 +130,6 @@ let
           type = types.str;
           description = "Name of the current environment. Usually corresponds to a git branch, but can be something else, e.g. an MR slug or number. Should be short, lowercase, and with no special characters.";
         };
-        defaultEnvironment = lib.mkOption {
-          type = types.str;
-          description = "Default environment name for the project.";
-          default = "main";
-        };
-        environments = lib.mkOption {
-          type = types.attrs;
-          default = { };
-          description = "Canonical environment tree (filled by environments.nix).";
-          internal = true;
-        };
-        assertions = lib.mkOption {
-          type = types.listOf types.unspecified;
-          internal = true;
-          default = [ ];
-          description = "Hostenv-level assertions accumulated from core invariants.";
-        };
         safeEnvironmentName = lib.mkOption {
           type = types.str;
           description = "Name of the current environment, shortened and with special characters removed.";
@@ -115,7 +141,7 @@ let
         };
         userName = lib.mkOption {
           type = types.str;
-          description = "UNIX username (on server) of this project.";
+          description = "UNIX username (on server) of this environment.";
         };
         hostname = lib.mkOption {
           type = types.str;
@@ -171,6 +197,12 @@ let
           apply = v: if v == null then null else lib.removeSuffix "/" v;
           default = null;
         };
+        projectSecrets = lib.mkOption {
+          type = secretsType;
+          default = { };
+          internal = true;
+          description = "Internal: project-level secret scope copied into each environment for provider planning.";
+        };
         projectNameHash = lib.mkOption {
           type = types.str;
           description = "Hash of organisation, project, and environment names.";
@@ -194,24 +226,7 @@ let
               builtins.map slugify [ config.project config.environmentName ]
             ) + "-" + lib.substring 0 7 slugHash;
         in
-        let
-          envs = config.environments or { };
-          productionEnvs = lib.filterAttrs (_: v: (v.enable or false) && v.type == "production") envs;
-          productionNames = builtins.attrNames productionEnvs;
-        in {
-          defaultEnvironment = lib.mkDefault (if productionNames != [ ] then builtins.head productionNames else "main");
-
-          assertions = [
-            {
-              assertion = (lib.length productionNames) <= 1;
-              message = "Only one environment may have type=production (found ${toString (lib.length productionNames)}).";
-            }
-            {
-              assertion = config.userName == shortName;
-              message = "hostenv.userName is derived from organisation/project/environment and must not be overridden.";
-            }
-          ];
-
+        {
           userName = lib.mkForce shortName;
           hostname = lib.mkForce "${shortName}.${config.hostenvHostname}";
           safeEnvironmentName = lib.mkForce (cleanDashes (sanitise config.environmentName));
@@ -230,13 +245,13 @@ let
         };
     };
 
-  # Per-environment schema used by the hostenv trunk.
+  # Per-environment config.
   environmentModule =
     { allUsers ? { }, topLevel ? { }, forceNull ? "__HOSTENV_INTERNAL_DO_NOT_CHANGE_SEMAPHORE__", hostenvModule }:
     { lib, config, name, options, ... }:
     let
       types = lib.types;
-      tl = topLevel;
+      secretsType = mkSecretsType lib;
 
       user = {
         options = {
@@ -251,6 +266,16 @@ let
             description = ''
               A list of verbatim OpenSSH public keys that should be added to the
               user's authorized keys.
+            '';
+          };
+
+          gitlabUsername = lib.mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = ''
+              GitLab username for the user. Optional.
+
+              Only relevant if `hostenv.provider-service.enable = true` and `hostenv.provider-service.gitlab.enable = true`
             '';
           };
         };
@@ -331,7 +356,6 @@ let
                       let
                         hostName = envConfig.hostenv.hostname or "";
                         thisHost = config._module.args.name;
-                        thisPrio = options.globalRedirect.highestPrio;
                       in
                       if thisHost == hostName
                       then value: if value == forceNull then null else value
@@ -456,20 +480,154 @@ let
             '';
           };
 
+        deploymentVerification = lib.mkOption {
+          type = types.submodule ({ ... }: {
+            options = {
+              enable = lib.mkOption {
+                type = types.bool;
+                default = true;
+                description = ''
+                  Whether deployment verification checks are enabled for this environment.
+                '';
+              };
+
+              enforce = lib.mkOption {
+                type = types.bool;
+                default = true;
+                description = ''
+                  Whether failed deployment verification checks fail the deployment.
+                '';
+              };
+
+              checks = lib.mkOption {
+                type = types.listOf (types.submodule ({ ... }: {
+                  options = {
+                    name = lib.mkOption {
+                      type = types.str;
+                      default = "verification-check";
+                      description = "Human-readable name for this check.";
+                    };
+
+                    type = lib.mkOption {
+                      type = types.enum [ "httpHostHeaderCurl" ];
+                      default = "httpHostHeaderCurl";
+                      description = "Verification check implementation to run.";
+                    };
+
+                    request = lib.mkOption {
+                      type = types.submodule ({ ... }: {
+                        options = {
+                          virtualHost = lib.mkOption {
+                            type = types.str;
+                            description = "Virtual host sent in the HTTP Host header.";
+                          };
+
+                          path = lib.mkOption {
+                            type = types.str;
+                            default = "/";
+                            description = "Request path used during verification.";
+                          };
+
+                          method = lib.mkOption {
+                            type = types.str;
+                            default = "GET";
+                            description = "HTTP method used during verification.";
+                          };
+
+                          targetHostSource = lib.mkOption {
+                            type = types.enum [ "nodeConnectionHost" ];
+                            default = "nodeConnectionHost";
+                            description = "Source of the node host used for direct connection.";
+                          };
+
+                          followRedirects = lib.mkOption {
+                            type = types.bool;
+                            default = false;
+                            description = "Whether redirects are followed by curl.";
+                          };
+
+                          maxRedirects = lib.mkOption {
+                            type = types.int;
+                            default = 5;
+                            description = "Maximum redirects to follow when followRedirects is enabled.";
+                          };
+
+                          timeoutSeconds = lib.mkOption {
+                            type = types.int;
+                            default = 15;
+                            description = "Maximum request duration in seconds.";
+                          };
+
+                          tlsMode = lib.mkOption {
+                            type = types.enum [ "strict" "insecure" ];
+                            default = "strict";
+                            description = "TLS verification mode for HTTPS requests.";
+                          };
+                        };
+                      });
+                      default = { };
+                      description = "Request definition for this check.";
+                    };
+
+                    constraints = lib.mkOption {
+                      type = types.listOf (types.submodule ({ ... }: {
+                        options = {
+                          rule = lib.mkOption {
+                            type = types.enum [
+                              "allowNonZeroExitStatus"
+                              "skipStdoutRegexOnRedirect"
+                              "stdoutRegexMustMatch"
+                              "stderrRegexMustNotMatch"
+                              "minHttpStatus"
+                              "maxHttpStatus"
+                            ];
+                            description = "Constraint rule to evaluate for the check.";
+                          };
+
+                          value = lib.mkOption {
+                            type = types.oneOf [ types.bool types.int types.str ];
+                            description = "Constraint value for the selected rule.";
+                          };
+                        };
+                      }));
+                      default = [ ];
+                      description = "Constraint list evaluated against the check output.";
+                    };
+                  };
+                }));
+                default = [ ];
+                description = ''
+                  Checks run after successful environment deployments.
+                '';
+              };
+            };
+          });
+          default = { };
+          description = ''
+            Per-environment deployment verification configuration.
+          '';
+        };
+
+        secrets = lib.mkOption {
+          type = secretsType;
+          default = { };
+          description = ''
+            Per-environment secrets using SOPS.
+          '';
+        };
+
         hostenv = lib.mkOption {
           type = types.submoduleWith {
             modules = [
               hostenvModule
               {
-                # Provide only the per-env bits; keep environments empty to avoid
-                # embedding the whole tree here.
-                config.organisation = lib.mkDefault (tl.organisation or "");
-                config.project = lib.mkDefault (tl.project or "");
-                config.hostenvHostname = lib.mkDefault (tl.hostenvHostname or "example.invalid");
-                config.backupsRepoHost = lib.mkDefault (tl.backupsRepoHost or null);
+                config.organisation = lib.mkDefault (topLevel.organisation or "");
+                config.project = lib.mkDefault (topLevel.project or "");
+                config.hostenvHostname = lib.mkDefault (topLevel.hostenvHostname or "example.invalid");
+                config.backupsRepoHost = lib.mkDefault (topLevel.backupsRepoHost or null);
                 config.environmentName = name;
-                config.root = lib.mkDefault (tl.root or ".");
-                config.environments = { };
+                config.root = lib.mkDefault (topLevel.root or ".");
+                config.projectSecrets = lib.mkDefault (topLevel.secrets or { });
               }
             ];
           };
@@ -512,7 +670,7 @@ let
       in
       if (!hasPogOverlay) then
         builtins.throw ''
-          The hostenv CLI requires the Pog library but is not available for ${system}.
+          The hostenv CLI requires the Pog library but it is not available for ${system}.
 
           Supported systems: ${supportedSystemsMsg}
 
@@ -559,10 +717,20 @@ in
     flake.lib.hostenv.module = hostenvModule;
     flake.lib.hostenv.environmentModule = environmentModule;
 
-    flake.modules.hostenv.core = { ... }: {
-      options.hostenv = lib.mkOption {
-        type = types.submodule hostenvModule;
-        description = "Hostenv configuration for the current environment.";
+    flake.modules.hostenv.core = { lib, config, ... }: {
+      options = {
+        secrets = lib.mkOption {
+          type = mkSecretsType lib;
+          default = { };
+          description = ''
+            Project-wide secrets using SOPS.
+          '';
+        };
+
+        hostenv = lib.mkOption {
+          type = types.submodule hostenvModule;
+          description = "Hostenv configuration for the current environment.";
+        };
       };
     };
 

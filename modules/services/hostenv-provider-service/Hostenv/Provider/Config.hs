@@ -1,35 +1,49 @@
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NoFieldSelectors #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Hostenv.Provider.Config
   ( AppConfig(..)
+  , DeployConfig(..)
+  , ProviderAccountConfig(..)
+  , UserConfig(..)
   , loadConfig
+  , hasGitlabAuth
+  , lookupDeployNodeAuthToken
   , appWorkDir
   , resolvePath
   , uiPath
   , normalizeBasePath
   ) where
 
+import qualified Data.Aeson as A
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
-import Data.Maybe (fromMaybe)
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.Yaml as Y
+import Data.Int (Int64)
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Maybe (isJust)
+import GHC.Generics (Generic)
 import Network.HTTP.Client (Manager, newManager)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
-import System.Directory (XdgDirectory (XdgData), getXdgDirectory)
-import System.Environment (lookupEnv)
+import System.Directory (doesFileExist)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 import System.FilePath ((</>), isAbsolute)
 
+import Hostenv.Provider.Crypto (TokenCipher, loadTokenCipher)
 import Hostenv.Provider.Service (GitlabSecrets, WebhookConfig(..), readGitlabSecrets)
 
 -- Configuration
 
 data AppConfig = AppConfig
   { appDataDir :: FilePath
-  , appRepoSource :: FilePath
   , appFlakeRoot :: FilePath
   , appListenSocket :: FilePath
   , appWebhookSecretFile :: Maybe FilePath
@@ -41,11 +55,141 @@ data AppConfig = AppConfig
   , appDbConnString :: Maybe BS.ByteString
   , appGitlabSecrets :: Maybe GitlabSecrets
   , appGitlabHosts :: [Text]
+  , appGitlabTokenCipher :: Maybe TokenCipher
+  , appGitlabDeployTokenTtlMinutes :: Int
   , appGitConfigPath :: FilePath
   , appGitCredentialsPath :: FilePath
   , appFlakeTemplate :: FilePath
+  , appSeedUsers :: [UserConfig]
+  , appJobsRetentionDays :: Int
+  , appJobsCleanupIntervalMins :: Int
+  , appJobsWaitTimeoutMins :: Int
+  , appJobsWaitInterval :: Int
+  , appDeploy :: DeployConfig
   , appHttpManager :: Maybe Manager
   }
+
+data DeployConfig = DeployConfig
+  { enable :: Bool
+  , nodeAuthTokens :: Map.Map Text Text
+  } deriving (Eq, Show)
+
+data ProviderConfigFile = ProviderConfigFile
+  { dataDir :: FilePath
+  , flakeRoot :: FilePath
+  , listenSocket :: FilePath
+  , webhookSecretFile :: Maybe FilePath
+  , webhookSecretsDir :: Maybe FilePath
+  , webhookHost :: Text
+  , uiBasePath :: Text
+  , uiBaseUrl :: Text
+  , dbUri :: String
+  , gitlab :: GitlabConfigFile
+  , seedUsers :: [UserConfig]
+  , gitConfigFile :: FilePath
+  , gitCredentialsFile :: FilePath
+  , flakeTemplate :: FilePath
+  , jobs :: JobsConfigFile
+  , deploy :: DeployConfigFile
+  } deriving (Eq, Show, Generic)
+
+data GitlabConfigFile = GitlabConfigFile
+  { enable :: Bool
+  , oAuthSecretsFile :: Maybe FilePath
+  , hosts :: [Text]
+  , tokenEncryptionKeyFile :: Maybe FilePath
+  , deployTokenTtlMinutes :: Maybe Int
+  } deriving (Eq, Show, Generic)
+
+data JobsConfigFile = JobsConfigFile
+  { retentionDays :: Int
+  , cleanupIntervalMins :: Int
+  , waitTimeoutMins :: Int
+  , waitInterval :: Int
+  } deriving (Eq, Show, Generic)
+
+data DeployConfigFile = DeployConfigFile
+  { enable :: Bool
+  , nodeAuthTokensFile :: Maybe FilePath
+  } deriving (Eq, Show, Generic)
+
+data ProviderAccountConfig = ProviderAccountConfig
+  { provider :: Text
+  , host :: Text
+  , username :: Text
+  , userId :: Maybe Int64
+  } deriving (Eq, Show, Generic)
+
+data UserConfig = UserConfig
+  { configUsername :: Text
+  , email :: Maybe Text
+  , role :: Text
+  , providerAccounts :: [ProviderAccountConfig]
+  } deriving (Eq, Show, Generic)
+
+instance A.FromJSON GitlabConfigFile where
+  parseJSON = A.withObject "GitlabConfigFile" $ \o ->
+    GitlabConfigFile
+      <$> o A..:? "enable" A..!= False
+      <*> o A..:? "oAuthSecretsFile"
+      <*> o A..:? "hosts" A..!= []
+      <*> o A..:? "tokenEncryptionKeyFile"
+      <*> o A..:? "deployTokenTtlMinutes"
+
+instance A.FromJSON ProviderAccountConfig
+
+instance A.FromJSON UserConfig
+
+instance A.FromJSON JobsConfigFile where
+  parseJSON = A.withObject "JobsConfigFile" $ \o ->
+    JobsConfigFile
+      <$> o A..:? "retentionDays" A..!= 30
+      <*> o A..:? "cleanupIntervalMins" A..!= 1440
+      <*> o A..:? "waitTimeoutMins" A..!= 120
+      <*> o A..:? "waitInterval" A..!= 60
+
+instance A.FromJSON DeployConfigFile where
+  parseJSON = A.withObject "DeployConfigFile" $ \o ->
+    DeployConfigFile
+      <$> o A..:? "enable" A..!= False
+      <*> o A..:? "nodeAuthTokensFile"
+
+instance A.FromJSON ProviderConfigFile where
+  parseJSON = A.withObject "ProviderConfigFile" $ \o -> do
+    gitlabCfg <-
+      o A..:? "gitlab" >>= \case
+        Just cfg -> pure cfg
+        Nothing -> do
+          legacySecrets <- o A..:? "gitlabOAuthSecretsFile"
+          legacyHosts <- o A..:? "gitlabHosts" A..!= []
+          legacyTokenKey <- o A..:? "gitlabTokenEncryptionKeyFile"
+          legacyDeployTokenTtl <- o A..:? "gitlabDeployTokenTtlMinutes"
+          pure
+            GitlabConfigFile
+              { enable = isJust legacySecrets
+              , oAuthSecretsFile = legacySecrets
+              , hosts = legacyHosts
+              , tokenEncryptionKeyFile = legacyTokenKey
+              , deployTokenTtlMinutes = legacyDeployTokenTtl
+              }
+    deployCfg <- o A..:? "deploy" A..!= DeployConfigFile { enable = False, nodeAuthTokensFile = Nothing }
+    ProviderConfigFile
+      <$> o A..: "dataDir"
+      <*> o A..: "flakeRoot"
+      <*> o A..: "listenSocket"
+      <*> o A..:? "webhookSecretFile"
+      <*> o A..:? "webhookSecretsDir"
+      <*> o A..: "webhookHost"
+      <*> o A..: "uiBasePath"
+      <*> o A..: "uiBaseUrl"
+      <*> o A..: "dbUri"
+      <*> pure gitlabCfg
+      <*> o A..:? "seedUsers" A..!= []
+      <*> o A..: "gitConfigFile"
+      <*> o A..: "gitCredentialsFile"
+      <*> o A..: "flakeTemplate"
+      <*> o A..:? "jobs" A..!= JobsConfigFile { retentionDays = 30, cleanupIntervalMins = 1440, waitTimeoutMins = 120, waitInterval = 60 }
+      <*> pure deployCfg
 
 appWorkDir :: AppConfig -> FilePath
 appWorkDir cfg = cfg.appDataDir </> cfg.appFlakeRoot
@@ -69,76 +213,141 @@ normalizeBasePath t =
       trimmed = T.dropWhileEnd (== '/') withSlash
    in if trimmed == "" then "/" else trimmed
 
-loadConfig :: IO AppConfig
-loadConfig = do
-  dataDir <- do
-    override <- lookupEnv "HOSTENV_PROVIDER_DATA_DIR"
-    case override of
-      Just v -> pure v
-      Nothing -> getXdgDirectory XdgData "hostenv-provider"
+loadConfig :: FilePath -> IO AppConfig
+loadConfig configPath = do
+  providerCfg <- readProviderConfig configPath
+  let gitlabCfg = providerCfg.gitlab
+  let deployCfg = providerCfg.deploy
+  secrets <-
+    if gitlabCfg.enable
+      then case gitlabCfg.oAuthSecretsFile of
+        Nothing ->
+          dieWith "gitlab.oAuthSecretsFile must be configured when gitlab.enable is true"
+        Just path -> Just <$> readGitlabSecrets path
+      else pure Nothing
 
-  repoSource <- requireEnv "HOSTENV_PROVIDER_REPO_SOURCE"
-  flakeRoot <- fromMaybe "." <$> lookupEnv "HOSTENV_PROVIDER_FLAKE_ROOT"
-  listenSocket <- requireEnv "HOSTENV_PROVIDER_LISTEN_SOCKET"
-  secretFile <- lookupEnv "HOSTENV_PROVIDER_WEBHOOK_SECRET_FILE"
-  secretsDir <- lookupEnv "HOSTENV_PROVIDER_WEBHOOK_SECRETS_DIR"
-  webhookHost <- T.pack <$> requireEnv "HOSTENV_PROVIDER_WEBHOOK_HOST"
-
-  uiBasePath <- T.pack <$> (fromMaybe "/ui" <$> lookupEnv "HOSTENV_PROVIDER_UI_BASE_PATH")
-  uiBaseUrl <- T.pack <$> (fromMaybe "https://example.invalid" <$> lookupEnv "HOSTENV_PROVIDER_UI_BASE_URL")
-
-  dbUri <- Just <$> requireEnv "HOSTENV_PROVIDER_DB_URI"
-  gitlabHosts <- fmap parseList (lookupEnv "HOSTENV_PROVIDER_GITLAB_HOSTS")
-  gitConfigPath <- fromMaybe (dataDir </> "gitconfig") <$> lookupEnv "HOSTENV_PROVIDER_GIT_CONFIG_FILE"
-  gitCredentialsPath <- fromMaybe (dataDir </> "git-credentials") <$> lookupEnv "HOSTENV_PROVIDER_GIT_CREDENTIALS_FILE"
-  flakeTemplate <- fromMaybe "flake.template.nix" <$> lookupEnv "HOSTENV_PROVIDER_FLAKE_TEMPLATE"
-
-  mSecretsPath <- lookupEnv "HOSTENV_PROVIDER_GITLAB_SECRETS_FILE"
-  secrets <- case mSecretsPath of
-    Nothing -> dieWith "GitLab OAuth secrets file missing"
-    Just path -> Just <$> readGitlabSecrets path
+  tokenCipher <-
+    if gitlabCfg.enable
+      then case gitlabCfg.tokenEncryptionKeyFile of
+        Nothing ->
+          dieWith "gitlab.tokenEncryptionKeyFile must be configured when gitlab.enable is true"
+        Just keyPath -> do
+          cipherResult <- loadTokenCipher keyPath
+          case cipherResult of
+            Left err -> dieWith ("failed to load token encryption key " <> keyPath <> ": " <> T.unpack err)
+            Right cipher -> pure (Just cipher)
+      else pure Nothing
 
   manager <- Just <$> newManager tlsManagerSettings
+  nodeTokens <-
+    if deployCfg.enable
+      then do
+        tokenPath <-
+          case deployCfg.nodeAuthTokensFile of
+            Nothing ->
+              dieWith "deploy.nodeAuthTokensFile must be configured when deploy.enable is true"
+            Just path -> pure path
+        loadNodeAuthTokensStrict tokenPath
+      else pure Map.empty
 
-  let workDir = dataDir </> flakeRoot
+  let workDir = providerCfg.dataDir </> providerCfg.flakeRoot
   let planPath = workDir </> "generated" </> "plan.json"
   let webhookCfg = WebhookConfig workDir planPath
 
   pure
     AppConfig
-      { appDataDir = dataDir
-      , appRepoSource = repoSource
-      , appFlakeRoot = flakeRoot
-      , appListenSocket = listenSocket
-      , appWebhookSecretFile = secretFile
-      , appWebhookSecretsDir = secretsDir
+      { appDataDir = providerCfg.dataDir
+      , appFlakeRoot = providerCfg.flakeRoot
+      , appListenSocket = providerCfg.listenSocket
+      , appWebhookSecretFile = providerCfg.webhookSecretFile
+      , appWebhookSecretsDir = providerCfg.webhookSecretsDir
       , appWebhookConfig = webhookCfg
-      , appUiBasePath = normalizeBasePath uiBasePath
-      , appUiBaseUrl = T.dropWhileEnd (== '/') uiBaseUrl
-      , appWebhookHost = webhookHost
-      , appDbConnString = BSC.pack <$> dbUri
+      , appUiBasePath = normalizeBasePath providerCfg.uiBasePath
+      , appUiBaseUrl = T.dropWhileEnd (== '/') providerCfg.uiBaseUrl
+      , appWebhookHost = providerCfg.webhookHost
+      , appDbConnString = Just (BSC.pack providerCfg.dbUri)
       , appGitlabSecrets = secrets
-      , appGitlabHosts = if null gitlabHosts then ["gitlab.com"] else gitlabHosts
-      , appGitConfigPath = gitConfigPath
-      , appGitCredentialsPath = gitCredentialsPath
-      , appFlakeTemplate = flakeTemplate
+      , appGitlabHosts = if null gitlabCfg.hosts then ["gitlab.com"] else gitlabCfg.hosts
+      , appGitlabTokenCipher = tokenCipher
+      , appGitlabDeployTokenTtlMinutes = max 1 (maybe 15 id gitlabCfg.deployTokenTtlMinutes)
+      , appGitConfigPath = providerCfg.gitConfigFile
+      , appGitCredentialsPath = providerCfg.gitCredentialsFile
+      , appFlakeTemplate = providerCfg.flakeTemplate
+      , appSeedUsers = providerCfg.seedUsers
+      , appJobsRetentionDays = max 1 providerCfg.jobs.retentionDays
+      , appJobsCleanupIntervalMins = max 1 providerCfg.jobs.cleanupIntervalMins
+      , appJobsWaitTimeoutMins = max 1 providerCfg.jobs.waitTimeoutMins
+      , appJobsWaitInterval = max 1 providerCfg.jobs.waitInterval
+      , appDeploy =
+          DeployConfig
+            { enable = deployCfg.enable
+            , nodeAuthTokens = nodeTokens
+            }
       , appHttpManager = manager
       }
 
-parseList :: Maybe String -> [Text]
-parseList Nothing = []
-parseList (Just raw) =
-  filter (/= "") (map T.strip (T.splitOn "," (T.pack raw)))
-
-requireEnv :: String -> IO String
-requireEnv key = do
-  val <- lookupEnv key
-  case val of
-    Just v -> pure v
-    Nothing -> dieWith ("missing required env var: " <> key)
+readProviderConfig :: FilePath -> IO ProviderConfigFile
+readProviderConfig path = do
+  exists <- doesFileExist path
+  if not exists
+    then dieWith ("provider config file not found: " <> path)
+    else do
+      bytes <- BL.readFile path
+      case A.eitherDecode' bytes of
+        Left err -> dieWith ("failed to parse provider config file " <> path <> ": " <> err)
+        Right cfg -> pure cfg
 
 
 dieWith :: String -> IO a
 dieWith msg = do
   hPutStrLn stderr msg
   exitFailure
+
+loadNodeAuthTokens :: Maybe FilePath -> IO (Map.Map Text Text)
+loadNodeAuthTokens mPath =
+  case mPath of
+    Nothing -> pure Map.empty
+    Just path -> do
+      exists <- doesFileExist path
+      if not exists
+        then pure Map.empty
+        else do
+          bytes <- BL.readFile path
+          case Y.decodeEither' (BL.toStrict bytes) of
+            Left err ->
+              dieWith
+                ( "failed to parse provider deploy node auth tokens file "
+                    <> path
+                    <> ": "
+                    <> Y.prettyPrintParseException err
+                )
+            Right rawMap ->
+              let normalized =
+                    Map.fromList
+                      [ (T.strip node, T.strip token)
+                      | (node, token) <- Map.toList (rawMap :: Map.Map Text Text)
+                      , T.strip node /= ""
+                      , T.strip token /= ""
+                      ]
+               in pure normalized
+
+loadNodeAuthTokensStrict :: FilePath -> IO (Map.Map Text Text)
+loadNodeAuthTokensStrict path = do
+  exists <- doesFileExist path
+  if not exists
+    then dieWith ("provider deploy node auth tokens file not found: " <> path)
+    else do
+      tokens <- loadNodeAuthTokens (Just path)
+      if Map.null tokens
+        then dieWith ("provider deploy node auth tokens file has no valid node/token entries: " <> path)
+        else pure tokens
+
+hasGitlabAuth :: AppConfig -> Bool
+hasGitlabAuth cfg =
+  case cfg.appGitlabSecrets of
+    Just _ -> True
+    Nothing -> False
+
+lookupDeployNodeAuthToken :: AppConfig -> Text -> Maybe Text
+lookupDeployNodeAuthToken cfg nodeName =
+  Map.lookup (T.strip nodeName) cfg.appDeploy.nodeAuthTokens

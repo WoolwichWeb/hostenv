@@ -4,6 +4,8 @@ let
   # Used by downstream projects and providers.
   # Allows downstream to import hostenv modules with either project or
   # provider enabled.
+  # If you're looking for where `hostenv.flakeModules.provider` or
+  # `hostenv.flakeModules.project` are built, this file is the place.
   mkFlakeModule = cfg: { ... }:
     {
       imports = [

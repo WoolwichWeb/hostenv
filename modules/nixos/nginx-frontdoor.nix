@@ -3,15 +3,18 @@
   flake.modules.nixos.nginx-frontdoor =
     { lib, pkgs, config, ... }:
     let
-      allEnvs = config.hostenv.environments or { };
       # Treat enable = false as disabled; default to enabled when unset.
-      envs = lib.filterAttrs (_: env: env.enable != false) allEnvs;
+      envs = lib.filterAttrs
+        (_: env: env.enable != false)
+        config.provider.plan.environments;
+
       sanitizeHeaderValue = label: value:
         if value == null then null else
         if lib.strings.hasInfix "\"" value then
           builtins.throw "hostenv nginx: ${label} may not contain double quotes"
         else
           value;
+
       mkHeaderLine = name: value:
         if value == null then ""
         else
@@ -26,6 +29,7 @@
                 "\"";
           in
           ''add_header ${name} ${quote}${value}${quote} always;'';
+
       mkSecurityHeaders = { vhost, envType, tlsEnabled }:
         let
           security = vhost.security or { };
@@ -60,6 +64,7 @@
           (if cspValue == null then "" else mkHeaderLine cspHeaderName cspValue)
           (if allowIndexing then "" else mkHeaderLine "X-Robots-Tag" "noindex")
         ]);
+
       mkUpstream = envName: env:
         let
           user = env.hostenv.userName or envName;
@@ -68,34 +73,31 @@
         {
           servers = { "unix:${socket}" = { }; };
         };
+
       vhostFromEnv = name: env:
         let
           primary = env.hostenv.hostname or name;
-          baseVH = env.virtualHosts or { };
-          enableACMEDefault = config.hostenv.nginx.enableACME;
           defaultLoc = {
             "/" = {
               recommendedProxySettings = true;
               proxyPass = "http://${name}_upstream";
+              proxyWebsockets = true;
             };
           };
           normalizeVhost = vhostName: vhost:
             let
-              enableACME =
-                vhost.enableACME
-                  or vhost.enableLetsEncrypt
-                  or (if vhostName == primary then enableACMEDefault else false);
+              enableLetsEncrypt =
+                vhost.enableLetsEncrypt
+                  or (if vhostName == primary then config.provider.nginx.enableLetsEncrypt else false);
               forceSSL =
                 vhost.forceSSL
-                  or vhost.enableACME
-                  or vhost.enableLetsEncrypt
-                  or (if vhostName == primary then enableACMEDefault else false);
-              tlsEnabled = enableACME || forceSSL;
+                  or enableLetsEncrypt;
+              tlsEnabled = enableLetsEncrypt || forceSSL;
               headerConfig = mkSecurityHeaders { vhost = vhost; envType = env.type; tlsEnabled = tlsEnabled; };
               baseConfig =
                 (builtins.removeAttrs vhost [ "enableLetsEncrypt" "allowIndexing" "security" "hsts" ])
                 // {
-                  enableACME = lib.mkDefault enableACME;
+                  enableACME = lib.mkDefault enableLetsEncrypt;
                   forceSSL = lib.mkDefault forceSSL;
                   extraConfig = lib.concatStringsSep "\n" (lib.filter (line: line != "") [
                     (vhost.extraConfig or "")
@@ -111,17 +113,21 @@
             else
               baseConfig;
 
-          addPrimary = baseVH // {
-            ${primary} = baseVH.${primary} or { };
+          addPrimary = (env.virtualHosts or { }) // {
+            ${primary} = env.virtual.${primary} or { };
           };
         in
         lib.mapAttrs normalizeVhost addPrimary;
     in
     {
-      options.hostenv.nginx.enableACME = lib.mkOption {
+      options.provider.nginx.enableLetsEncrypt = lib.mkOption {
         type = lib.types.bool;
         default = true;
-        description = "Whether host-level nginx should request ACME certs by default.";
+        description = ''
+          Whether the nginx reverse proxy should request Let's Encrypt certificates by default for environments.
+
+          Note: this does not override project/environment configuration.
+        '';
       };
 
       config = lib.mkIf (envs != { }) {
@@ -129,7 +135,7 @@
           (n: env: [
             {
               assertion = (env.hostenv.upstreamRuntimeDir or "") != "";
-              message = "hostenv nginx: upstreamRuntimeDir missing for env ${n}";
+              message = "nginx: upstreamRuntimeDir missing for env ${n}";
             }
           ])
           envs);
@@ -142,7 +148,11 @@
           enable = true;
           recommendedProxySettings = true;
           virtualHosts = lib.foldl' lib.recursiveUpdate { }
-            (lib.mapAttrsToList (n: env: vhostFromEnv (env.hostenv.userName or n) env) envs);
+            (
+              lib.mapAttrsToList
+                (n: env: vhostFromEnv (env.hostenv.userName or n) env)
+                envs
+            );
           upstreams = lib.listToAttrs (lib.mapAttrsToList
             (n: env:
               let user = env.hostenv.userName or n;

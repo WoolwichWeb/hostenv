@@ -48,7 +48,7 @@
                 }
               ];
             })
-          (lib.filterAttrs (_: v: v.enable) config.hostenv.publicEnvironments)
+          (lib.filterAttrs (_: v: v.enable) config.exportedEnvironments)
         // {
           default = {
             devshell = {
@@ -59,7 +59,7 @@
               # user, and provide some quick guidance.
               startup.hostenv = {
                 text = ''
-                    ENV_JSON='${builtins.toJSON (lib.filterAttrs (_: v: v.enable) config.hostenv.publicEnvironments)}'
+                    ENV_JSON='${builtins.toJSON (lib.filterAttrs (_: v: v.enable) config.exportedEnvironments)}'
 
                     if gitRef=$(git symbolic-ref -q --short HEAD 2>/dev/null); then
                       # Is current branch a hostenv environment?

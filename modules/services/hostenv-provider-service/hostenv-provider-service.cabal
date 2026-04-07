@@ -11,9 +11,14 @@ executable hostenv-provider-service
   other-modules:
     Hostenv.Provider.Command
     Hostenv.Provider.Config
+    Hostenv.Provider.Crypto
     Hostenv.Provider.DB
+    Hostenv.Provider.DeployApi
     Hostenv.Provider.Gitlab
     Hostenv.Provider.Http
+    Hostenv.Provider.Jobs
+    Hostenv.Provider.Logging
+    Hostenv.Provider.PrevNodeDiscovery
     Hostenv.Provider.Project
     Hostenv.Provider.Repo
     Hostenv.Provider.Server
@@ -26,12 +31,13 @@ executable hostenv-provider-service
     Hostenv.Provider.UI.Views
   default-language: Haskell2010
   build-depends:
+    async,
     base >=4.14 && <5,
     aeson,
     bytestring,
     containers,
     cookie,
-    cryptonite,
+    crypton,
     directory,
     filepath,
     http-client,
@@ -44,12 +50,18 @@ executable hostenv-provider-service
     process,
     servant,
     servant-server,
+    stm,
     tagged,
     text,
     time,
+    transformers,
     turtle,
     unix,
     wai,
+    yaml,
+    wai-websockets,
+    websockets,
+    addressable-content,
     warp
 
 test-suite hostenv-provider-service-tests
@@ -57,16 +69,50 @@ test-suite hostenv-provider-service-tests
   main-is: Test.hs
   hs-source-dirs: .
   other-modules:
+    Hostenv.Provider.Command
+    Hostenv.Provider.Config
+    Hostenv.Provider.Crypto
+    Hostenv.Provider.DB
+    Hostenv.Provider.DeployApi
+    Hostenv.Provider.Gitlab
+    Hostenv.Provider.Http
+    Hostenv.Provider.Jobs
+    Hostenv.Provider.Logging
+    Hostenv.Provider.PrevNodeDiscovery
+    Hostenv.Provider.Repo
     Hostenv.Provider.Service
+    Hostenv.Provider.Util
+    Hostenv.Provider.Webhook
   default-language: Haskell2010
   build-depends:
+    async,
     base >=4.14 && <5,
     aeson,
     bytestring,
+    cookie,
     containers,
-    cryptonite,
+    crypton,
     directory,
+    filepath,
+    http-client,
+    http-client-tls,
+    http-types,
+    lucid,
     memory,
+    network,
+    postgresql-simple,
     process,
+    servant,
+    servant-server,
+    stm,
+    tagged,
     text,
-    time
+    time,
+    transformers,
+    unix,
+    wai,
+    warp,
+    yaml,
+    wai-websockets,
+    websockets,
+    addressable-content

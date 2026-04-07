@@ -5,6 +5,11 @@ pipeline or real environment builds (`drupal*/`, `provider-*.nix`,
 `public-env-json.nix`, `socket-contract.nix`, `hostname.nix`). These typically use `makeHostenv` and
 import multi-module stacks.
 
+Manual-only integration checks (intentionally excluded from `nix flake check`)
+should expose a separate package target. Example:
+
+- `nix build .#provider-secrets-runtime-test`
+
 `tests/unit/` contains fast, focused checks for individual modules (`restic.nix`,
 `users-slices.nix`, `hostenv-assertions.nix`) and lean on the stubs in
 `tests/support`.
