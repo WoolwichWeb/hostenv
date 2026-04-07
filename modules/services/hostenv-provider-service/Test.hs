@@ -34,6 +34,7 @@ import Hostenv.Provider.Gitlab
   , NixGitlabTokenType(..)
   , GitlabTokenResponse(..)
   , appendNixAccessTokenConfig
+  , deployTokenExpiryDateAt
   , gitlabApiError
   , isReauthError
   , oauthCredentialFromTokenAt
@@ -41,12 +42,13 @@ import Hostenv.Provider.Gitlab
   , renderGitlabError
   , renderUserIdMismatchMessage
   )
+import Hostenv.Provider.Jobs (JobOutcome(..))
 import Hostenv.Provider.Logging (ProviderLogFields(..), ProviderSeverity(..), providerLogFields, providerLogValue)
 import Hostenv.Provider.PrevNodeDiscovery
 import Hostenv.Provider.Repo (RepoStatus(..), ensureGitConfig, ensureProviderRepo, isAuthFailure)
 import Hostenv.Provider.Service
 import Hostenv.Provider.Server (wsNodeEventMatchesAuthenticatedNode)
-import Hostenv.Provider.Webhook (chooseFinalResult, persistIntentsActionsAndPushWith, shouldWaitForCallbacks)
+import Hostenv.Provider.Webhook (persistIntentsActionsAndPushWith, shouldWaitForCallbacks)
 
 assert :: Bool -> String -> IO ()
 assert cond msg = unless cond $ do
@@ -124,10 +126,10 @@ main = do
   testReadGitlabSecrets
   testGitlabOAuthCredentialMerge
   testGitlabApiErrorFormatting
+  testDeployTokenExpiryDate
   testGitlabAccessMessages
   testGitlabReauthClassification
   testRepoAuthFailureClassifier
-  testWebhookResultPriority
   testShouldWaitForCallbacks
   testPersistIntentsActionsAndPushOrder
   testTokenEncryptionRoundtrip
@@ -1220,6 +1222,14 @@ testGitlabApiErrorFormatting = do
     GitlabHttpError { responseBody = Nothing } -> pure ()
     _ -> assert False "gitlabApiError should omit empty response body snippets"
 
+testDeployTokenExpiryDate :: IO ()
+testDeployTokenExpiryDate = do
+  let midday = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime (12 * 60 * 60))
+      nearMidnight = UTCTime (fromGregorian 2026 1 1) (secondsToDiffTime (23 * 60 * 60 + 55 * 60))
+  assert (deployTokenExpiryDateAt 15 midday == "2026-01-02") "short deploy token TTLs should still expire on a future calendar day"
+  assert (deployTokenExpiryDateAt 15 nearMidnight == "2026-01-02") "deploy token expiry should preserve the natural next-day rollover"
+  assert (deployTokenExpiryDateAt (60 * 48) midday == "2026-01-03") "longer deploy token TTLs should preserve later future dates"
+
 testGitlabAccessMessages :: IO ()
 testGitlabAccessMessages = do
   let accessMsg = renderAccessDeniedMessage "liammcdermott"
@@ -1249,22 +1259,6 @@ testRepoAuthFailureClassifier = do
   assert (isAuthFailure "Authentication failed for repository") "auth classifier should catch authentication failure"
   assert (isAuthFailure "could not read username for 'https://gitlab.com'") "auth classifier should catch missing username errors"
   assert (not (isAuthFailure "fatal: unable to access: TLS timeout")) "auth classifier should ignore non-auth transport failures"
-
-testWebhookResultPriority :: IO ()
-testWebhookResultPriority = do
-  let primary = WebhookPlanError StagePlan "primary failed"
-      okResult = WebhookResult [] [] "sha" WebhookUpdateNoop
-  case chooseFinalResult (Left primary) (Just "revoke failed") of
-    Left (Left err) -> assert (err == primary) "primary webhook failure should take precedence over revoke failures"
-    _ -> assert False "expected primary webhook failure to win"
-
-  case chooseFinalResult (Right okResult) (Just "revoke failed") of
-    Left (Right revokeErr) -> assert (revokeErr == "revoke failed") "revoke failure should surface when primary succeeds"
-    _ -> assert False "expected revoke error when primary succeeded"
-
-  case chooseFinalResult (Right okResult) Nothing of
-    Right finalResult -> assert (finalResult == okResult) "successful webhook result should pass through when revoke succeeds"
-    _ -> assert False "expected successful result when there is no revoke error"
 
 testShouldWaitForCallbacks :: IO ()
 testShouldWaitForCallbacks = do

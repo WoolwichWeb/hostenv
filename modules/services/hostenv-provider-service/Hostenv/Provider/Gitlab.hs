@@ -30,6 +30,7 @@ module Hostenv.Provider.Gitlab
   , updateGitlabWebhook
   , createProjectDeployToken
   , revokeProjectToken
+  , deployTokenExpiryDateAt
   , appendNixAccessTokenConfig
   , ensureProjectCredential
   , oauthCredentialFromTokenAt
@@ -50,6 +51,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Text.Encoding.Error (lenientDecode)
 import Data.Time (UTCTime, addUTCTime, getCurrentTime, utctDay)
+import Data.Time.Calendar (addDays)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Database.PostgreSQL.Simple (Connection, Only (..), execute, query)
 import Network.HTTP.Client (Manager, Request (..), RequestBody (..), httpLbs, parseRequest, responseBody, responseStatus)
@@ -387,8 +389,7 @@ createProjectDeployToken cfg host oauthToken repoId = do
     Right manager -> do
       now <- getCurrentTime
       suffix <- randomToken 10
-      let expiryDay = utctDay (addUTCTime (fromIntegral (cfg.appGitlabDeployTokenTtlMinutes * 60)) now)
-          expiryDate = T.pack (formatTime defaultTimeLocale "%Y-%m-%d" expiryDay)
+      let expiryDate = deployTokenExpiryDateAt cfg.appGitlabDeployTokenTtlMinutes now
           tokenName = "hostenv-deploy-" <> suffix
       req <- parseRequest (T.unpack ("https://" <> host <> "/api/v4/projects/" <> T.pack (show repoId) <> "/access_tokens"))
       let params =
@@ -410,6 +411,13 @@ createProjectDeployToken cfg host oauthToken repoId = do
             pure (Left (GitlabDecodeError "GitLab project deploy token creation failed" (T.pack err)))
           Right deployToken -> pure (Right deployToken)
         else pure (Left (gitlabApiError "GitLab project deploy token creation failed" (responseStatus resp) (responseBody resp)))
+
+deployTokenExpiryDateAt :: Int -> UTCTime -> Text
+deployTokenExpiryDateAt ttlMinutes now =
+  let expiryFromTtl = utctDay (addUTCTime (fromIntegral (ttlMinutes * 60)) now)
+      earliestFutureDay = addDays 1 (utctDay now)
+      expiryDay = max expiryFromTtl earliestFutureDay
+   in T.pack (formatTime defaultTimeLocale "%Y-%m-%d" expiryDay)
 
 revokeProjectToken :: AppConfig -> Text -> Text -> Int64 -> Int64 -> IO (Either GitlabError ())
 revokeProjectToken cfg host oauthToken repoId deployTokenId = do

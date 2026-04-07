@@ -10,7 +10,6 @@ module Hostenv.Provider.Webhook
   , runWebhookDeployJob
   , shouldWaitForCallbacks
   , persistIntentsActionsAndPushWith
-  , chooseFinalResult
   ) where
 
 import Control.Exception (finally, IOException, try)
@@ -70,6 +69,7 @@ import Hostenv.Provider.Service
   , verifyGitLabToken
   )
 import Hostenv.Provider.Util (pickFirstExisting, readSecret)
+import Data.Either (lefts)
 
 data WebhookAccepted = WebhookAccepted
   { accepted :: Bool
@@ -152,7 +152,10 @@ runWebhookDeployJob cfg hash projectRef logger = do
                   Left err -> pure (Left (renderGitlabError err))
                   Right deployToken -> do
                     let scopedNixConfig = appendNixAccessTokenConfig existingNixConfig deployHost NixGitlabPAT deployToken.value
-                    revokeErrRef <- newIORef Nothing
+                    -- Awkward, but a `Right` signifies success. We align
+                    -- the types with `deployTokenResult` to make result
+                    -- handling code a little simpler later.
+                    revokeErrRef <- newIORef $ Right (JobComplete "")
                     logger.logInfo "webhook stage: execute_pipeline"
                     pipelineResult <-
                       executePipeline (Just scopedNixConfig) gitEnvVars
@@ -160,16 +163,15 @@ runWebhookDeployJob cfg hash projectRef logger = do
                           logger.logInfo "webhook stage: revoke_deploy_token"
                           revokeResult <- revokeProjectToken cfg deployHost deployAccessToken deployRepoId deployToken.id
                           case revokeResult of
-                            Left msg -> writeIORef revokeErrRef (Just msg)
+                            Left msg -> writeIORef revokeErrRef (Left $ "failed to revoke deploy token: " <> renderGitlabError msg)
                             Right _ -> pure ()
                     revokeErr <- readIORef revokeErrRef
-                    case pipelineResult of
-                      Left err -> pure (Left err)
-                      Right outcome -> do
-                        case revokeErr of
-                          Nothing -> pure ()
-                          Just revokeMsg -> logger.logError ("failed to revoke deploy token: " <> renderGitlabError revokeMsg)
-                        pure (Right outcome)
+                    case lefts [ pipelineResult, revokeErr ] of
+                      [] -> pure pipelineResult
+                      errs -> do
+                        mapM_ logger.logError errs
+                        -- Merge error strings before returning.
+                        pure $ Left (T.intercalate ", " errs)
   where
     executePipeline :: Maybe Text -> [(Text, Text)] -> IO (Either Text JobOutcome)
     executePipeline mNixConfig gitEnvVars = do
@@ -800,15 +802,6 @@ serverError err =
           exitCode = exitCodeToInt exitCodeRaw
           response = ErrorResponse ("webhook stage " <> renderWebhookStage stage <> " failed") (Just cmd) exitCode (Just stdoutText) (Just stderrText)
        in errorWithBody err500 response
-
-chooseFinalResult :: Either WebhookError WebhookResult -> Maybe Text -> Either (Either WebhookError Text) WebhookResult
-chooseFinalResult primaryResult mRevokeError =
-  case primaryResult of
-    Left primaryErr -> Left (Left primaryErr)
-    Right successResult ->
-      case mRevokeError of
-        Just revokeErr -> Left (Right revokeErr)
-        Nothing -> Right successResult
 
 renderWebhookError :: WebhookError -> Text
 renderWebhookError err =
