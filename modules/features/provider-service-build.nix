@@ -50,6 +50,8 @@ in
           echo "hostenv-provider-service-dev: proxying http://localhost:$HOSTENV_PROVIDER_HTTP_PORT -> unix:$listen_socket" >&2
         fi
 
+        # The lack of parameters here is temporary, and will be resolved once
+        # provider-service is complete.
         exec ${servicePkg}/bin/hostenv-provider-service "$@"
       '';
     in
