@@ -9,6 +9,8 @@ let
     config.flake.modules.nixos.monitoring
   ];
   libHostenv = config.flake.lib.hostenv;
+  providerServiceDeprecationNote =
+    " Temporary compatibility option while deploy-rs provider tooling remains in use; will be deprecated once provider-service is complete.";
 
   providerNixosSystem =
     { config
@@ -389,15 +391,41 @@ in
       description = "Map of node name -> system string (e.g. x86_64-linux, aarch64-linux).";
     };
 
-    # nodes = mkOption {
-    #   type = types.attrsOf (types.submodule {
-    #     options.configuration = mkOption {
-    #       type = types.path;
-    #     };
-    #   });
-    #   default = { };
-    #   description = "Declarative node configuration. Each attribute defines a node with a configuration.nix path.";
-    # };
+    nodeAddresses = mkOption {
+      type = types.attrsOf types.str;
+      default = { };
+      description = "Optional map of node name -> SSH hostname/IP override for deploy-rs." + providerServiceDeprecationNote;
+    };
+
+    nodeSshPorts = mkOption {
+      type = types.attrsOf types.int;
+      default = { };
+      description = "Optional map of node name -> SSH port override for deploy-rs." + providerServiceDeprecationNote;
+    };
+
+    nodeSshOpts = mkOption {
+      type = types.attrsOf (types.listOf types.str);
+      default = { };
+      description = "Optional map of node name -> extra SSH options for deploy-rs." + providerServiceDeprecationNote;
+    };
+
+    nodeRemoteBuild = mkOption {
+      type = types.attrsOf types.bool;
+      default = { };
+      description = "Optional map of node name -> whether deploy-rs should build on the remote host." + providerServiceDeprecationNote;
+    };
+
+    nodeMagicRollback = mkOption {
+      type = types.attrsOf types.bool;
+      default = { };
+      description = "Optional map of node name -> deploy-rs magicRollback override." + providerServiceDeprecationNote;
+    };
+
+    nodeAutoRollback = mkOption {
+      type = types.attrsOf types.bool;
+      default = { };
+      description = "Optional map of node name -> deploy-rs autoRollback override." + providerServiceDeprecationNote;
+    };
 
     nodeModules = mkOption {
       type = types.listOf (types.oneOf [ types.path types.str ]);
