@@ -29,10 +29,10 @@ flake-check:
     paths:
       - /nix/var/nix/builds
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == "main"'
     - if: '$CI_MERGE_REQUEST_DRAFT == true'
       when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
   tags:
     - saas-linux-small-arm64
 
