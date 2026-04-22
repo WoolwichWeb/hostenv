@@ -112,7 +112,7 @@ let
     systems = systemsInput;
     localSystem = system;
   };
-  deployProfiles = builtins.trace deployOutputs.deploy.nodes.${nodeName} deployOutputs.deploy.nodes.${nodeName}.profiles;
+  deployProfiles = deployOutputs.deploy.nodes.${nodeName}.profiles;
   systemEval = nixosSystem {
     inherit config nodeSystems nodesPath secretsPath;
     node = nodeName;

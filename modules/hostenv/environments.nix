@@ -1,8 +1,6 @@
 { config, lib, ... }:
 let
   libHostenv = config.flake.lib.hostenv;
-  # hostenvModule = config.flake.lib.hostenv.module;
-  # environmentModule = config.flake.lib.hostenv.environmentModule;
   exportUser = user: {
     inherit (user) email publicKeys;
   };
@@ -35,10 +33,6 @@ let
     security = exportSecurity virtualHost.security;
   };
 
-  exportSecrets = secrets: {
-    inherit (secrets) enable file keys providerPublicKeys;
-  };
-
   exportHostenv = hostenv: {
     inherit (hostenv)
       organisation
@@ -60,7 +54,6 @@ let
 
     users = lib.mapAttrs (_: user: exportUser user) environment.users;
     virtualHosts = lib.mapAttrs (_: virtualHost: exportVirtualHost virtualHost) environment.virtualHosts;
-    # secrets = exportSecrets environment.secrets;
     hostenv = exportHostenv environment.hostenv;
   };
 
