@@ -3,7 +3,7 @@
   flake.modules.hostenv.tools-core-subcommands =
     { lib, config, ... }:
     let
-      envJsonEval = builtins.tryEval (builtins.toJSON (builtins.trace (builtins.attrNames config) config.exportedEnvironments));
+      envJsonEval = builtins.tryEval (builtins.toJSON config.exportedEnvironments);
       envJson =
         assert envJsonEval.success
           || builtins.throw ''
