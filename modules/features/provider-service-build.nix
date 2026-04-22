@@ -21,6 +21,7 @@ in
 
         base="''${HOSTENV_PROVIDER_DEV_DIR:-/tmp/hostenv-provider-dev}"
         pgdata="$base/pgdata"
+        listen_socket="$base/hostenv-provider.sock"
         mkdir -p "$base"
 
         if [ ! -s "$pgdata/PG_VERSION" ]; then
@@ -38,26 +39,18 @@ in
 
         createdb -h "$base" hostenv-provider >/dev/null 2>&1 || true
 
-        secrets="''${HOSTENV_PROVIDER_GITLAB_SECRETS_FILE:-$base/gitlab_oauth}"
+        secrets="$base/gitlab_oauth"
         if [ ! -f "$secrets" ]; then
           printf "client_id=dev\nclient_secret=dev\n" > "$secrets"
         fi
 
-        export HOSTENV_PROVIDER_GITLAB_SECRETS_FILE="$secrets"
-        export HOSTENV_PROVIDER_REPO_SOURCE="''${HOSTENV_PROVIDER_REPO_SOURCE:-$PWD}"
-        export HOSTENV_PROVIDER_DATA_DIR="''${HOSTENV_PROVIDER_DATA_DIR:-$base/data}"
-        export HOSTENV_PROVIDER_LISTEN_SOCKET="''${HOSTENV_PROVIDER_LISTEN_SOCKET:-$base/hostenv-provider.sock}"
-        export HOSTENV_PROVIDER_WEBHOOK_HOST="''${HOSTENV_PROVIDER_WEBHOOK_HOST:-localhost}"
-        export HOSTENV_PROVIDER_UI_BASE_URL="''${HOSTENV_PROVIDER_UI_BASE_URL:-http://localhost}"
-        export HOSTENV_PROVIDER_DB_URI="''${HOSTENV_PROVIDER_DB_URI:-host=$base dbname=hostenv-provider}"
-
         if [ -n "''${HOSTENV_PROVIDER_HTTP_PORT:-}" ]; then
-          socat TCP-LISTEN:"$HOSTENV_PROVIDER_HTTP_PORT",fork,reuseaddr UNIX-CONNECT:"$HOSTENV_PROVIDER_LISTEN_SOCKET" &
+          socat TCP-LISTEN:"$HOSTENV_PROVIDER_HTTP_PORT",fork,reuseaddr UNIX-CONNECT:"$listen_socket" &
           socat_pid=$!
-          echo "hostenv-provider-service-dev: proxying http://localhost:$HOSTENV_PROVIDER_HTTP_PORT -> unix:$HOSTENV_PROVIDER_LISTEN_SOCKET" >&2
+          echo "hostenv-provider-service-dev: proxying http://localhost:$HOSTENV_PROVIDER_HTTP_PORT -> unix:$listen_socket" >&2
         fi
 
-        ${servicePkg}/bin/hostenv-provider-service
+        exec ${servicePkg}/bin/hostenv-provider-service "$@"
       '';
     in
     {
