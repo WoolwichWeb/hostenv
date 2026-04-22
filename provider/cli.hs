@@ -29,7 +29,7 @@ import Data.Text.Encoding qualified as TE
 import Distribution.Compat.Prelude qualified as Sh
 import Hostenv.Provider.DeployGuidance (FlakeKeyStatus (..), localTrustSetupLines, remoteNodeTrustLines)
 import Hostenv.Provider.DnsBackoff (backoffDelays)
-import Hostenv.Provider.DnsGateFilter (filterEnvironmentsByNode)
+import Hostenv.Provider.DnsGateFilter (DnsGateItem (..), collectDnsGateItems, filterEnvironmentsByNode)
 import Hostenv.Provider.DeployPreflight qualified as Preflight
 import Hostenv.Provider.DeployVerification qualified as Verify
 import Hostenv.Provider.PrevNodeDiscovery qualified as PrevNode
@@ -690,14 +690,6 @@ isSubdomainOf host zone =
 
 type DnsGateKey = (Text, Text)
 
-data DnsGateItem = DnsGateItem
-    { dgiEnvName :: Text
-    , dgiNodeName :: Maybe Text
-    , dgiVhostName :: Text
-    , dgiDiscoveryHost :: Text
-    , dgiExpectedHost :: Text
-    }
-
 data DnsUpsertEligibility = UpsertEligible | UpsertIneligible Text
 
 data DnsUpsertOutcome
@@ -713,38 +705,6 @@ data DnsGateMismatch = DnsGateMismatch
 
 dnsGateKey :: DnsGateItem -> DnsGateKey
 dnsGateKey item = (item.dgiDiscoveryHost, item.dgiExpectedHost)
-
-collectDnsGateItems :: Text -> KM.KeyMap A.Value -> [DnsGateItem]
-collectDnsGateItems hostenvHostname envs =
-    concatMap collectEnv (KM.toList envs)
-  where
-    collectEnv (kEnv, vEnv) =
-        case vEnv of
-            A.Object envObj ->
-                let envName = K.toText kEnv
-                    hostenvObj = fromMaybe KM.empty (lookupObj (K.fromString "hostenv") envObj)
-                    envUserName = fromMaybe envName (lookupText (K.fromString "userName") hostenvObj)
-                    nodeName = lookupText (K.fromString "node") envObj
-                    canonicalDiscoveryHost = PrevNode.canonicalHostInDomain envUserName hostenvHostname
-                    dnsHostFor vh =
-                        if isSubdomainOf vh hostenvHostname
-                            then vh
-                            else canonicalDiscoveryHost
-                    expectedHostFor vh = maybe vh (`PrevNode.canonicalHostInDomain` hostenvHostname) nodeName
-                    vhosts = fromMaybe KM.empty (lookupObj (K.fromString "virtualHosts") envObj)
-                 in map
-                        (\(vhKey, _) ->
-                            let vhName = K.toText vhKey
-                             in DnsGateItem
-                                    { dgiEnvName = envName
-                                    , dgiNodeName = nodeName
-                                    , dgiVhostName = vhName
-                                    , dgiDiscoveryHost = dnsHostFor vhName
-                                    , dgiExpectedHost = expectedHostFor vhName
-                                    }
-                        )
-                        (KM.toList vhosts)
-            _ -> []
 
 uniqueDnsGateItems :: [DnsGateItem] -> [DnsGateItem]
 uniqueDnsGateItems =
