@@ -3,7 +3,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Hostenv.Provider.DeployVerification
-    ( TargetHostSource (..)
+    ( NodeConnection (..)
+    , defaultNodeConnection
+    , nodeConnectionFor
+    , TargetHostSource (..)
     , TlsMode (..)
     , VerificationRequest (..)
     , VerificationConstraint (..)
@@ -21,12 +24,60 @@ import Data.Aeson ((.:), (.:?), (.!=))
 import Data.Aeson qualified as A
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
+import Data.Aeson.Types (Parser, parseEither)
 import Data.List (find)
+import Data.Maybe (fromMaybe)
 import Data.Scientific (floatingOrInteger)
 import Data.Text (Text)
 import Data.Text qualified as T
 import System.Exit (ExitCode (..))
 import System.Process (readProcessWithExitCode)
+
+data NodeConnection = NodeConnection
+    { hostname :: Text
+    , verificationHostname :: Text
+    , sshOpts :: [Text]
+    }
+    deriving (Eq, Show)
+
+canonicalNodeHostname :: Text -> Text -> Text
+canonicalNodeHostname hostenvHostname nodeName =
+    nodeName <> "." <> hostenvHostname
+
+defaultNodeConnection :: Text -> Text -> NodeConnection
+defaultNodeConnection hostenvHostname nodeName =
+    let hostname = canonicalNodeHostname hostenvHostname nodeName
+     in NodeConnection
+            { hostname = hostname
+            , verificationHostname = hostname
+            , sshOpts = []
+            }
+
+parseNodeConnection :: Text -> Text -> A.Value -> Parser NodeConnection
+parseNodeConnection hostenvHostname nodeName =
+    A.withObject "NodeConnection" $ \o ->
+        let canonicalHostname = canonicalNodeHostname hostenvHostname nodeName
+         in NodeConnection
+                <$> o .:? "hostname" .!= canonicalHostname
+                <*> o .:? "verificationHostname" .!= canonicalHostname
+                <*> o .:? "sshOpts" .!= []
+
+nodeConnectionFor :: KM.KeyMap A.Value -> Text -> Text -> NodeConnection
+nodeConnectionFor plan hostenvHostname nodeName =
+    fromMaybe
+        (defaultNodeConnection hostenvHostname nodeName)
+        (lookupNodeConnection plan hostenvHostname nodeName)
+
+lookupNodeConnection :: KM.KeyMap A.Value -> Text -> Text -> Maybe NodeConnection
+lookupNodeConnection plan hostenvHostname nodeName = do
+    conns <- lookupObj (K.fromString "nodeConnections") plan
+    raw <- KM.lookup (K.fromText nodeName) conns
+    either (const Nothing) Just (parseEither (parseNodeConnection hostenvHostname nodeName) raw)
+
+lookupObj :: K.Key -> KM.KeyMap A.Value -> Maybe (KM.KeyMap A.Value)
+lookupObj key obj = case KM.lookup key obj of
+    Just (A.Object o) -> Just o
+    _ -> Nothing
 
 data TargetHostSource
     = TargetNodeConnectionHost

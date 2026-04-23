@@ -31,6 +31,7 @@ import Hostenv.Provider.DeployGuidance (FlakeKeyStatus (..), localTrustSetupLine
 import Hostenv.Provider.DnsBackoff (backoffDelays)
 import Hostenv.Provider.DnsGateFilter (DnsGateItem (..), collectDnsGateItems, filterEnvironmentsByNode)
 import Hostenv.Provider.DeployPreflight qualified as Preflight
+import Hostenv.Provider.DeployVerification (NodeConnection (..), nodeConnectionFor)
 import Hostenv.Provider.DeployVerification qualified as Verify
 import Hostenv.Provider.PrevNodeDiscovery qualified as PrevNode
 import Hostenv.Provider.SigningTarget (deployProfilePathInstallable)
@@ -392,36 +393,6 @@ instance A.FromJSON EnvInfo where
                 , uid = uid
                 , deploymentStatus = NotAttempted
                 }
-
-data NodeConnection = NodeConnection
-    { connHostname :: Text
-    , connSshOpts :: [Text]
-    }
-
-instance A.FromJSON NodeConnection where
-    parseJSON = A.withObject "NodeConnection" $ \o ->
-        NodeConnection
-            <$> o .: "hostname"
-            <*> o .:? "sshOpts" .!= []
-
-defaultNodeConnection :: Text -> Text -> NodeConnection
-defaultNodeConnection hostenvHostname nodeName =
-    NodeConnection
-        { connHostname = nodeName <> "." <> hostenvHostname
-        , connSshOpts = []
-        }
-
-lookupNodeConnection :: KM.KeyMap A.Value -> Text -> Maybe NodeConnection
-lookupNodeConnection plan nodeName = do
-    conns <- lookupObj (K.fromString "nodeConnections") plan
-    raw <- KM.lookup (K.fromText nodeName) conns
-    either (const Nothing) Just (iparseEither parseJSON raw)
-
-nodeConnectionFor :: KM.KeyMap A.Value -> Text -> Text -> NodeConnection
-nodeConnectionFor plan hostenvHostname nodeName =
-    fromMaybe
-        (defaultNodeConnection hostenvHostname nodeName)
-        (lookupNodeConnection plan nodeName)
 
 data Snapshot = Snapshot {snapId :: Text}
 
@@ -1088,9 +1059,9 @@ data SshTarget = SshTarget
 mkSshTarget :: Text -> NodeConnection -> SshTarget
 mkSshTarget user conn =
     SshTarget
-        { targetUserHost = user <> "@" <> conn.connHostname
-        , targetHost = conn.connHostname
-        , targetSshOpts = conn.connSshOpts
+        { targetUserHost = user <> "@" <> conn.hostname
+        , targetHost = conn.hostname
+        , targetSshOpts = conn.sshOpts
         }
 
 runRemoteScript :: SshTarget -> Text -> IO ExitCode
@@ -1968,9 +1939,9 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                                                         if null verificationSpec.evChecks
                                                             then pure Nothing
                                                             else do
-                                                                let targetHost = (resolveNodeConnection envInfo.node).connHostname
-                                                                printProviderLine ("hostenv-provider: running deployment verification for " <> envName <> " via " <> targetHost)
-                                                                verificationRes <- try (Verify.runEnvVerification targetHost verificationSpec) :: IO (Either SomeException [Verify.VerificationCheckResult])
+                                                                let verificationHost = (resolveNodeConnection envInfo.node).verificationHostname
+                                                                printProviderLine ("hostenv-provider: running deployment verification for " <> envName <> " via " <> verificationHost)
+                                                                verificationRes <- try (Verify.runEnvVerification verificationHost verificationSpec) :: IO (Either SomeException [Verify.VerificationCheckResult])
                                                                 case verificationRes of
                                                                     Left err -> do
                                                                         let message = "verification failed for " <> envName <> ": " <> T.pack (displayException err)
