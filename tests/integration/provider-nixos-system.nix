@@ -22,6 +22,7 @@ let
   '';
 
   secretsPath = pkgs.writeText "secrets.yaml" ''
+    access_tokens: ""
     ${envName}:
       backups_secret: "dummy"
       backups_env: "dummy"
@@ -138,6 +139,14 @@ let
     lib.elem "ssh-ed25519 test" (systemEval.config.users.users.${deployUser}.openssh.authorizedKeys.keys or [ ]);
   trustedPublicKeysOk =
     lib.elem trustedSigningKey (systemEval.config.nix.settings.trusted-public-keys or [ ]);
+  accessTokensSecret = systemEval.config.sops.secrets.access_tokens or null;
+  privateRepoAuthOk =
+    accessTokensSecret != null
+    && (accessTokensSecret.group or null) == (systemEval.config.users.groups.keys.name or "keys")
+    && (accessTokensSecret.mode or null) == "0440"
+    && lib.strings.hasInfix
+      "!include ${accessTokensSecret.path}"
+      (systemEval.config.nix.extraOptions or "");
   secretsOk =
     builtins.hasAttr "${envName}/backups_secret" systemEval.config.sops.secrets
     && builtins.hasAttr "${envName}/backups_env" systemEval.config.sops.secrets
@@ -178,4 +187,8 @@ in
     asserts.assertTrue "provider-nixos-system-session-vars"
       xdgVarsOk
       "provider nixosSystem should set XDG session variables";
+  provider-nixos-system-private-repo-auth =
+    asserts.assertTrue "provider-nixos-system-private-repo-auth"
+      privateRepoAuthOk
+      "provider nixosSystem should keep the access token include for private flake fetches";
 }

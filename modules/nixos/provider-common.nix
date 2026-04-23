@@ -101,8 +101,13 @@ in
             options = lib.mkDefault "--delete-older-than 10d";
           };
 
+          # TODO: SOPS secrets.access_tokens may not be needed after OAuth
+          # work is complete. For now this is necessary to allow access to
+          # private repos from nodes performing remote builds, but should be
+          # re-evaluated in future.
           extraOptions = lib.mkDefault ''
             experimental-features = nix-command flakes
+            !include ${config.sops.secrets.access_tokens.path}
           '';
 
           settings.trusted-public-keys =
@@ -180,6 +185,14 @@ in
         ];
 
         sops.secrets = lib.mkMerge [
+          {
+            # GitLab/GitHub tokens for private flake inputs are still needed by
+            # node-side builds until provider-service can fetch sources.
+            access_tokens = lib.mkDefault {
+              mode = "0440";
+              group = config.users.groups.keys.name;
+            };
+          }
           (lib.mkIf deployCfg.enable {
             hostenv-provider-node-token = {
               key = "provider_node_tokens/${deployCfg.nodeName}";
