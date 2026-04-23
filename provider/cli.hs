@@ -1505,39 +1505,43 @@ resolvePrevNode explicitSourceFor hostenvHostname discoveryNodes envInfo =
             printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " forced via --migration-source: " <> sourceNode)
             pure (Right (Just sourceNode))
         Nothing -> do
-            matchedNodes <- PrevNode.discoverMatchingNodes dnsPointsTo hostenvHostname envInfo.userName discoveryNodes
-            let resolution = PrevNode.resolvePrevNodeFromMatches envInfo.node matchedNodes
-            let envHost = PrevNode.canonicalHostInDomain envInfo.userName hostenvHostname
+            let probedHosts = PrevNode.probeHosts hostenvHostname envInfo.userName envInfo.vhosts
+            -- TODO: Finish the refactor by typing EnvInfo/discoveryNodes at the
+            -- source instead of wrapping raw Text into NodeName here.
+            let candidateNodes = map PrevNode.NodeName discoveryNodes
+            let currentNode = PrevNode.NodeName envInfo.node
+            probes <-
+                forM probedHosts $ \probeHost ->
+                    PrevNode.probeHost dnsPointsTo hostenvHostname probeHost candidateNodes
+            let resolution = PrevNode.chooseDiscoveryOutcome currentNode probes
             case resolution of
-                PrevNode.PrevNodeResolved node -> do
-                    printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " discovered via DNS " <> envHost <> ": " <> node)
+                PrevNode.DiscoveryResolved (PrevNode.Hostname discoveryHost) (PrevNode.NodeName node) -> do
+                    printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " discovered via DNS " <> discoveryHost <> ": " <> node)
                     pure (Right (Just node))
-                PrevNode.PrevNodeSkip ->
-                    if null matchedNodes
-                        then pure (Right Nothing)
-                        else do
-                            when (envInfo.node `elem` matchedNodes) $
-                                printProviderLine
-                                    ( "hostenv-provider: info: previous-node discovery for "
-                                        <> envInfo.userName
-                                        <> " via "
-                                        <> envHost
-                                        <> " matched current node "
-                                        <> envInfo.node
-                                        <> " among: "
-                                        <> T.intercalate ", " matchedNodes
-                                        <> "; skipping migration discovery"
-                                    )
-                            pure (Right Nothing)
-                PrevNode.PrevNodeAmbiguousFatal nodes ->
+                PrevNode.DiscoverySkipped PrevNode.DiscoveryNoMatches ->
+                    pure (Right Nothing)
+                PrevNode.DiscoverySkipped (PrevNode.DiscoveryMatchedCurrent (PrevNode.Hostname probedHost) matchedNodes) -> do
+                    printProviderLine
+                        ( "hostenv-provider: info: previous-node discovery for "
+                            <> envInfo.userName
+                            <> " via "
+                            <> probedHost
+                            <> " matched current node "
+                            <> envInfo.node
+                            <> " among: "
+                            <> T.intercalate ", " [ nodeName | PrevNode.NodeName nodeName <- matchedNodes ]
+                            <> "; skipping migration discovery"
+                        )
+                    pure (Right Nothing)
+                PrevNode.DiscoveryAmbiguous (PrevNode.Hostname discoveryHost) nodes ->
                     pure
                         ( Left
                             ( "previous-node discovery for "
                                 <> envInfo.userName
                                 <> " via "
-                                <> envHost
+                                <> discoveryHost
                                 <> " is ambiguous: matched nodes "
-                                <> T.intercalate ", " nodes
+                                <> T.intercalate ", " [ nodeName | PrevNode.NodeName nodeName <- nodes ]
                                 <> " (current node: "
                                 <> envInfo.node
                                 <> "). Set --migration-source "
