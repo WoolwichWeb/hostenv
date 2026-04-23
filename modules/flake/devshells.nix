@@ -2,24 +2,12 @@
 let
   fp = inputs.flake-parts.lib;
   providerEnabled = config.provider.enable or false;
-  hostenvInputs = config.flake.lib.hostenvInputs;
-  addressableContentInput =
-    hostenvInputs.requireInput {
-      inherit inputs;
-      name = "addressable-content";
-      context = "hostenv dev shell";
-    };
 in
 {
   options.perSystem = fp.mkPerSystemOption ({ config, pkgs, ... }:
     let
       ghcPackageNames = lib.unique config.hostenv.haskell.devPackages;
-      providerHaskellPackages = pkgs.haskell.packages.ghc912.override {
-        overrides = self: super: {
-          addressable-content = self.callCabal2nix "addressable-content" addressableContentInput.outPath { };
-        };
-      };
-      devGhc = providerHaskellPackages.ghcWithPackages (p: map (name: p.${name}) ghcPackageNames);
+      devGhc = pkgs.haskell.packages.ghc912.ghcWithPackages (p: map (name: p.${name}) ghcPackageNames);
       cabalHook = ''
         if command -v ghc >/dev/null; then
           libdir="$(ghc --print-libdir)"
