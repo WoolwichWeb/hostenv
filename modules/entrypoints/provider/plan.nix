@@ -613,6 +613,9 @@ let
               if builtins.hasAttr node nodeAddresses
               then nodeAddresses.${node}
               else node + "." + cfgHostenvHostname;
+            # Deployment verification should probe the node's HTTP(S) frontdoor,
+            # not an SSH-only override such as a bastion or management address.
+            verificationHostname = node + "." + cfgHostenvHostname;
             sshOpts =
               let
                 # If a per-node SSH port is configured, convert it to OpenSSH args.
@@ -742,7 +745,7 @@ let
 
                 1. Under **environments** is a JSON representation of hostenv's own modules config, retaining the original structure of that representation.
                 2. Each element under **nodes** is NixOS server configuration, and will be merged into the configuration of that server during build.
-                3. Under **nodeConnections** is deploy SSH metadata used by provider tooling (hostname + ssh options).
+                3. Under **nodeConnections** is node routing metadata used by provider tooling (SSH hostname/options plus the HTTP(S) verification hostname).
 
                 Note: all manual changes to this file will be discarded.
               '';

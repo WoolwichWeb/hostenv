@@ -1,6 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import Control.Monad (unless)
+import Data.Aeson ((.=))
+import Data.Aeson qualified as A
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Aeson.KeyMap qualified as KM
 import Data.Text (Text)
@@ -73,6 +75,38 @@ main = do
     (parseEnvVerificationSpec KM.empty == Right defaultEnvVerificationSpec)
     "missing deploymentVerification should use defaults"
 
+  let legacyConnPlan =
+        asObject $
+          A.object
+            [ "nodeConnections"
+                .= A.object
+                  [ "node-a"
+                      .= A.object
+                        [ "hostname" .= ("bastion.example.test" :: Text)
+                        , "sshOpts" .= ["-J" :: Text, "jump.example.test"]
+                        ]
+                  ]
+            ]
+  let legacyConn = nodeConnectionFor legacyConnPlan "hosting.test" "node-a"
+  assert (hostname legacyConn == "bastion.example.test") "node connections should keep SSH hostname overrides"
+  assert (verificationHostname legacyConn == "node-a.hosting.test") "verification should fall back to the canonical node hostname for older plans"
+  assert (sshOpts legacyConn == ["-J", "jump.example.test"]) "node connections should preserve SSH options"
+
+  let explicitConnPlan =
+        asObject $
+          A.object
+            [ "nodeConnections"
+                .= A.object
+                  [ "node-a"
+                      .= A.object
+                        [ "hostname" .= ("bastion.example.test" :: Text)
+                        , "verificationHostname" .= ("frontend.node-a.hosting.test" :: Text)
+                        ]
+                  ]
+            ]
+  let explicitConn = nodeConnectionFor explicitConnPlan "hosting.test" "node-a"
+  assert (verificationHostname explicitConn == "frontend.node-a.hosting.test") "verification should use verificationHostname when the plan provides one"
+
   resultsPass <-
     runEnvVerificationWith
       (\_ -> pure (Exit.ExitSuccess, showText (mkCurlOutput "<meta name=\"Generator\" content=\"Drupal 11\" />" 200), ""))
@@ -139,3 +173,9 @@ firstResult results =
   case results of
     (x : _) -> x
     [] -> error "expected at least one verification result"
+
+asObject :: A.Value -> KM.KeyMap A.Value
+asObject value =
+  case value of
+    A.Object obj -> obj
+    _ -> error "expected JSON object"
