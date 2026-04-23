@@ -594,11 +594,58 @@ let
         inherit system;
         overlays = [ pogOverlay ];
       };
+
+      evalHostenv = modules: selectedEnvironmentName:
+        pkgs.lib.evalModules {
+          modules =
+            [
+              { _module.args = { inherit inputs pkgs; }; }
+              ({ ... }: {
+                hostenv.environmentName = selectedEnvironmentName;
+              })
+              {
+                systemd.globalEnvironment.TZDIR = "${pkgs.tzdata}/share/zoneinfo";
+              }
+            ]
+            ++ lib.attrValues config.flake.modules.hostenv
+            ++ modules;
+        };
+
+      resolveDefaultEnvironment = modules:
+        let
+          discoveryEnvironmentName = "__HOSTENV_INTERNAL_DEFAULT_DISCOVERY__";
+          discoveryEval = evalHostenv
+            (modules ++ [
+              ({ lib, ... }: {
+                # Use a synthetic environment name so default-environment
+                # discovery does not recurse through the normal current-env path.
+                environments.${discoveryEnvironmentName}.enable = lib.mkDefault false;
+              })
+            ])
+            discoveryEnvironmentName;
+
+          # List of production environment names
+          productionNames =
+            builtins.attrNames
+              (lib.filterAttrs
+                (_: env: (env.enable or false) && env.type == "production")
+                discoveryEval.config.environments);
+
+          # True if the environment config explicitly sets a
+          # default environment
+          hasExplicitDefaultEnvironment =
+            let
+              defaultPrio = (lib.modules.mkOptionDefault null).priority;
+            in
+            discoveryEval.options.defaultEnvironment.highestPrio != defaultPrio;
+        in
+        if hasExplicitDefaultEnvironment
+        then discoveryEval.config.defaultEnvironment
+        else if productionNames != [ ]
+        then builtins.head productionNames
+        else "main";
     in
     modules: environmentName:
-      let
-        hostenvModules = lib.attrValues config.flake.modules.hostenv;
-      in
       if (!hasPogOverlay) then
         builtins.throw ''
           The hostenv CLI requires the Pog library but is not available for ${system}.
@@ -610,23 +657,20 @@ let
           - If you're on macOS, run a Linux dev shell via a remote builder or `nix develop --system x86_64-linux`.
         ''
       else
-        pkgs.lib.evalModules {
-          modules =
-            [
-              { _module.args = { inherit inputs pkgs; }; }
-              ({ config, ... }: {
-                hostenv.environmentName =
-                  if environmentName == null
-                  then config.defaultEnvironment
-                  else environmentName;
-              })
-              {
-                systemd.globalEnvironment.TZDIR = "${pkgs.tzdata}/share/zoneinfo";
-              }
-            ]
-            ++ hostenvModules
-            ++ modules;
-        };
+        let
+          defaultEnvironment = resolveDefaultEnvironment modules;
+          selectedEnvironmentName =
+            if environmentName == null
+            then defaultEnvironment
+            else environmentName;
+        in
+        evalHostenv
+          (modules ++ [
+            ({ lib, ... }: {
+              defaultEnvironment = lib.mkForce defaultEnvironment;
+            })
+          ])
+          selectedEnvironmentName;
 
 in
 {
@@ -648,6 +692,7 @@ in
     flake.lib.hostenv.module = hostenvModule;
     flake.lib.hostenv.environmentModule = environmentModule;
 
+    # TODO: do not create unknown flake outputs, use lib instead
     flake.modules.hostenv.core = { ... }: {
       options.hostenv = lib.mkOption {
         type = types.submodule hostenvModule;
@@ -655,6 +700,7 @@ in
       };
     };
 
+    # TODO: do not create unknown flake outputs, use lib instead
     flake.makeHostenv = lib.genAttrs systems mkMakeHostenv;
 
     perSystem = { system, ... }: {

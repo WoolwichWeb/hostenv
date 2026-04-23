@@ -134,14 +134,6 @@ in
             }
           ];
           exportedEnvironments = exportEnvironments config.environments;
-
-          # The below does not work anymore due to an infinite recursion bug.
-          # There is a workaround: populate the default environment from a
-          # separately evaluated copy of the project's config. However, this
-          # would introduce some complexity, so it's defered for now.
-          # @todo: revisit whether the additional complexity is worth it to
-          # get this working again.
-          # defaultEnvironment = lib.mkDefault (if productionNames != [ ] then builtins.head productionNames else "main");
         };
     };
 }
