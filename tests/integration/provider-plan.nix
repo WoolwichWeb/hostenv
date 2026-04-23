@@ -698,6 +698,17 @@ in
     asserts.assertTrue "provider-plan-node-merge" ok
       "node1 should contain users and vhosts for both environments";
 
+  provider-plan-node-connections =
+    let
+      plan = lib.importJSON planNoState;
+      conn = plan.nodeConnections.node1 or { };
+      ok =
+        (conn.hostname or null) == "node1.custom.host"
+        && (conn.verificationHostname or null) == "node1.custom.host";
+    in
+    asserts.assertTrue "provider-plan-node-connections" ok
+      "plan.json should expose both SSH and verification hostnames in nodeConnections";
+
   provider-plan-no-deploy-keys-in-envs =
     let
       plan = lib.importJSON planNoState;
