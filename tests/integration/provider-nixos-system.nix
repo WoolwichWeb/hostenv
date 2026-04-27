@@ -9,6 +9,8 @@ let
   nodeName = "node-a";
   deployUser = "shipper";
   trustedSigningKey = "hostenv-provider-test-1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  providerCacheUrl = "https://cache.hosting.test";
+  providerCachePublicKey = "cache.hosting.test-1:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
   systemsInput = pkgs.writeText "systems.nix" ''[ "${system}" ]'';
 
   nodesPath = pkgs.runCommand "nodes-stub" { } ''
@@ -23,6 +25,7 @@ let
 
   secretsPath = pkgs.writeText "secrets.yaml" ''
     access_tokens: ""
+    cache_auth_password: "dummy"
     ${envName}:
       backups_secret: "dummy"
       backups_env: "dummy"
@@ -46,6 +49,11 @@ let
           deployPublicKeys = [ "ssh-ed25519 test" ];
           deployUser = deployUser;
           nixSigning.trustedPublicKeys = [ trustedSigningKey ];
+          cache = {
+            enable = true;
+            url = providerCacheUrl;
+            publicKey = providerCachePublicKey;
+          };
         };
       };
     };
@@ -157,6 +165,13 @@ let
     lib.elem "ssh-ed25519 test" (systemEval.config.users.users.${deployUser}.openssh.authorizedKeys.keys or [ ]);
   trustedPublicKeysOk =
     lib.elem trustedSigningKey (systemEval.config.nix.settings.trusted-public-keys or [ ]);
+  cacheSubstituters = systemEval.config.nix.settings.substituters or [ ];
+  providerCacheSubstitutersOk =
+    cacheSubstituters != [ ]
+    && builtins.head cacheSubstituters == providerCacheUrl
+    && builtins.any
+      (substituter: substituter == "https://cache.nixos.org/" || substituter == "https://cache.nixos.org")
+      cacheSubstituters;
   accessTokensSecret = systemEval.config.sops.secrets.access_tokens or null;
   privateRepoAuthOk =
     accessTokensSecret != null
@@ -209,4 +224,8 @@ in
     asserts.assertTrue "provider-nixos-system-private-repo-auth"
       privateRepoAuthOk
       "provider nixosSystem should keep the access token include for private flake fetches";
+  provider-nixos-system-provider-cache-substituters =
+    asserts.assertTrue "provider-nixos-system-provider-cache-substituters"
+      providerCacheSubstitutersOk
+      "provider cache should be first substituter without dropping default substituters";
 }
