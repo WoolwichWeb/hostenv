@@ -9,7 +9,13 @@ import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Hostenv.Provider.DnsGateFilter (DnsGateItem (..), collectDnsGateItems, filterEnvironmentsByNode)
+import Hostenv.Provider.DnsGateFilter
+    ( DnsGateItem (..)
+    , collectDnsGateItems
+    , disableLetsEncryptOnNode
+    , disableLetsEncryptPaths
+    , filterEnvironmentsByNode
+    )
 import System.Exit (exitFailure)
 
 mkEnv :: Maybe Text -> A.Value
@@ -32,6 +38,61 @@ mkDnsEnv mNode vhosts =
                         ]
               )
             ]
+
+mkTlsVhost :: A.Value
+mkTlsVhost =
+    A.Object $
+        KM.fromList
+            [ (K.fromString "enableLetsEncrypt", A.Bool True)
+            , (K.fromString "forceSSL", A.Bool True)
+            ]
+
+mkGatePlan :: KM.KeyMap A.Value
+mkGatePlan =
+    KM.fromList
+        [ ( K.fromString "environments"
+          , A.Object $
+                KM.fromList
+                    [ ( K.fromString "envA"
+                      , A.Object $
+                            KM.fromList
+                                [ ( K.fromString "virtualHosts"
+                                  , A.Object $
+                                        KM.fromList
+                                            [ (K.fromString "www.customer.com", mkTlsVhost)
+                                            ]
+                                  )
+                                ]
+                      )
+                    ]
+          )
+        , ( K.fromString "nodes"
+          , A.Object $
+                KM.fromList
+                    [ ( K.fromString "backend05"
+                      , A.Object $
+                            KM.fromList
+                                [ ( K.fromString "services"
+                                  , A.Object $
+                                        KM.fromList
+                                            [ ( K.fromString "nginx"
+                                              , A.Object $
+                                                    KM.fromList
+                                                        [ ( K.fromString "virtualHosts"
+                                                          , A.Object $
+                                                                KM.fromList
+                                                                    [ (K.fromString "www.customer.com", mkTlsVhost)
+                                                                    ]
+                                                          )
+                                                        ]
+                                              )
+                                            ]
+                                  )
+                                ]
+                      )
+                    ]
+          )
+        ]
 
 keysSet :: KM.KeyMap A.Value -> S.Set Text
 keysSet =
@@ -59,6 +120,31 @@ assertHostMapEqual label expected actual =
             TIO.putStrLn ("expected: " <> tShow expected)
             TIO.putStrLn ("actual:   " <> tShow actual)
             exitFailure
+
+assertBoolAt :: Text -> Bool -> [Text] -> KM.KeyMap A.Value -> IO ()
+assertBoolAt label expected path obj =
+    if lookupBoolAt path obj == Just expected
+        then pure ()
+        else do
+            TIO.putStrLn ("assertion failed (" <> label <> ")")
+            TIO.putStrLn ("path:     " <> T.intercalate "." path)
+            TIO.putStrLn ("expected: " <> tShow (Just expected))
+            TIO.putStrLn ("actual:   " <> tShow (lookupBoolAt path obj))
+            exitFailure
+
+lookupBoolAt :: [Text] -> KM.KeyMap A.Value -> Maybe Bool
+lookupBoolAt path obj =
+    case lookupAt path obj of
+        Just (A.Bool value) -> Just value
+        _ -> Nothing
+
+lookupAt :: [Text] -> KM.KeyMap A.Value -> Maybe A.Value
+lookupAt [] _ = Nothing
+lookupAt [key] obj = KM.lookup (K.fromText key) obj
+lookupAt (key : rest) obj =
+    case KM.lookup (K.fromText key) obj of
+        Just (A.Object next) -> lookupAt rest next
+        _ -> Nothing
 
 hostMap :: [DnsGateItem] -> M.Map Text (Text, Text)
 hostMap items =
@@ -114,5 +200,33 @@ main = do
             ]
         )
         (hostMap dnsItems)
+
+    let gatedPlan =
+            disableLetsEncryptOnNode (Just "backend05") "www.customer.com" $
+                disableLetsEncryptPaths "envA" "www.customer.com" mkGatePlan
+
+    assertBoolAt
+        "dns-gate should disable environment enableLetsEncrypt"
+        False
+        ["environments", "envA", "virtualHosts", "www.customer.com", "enableLetsEncrypt"]
+        gatedPlan
+
+    assertBoolAt
+        "dns-gate should disable environment forceSSL"
+        False
+        ["environments", "envA", "virtualHosts", "www.customer.com", "forceSSL"]
+        gatedPlan
+
+    assertBoolAt
+        "dns-gate should disable node enableLetsEncrypt"
+        False
+        ["nodes", "backend05", "services", "nginx", "virtualHosts", "www.customer.com", "enableLetsEncrypt"]
+        gatedPlan
+
+    assertBoolAt
+        "dns-gate should disable node forceSSL"
+        False
+        ["nodes", "backend05", "services", "nginx", "virtualHosts", "www.customer.com", "forceSSL"]
+        gatedPlan
 
     TIO.putStrLn "ok"
