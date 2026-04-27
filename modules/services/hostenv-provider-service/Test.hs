@@ -32,6 +32,7 @@ main = do
   testNodeOrderWithMigrations
   testNodeOrderWithDnsSkipsNonMigratingEnvDiscovery
   testNodeOrderWithDnsFallsBackToVhosts
+  testNodeOrderWithDnsIncludesStateOnlyPreviousNode
   testProjectHashSelection
   testPrevNodeDiscoveryResolution
   testCommandSequence
@@ -120,6 +121,26 @@ testNodeOrderWithDnsFallsBackToVhosts = do
       assert
         (map fst calls == ["env-a.hosting.test", "env-a.hosting.test", "www.customer.com", "www.customer.com"])
         "dns discovery should probe canonical host first and then configured vhosts"
+
+
+testNodeOrderWithDnsIncludesStateOnlyPreviousNode :: IO ()
+testNodeOrderWithDnsIncludesStateOnlyPreviousNode = do
+  let planJson =
+        BLC.pack
+          "{\"hostenvHostname\":\"hosting.test\",\"nodes\":{\"node-c\":{}},\"nodeConnections\":{\"node-a\":{}},\"environments\":{\"env-a\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"projectNameHash\":\"hash-main\"},\"node\":\"node-c\",\"migrations\":[\"db\"]}}}"
+  callsRef <- newIORef ([] :: [(T.Text, T.Text)])
+  let pointsTo vhost expectedHost = do
+        modifyIORef' callsRef (<> [(vhost, expectedHost)])
+        pure (vhost == "env-a.hosting.test" && expectedHost == "node-a.hosting.test")
+  result <- nodesForProjectWithDnsWith pointsTo "acme" "site" planJson
+  case result of
+    Left err -> assert False ("nodesForProjectWithDnsWith failed unexpectedly: " <> show err)
+    Right nodes -> do
+      assert (nodes == ["node-c", "node-a"]) "state-only previous node should be ordered after destination"
+      calls <- readIORef callsRef
+      assert
+        (("env-a.hosting.test", "node-a.hosting.test") `elem` calls)
+        "dns discovery should probe state-only nodeConnections candidates"
 
 
 testCommandSequence :: IO ()
