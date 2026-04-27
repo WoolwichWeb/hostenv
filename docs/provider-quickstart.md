@@ -167,15 +167,10 @@ Example (in a provider hostenv environment config):
 
   services.hostenv-provider = {
     enable = true;
-    gitlab = {
-      enable = true;
-      oAuthSecretsFile = "/run/secrets/hostenv/gitlab_oauth";
-      tokenEncryptionKeyFile = "/run/secrets/hostenv/gitlab_token_key";
-      # hosts = [ "gitlab.com" ];
-      # deployTokenTtlMinutes = 60;
-    };
+    gitlabOAuthSecretsFile = "/run/secrets/hostenv/gitlab_oauth";
+    # gitlabHosts = [ "gitlab.com" ];
     webhookSecretsDir = "/run/secrets/hostenv/webhooks";
-    # uiHost defaults to webhookHost; uiBasePath defaults to /dashboard
+    # uiHost defaults to webhookHost; uiBasePath defaults to /ui
   };
 }
 ```
@@ -189,15 +184,12 @@ client_secret=...
 
 Notes:
 
-- The UI is available at `https://<uiHost>/dashboard` by default.
+- The UI is available at `https://<uiHost>/ui` by default.
 - OAuth scopes requested: `api`, `read_repository`.
-- `gitlab.hosts` defaults to `["gitlab.com"]`; set it to allow additional GitLab hosts.
-- `gitlab.deployTokenTtlMinutes` defaults to `60`; deploy runs still revoke per-run tokens immediately on completion/failure.
+- `gitlabHosts` defaults to `["gitlab.com"]`; set it to allow additional GitLab hosts.
 - Add your admin user by setting their `users.role` in the database (defaults to `user`).
 - The UI regenerates `flake.nix` from a template (`flake.template.nix`) using
   projects stored in PostgreSQL, and writes a git credential store file so
   `nix flake update <org>__<project>` can access private GitLab repositories.
   Keep structural edits in `flake.template.nix`, not `flake.nix`.
 - The template must include the `{{HOSTENV_PROJECT_INPUTS}}` marker.
-- Persisted OAuth tokens are encrypted at rest in PostgreSQL using
-  `gitlab.tokenEncryptionKeyFile`.

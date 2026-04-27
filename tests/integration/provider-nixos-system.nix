@@ -65,6 +65,16 @@ let
           upstreamRuntimeDir = "/run/hostenv/nginx/${envName}";
           root = "/src/demo";
         };
+        virtualHosts = {
+          "${hostName}" = {
+            enableLetsEncrypt = false;
+            forceSSL = false;
+          };
+          "alias.${hostName}" = {
+            enableLetsEncrypt = true;
+            forceSSL = true;
+          };
+        };
       };
     };
     defaultEnvironment = "main";
@@ -135,6 +145,14 @@ let
 
   nginxOk = systemEval.config.services.nginx.enable == true;
   vhostOk = builtins.hasAttr hostName systemEval.config.services.nginx.virtualHosts;
+  primaryVhost = systemEval.config.services.nginx.virtualHosts.${hostName} or { };
+  aliasHostName = "alias.${hostName}";
+  aliasVhost = systemEval.config.services.nginx.virtualHosts.${aliasHostName} or { };
+  vhostTlsOk =
+    (primaryVhost.enableACME or null) == false
+    && (primaryVhost.forceSSL or null) == false
+    && (aliasVhost.enableACME or null) == true
+    && (aliasVhost.forceSSL or null) == true;
   deployKeysOk =
     lib.elem "ssh-ed25519 test" (systemEval.config.users.users.${deployUser}.openssh.authorizedKeys.keys or [ ]);
   trustedPublicKeysOk =
@@ -177,7 +195,7 @@ in
 {
   provider-nixos-system-eval =
     asserts.assertTrue "provider-nixos-system-eval"
-      (nginxOk && vhostOk && deployKeysOk && trustedPublicKeysOk && secretsOk && deploySystemSshUserOk && deployEnvSshUserOk && deployEnvProfileUserOk && firewallPortsOk && ! systemMismatch.success)
+      (nginxOk && vhostOk && vhostTlsOk && deployKeysOk && trustedPublicKeysOk && secretsOk && deploySystemSshUserOk && deployEnvSshUserOk && deployEnvProfileUserOk && firewallPortsOk && ! systemMismatch.success)
       "provider nixosSystem should enforce env key/userName alignment";
   provider-nixos-system-wheel-sudo =
     asserts.assertTrue "provider-nixos-system-wheel-sudo"
