@@ -230,11 +230,11 @@ in
                 *:*) cache_host="''${cache_host%%:*}" ;;
               esac
               mkdir -p "$(dirname "${cacheCfg.netrcFile}")"
-              cat > "${cacheCfg.netrcFile}" <<EOF
-              machine $cache_host
-              login cache
-              password $password
-            EOF
+              printf '%s\n' \
+                "machine $cache_host" \
+                "login cache" \
+                "password $password" \
+                > "${cacheCfg.netrcFile}"
               chown root:root "${cacheCfg.netrcFile}"
               chmod 0400 "${cacheCfg.netrcFile}"
           '';
