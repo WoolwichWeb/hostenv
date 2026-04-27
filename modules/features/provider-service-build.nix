@@ -52,7 +52,7 @@ in
 
         # The lack of parameters here is temporary, and will be resolved once
         # provider-service is complete.
-        exec ${servicePkg}/bin/hostenv-provider-service "$@"
+        ${servicePkg}/bin/hostenv-provider-service "$@"
       '';
     in
     {
