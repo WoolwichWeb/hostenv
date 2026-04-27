@@ -120,6 +120,8 @@ in
             );
 
           settings.require-signed-binaries = lib.mkIf cacheCfg.enable true;
+          # Keep NixOS defaults such as cache.nixos.org as fallbacks while
+          # preferring the provider cache.
           settings.substituters = lib.mkIf cacheCfg.enable (lib.mkBefore [ cacheCfg.url ]);
           settings.netrc-file = lib.mkIf (cacheCfg.enable && cacheCfg.netrcFile != null && cacheCfg.netrcFile != "") cacheCfg.netrcFile;
           # Allow deploy-rs uploads from the provider host without disabling
