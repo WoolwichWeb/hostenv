@@ -428,7 +428,7 @@ let
                                       extraConfig = mkSecurityHeaders { vhost = vhost; envType = effectiveEnvCfg.type; };
                                     in
                                     (builtins.removeAttrs vhost [ "enableLetsEncrypt" "allowIndexing" "security" "hsts" ]) // {
-                                      enableACME = vhost.enableLetsEncrypt;
+                                      enableLetsEncrypt = vhost.enableLetsEncrypt;
                                       forceSSL = vhost.enableLetsEncrypt;
                                       extraConfig = extraConfig;
                                       locations =
