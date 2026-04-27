@@ -10,14 +10,19 @@ module Hostenv.Provider.PrevNodeDiscovery
     , DiscoverySkip (..)
     , DiscoveryOutcome (..)
     , canonicalHostInDomain
+    , discoveryNodeNames
     , probeHosts
     , probeHost
     , classifyProbe
     , chooseDiscoveryOutcome
     ) where
 
+import Data.Aeson qualified as A
+import Data.Aeson.Key qualified as K
+import Data.Aeson.KeyMap qualified as KM
 import Control.Monad (filterM)
 import Data.List (nub, sort)
+import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 
@@ -114,6 +119,20 @@ hostnameText (Hostname t) = t
 
 nodeNameText :: NodeName -> Text
 nodeNameText (NodeName t) = t
+
+-- | Build the candidate node list for previous-node discovery.
+--   This includes current plan nodes, persisted nodeConnections from state,
+--   and any nodes attached to the currently parsed environments.
+discoveryNodeNames :: KM.KeyMap A.Value -> [Text] -> [Text]
+discoveryNodeNames plan envNodes =
+    S.toList . S.fromList . filter (not . T.null) $
+        objectKeys (K.fromString "nodes") plan
+            <> objectKeys (K.fromString "nodeConnections") plan
+            <> envNodes
+  where
+    objectKeys key obj = case KM.lookup key obj of
+        Just (A.Object sub) -> map (K.toText . fst) (KM.toList sub)
+        _ -> []
 
 -- | Build the ordered hostnames to probe for one environment:
 --   the canonical hostenv hostname first, then configured vhosts.
