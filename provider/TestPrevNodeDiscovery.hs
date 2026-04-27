@@ -1,6 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import Control.Monad (unless)
+import Data.Aeson ((.=))
+import Data.Aeson qualified as A
+import Data.Aeson.KeyMap qualified as KM
 import Hostenv.Provider.PrevNodeDiscovery
 import System.Exit (exitFailure)
 
@@ -17,6 +20,20 @@ main = do
   assert
     (canonicalHostInDomain "env-main-a1b2c3.hosting.test" "hosting.test" == "env-main-a1b2c3.hosting.test")
     "canonical host should not duplicate suffix"
+  let planWithStateOnlyNode =
+        asObject $
+          A.object
+            [ "nodes" .= A.object
+                [ "node-b" .= A.object []
+                ]
+            , "nodeConnections" .= A.object
+                [ "node-a" .= A.object []
+                , "node-b" .= A.object []
+                ]
+            ]
+  assert
+    (discoveryNodeNames planWithStateOnlyNode ["node-b", "node-c"] == ["node-a", "node-b", "node-c"])
+    "discovery nodes should include state-only nodeConnections and current env nodes"
 
   assert
     ( classifyProbe (NodeName "node-b") (Probe (Hostname "env-main-a1b2c3.hosting.test") [])
@@ -84,3 +101,9 @@ main = do
     "vhost fallback should win when canonical host is ambiguous"
 
   putStrLn "ok"
+
+asObject :: A.Value -> KM.KeyMap A.Value
+asObject value =
+  case value of
+    A.Object obj -> obj
+    _ -> error "expected JSON object"

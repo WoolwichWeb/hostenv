@@ -258,12 +258,6 @@ lookupBool k o = case KM.lookup k o of
     Just (A.Bool b) -> Just b
     _ -> Nothing
 
-planNodeNames :: KM.KeyMap A.Value -> [Text]
-planNodeNames plan =
-    case lookupObj (K.fromString "nodes") plan of
-        Nothing -> []
-        Just nodesObj -> map (K.toText . fst) (KM.toList nodesObj)
-
 modifyAt :: [KM.Key] -> (A.Value -> A.Value) -> KM.KeyMap A.Value -> KM.KeyMap A.Value
 modifyAt [] _ obj = obj
 modifyAt [k] f obj = maybe obj (\v -> KM.insert k (f v) obj) (KM.lookup k obj)
@@ -1642,10 +1636,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
             let sourceHits = filter (\(envName, _) -> any (\e -> e.userName == envName) envInfosFiltered) migrationSources
             let sourceMisses = map fst migrationSources \\ map fst sourceHits
             let sourceFor envName = lookup envName migrationSources
-            let discoveryNodes =
-                    S.toList $
-                        S.fromList $
-                            filter (not . T.null) (planNodeNames plan <> uniqueNodeNames (map fst envRows))
+            let discoveryNodes = PrevNode.discoveryNodeNames plan (uniqueNodeNames (map fst envRows))
 
             -- Perform data migrations if the environment has moved node.
             case mNode of
