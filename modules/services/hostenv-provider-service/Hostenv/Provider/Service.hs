@@ -158,17 +158,7 @@ nodesForProjectWithDnsWith pointsTo org project raw = do
                       _ -> pure Nothing
                   Nothing -> pure Nothing
               _ -> pure Nothing
-          let rootNodeNames =
-                case lookupObj (K.fromString "nodes") root of
-                  Nothing -> []
-                  Just nodesObj -> map (K.toText . fst) (KM.toList nodesObj)
-          -- Probe every node mentioned at the plan root, plus nodes currently
-          -- assigned to this project's environments. The root set may include
-          -- remembered source nodes that no longer host a current environment.
-          let discoveryNodes =
-                S.toList $
-                  S.fromList $
-                    filter (not . T.null) (rootNodeNames <> map (\(_, node, _, _, _) -> node) matches)
+          let discoveryNodes = PrevNode.discoveryNodeNames root (map (\(_, node, _, _, _) -> node) matches)
 
           resolvedMatches <- forM matches $ \(envUserName, node, prevNode, migrateBackups, vhosts) -> do
             resolvedPrev <-
@@ -181,7 +171,7 @@ nodesForProjectWithDnsWith pointsTo org project raw = do
           case sequence resolvedMatches of
             Left err -> pure (Left err)
             Right resolvedInfos -> do
-              let nodes = sort (nub (map envNode resolvedInfos))
+              let nodes = sort (nub (map envNode resolvedInfos <> mapMaybe envPrevNode resolvedInfos))
               -- A migrating environment depends on its previous node staying
               -- available long enough to pull data from it.
               let deps =
