@@ -1,9 +1,12 @@
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE NoFieldSelectors #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Hostenv.Provider.DnsGateFilter
     ( DnsGateItem (..)
     , collectDnsGateItems
+    , disableLetsEncryptOnNode
+    , disableLetsEncryptPaths
     , filterEnvironmentsByNode
     ) where
 
@@ -72,3 +75,29 @@ lookupObj key obj =
     case KM.lookup key obj of
         Just (A.Object o) -> Just o
         _ -> Nothing
+
+modifyAt :: [K.Key] -> (A.Value -> A.Value) -> KM.KeyMap A.Value -> KM.KeyMap A.Value
+modifyAt [] _ obj = obj
+modifyAt [k] f obj = maybe obj (\v -> KM.insert k (f v) obj) (KM.lookup k obj)
+modifyAt (k : ks) f obj =
+    case KM.lookup k obj of
+        Just (A.Object sub) -> KM.insert k (A.Object (modifyAt ks f sub)) obj
+        _ -> obj
+
+setBoolAt :: [Text] -> Bool -> KM.KeyMap A.Value -> KM.KeyMap A.Value
+setBoolAt path b = modifyAt (map K.fromText path) (const (A.Bool b))
+
+disableLetsEncryptPaths :: Text -> Text -> KM.KeyMap A.Value -> KM.KeyMap A.Value
+disableLetsEncryptPaths name vhostName root =
+    let pEnvEnable = ["environments", name, "virtualHosts", vhostName, "enableLetsEncrypt"]
+        pEnvSSL = ["environments", name, "virtualHosts", vhostName, "forceSSL"]
+     in setBoolAt pEnvSSL False $
+            setBoolAt pEnvEnable False root
+
+disableLetsEncryptOnNode :: Maybe Text -> Text -> KM.KeyMap A.Value -> KM.KeyMap A.Value
+disableLetsEncryptOnNode Nothing _ root = root
+disableLetsEncryptOnNode (Just nodeName) vhostName root =
+    let pNodeEnable = ["nodes", nodeName, "services", "nginx", "virtualHosts", vhostName, "enableLetsEncrypt"]
+        pNodeSSL = ["nodes", nodeName, "services", "nginx", "virtualHosts", vhostName, "forceSSL"]
+     in setBoolAt pNodeSSL False $
+            setBoolAt pNodeEnable False root

@@ -29,7 +29,13 @@ import Data.Text.Encoding qualified as TE
 import Distribution.Compat.Prelude qualified as Sh
 import Hostenv.Provider.DeployGuidance (FlakeKeyStatus (..), localTrustSetupLines, remoteNodeTrustLines)
 import Hostenv.Provider.DnsBackoff (backoffDelays)
-import Hostenv.Provider.DnsGateFilter (DnsGateItem (..), collectDnsGateItems, filterEnvironmentsByNode)
+import Hostenv.Provider.DnsGateFilter
+    ( DnsGateItem (..)
+    , collectDnsGateItems
+    , disableLetsEncryptOnNode
+    , disableLetsEncryptPaths
+    , filterEnvironmentsByNode
+    )
 import Hostenv.Provider.DeployPreflight qualified as Preflight
 import Hostenv.Provider.DeployVerification (NodeConnection (..), nodeConnectionFor)
 import Hostenv.Provider.DeployVerification qualified as Verify
@@ -257,30 +263,6 @@ lookupBool :: KM.Key -> KM.KeyMap A.Value -> Maybe Bool
 lookupBool k o = case KM.lookup k o of
     Just (A.Bool b) -> Just b
     _ -> Nothing
-
-modifyAt :: [KM.Key] -> (A.Value -> A.Value) -> KM.KeyMap A.Value -> KM.KeyMap A.Value
-modifyAt [] _ obj = obj
-modifyAt [k] f obj = maybe obj (\v -> KM.insert k (f v) obj) (KM.lookup k obj)
-modifyAt (k : ks) f obj =
-    case KM.lookup k obj of
-        Just (A.Object sub) -> KM.insert k (A.Object (modifyAt ks f sub)) obj
-        _ -> obj
-
-setBoolAt :: [Text] -> Bool -> KM.KeyMap A.Value -> KM.KeyMap A.Value
-setBoolAt path b = modifyAt (map K.fromText path) (const (A.Bool b))
-
-disableAcmePaths :: Text -> Text -> KM.KeyMap A.Value -> KM.KeyMap A.Value
-disableAcmePaths name vhostName root =
-    let pEnvEnable = ["environments", name, "virtualHosts", vhostName, "enableACME"]
-        pEnvSSL = ["environments", name, "virtualHosts", vhostName, "forceSSL"]
-     in setBoolAt pEnvSSL False (setBoolAt pEnvEnable False root)
-
-disableAcmeOnNode :: Maybe Text -> Text -> KM.KeyMap A.Value -> KM.KeyMap A.Value
-disableAcmeOnNode Nothing _ root = root
-disableAcmeOnNode (Just nodeName) vhostName root =
-    let pNodeEnable = ["nodes", nodeName, "services", "nginx", "virtualHosts", vhostName, "enableACME"]
-        pNodeSSL = ["nodes", nodeName, "services", "nginx", "virtualHosts", vhostName, "forceSSL"]
-     in setBoolAt pNodeSSL False (setBoolAt pNodeEnable False root)
 
 prettyJson :: BL.ByteString -> IO BL.ByteString
 prettyJson raw = do
@@ -860,8 +842,8 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
 
             let applyDisable planAcc mismatch =
                     let item = mismatch.dgmItem
-                        plan1 = disableAcmePaths item.dgiEnvName item.dgiVhostName planAcc
-                     in disableAcmeOnNode item.dgiNodeName item.dgiVhostName plan1
+                        plan1 = disableLetsEncryptPaths item.dgiEnvName item.dgiVhostName planAcc
+                     in disableLetsEncryptOnNode item.dgiNodeName item.dgiVhostName plan1
 
             let plan' = foldl applyDisable plan disableTargets
             planPretty <- prettyJson (A.encode plan')
