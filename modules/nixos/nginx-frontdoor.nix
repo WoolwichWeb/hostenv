@@ -94,7 +94,7 @@
               tlsEnabled = enableLetsEncrypt || forceSSL;
               headerConfig = mkSecurityHeaders { vhost = vhost; envType = env.type; tlsEnabled = tlsEnabled; };
               baseConfig =
-                (builtins.removeAttrs vhost [ "enableLetsEncrypt" "allowIndexing" "security" "hsts" ])
+                (builtins.removeAttrs vhost [ "enableLetsEncrypt" "enableACME" "allowIndexing" "security" "hsts" ])
                 // {
                   enableACME = lib.mkDefault enableLetsEncrypt;
                   forceSSL = lib.mkDefault forceSSL;

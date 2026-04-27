@@ -818,6 +818,27 @@ in
       (hasCsp && hasReportTo && hasReferrer && hasRobots && hasHsts && noCspOnAlias)
       "plan should emit security headers for configured virtual hosts and omit CSP when unset";
 
+  provider-plan-letsencrypt-field =
+    let
+      plan = lib.importJSON planNoState;
+      envVhost = plan.environments.${user1}.virtualHosts."env1.example" or { };
+      envAliasVhost = plan.environments.${user1}.virtualHosts."alias.example" or { };
+      nodeVhost = plan.nodes.node1.services.nginx.virtualHosts."env1.example" or { };
+      nodeAliasVhost = plan.nodes.node1.services.nginx.virtualHosts."alias.example" or { };
+      ok =
+        (envVhost.enableLetsEncrypt or null) == true
+        && (envAliasVhost.enableLetsEncrypt or null) == true
+        && (nodeVhost.enableLetsEncrypt or null) == true
+        && (nodeAliasVhost.enableLetsEncrypt or null) == true
+        && !(envVhost ? enableACME)
+        && !(envAliasVhost ? enableACME)
+        && !(nodeVhost ? enableACME)
+        && !(nodeAliasVhost ? enableACME);
+    in
+    asserts.assertTrue "provider-plan-letsencrypt-field"
+      ok
+      "plan should serialize virtual host TLS intent with enableLetsEncrypt rather than enableACME";
+
   provider-plan-backups-repo-host-per-env =
     let
       mainBackups = backupsMixedPlanData.environments.${backupsMixedMainUser}.hostenv.backupsRepoHost or null;
