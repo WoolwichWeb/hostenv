@@ -110,6 +110,17 @@ let
       environmentName = "main";
     };
   };
+  configCacheMissing = config // {
+    nodes = config.nodes // {
+      ${nodeName} = config.nodes.${nodeName} // {
+        provider = config.nodes.${nodeName}.provider // {
+          cache = {
+            enable = true;
+          };
+        };
+      };
+    };
+  };
 
   providerFlake = inputs.flake-parts.lib.mkFlake { inherit inputs; } {
     systems = [ system ];
@@ -176,6 +187,15 @@ let
   };
   systemServiceResolutionReserved = nixosSystem {
     config = configServiceResolutionReserved;
+    inherit nodeSystems nodesPath secretsPath;
+    node = nodeName;
+    inputs = inputsForSystem;
+    nixpkgs = inputs.nixpkgs;
+    pkgs = pkgsBySystem;
+    localSystem = system;
+  };
+  systemCacheMissing = nixosSystem {
+    config = configCacheMissing;
     inherit nodeSystems nodesPath secretsPath;
     node = nodeName;
     inputs = inputsForSystem;
@@ -254,6 +274,13 @@ let
     hasAssertionMessage
       "provider.serviceResolution is reserved for provider-service secret wiring"
       systemServiceResolutionReserved;
+  missingCacheSettingsOk =
+    hasAssertionMessage
+      "provider.cache.url must be configured when provider.cache.enable is true"
+      systemCacheMissing
+    && hasAssertionMessage
+      "provider.cache.publicKey must be configured when provider.cache.enable is true"
+      systemCacheMissing;
 in
 {
   provider-nixos-system-eval =
@@ -283,4 +310,8 @@ in
     asserts.assertTrue "provider-nixos-system-reserved-provider-service-options"
       (reservedProviderDeployOk && reservedServiceResolutionOk)
       "provider-common should reject reserved provider-service options while keeping node cache usable";
+  provider-nixos-system-cache-missing-settings =
+    asserts.assertTrue "provider-nixos-system-cache-missing-settings"
+      missingCacheSettingsOk
+      "provider cache should report guarded validation messages when enabled without required settings";
 }

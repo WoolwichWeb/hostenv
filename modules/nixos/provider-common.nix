@@ -41,6 +41,8 @@ in
         deploy = {
           enable = lib.mkEnableOption "reserved provider-deploy node agent wiring";
 
+          # @todo: change these back to disallow nulls once provider-service
+          # node agent wiring lands and validation no longer needs placeholders.
           providerApiBaseUrl = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
@@ -69,13 +71,17 @@ in
         cache = {
           enable = lib.mkEnableOption "provider binary cache client configuration";
 
+          # @todo: change these back to disallow nulls once provider cache
+          # wiring lands and validation no longer needs placeholders.
           url = lib.mkOption {
-            type = lib.types.str;
+            type = lib.types.nullOr lib.types.str;
+            default = null;
             description = "Provider cache URL used as highest-priority substituter.";
           };
 
           publicKey = lib.mkOption {
-            type = lib.types.str;
+            type = lib.types.nullOr lib.types.str;
+            default = null;
             description = "Public cache signing key appended to trusted-public-keys.";
           };
 
@@ -120,7 +126,10 @@ in
           settings.trusted-public-keys =
             let
               # Include the cache's public key if needed.
-              cacheKey = if cacheCfg.enable then [ cacheCfg.publicKey ] else [ ];
+              cacheKey =
+                if cacheCfg.enable && cacheCfg.publicKey != null && cacheCfg.publicKey != ""
+                then [ cacheCfg.publicKey ]
+                else [ ];
             in
             lib.mkAfter (lib.unique
               (config.provider.nixSigning.trustedPublicKeys ++ cacheKey)
@@ -129,8 +138,12 @@ in
           settings.require-signed-binaries = lib.mkIf cacheCfg.enable true;
           # Keep NixOS defaults such as cache.nixos.org as fallbacks while
           # preferring the provider cache.
-          settings.substituters = lib.mkIf cacheCfg.enable (lib.mkBefore [ cacheCfg.url ]);
-          settings.netrc-file = lib.mkIf (cacheCfg.enable && cacheCfg.netrcFile != null && cacheCfg.netrcFile != "") cacheCfg.netrcFile;
+          settings.substituters =
+            lib.mkIf (cacheCfg.enable && cacheCfg.url != null && cacheCfg.url != "")
+              (lib.mkBefore [ cacheCfg.url ]);
+          settings.netrc-file =
+            lib.mkIf (cacheCfg.enable && cacheCfg.netrcFile != null && cacheCfg.netrcFile != "")
+              cacheCfg.netrcFile;
           # Allow deploy-rs uploads from the provider host without disabling
           # signature checks globally on the node.
           settings.trusted-users = lib.mkAfter [ deployUser ];
@@ -205,11 +218,21 @@ in
           })
         ];
 
-        systemd.services.hostenv-provider-cache-netrc = lib.mkIf cacheCfg.enable {
-          description = "Render provider cache netrc from password secret";
-          wantedBy = [ "multi-user.target" ];
-          before = [ "provider-deploy.service" "nix-daemon.service" ];
-          script = ''
+        systemd.services.hostenv-provider-cache-netrc = lib.mkIf
+          (
+            cacheCfg.enable
+            && cacheCfg.url != null
+            && cacheCfg.url != ""
+            && cacheCfg.authPasswordFile != null
+            && cacheCfg.authPasswordFile != ""
+            && cacheCfg.netrcFile != null
+            && cacheCfg.netrcFile != ""
+          )
+          {
+            description = "Render provider cache netrc from password secret";
+            wantedBy = [ "multi-user.target" ];
+            before = [ "provider-deploy.service" "nix-daemon.service" ];
+            script = ''
               set -euo pipefail
               umask 077
               password="$(tr -d '\n\r' < "${cacheCfg.authPasswordFile}")"
@@ -229,12 +252,12 @@ in
                 > "${cacheCfg.netrcFile}"
               chown root:root "${cacheCfg.netrcFile}"
               chmod 0400 "${cacheCfg.netrcFile}"
-          '';
-          serviceConfig = {
-            Type = "oneshot";
-            RemainAfterExit = true;
+            '';
+            serviceConfig = {
+              Type = "oneshot";
+              RemainAfterExit = true;
+            };
           };
-        };
 
         networking.firewall.enable = lib.mkDefault true;
         # Do not use mkDefault here: list options only merge within the
