@@ -20,6 +20,6 @@
     });
 
     default = null;
-    description = "Provider environment selector used for provider-service secrets.";
+    description = "Reserved provider environment selector for provider-service secrets. This is rejected until provider-service secret wiring lands.";
   };
 }

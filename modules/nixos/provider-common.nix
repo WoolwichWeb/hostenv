@@ -10,6 +10,13 @@ in
       deployCfg = config.provider.deploy;
       cacheCfg = config.provider.cache;
       deployUser = config.provider.deployUser or "deploy";
+      serviceResolutionCfg = config.provider.serviceResolution;
+      deployHasSettings =
+        deployCfg.enable
+        || deployCfg.providerApiBaseUrl != null
+        || deployCfg.nodeAuthTokenFile != null
+        || deployCfg.nodeName != null
+        || deployCfg.reconnectSeconds != 5;
     in
     {
       options.provider = {
@@ -32,30 +39,30 @@ in
         serviceResolution = libHostenv.mkServiceResolutionOption { inherit lib; };
 
         deploy = {
-          enable = lib.mkEnableOption "provider-deploy node agent";
+          enable = lib.mkEnableOption "reserved provider-deploy node agent wiring";
 
           providerApiBaseUrl = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
-            description = "Base URL for provider deploy APIs.";
+            description = "Reserved base URL for provider deploy APIs.";
           };
 
           nodeAuthTokenFile = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
-            description = "Bearer token file used by provider-deploy.";
+            description = "Reserved bearer token file used by provider-deploy.";
           };
 
           nodeName = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
-            description = "Logical node identity used by provider-deploy.";
+            description = "Reserved logical node identity used by provider-deploy.";
           };
 
           reconnectSeconds = lib.mkOption {
             type = lib.types.int;
             default = 5;
-            description = "Backoff delay between provider-deploy reconnects.";
+            description = "Reserved backoff delay between provider-deploy reconnects.";
           };
         };
 
@@ -153,20 +160,12 @@ in
 
         assertions = [
           {
-            assertion = (!deployCfg.enable) || (deployCfg.providerApiBaseUrl != null && deployCfg.providerApiBaseUrl != "");
-            message = "provider.deploy.providerApiBaseUrl must be configured when provider.deploy.enable is true.";
+            assertion = !deployHasSettings;
+            message = "provider.deploy is reserved for provider-service node agent wiring and is not supported by provider-common yet.";
           }
           {
-            assertion = (!deployCfg.enable) || (deployCfg.nodeAuthTokenFile != null && deployCfg.nodeAuthTokenFile != "");
-            message = "provider.deploy.nodeAuthTokenFile must be configured when provider.deploy.enable is true.";
-          }
-          {
-            assertion = (!deployCfg.enable) || (deployCfg.nodeName != null && deployCfg.nodeName != "");
-            message = "provider.deploy.nodeName must be configured when provider.deploy.enable is true.";
-          }
-          {
-            assertion = deployCfg.reconnectSeconds > 0;
-            message = "provider.deploy.reconnectSeconds must be greater than zero.";
+            assertion = serviceResolutionCfg == null;
+            message = "provider.serviceResolution is reserved for provider-service secret wiring and is not supported by provider-common yet.";
           }
           {
             assertion = (!cacheCfg.enable) || (cacheCfg.url != null && cacheCfg.url != "");
@@ -195,15 +194,6 @@ in
               group = config.users.groups.keys.name;
             };
           }
-          (lib.mkIf deployCfg.enable {
-            hostenv-provider-node-token = {
-              key = "provider_node_tokens/${deployCfg.nodeName}";
-              path = deployCfg.nodeAuthTokenFile;
-              owner = "root";
-              group = "root";
-              mode = "0400";
-            };
-          })
           (lib.mkIf cacheCfg.enable {
             hostenv-provider-cache-auth-password = {
               key = "cache_auth_password";

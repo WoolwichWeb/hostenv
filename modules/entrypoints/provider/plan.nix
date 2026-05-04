@@ -27,10 +27,13 @@ let
     , planSource ? "eval"
     , generatedFlake ? { }
     , lockPath ? (if inputs ? self then inputs.self + /flake.lock else ../../../flake.lock)
-      # Future provider-service configuration (not used yet).
+      # Reserved provider-service configuration. These are accepted only so
+      # provider entrypoint callers can fail fast instead of silently dropping
+      # settings before provider-service node wiring lands.
       # @todo: when the new provider-service is included, make these mandatory.
     , deploy ? { }
     , serviceResolution ? null
+    , cache ? { }
     }:
 
     let
@@ -256,6 +259,46 @@ let
               implicit UID assignment by NixOS. Regenerate with planSource="eval"
               or add uid values to the existing plan file.
             '';
+
+      deployHasSettings =
+        (deploy.enable or false)
+        || (deploy.providerApiBaseUrl or null) != null
+        || (deploy.nodeAuthTokenFile or null) != null
+        || (deploy.nodeAuthTokenFiles or { }) != { }
+        || (deploy.reconnectSeconds or 5) != 5
+        || (builtins.removeAttrs deploy [
+          "enable"
+          "providerApiBaseUrl"
+          "nodeAuthTokenFile"
+          "nodeAuthTokenFiles"
+          "reconnectSeconds"
+        ]) != { };
+
+      cacheHasSettings =
+        (cache.enable or false)
+        || (builtins.removeAttrs cache [ "enable" ]) != { };
+
+      assertUnsupportedProviderServiceOptions =
+        if deployHasSettings then
+          builtins.throw ''
+            provider plan: provider.deploy is reserved for provider-service node agent wiring, but it is not wired into generated node configuration yet.
+
+            Leave provider.deploy at its defaults until the provider-service node wiring PR lands.
+          ''
+        else if serviceResolution != null then
+          builtins.throw ''
+            provider plan: provider.serviceResolution is reserved for provider-service secret wiring, but it is not wired into generated node configuration yet.
+
+            Leave provider.serviceResolution unset until the provider-service wiring PR lands.
+          ''
+        else if cacheHasSettings then
+          builtins.throw ''
+            provider plan: provider.cache is reserved for provider-service cache wiring, but outer provider.cache settings are not wired into generated node configuration yet.
+
+            Leave provider.cache at its defaults until the provider-service cache wiring PR lands.
+          ''
+        else
+          true;
 
       nextUid =
         let
@@ -874,7 +917,7 @@ let
         else statePathChecked;
 
     in
-    assert (assertProjectInputs && assertDiskUids);
+    assert (assertProjectInputs && assertDiskUids && assertUnsupportedProviderServiceOptions);
     {
       flake = generatedFlakeFile;
       plan = generatedConfig;

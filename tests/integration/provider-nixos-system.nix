@@ -95,6 +95,21 @@ let
       });
     };
   };
+  configDeployReserved = lib.recursiveUpdate config {
+    nodes.${nodeName}.provider.deploy = {
+      enable = true;
+      providerApiBaseUrl = "https://hosting.test";
+      nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
+      nodeName = nodeName;
+    };
+  };
+  configServiceResolutionReserved = lib.recursiveUpdate config {
+    nodes.${nodeName}.provider.serviceResolution = {
+      organisation = "acme";
+      project = "demo";
+      environmentName = "main";
+    };
+  };
 
   providerFlake = inputs.flake-parts.lib.mkFlake { inherit inputs; } {
     systems = [ system ];
@@ -150,6 +165,24 @@ let
     pkgs = pkgsBySystem;
     localSystem = system;
   });
+  systemDeployReserved = nixosSystem {
+    config = configDeployReserved;
+    inherit nodeSystems nodesPath secretsPath;
+    node = nodeName;
+    inputs = inputsForSystem;
+    nixpkgs = inputs.nixpkgs;
+    pkgs = pkgsBySystem;
+    localSystem = system;
+  };
+  systemServiceResolutionReserved = nixosSystem {
+    config = configServiceResolutionReserved;
+    inherit nodeSystems nodesPath secretsPath;
+    node = nodeName;
+    inputs = inputsForSystem;
+    nixpkgs = inputs.nixpkgs;
+    pkgs = pkgsBySystem;
+    localSystem = system;
+  };
 
   nginxOk = systemEval.config.services.nginx.enable == true;
   vhostOk = builtins.hasAttr hostName systemEval.config.services.nginx.virtualHosts;
@@ -206,6 +239,21 @@ let
   deployEnvProfileUserOk = (deployProfiles.${envName}.user or null) == envName;
   firewallPorts = systemEval.config.networking.firewall.allowedTCPPorts or [ ];
   firewallPortsOk = lib.all (port: lib.elem port firewallPorts) [ 22 80 443 ];
+  hasAssertionMessage = messageNeedle: systemConfig:
+    builtins.any
+      (assertion:
+        assertion.assertion == false
+        && lib.strings.hasInfix messageNeedle assertion.message
+      )
+      (systemConfig.config.assertions or [ ]);
+  reservedProviderDeployOk =
+    hasAssertionMessage
+      "provider.deploy is reserved for provider-service node agent wiring"
+      systemDeployReserved;
+  reservedServiceResolutionOk =
+    hasAssertionMessage
+      "provider.serviceResolution is reserved for provider-service secret wiring"
+      systemServiceResolutionReserved;
 in
 {
   provider-nixos-system-eval =
@@ -228,4 +276,11 @@ in
     asserts.assertTrue "provider-nixos-system-provider-cache-substituters"
       providerCacheSubstitutersOk
       "provider cache should be first substituter without dropping default substituters";
+  provider-nixos-system-reserved-provider-service-options =
+    # Temporary: remove these reserved-option assertions when provider-service
+    # deploy/secret wiring is implemented and the options become real node
+    # configuration instead of rejected placeholders.
+    asserts.assertTrue "provider-nixos-system-reserved-provider-service-options"
+      (reservedProviderDeployOk && reservedServiceResolutionOk)
+      "provider-common should reject reserved provider-service options while keeping node cache usable";
 }

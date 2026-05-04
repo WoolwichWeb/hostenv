@@ -341,31 +341,31 @@ in
     deploy = mkOption {
       type = types.submodule {
         options = {
-          enable = lib.mkEnableOption "provider-deploy node agent";
+          enable = lib.mkEnableOption "reserved provider-deploy node agent wiring";
           providerApiBaseUrl = mkOption {
             type = types.nullOr types.str;
             default = null;
-            description = "Base URL for provider deploy APIs used by node workers.";
+            description = "Reserved base URL for provider deploy APIs used by node workers.";
           };
           nodeAuthTokenFile = mkOption {
             type = types.nullOr types.str;
             default = null;
-            description = "Default path for node bearer token used in provider-deploy requests.";
+            description = "Reserved default path for node bearer token used in provider-deploy requests.";
           };
           nodeAuthTokenFiles = mkOption {
             type = types.attrsOf types.str;
             default = { };
-            description = "Optional map of node name -> provider-deploy bearer token file path.";
+            description = "Reserved map of node name -> provider-deploy bearer token file path.";
           };
           reconnectSeconds = mkOption {
             type = types.int;
             default = 5;
-            description = "Provider-deploy reconnect delay in seconds.";
+            description = "Reserved provider-deploy reconnect delay in seconds.";
           };
         };
       };
       default = { };
-      description = "Provider-deploy settings propagated to provider nodes.";
+      description = "Reserved provider-deploy settings. These are rejected until provider-service node agent wiring lands.";
     };
 
     serviceResolution = libHostenv.mkServiceResolutionOption { inherit lib; };
@@ -373,11 +373,11 @@ in
     cache = mkOption {
       type = types.submodule {
         options = {
-          enable = lib.mkEnableOption "provider-service cache server secret wiring";
+          enable = lib.mkEnableOption "reserved provider-service cache server secret wiring";
         };
       };
       default = { };
-      description = "Controls provider-service cache secret projection to the selected service environment.";
+      description = "Reserved provider-service cache secret projection. This is rejected until provider-service cache wiring lands.";
     };
 
     nodeFor = mkOption {
