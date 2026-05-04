@@ -80,6 +80,9 @@ in
               cloudflare = cfg.cloudflare;
               planSource = cfg.planSource;
               generatedFlake = cfg.generatedFlake;
+              deploy = cfg.deploy;
+              serviceResolution = cfg.serviceResolution;
+              cache = cfg.cache;
             };
       in
       {

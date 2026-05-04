@@ -11,7 +11,14 @@ let
     nodeAuthTokenFiles = { };
     reconnectSeconds = 5;
   };
-  providerPlan = args: inputs.self.lib.provider.plan (args // { deploy = args.deploy or defaultDeploy; serviceResolution = args.serviceResolution or null; });
+  defaultCache = {
+    enable = false;
+  };
+  providerPlan = args: inputs.self.lib.provider.plan (args // {
+    deploy = args.deploy or defaultDeploy;
+    serviceResolution = args.serviceResolution or null;
+    cache = args.cache or defaultCache;
+  });
 
   mkHostenvStub = system:
     let outPath = ../../modules;
@@ -154,6 +161,7 @@ let
     , nodeModules ? [ ]
     , generatedFlake ? { }
     , deploy ? defaultDeploy
+    , cache ? defaultCache
     , deployPublicKeys ? [ "ssh-ed25519 test" ]
     , serviceResolution ? null
     }:
@@ -207,6 +215,7 @@ let
       cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
       planSource = planSource;
       deploy = deploy;
+      cache = cache;
       serviceResolution = serviceResolution;
       inherit nodeModules generatedFlake;
     };
@@ -557,6 +566,43 @@ let
       cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
       planSource = "eval";
     });
+  tryPlan = args:
+    let
+      plan = mkPlan args;
+    in
+    builtins.tryEval (builtins.deepSeq plan true);
+  # Temporary fail-fast coverage while provider-service node wiring is incomplete.
+  # Remove these expected-failure cases once provider.deploy, provider.cache,
+  # and provider.serviceResolution are wired through provider.plan into the
+  # generated node configuration.
+  planDeployEnabledReserved =
+    tryPlan {
+      deploy = defaultDeploy // {
+        enable = true;
+        providerApiBaseUrl = "https://hosting.test";
+        nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
+      };
+    };
+  planDeploySettingReserved =
+    tryPlan {
+      deploy = defaultDeploy // {
+        providerApiBaseUrl = "https://hosting.test";
+      };
+    };
+  planServiceResolutionReserved =
+    tryPlan {
+      serviceResolution = {
+        organisation = "org";
+        project = "proj";
+        environmentName = "env1";
+      };
+    };
+  planCacheReserved =
+    tryPlan {
+      cache = {
+        enable = true;
+      };
+    };
 
   providerPlanVhostConflictState =
     let
@@ -852,6 +898,34 @@ in
     asserts.assertTrue "provider-plan-default-lock"
       planDefaultLock.success
       "plan generation should use inputs.self/flake.lock when lockPath is omitted";
+
+  provider-plan-deploy-enabled-reserved =
+    # Temporary: plan generation should fail only until provider.deploy is
+    # wired into provider.plan and generated node configuration.
+    asserts.assertTrue "provider-plan-deploy-enabled-reserved"
+      (! planDeployEnabledReserved.success)
+      "plan generation must fail when reserved provider.deploy wiring is enabled";
+
+  provider-plan-deploy-settings-reserved =
+    # Temporary: remove this once non-default provider.deploy settings are
+    # intentionally propagated instead of rejected.
+    asserts.assertTrue "provider-plan-deploy-settings-reserved"
+      (! planDeploySettingReserved.success)
+      "plan generation must fail when reserved provider.deploy settings are non-default";
+
+  provider-plan-service-resolution-reserved =
+    # Temporary: remove this once provider.serviceResolution is wired into
+    # provider.plan for provider-service secret routing.
+    asserts.assertTrue "provider-plan-service-resolution-reserved"
+      (! planServiceResolutionReserved.success)
+      "plan generation must fail when reserved provider.serviceResolution is configured";
+
+  provider-plan-cache-reserved =
+    # Temporary: remove this once provider.cache is wired into provider.plan
+    # and generated node cache configuration.
+    asserts.assertTrue "provider-plan-cache-reserved"
+      (! planCacheReserved.success)
+      "plan generation must fail when reserved outer provider.cache wiring is enabled";
 
   provider-plan-vhost-conflict-state = providerPlanVhostConflictState;
   provider-plan-vhost-conflict-new-envs = providerPlanVhostConflictNewEnvs;
