@@ -24,7 +24,6 @@ let
             modules.nixos = {
               provider-common = { };
               hostenv-top-level = { };
-              nginx-frontdoor = { };
               nginx-tuning = { };
               monitoring = { };
             };

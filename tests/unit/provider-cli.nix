@@ -9,6 +9,11 @@ let
     p.scientific
     p.text
   ]);
+  providerCliDnsGateFilter = pkgs.runCommand "provider-cli-dns-gate-filter" { } ''
+    set -euo pipefail
+    ${ghc}/bin/runghc -i${src} ${src}/TestDnsGateFilter.hs
+    echo ok > "$out"
+  '';
 in
 {
   provider-cli-typecheck = cliPkg;
@@ -17,11 +22,8 @@ in
     ${ghc}/bin/runghc -i${src} ${src}/TestSigningTargets.hs
     echo ok > "$out"
   '';
-  provider-cli-dns-gate-filtering = pkgs.runCommand "provider-cli-dns-gate-filtering" { } ''
-    set -euo pipefail
-    ${ghc}/bin/runghc -i${src} ${src}/TestDnsGateFilter.hs
-    echo ok > "$out"
-  '';
+  provider-cli-dns-gate-filter = providerCliDnsGateFilter;
+  provider-cli-dns-gate-filtering = providerCliDnsGateFilter;
   provider-cli-dry-run-help = pkgs.runCommand "provider-cli-dry-run-help" { } ''
     set -euo pipefail
     for subcmd in plan dns-gate deploy; do

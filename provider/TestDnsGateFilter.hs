@@ -12,7 +12,7 @@ import Data.Text.IO qualified as TIO
 import Hostenv.Provider.DnsGateFilter
     ( DnsGateItem (..)
     , collectDnsGateItems
-    , disableLetsEncryptOnNode
+    , disableAcmeOnNode
     , disableLetsEncryptPaths
     , filterEnvironmentsByNode
     )
@@ -44,6 +44,14 @@ mkTlsVhost =
     A.Object $
         KM.fromList
             [ (K.fromString "enableLetsEncrypt", A.Bool True)
+            , (K.fromString "forceSSL", A.Bool True)
+            ]
+
+mkAcmeVhost :: A.Value
+mkAcmeVhost =
+    A.Object $
+        KM.fromList
+            [ (K.fromString "enableACME", A.Bool True)
             , (K.fromString "forceSSL", A.Bool True)
             ]
 
@@ -81,7 +89,7 @@ mkGatePlan =
                                                         [ ( K.fromString "virtualHosts"
                                                           , A.Object $
                                                                 KM.fromList
-                                                                    [ (K.fromString "www.customer.com", mkTlsVhost)
+                                                                    [ (K.fromString "www.customer.com", mkAcmeVhost)
                                                                     ]
                                                           )
                                                         ]
@@ -130,6 +138,17 @@ assertBoolAt label expected path obj =
             TIO.putStrLn ("path:     " <> T.intercalate "." path)
             TIO.putStrLn ("expected: " <> tShow (Just expected))
             TIO.putStrLn ("actual:   " <> tShow (lookupBoolAt path obj))
+            exitFailure
+
+assertMissingAt :: Text -> [Text] -> KM.KeyMap A.Value -> IO ()
+assertMissingAt label path obj =
+    if lookupAt path obj == Nothing
+        then pure ()
+        else do
+            TIO.putStrLn ("assertion failed (" <> label <> ")")
+            TIO.putStrLn ("path:     " <> T.intercalate "." path)
+            TIO.putStrLn ("expected: missing")
+            TIO.putStrLn ("actual:   " <> tShow (lookupAt path obj))
             exitFailure
 
 lookupBoolAt :: [Text] -> KM.KeyMap A.Value -> Maybe Bool
@@ -202,7 +221,7 @@ main = do
         (hostMap dnsItems)
 
     let gatedPlan =
-            disableLetsEncryptOnNode (Just "backend05") "www.customer.com" $
+            disableAcmeOnNode (Just "backend05") "www.customer.com" $
                 disableLetsEncryptPaths "envA" "www.customer.com" mkGatePlan
 
     assertBoolAt
@@ -218,15 +237,27 @@ main = do
         gatedPlan
 
     assertBoolAt
-        "dns-gate should disable node enableLetsEncrypt"
+        "dns-gate should disable node enableACME"
         False
-        ["nodes", "backend05", "services", "nginx", "virtualHosts", "www.customer.com", "enableLetsEncrypt"]
+        ["nodes", "backend05", "services", "nginx", "virtualHosts", "www.customer.com", "enableACME"]
         gatedPlan
 
     assertBoolAt
         "dns-gate should disable node forceSSL"
         False
         ["nodes", "backend05", "services", "nginx", "virtualHosts", "www.customer.com", "forceSSL"]
+        gatedPlan
+
+    assertMissingAt
+        "dns-gate should not write node enableLetsEncrypt"
+        [ "nodes"
+        , "backend05"
+        , "services"
+        , "nginx"
+        , "virtualHosts"
+        , "www.customer.com"
+        , "enableLetsEncrypt"
+        ]
         gatedPlan
 
     TIO.putStrLn "ok"

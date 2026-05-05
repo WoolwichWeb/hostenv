@@ -32,7 +32,7 @@ import Hostenv.Provider.DnsBackoff (backoffDelays)
 import Hostenv.Provider.DnsGateFilter
     ( DnsGateItem (..)
     , collectDnsGateItems
-    , disableLetsEncryptOnNode
+    , disableAcmeOnNode
     , disableLetsEncryptPaths
     , filterEnvironmentsByNode
     )
@@ -843,7 +843,7 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
             let applyDisable planAcc mismatch =
                     let item = mismatch.dgmItem
                         plan1 = disableLetsEncryptPaths item.dgiEnvName item.dgiVhostName planAcc
-                     in disableLetsEncryptOnNode item.dgiNodeName item.dgiVhostName plan1
+                     in disableAcmeOnNode item.dgiNodeName item.dgiVhostName plan1
 
             let plan' = foldl applyDisable plan disableTargets
             planPretty <- prettyJson (A.encode plan')

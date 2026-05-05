@@ -864,26 +864,37 @@ in
       (hasCsp && hasReportTo && hasReferrer && hasRobots && hasHsts && noCspOnAlias)
       "plan should emit security headers for configured virtual hosts and omit CSP when unset";
 
-  provider-plan-letsencrypt-field =
+  provider-plan-vhost-boundary =
     let
       plan = lib.importJSON planNoState;
       envVhost = plan.environments.${user1}.virtualHosts."env1.example" or { };
       envAliasVhost = plan.environments.${user1}.virtualHosts."alias.example" or { };
       nodeVhost = plan.nodes.node1.services.nginx.virtualHosts."env1.example" or { };
       nodeAliasVhost = plan.nodes.node1.services.nginx.virtualHosts."alias.example" or { };
+      nodeDefaultVhost = plan.nodes.node1.services.nginx.virtualHosts.default or { };
       ok =
         (envVhost.enableLetsEncrypt or null) == true
         && (envAliasVhost.enableLetsEncrypt or null) == true
-        && (nodeVhost.enableLetsEncrypt or null) == true
-        && (nodeAliasVhost.enableLetsEncrypt or null) == true
         && !(envVhost ? enableACME)
         && !(envAliasVhost ? enableACME)
-        && !(nodeVhost ? enableACME)
-        && !(nodeAliasVhost ? enableACME);
+        && (nodeVhost.enableACME or null) == true
+        && (nodeAliasVhost.enableACME or null) == true
+        && !(nodeVhost ? enableLetsEncrypt)
+        && !(nodeAliasVhost ? enableLetsEncrypt)
+        && !(nodeVhost ? allowIndexing)
+        && !(nodeAliasVhost ? allowIndexing)
+        && !(nodeVhost ? security)
+        && !(nodeAliasVhost ? security)
+        && !(nodeVhost ? hsts)
+        && !(nodeAliasVhost ? hsts)
+        && (nodeAliasVhost.locations."/".proxyPass or null) == "http://${user1}_upstream"
+        && (nodeDefaultVhost.rejectSSL or null) == true
+        && (nodeDefaultVhost.default or null) == true
+        && (nodeDefaultVhost.locations."/".return or null) == "444";
     in
-    asserts.assertTrue "provider-plan-letsencrypt-field"
+    asserts.assertTrue "provider-plan-vhost-boundary"
       ok
-      "plan should serialize virtual host TLS intent with enableLetsEncrypt rather than enableACME";
+      "plan should keep environment vhosts hostenv-shaped and node vhosts NixOS-shaped";
 
   provider-plan-backups-repo-host-per-env =
     let
