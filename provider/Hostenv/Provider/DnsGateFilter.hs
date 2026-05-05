@@ -5,7 +5,7 @@
 module Hostenv.Provider.DnsGateFilter
     ( DnsGateItem (..)
     , collectDnsGateItems
-    , disableLetsEncryptOnNode
+    , disableAcmeOnNode
     , disableLetsEncryptPaths
     , filterEnvironmentsByNode
     ) where
@@ -94,10 +94,10 @@ disableLetsEncryptPaths name vhostName root =
      in setBoolAt pEnvSSL False $
             setBoolAt pEnvEnable False root
 
-disableLetsEncryptOnNode :: Maybe Text -> Text -> KM.KeyMap A.Value -> KM.KeyMap A.Value
-disableLetsEncryptOnNode Nothing _ root = root
-disableLetsEncryptOnNode (Just nodeName) vhostName root =
-    let pNodeEnable = ["nodes", nodeName, "services", "nginx", "virtualHosts", vhostName, "enableLetsEncrypt"]
+disableAcmeOnNode :: Maybe Text -> Text -> KM.KeyMap A.Value -> KM.KeyMap A.Value
+disableAcmeOnNode Nothing _ root = root
+disableAcmeOnNode (Just nodeName) vhostName root =
+    let pNodeEnable = ["nodes", nodeName, "services", "nginx", "virtualHosts", vhostName, "enableACME"]
         pNodeSSL = ["nodes", nodeName, "services", "nginx", "virtualHosts", vhostName, "forceSSL"]
      in setBoolAt pNodeSSL False $
             setBoolAt pNodeEnable False root

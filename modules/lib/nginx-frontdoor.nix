@@ -1,12 +1,14 @@
 { ... }:
-{
-  flake.modules.nixos.nginx-frontdoor =
-    { lib, pkgs, config, ... }:
+let
+  mkNodeNginxConfig =
+    { lib
+    , envs
+    , runtimeRoot
+    , defaultEnableLetsEncrypt
+    , mkDefault ? (x: x)
+    }:
     let
-      # Treat enable = false as disabled; default to enabled when unset.
-      envs = lib.filterAttrs
-        (_: env: env.enable != false)
-        config.provider.plan.environments;
+      enabledEnvs = lib.filterAttrs (_: env: env.enable != false) envs;
 
       sanitizeHeaderValue = label: value:
         if value == null then null else
@@ -68,49 +70,52 @@
       mkUpstream = envName: env:
         let
           user = env.hostenv.userName or envName;
-          socket = (env.hostenv.upstreamRuntimeDir or "${config.hostenv.runtimeRoot}/nginx/${user}") + "/in.sock";
+          socket = (env.hostenv.upstreamRuntimeDir or "${runtimeRoot}/nginx/${user}") + "/in.sock";
         in
         {
           servers = { "unix:${socket}" = { }; };
         };
 
-      vhostFromEnv = name: env:
+      vhostFromEnv = envName: env:
         let
-          primary = env.hostenv.hostname or name;
-          defaultLoc = {
-            "/" = {
-              recommendedProxySettings = true;
-              proxyPass = "http://${name}_upstream";
-            };
-          };
+          user = env.hostenv.userName or envName;
+          primary = env.hostenv.hostname or user;
           normalizeVhost = vhostName: vhost:
             let
               enableLetsEncrypt =
                 vhost.enableLetsEncrypt
-                  or (if vhostName == primary then config.provider.nginx.enableLetsEncrypt else false);
+                  or (if vhostName == primary then defaultEnableLetsEncrypt else false);
               forceSSL =
                 vhost.forceSSL
                   or enableLetsEncrypt;
               tlsEnabled = enableLetsEncrypt || forceSSL;
               headerConfig = mkSecurityHeaders { vhost = vhost; envType = env.type; tlsEnabled = tlsEnabled; };
-              baseConfig =
-                (builtins.removeAttrs vhost [ "enableLetsEncrypt" "enableACME" "allowIndexing" "security" "hsts" ])
-                // {
-                  enableACME = lib.mkDefault enableLetsEncrypt;
-                  forceSSL = lib.mkDefault forceSSL;
-                  extraConfig = lib.concatStringsSep "\n" (lib.filter (line: line != "") [
-                    (vhost.extraConfig or "")
-                    headerConfig
-                  ]);
-                };
             in
-            if vhostName == primary then
-              baseConfig // {
-                locations = (vhost.locations or { }) // defaultLoc;
-                http2 = true;
-              }
-            else
-              baseConfig;
+            (builtins.removeAttrs vhost [
+              "enableLetsEncrypt"
+              "enableACME"
+              "allowIndexing"
+              "security"
+              "hsts"
+            ]) // {
+              enableACME = mkDefault enableLetsEncrypt;
+              forceSSL = mkDefault forceSSL;
+              extraConfig = lib.concatStringsSep "\n" (lib.filter (line: line != "") [
+                (vhost.extraConfig or "")
+                headerConfig
+              ]);
+              locations =
+                (vhost.locations or { }) // (
+                  if (vhost.globalRedirect or null) == null then {
+                    "/" = {
+                      recommendedProxySettings = true;
+                      proxyPass = "http://${user}_upstream";
+                    };
+                  } else { }
+                );
+            } // lib.optionalAttrs (vhostName == primary) {
+              http2 = true;
+            };
 
           addPrimary = (env.virtualHosts or { }) // {
             ${primary} = (env.virtualHosts or { }).${primary} or { };
@@ -119,49 +124,39 @@
         lib.mapAttrs normalizeVhost addPrimary;
     in
     {
-      options.provider.nginx.enableLetsEncrypt = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = ''
-          Whether the nginx reverse proxy should request Let's Encrypt certificates by default for environments.
+      networking.firewall.allowedTCPPorts = [ 80 443 22 ];
 
-          Note: this does not override project/environment configuration.
-        '';
-      };
-
-      config = lib.mkIf (envs != { }) {
-        assertions = lib.flatten (lib.mapAttrsToList
-          (n: env: [
-            {
-              assertion = (env.hostenv.upstreamRuntimeDir or "") != "";
-              message = "nginx: upstreamRuntimeDir missing for env ${n}";
-            }
-          ])
-          envs);
-
-        # Keep these ports in the merged result even when other modules
-        # (for example sshd openFirewall) contribute non-default values.
-        networking.firewall.allowedTCPPorts = [ 80 443 22 ];
-
-        services.nginx = {
-          enable = true;
-          recommendedProxySettings = true;
-          virtualHosts = lib.foldl' lib.recursiveUpdate { }
+      services.nginx = {
+        enable = true;
+        recommendedProxySettings = true;
+        virtualHosts =
+          (lib.foldl' lib.recursiveUpdate { }
             (
               lib.mapAttrsToList
                 (n: env: vhostFromEnv (env.hostenv.userName or n) env)
-                envs
-            );
-          upstreams = lib.listToAttrs (lib.mapAttrsToList
-            (n: env:
-              let user = env.hostenv.userName or n;
-              in {
-                name = "${user}_upstream";
-                value = mkUpstream n env;
-              })
-            envs);
-        };
+                enabledEnvs
+            ))
+          // {
+            default = {
+              serverName = "_";
+              default = true;
+              rejectSSL = true;
+              locations."/".return = "444";
+            };
+          };
+        upstreams = lib.listToAttrs (lib.mapAttrsToList
+          (n: env:
+            let user = env.hostenv.userName or n;
+            in {
+              name = "${user}_upstream";
+              value = mkUpstream n env;
+            })
+          enabledEnvs);
       };
-    }
-  ;
+    };
+in
+{
+  flake.lib.hostenv.nginxFrontdoor = {
+    inherit mkNodeNginxConfig;
+  };
 }

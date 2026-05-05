@@ -49,63 +49,6 @@ let
         if hostenvInput ? makeHostenv
         then hostenvInput.makeHostenv.${system}
         else builtins.throw "provider plan: hostenv input missing makeHostenv output.";
-      sanitizeHeaderValue = label: value:
-        if value == null then null else
-        if lib.strings.hasInfix "\"" value then
-          builtins.throw "provider plan: ${label} may not contain double quotes"
-        else
-          value;
-      mkHeaderLine = name: value:
-        if value == null then ""
-        else
-          let
-            hasDouble = lib.strings.hasInfix "\"" value;
-            hasSingle = lib.strings.hasInfix "'" value;
-            quote =
-              if hasDouble && !hasSingle then "'"
-              else if hasDouble && hasSingle then
-                builtins.throw "provider plan: ${name} header value may not contain both single and double quotes"
-              else
-                "\"";
-          in
-          ''add_header ${name} ${quote}${value}${quote} always;'';
-
-      mkSecurityHeaders = { vhost, envType }:
-        let
-          security = vhost.security or { };
-          referrerPolicy = security.referrerPolicy or "strict-origin-when-cross-origin";
-          xFrameOptions = security.xFrameOptions or "SAMEORIGIN";
-          xContentTypeOptions = security.xContentTypeOptions or true;
-          reportTo = security.reportTo or null;
-          hstsEnabled =
-            (security.hsts or (vhost.hsts or true))
-            && (vhost.enableLetsEncrypt or false);
-          cspBase = sanitizeHeaderValue "security.csp" (security.csp or null);
-          cspReportTo = security.cspReportTo or null;
-          cspValue =
-            if cspBase == null then null else
-            let trimmed = lib.strings.removeSuffix ";" cspBase;
-            in
-            if cspReportTo == null then
-              trimmed
-            else
-              "${trimmed}; report-to ${cspReportTo}";
-          cspHeaderName =
-            if (security.cspMode or "enforce") == "report-only" then
-              "Content-Security-Policy-Report-Only"
-            else
-              "Content-Security-Policy";
-          allowIndexing = vhost.allowIndexing or (envType == "production");
-        in
-        lib.concatStringsSep "\n" (lib.filter (line: line != "") [
-          (mkHeaderLine "Report-To" reportTo)
-          (mkHeaderLine "Referrer-Policy" referrerPolicy)
-          (if xFrameOptions == null then "" else mkHeaderLine "X-Frame-Options" xFrameOptions)
-          (if xContentTypeOptions then mkHeaderLine "X-Content-Type-Options" "nosniff" else "")
-          (if hstsEnabled then mkHeaderLine "Strict-Transport-Security" "max-age=63072000; includeSubDomains; preload" else "")
-          (if cspValue == null then "" else mkHeaderLine cspHeaderName cspValue)
-          (if allowIndexing then "" else mkHeaderLine "X-Robots-Tag" "noindex")
-        ]);
 
       requirePath = { name, path, hint ? "" }:
         if path == null then
@@ -458,39 +401,13 @@ let
                             (builtins.attrNames effectiveEnvCfg.virtualHosts)
                             (builtins.attrNames filteredEnvVHosts);
 
-                          virtualHosts =
+                          environmentVirtualHosts =
                             if conflicts != [ ] then
                               builtins.throw ''
                                 provider plan: environment '${envName}' declares virtualHosts that are already reserved in state: ${lib.concatStringsSep ", " conflicts}
                               ''
                             else
-                              builtins.mapAttrs
-                                (
-                                  n: vhost:
-                                    let
-                                      extraConfig = mkSecurityHeaders { vhost = vhost; envType = effectiveEnvCfg.type; };
-                                    in
-                                    (builtins.removeAttrs vhost [ "enableLetsEncrypt" "allowIndexing" "security" "hsts" ]) // {
-                                      enableLetsEncrypt = vhost.enableLetsEncrypt;
-                                      forceSSL = vhost.enableLetsEncrypt;
-                                      extraConfig = extraConfig;
-                                      locations =
-                                        let
-                                          locationDefault =
-                                            if builtins.isNull vhost.globalRedirect then
-                                              {
-                                                "/" = {
-                                                  recommendedProxySettings = true;
-                                                  proxyPass = "http://${effectiveEnvCfg.hostenv.userName}_upstream";
-                                                };
-                                              }
-                                            else
-                                              { };
-                                        in
-                                        vhost.locations // locationDefault;
-                                    }
-                                )
-                                filteredEnvVHosts;
+                              filteredEnvVHosts;
                         in
                         let
                           envWithMigrations = lib.recursiveUpdate effectiveEnvCfg migrateEnvExtras;
@@ -507,7 +424,8 @@ let
                           };
                         in
                         envWithMigrations // {
-                          inherit node authorizedKeys virtualHosts;
+                          inherit node authorizedKeys;
+                          virtualHosts = environmentVirtualHosts;
                           hostenv = hostenv';
                           repo = repo // { ref = hostenv'.gitRef; };
                         }
@@ -821,61 +739,64 @@ let
                     ${nodeName} =
                       let
                         existing = acc.nodes.${elem.node} or { };
+                        nginxCfg = config.flake.lib.hostenv.nginxFrontdoor.mkNodeNginxConfig {
+                          inherit lib;
+                          envs = {
+                            ${elem.hostenv.userName} = elem;
+                          };
+                          runtimeRoot = "/run/hostenv";
+                          defaultEnableLetsEncrypt = letsEncrypt.enable or true;
+                        };
                       in
-                      lib.recursiveUpdate existing {
-                        security.acme = {
-                          acceptTerms = letsEncrypt.acceptTerms;
-                          defaults.email = letsEncrypt.adminEmail;
-                        };
-
-                        provider = {
-                          inherit deployPublicKeys;
-                          inherit deployUser;
-                          nixSigning.trustedPublicKeys = nixSigning.trustedPublicKeys or [ ];
-                        };
-
-                        users.groups.${elem.hostenv.userName} = {
-                          gid = elem.uid;
-                        };
-
-                        users.users.${elem.hostenv.userName} = {
-                          uid = elem.uid;
-                          group = elem.hostenv.userName;
-                          openssh.authorizedKeys.keys = elem.authorizedKeys;
-                          isNormalUser = true;
-                          createHome = true;
-                          linger = true;
-                        };
-
-                        systemd.slices = {
-                          ${sliceName} = {
-                            description = "${firstPart} slice";
-                            sliceConfig = {
-                              CPUAccounting = "yes";
-                              CPUQuota = "200%";
-                              MemoryAccounting = "yes";
-                              MemoryMax = "12G";
+                      lib.recursiveUpdate existing (
+                        lib.recursiveUpdate
+                          {
+                            security.acme = {
+                              acceptTerms = letsEncrypt.acceptTerms;
+                              defaults.email = letsEncrypt.adminEmail;
                             };
-                          };
-                          "user-${elem.hostenv.organisation}-" = { };
-                          "${sliceName}-" = { };
-                        };
 
-                        systemd.services."user@${uid_}" = {
-                          overrideStrategy = "asDropin";
-                          serviceConfig.Slice = "${sliceName}-${uid_}.slice";
-                        };
+                            provider = {
+                              inherit deployPublicKeys;
+                              inherit deployUser;
+                              nixSigning.trustedPublicKeys = nixSigning.trustedPublicKeys or [ ];
+                            };
 
-                        services.nginx.virtualHosts = elem.virtualHosts // {
-                          default = {
-                            serverName = "_";
-                            default = true;
-                            rejectSSL = true;
-                            locations."/".return = "444";
-                          };
-                        };
+                            users.groups.${elem.hostenv.userName} = {
+                              gid = elem.uid;
+                            };
 
-                      };
+                            users.users.${elem.hostenv.userName} = {
+                              uid = elem.uid;
+                              group = elem.hostenv.userName;
+                              openssh.authorizedKeys.keys = elem.authorizedKeys;
+                              isNormalUser = true;
+                              createHome = true;
+                              linger = true;
+                            };
+
+                            systemd.slices = {
+                              ${sliceName} = {
+                                description = "${firstPart} slice";
+                                sliceConfig = {
+                                  CPUAccounting = "yes";
+                                  CPUQuota = "200%";
+                                  MemoryAccounting = "yes";
+                                  MemoryMax = "12G";
+                                };
+                              };
+                              "user-${elem.hostenv.organisation}-" = { };
+                              "${sliceName}-" = { };
+                            };
+
+                            systemd.services."user@${uid_}" = {
+                              overrideStrategy = "asDropin";
+                              serviceConfig.Slice = "${sliceName}-${uid_}.slice";
+                            };
+
+                          }
+                          nginxCfg
+                      );
                   };
                 })
               base
