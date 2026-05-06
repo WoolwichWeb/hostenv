@@ -34,14 +34,13 @@ let
 
       mkSecurityHeaders = { vhost, envType, tlsEnabled }:
         let
-          security = vhost.security or { };
-          referrerPolicy = security.referrerPolicy or "strict-origin-when-cross-origin";
-          xFrameOptions = security.xFrameOptions or "SAMEORIGIN";
-          xContentTypeOptions = security.xContentTypeOptions or true;
-          reportTo = security.reportTo or null;
-          hstsEnabled = (security.hsts or (vhost.hsts or true)) && tlsEnabled;
-          cspBase = sanitizeHeaderValue "security.csp" (security.csp or null);
-          cspReportTo = security.cspReportTo or null;
+          referrerPolicy = vhost.security.referrerPolicy or "strict-origin-when-cross-origin";
+          xFrameOptions = vhost.security.xFrameOptions or "SAMEORIGIN";
+          xContentTypeOptions = vhost.security.xContentTypeOptions or true;
+          reportTo = vhost.security.reportTo or null;
+          hstsEnabled = vhost.security.hsts && tlsEnabled;
+          cspBase = sanitizeHeaderValue "security.csp" (vhost.security.csp or null);
+          cspReportTo = vhost.security.cspReportTo or null;
           cspValue =
             if cspBase == null then null else
             let trimmed = lib.strings.removeSuffix ";" cspBase;
@@ -51,7 +50,7 @@ let
             else
               "${trimmed}; report-to ${cspReportTo}";
           cspHeaderName =
-            if (security.cspMode or "enforce") == "report-only" then
+            if (vhost.security.cspMode or "enforce") == "report-only" then
               "Content-Security-Policy-Report-Only"
             else
               "Content-Security-Policy";
@@ -85,11 +84,13 @@ let
               enableLetsEncrypt =
                 vhost.enableLetsEncrypt
                   or (if vhostName == primary then defaultEnableLetsEncrypt else false);
-              forceSSL =
-                vhost.forceSSL
-                  or enableLetsEncrypt;
-              tlsEnabled = enableLetsEncrypt || forceSSL;
-              headerConfig = mkSecurityHeaders { vhost = vhost; envType = env.type; tlsEnabled = tlsEnabled; };
+              headerConfig = mkSecurityHeaders
+                {
+                  vhost = vhost;
+                  envType = env.type;
+                  # The only TLS/SSL supported right now is Let's Encrypt, this will change in future.
+                  tlsEnabled = enableLetsEncrypt;
+                };
             in
             (builtins.removeAttrs vhost [
               "enableLetsEncrypt"
@@ -99,7 +100,7 @@ let
               "hsts"
             ]) // {
               enableACME = mkDefault enableLetsEncrypt;
-              forceSSL = mkDefault forceSSL;
+              forceSSL = mkDefault enableLetsEncrypt;
               extraConfig = lib.concatStringsSep "\n" (lib.filter (line: line != "") [
                 (vhost.extraConfig or "")
                 headerConfig
