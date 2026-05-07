@@ -4,9 +4,9 @@
 -- hostenv-provider CLI: plan | dns-gate | deploy
 -- dns-gate ports the legacy scripts/postgen.hs DNS/ACME gate and Cloudflare upsert logic.
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, displayException, finally, try)
 import Control.Monad (forM, forM_, unless, when)
-import Control.Concurrent (threadDelay)
 import Data.Aeson ((.!=), (.:), (.:?), (.=))
 import Data.Aeson qualified as A
 import Data.Aeson.Key qualified as K
@@ -28,10 +28,17 @@ import Data.Text.Conversions (convertText)
 import Data.Text.Encoding qualified as TE
 import Distribution.Compat.Prelude qualified as Sh
 import Hostenv.Provider.DeployGuidance (FlakeKeyStatus (..), localTrustSetupLines, remoteNodeTrustLines)
-import Hostenv.Provider.DnsBackoff (backoffDelays)
-import Hostenv.Provider.DnsGateFilter (filterEnvironmentsByNode)
 import Hostenv.Provider.DeployPreflight qualified as Preflight
+import Hostenv.Provider.DeployVerification (NodeConnection (..), nodeConnectionFor)
 import Hostenv.Provider.DeployVerification qualified as Verify
+import Hostenv.Provider.DnsBackoff (backoffDelays)
+import Hostenv.Provider.DnsGateFilter (
+    DnsGateItem (..),
+    collectDnsGateItems,
+    disableAcmeOnNode,
+    disableLetsEncryptPaths,
+    filterEnvironmentsByNode,
+ )
 import Hostenv.Provider.PrevNodeDiscovery qualified as PrevNode
 import Hostenv.Provider.SigningTarget (deployProfilePathInstallable)
 import Options.Applicative qualified as OA
@@ -257,36 +264,6 @@ lookupBool k o = case KM.lookup k o of
     Just (A.Bool b) -> Just b
     _ -> Nothing
 
-planNodeNames :: KM.KeyMap A.Value -> [Text]
-planNodeNames plan =
-    case lookupObj (K.fromString "nodes") plan of
-        Nothing -> []
-        Just nodesObj -> map (K.toText . fst) (KM.toList nodesObj)
-
-modifyAt :: [KM.Key] -> (A.Value -> A.Value) -> KM.KeyMap A.Value -> KM.KeyMap A.Value
-modifyAt [] _ obj = obj
-modifyAt [k] f obj = maybe obj (\v -> KM.insert k (f v) obj) (KM.lookup k obj)
-modifyAt (k : ks) f obj =
-    case KM.lookup k obj of
-        Just (A.Object sub) -> KM.insert k (A.Object (modifyAt ks f sub)) obj
-        _ -> obj
-
-setBoolAt :: [Text] -> Bool -> KM.KeyMap A.Value -> KM.KeyMap A.Value
-setBoolAt path b = modifyAt (map K.fromText path) (const (A.Bool b))
-
-disableAcmePaths :: Text -> Text -> KM.KeyMap A.Value -> KM.KeyMap A.Value
-disableAcmePaths name vhostName root =
-    let pEnvEnable = ["environments", name, "virtualHosts", vhostName, "enableACME"]
-        pEnvSSL = ["environments", name, "virtualHosts", vhostName, "forceSSL"]
-     in setBoolAt pEnvSSL False (setBoolAt pEnvEnable False root)
-
-disableAcmeOnNode :: Maybe Text -> Text -> KM.KeyMap A.Value -> KM.KeyMap A.Value
-disableAcmeOnNode Nothing _ root = root
-disableAcmeOnNode (Just nodeName) vhostName root =
-    let pNodeEnable = ["nodes", nodeName, "services", "nginx", "virtualHosts", vhostName, "enableACME"]
-        pNodeSSL = ["nodes", nodeName, "services", "nginx", "virtualHosts", vhostName, "forceSSL"]
-     in setBoolAt pNodeSSL False (setBoolAt pNodeEnable False root)
-
 prettyJson :: BL.ByteString -> IO BL.ByteString
 prettyJson raw = do
     (code, out, err) <- readProcessWithExitCode "jq" ["-S", "."] (T.unpack (TE.decodeUtf8 (BL.toStrict raw)))
@@ -392,36 +369,6 @@ instance A.FromJSON EnvInfo where
                 , uid = uid
                 , deploymentStatus = NotAttempted
                 }
-
-data NodeConnection = NodeConnection
-    { connHostname :: Text
-    , connSshOpts :: [Text]
-    }
-
-instance A.FromJSON NodeConnection where
-    parseJSON = A.withObject "NodeConnection" $ \o ->
-        NodeConnection
-            <$> o .: "hostname"
-            <*> o .:? "sshOpts" .!= []
-
-defaultNodeConnection :: Text -> Text -> NodeConnection
-defaultNodeConnection hostenvHostname nodeName =
-    NodeConnection
-        { connHostname = nodeName <> "." <> hostenvHostname
-        , connSshOpts = []
-        }
-
-lookupNodeConnection :: KM.KeyMap A.Value -> Text -> Maybe NodeConnection
-lookupNodeConnection plan nodeName = do
-    conns <- lookupObj (K.fromString "nodeConnections") plan
-    raw <- KM.lookup (K.fromText nodeName) conns
-    either (const Nothing) Just (iparseEither parseJSON raw)
-
-nodeConnectionFor :: KM.KeyMap A.Value -> Text -> Text -> NodeConnection
-nodeConnectionFor plan hostenvHostname nodeName =
-    fromMaybe
-        (defaultNodeConnection hostenvHostname nodeName)
-        (lookupNodeConnection plan nodeName)
 
 data Snapshot = Snapshot {snapId :: Text}
 
@@ -690,14 +637,6 @@ isSubdomainOf host zone =
 
 type DnsGateKey = (Text, Text)
 
-data DnsGateItem = DnsGateItem
-    { dgiEnvName :: Text
-    , dgiNodeName :: Maybe Text
-    , dgiVhostName :: Text
-    , dgiDiscoveryHost :: Text
-    , dgiExpectedHost :: Text
-    }
-
 data DnsUpsertEligibility = UpsertEligible | UpsertIneligible Text
 
 data DnsUpsertOutcome
@@ -713,38 +652,6 @@ data DnsGateMismatch = DnsGateMismatch
 
 dnsGateKey :: DnsGateItem -> DnsGateKey
 dnsGateKey item = (item.dgiDiscoveryHost, item.dgiExpectedHost)
-
-collectDnsGateItems :: Text -> KM.KeyMap A.Value -> [DnsGateItem]
-collectDnsGateItems hostenvHostname envs =
-    concatMap collectEnv (KM.toList envs)
-  where
-    collectEnv (kEnv, vEnv) =
-        case vEnv of
-            A.Object envObj ->
-                let envName = K.toText kEnv
-                    hostenvObj = fromMaybe KM.empty (lookupObj (K.fromString "hostenv") envObj)
-                    envUserName = fromMaybe envName (lookupText (K.fromString "userName") hostenvObj)
-                    nodeName = lookupText (K.fromString "node") envObj
-                    canonicalDiscoveryHost = PrevNode.canonicalHostInDomain envUserName hostenvHostname
-                    dnsHostFor vh =
-                        if isSubdomainOf vh hostenvHostname
-                            then vh
-                            else canonicalDiscoveryHost
-                    expectedHostFor vh = maybe vh (`PrevNode.canonicalHostInDomain` hostenvHostname) nodeName
-                    vhosts = fromMaybe KM.empty (lookupObj (K.fromString "virtualHosts") envObj)
-                 in map
-                        (\(vhKey, _) ->
-                            let vhName = K.toText vhKey
-                             in DnsGateItem
-                                    { dgiEnvName = envName
-                                    , dgiNodeName = nodeName
-                                    , dgiVhostName = vhName
-                                    , dgiDiscoveryHost = dnsHostFor vhName
-                                    , dgiExpectedHost = expectedHostFor vhName
-                                    }
-                        )
-                        (KM.toList vhosts)
-            _ -> []
 
 uniqueDnsGateItems :: [DnsGateItem] -> [DnsGateItem]
 uniqueDnsGateItems =
@@ -935,7 +842,7 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
 
             let applyDisable planAcc mismatch =
                     let item = mismatch.dgmItem
-                        plan1 = disableAcmePaths item.dgiEnvName item.dgiVhostName planAcc
+                        plan1 = disableLetsEncryptPaths item.dgiEnvName item.dgiVhostName planAcc
                      in disableAcmeOnNode item.dgiNodeName item.dgiVhostName plan1
 
             let plan' = foldl applyDisable plan disableTargets
@@ -1128,9 +1035,9 @@ data SshTarget = SshTarget
 mkSshTarget :: Text -> NodeConnection -> SshTarget
 mkSshTarget user conn =
     SshTarget
-        { targetUserHost = user <> "@" <> conn.connHostname
-        , targetHost = conn.connHostname
-        , targetSshOpts = conn.connSshOpts
+        { targetUserHost = user <> "@" <> conn.hostname
+        , targetHost = conn.hostname
+        , targetSshOpts = conn.sshOpts
         }
 
 runRemoteScript :: SshTarget -> Text -> IO ExitCode
@@ -1545,39 +1452,43 @@ resolvePrevNode explicitSourceFor hostenvHostname discoveryNodes envInfo =
             printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " forced via --migration-source: " <> sourceNode)
             pure (Right (Just sourceNode))
         Nothing -> do
-            matchedNodes <- PrevNode.discoverMatchingNodes dnsPointsTo hostenvHostname envInfo.userName discoveryNodes
-            let resolution = PrevNode.resolvePrevNodeFromMatches envInfo.node matchedNodes
-            let envHost = PrevNode.canonicalHostInDomain envInfo.userName hostenvHostname
+            let probedHosts = PrevNode.probeHosts hostenvHostname envInfo.userName envInfo.vhosts
+            -- TODO: Finish the refactor by typing EnvInfo/discoveryNodes at the
+            -- source instead of wrapping raw Text into NodeName here.
+            let candidateNodes = map PrevNode.NodeName discoveryNodes
+            let currentNode = PrevNode.NodeName envInfo.node
+            probes <-
+                forM probedHosts $ \probeHost ->
+                    PrevNode.probeHost dnsPointsTo hostenvHostname probeHost candidateNodes
+            let resolution = PrevNode.chooseDiscoveryOutcome currentNode probes
             case resolution of
-                PrevNode.PrevNodeResolved node -> do
-                    printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " discovered via DNS " <> envHost <> ": " <> node)
+                PrevNode.DiscoveryResolved (PrevNode.Hostname discoveryHost) (PrevNode.NodeName node) -> do
+                    printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " discovered via DNS " <> discoveryHost <> ": " <> node)
                     pure (Right (Just node))
-                PrevNode.PrevNodeSkip ->
-                    if null matchedNodes
-                        then pure (Right Nothing)
-                        else do
-                            when (envInfo.node `elem` matchedNodes) $
-                                printProviderLine
-                                    ( "hostenv-provider: info: previous-node discovery for "
-                                        <> envInfo.userName
-                                        <> " via "
-                                        <> envHost
-                                        <> " matched current node "
-                                        <> envInfo.node
-                                        <> " among: "
-                                        <> T.intercalate ", " matchedNodes
-                                        <> "; skipping migration discovery"
-                                    )
-                            pure (Right Nothing)
-                PrevNode.PrevNodeAmbiguousFatal nodes ->
+                PrevNode.DiscoverySkipped PrevNode.DiscoveryNoMatches ->
+                    pure (Right Nothing)
+                PrevNode.DiscoverySkipped (PrevNode.DiscoveryMatchedCurrent (PrevNode.Hostname probedHost) matchedNodes) -> do
+                    printProviderLine
+                        ( "hostenv-provider: info: previous-node discovery for "
+                            <> envInfo.userName
+                            <> " via "
+                            <> probedHost
+                            <> " matched current node "
+                            <> envInfo.node
+                            <> " among: "
+                            <> T.intercalate ", " [nodeName | PrevNode.NodeName nodeName <- matchedNodes]
+                            <> "; skipping migration discovery"
+                        )
+                    pure (Right Nothing)
+                PrevNode.DiscoveryAmbiguous (PrevNode.Hostname discoveryHost) nodes ->
                     pure
                         ( Left
                             ( "previous-node discovery for "
                                 <> envInfo.userName
                                 <> " via "
-                                <> envHost
+                                <> discoveryHost
                                 <> " is ambiguous: matched nodes "
-                                <> T.intercalate ", " nodes
+                                <> T.intercalate ", " [nodeName | PrevNode.NodeName nodeName <- nodes]
                                 <> " (current node: "
                                 <> envInfo.node
                                 <> "). Set --migration-source "
@@ -1707,10 +1618,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
             let sourceHits = filter (\(envName, _) -> any (\e -> e.userName == envName) envInfosFiltered) migrationSources
             let sourceMisses = map fst migrationSources \\ map fst sourceHits
             let sourceFor envName = lookup envName migrationSources
-            let discoveryNodes =
-                    S.toList $
-                        S.fromList $
-                            filter (not . T.null) (planNodeNames plan <> uniqueNodeNames (map fst envRows))
+            let discoveryNodes = PrevNode.discoveryNodeNames plan (uniqueNodeNames (map fst envRows))
 
             -- Perform data migrations if the environment has moved node.
             case mNode of
@@ -1737,16 +1645,15 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                             Nothing -> ["generated/"]
                         sigArgs = if useCheckSigs then ["--checksigs"] else []
                         dryActivateArgs = if useDryActivate then ["--dry-activate"] else []
-                     in
-                    [ "run"
-                    , "nixpkgs#deploy-rs"
-                    , "--"
-                    , "--skip-checks"
-                    ]
-                        <> sigArgs
-                        <> dryActivateArgs
-                        <> remoteBuildArgs
-                        <> targetArgs
+                     in [ "run"
+                        , "nixpkgs#deploy-rs"
+                        , "--"
+                        , "--skip-checks"
+                        ]
+                            <> sigArgs
+                            <> dryActivateArgs
+                            <> remoteBuildArgs
+                            <> targetArgs
             let deployGuard res args = when (res /= ExitSuccess) $ printProviderLine ("hostenv-provider: deploying " <> T.unwords args <> " failed")
 
             when dryRun $ do
@@ -2004,9 +1911,9 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                                                         if null verificationSpec.evChecks
                                                             then pure Nothing
                                                             else do
-                                                                let targetHost = (resolveNodeConnection envInfo.node).connHostname
-                                                                printProviderLine ("hostenv-provider: running deployment verification for " <> envName <> " via " <> targetHost)
-                                                                verificationRes <- try (Verify.runEnvVerification targetHost verificationSpec) :: IO (Either SomeException [Verify.VerificationCheckResult])
+                                                                let verificationHost = Verify.canonicalNodeHostname hostenvHostname envInfo.node
+                                                                printProviderLine ("hostenv-provider: running deployment verification for " <> envName <> " via " <> verificationHost)
+                                                                verificationRes <- try (Verify.runEnvVerification verificationHost verificationSpec) :: IO (Either SomeException [Verify.VerificationCheckResult])
                                                                 case verificationRes of
                                                                     Left err -> do
                                                                         let message = "verification failed for " <> envName <> ": " <> T.pack (displayException err)

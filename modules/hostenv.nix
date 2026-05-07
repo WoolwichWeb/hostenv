@@ -87,23 +87,6 @@ let
           type = types.str;
           description = "Name of the current environment. Usually corresponds to a git branch, but can be something else, e.g. an MR slug or number. Should be short, lowercase, and with no special characters.";
         };
-        defaultEnvironment = lib.mkOption {
-          type = types.str;
-          description = "Default environment name for the project.";
-          default = "main";
-        };
-        environments = lib.mkOption {
-          type = types.attrs;
-          default = { };
-          description = "Canonical environment tree (filled by environments.nix).";
-          internal = true;
-        };
-        assertions = lib.mkOption {
-          type = types.listOf types.unspecified;
-          internal = true;
-          default = [ ];
-          description = "Hostenv-level assertions accumulated from core invariants.";
-        };
         safeEnvironmentName = lib.mkOption {
           type = types.str;
           description = "Name of the current environment, shortened and with special characters removed.";
@@ -115,7 +98,7 @@ let
         };
         userName = lib.mkOption {
           type = types.str;
-          description = "UNIX username (on server) of this project.";
+          description = "UNIX username (on server) of this environment.";
         };
         hostname = lib.mkOption {
           type = types.str;
@@ -194,24 +177,7 @@ let
               builtins.map slugify [ config.project config.environmentName ]
             ) + "-" + lib.substring 0 7 slugHash;
         in
-        let
-          envs = config.environments or { };
-          productionEnvs = lib.filterAttrs (_: v: (v.enable or false) && v.type == "production") envs;
-          productionNames = builtins.attrNames productionEnvs;
-        in {
-          defaultEnvironment = lib.mkDefault (if productionNames != [ ] then builtins.head productionNames else "main");
-
-          assertions = [
-            {
-              assertion = (lib.length productionNames) <= 1;
-              message = "Only one environment may have type=production (found ${toString (lib.length productionNames)}).";
-            }
-            {
-              assertion = config.userName == shortName;
-              message = "hostenv.userName is derived from organisation/project/environment and must not be overridden.";
-            }
-          ];
-
+        {
           userName = lib.mkForce shortName;
           hostname = lib.mkForce "${shortName}.${config.hostenvHostname}";
           safeEnvironmentName = lib.mkForce (cleanDashes (sanitise config.environmentName));
@@ -230,13 +196,12 @@ let
         };
     };
 
-  # Per-environment schema used by the hostenv trunk.
+  # Per-environment config.
   environmentModule =
     { allUsers ? { }, topLevel ? { }, forceNull ? "__HOSTENV_INTERNAL_DO_NOT_CHANGE_SEMAPHORE__", hostenvModule }:
     { lib, config, name, options, ... }:
     let
       types = lib.types;
-      tl = topLevel;
 
       user = {
         options = {
@@ -331,7 +296,6 @@ let
                       let
                         hostName = envConfig.hostenv.hostname or "";
                         thisHost = config._module.args.name;
-                        thisPrio = options.globalRedirect.highestPrio;
                       in
                       if thisHost == hostName
                       then value: if value == forceNull then null else value
@@ -589,15 +553,12 @@ let
             modules = [
               hostenvModule
               {
-                # Provide only the per-env bits; keep environments empty to avoid
-                # embedding the whole tree here.
-                config.organisation = lib.mkDefault (tl.organisation or "");
-                config.project = lib.mkDefault (tl.project or "");
-                config.hostenvHostname = lib.mkDefault (tl.hostenvHostname or "example.invalid");
-                config.backupsRepoHost = lib.mkDefault (tl.backupsRepoHost or null);
+                config.organisation = lib.mkDefault (topLevel.organisation or "");
+                config.project = lib.mkDefault (topLevel.project or "");
+                config.hostenvHostname = lib.mkDefault (topLevel.hostenvHostname or "example.invalid");
+                config.backupsRepoHost = lib.mkDefault (topLevel.backupsRepoHost or null);
                 config.environmentName = name;
-                config.root = lib.mkDefault (tl.root or ".");
-                config.environments = { };
+                config.root = lib.mkDefault (topLevel.root or ".");
               }
             ];
           };
@@ -633,11 +594,58 @@ let
         inherit system;
         overlays = [ pogOverlay ];
       };
+
+      evalHostenv = modules: selectedEnvironmentName:
+        pkgs.lib.evalModules {
+          modules =
+            [
+              { _module.args = { inherit inputs pkgs; }; }
+              ({ ... }: {
+                hostenv.environmentName = selectedEnvironmentName;
+              })
+              {
+                systemd.globalEnvironment.TZDIR = "${pkgs.tzdata}/share/zoneinfo";
+              }
+            ]
+            ++ lib.attrValues config.flake.modules.hostenv
+            ++ modules;
+        };
+
+      resolveDefaultEnvironment = modules:
+        let
+          discoveryEnvironmentName = "__HOSTENV_INTERNAL_DEFAULT_DISCOVERY__";
+          discoveryEval = evalHostenv
+            (modules ++ [
+              ({ lib, ... }: {
+                # Use a synthetic environment name so default-environment
+                # discovery does not recurse through the normal current-env path.
+                environments.${discoveryEnvironmentName}.enable = lib.mkDefault false;
+              })
+            ])
+            discoveryEnvironmentName;
+
+          # List of production environment names
+          productionNames =
+            builtins.attrNames
+              (lib.filterAttrs
+                (_: env: (env.enable or false) && env.type == "production")
+                discoveryEval.config.environments);
+
+          # True if the environment config explicitly sets a
+          # default environment
+          hasExplicitDefaultEnvironment =
+            let
+              defaultPrio = (lib.modules.mkOptionDefault null).priority;
+            in
+            discoveryEval.options.defaultEnvironment.highestPrio != defaultPrio;
+        in
+        if hasExplicitDefaultEnvironment
+        then discoveryEval.config.defaultEnvironment
+        else if productionNames != [ ]
+        then builtins.head productionNames
+        else "main";
     in
     modules: environmentName:
-      let
-        hostenvModules = lib.attrValues config.flake.modules.hostenv;
-      in
       if (!hasPogOverlay) then
         builtins.throw ''
           The hostenv CLI requires the Pog library but is not available for ${system}.
@@ -649,23 +657,20 @@ let
           - If you're on macOS, run a Linux dev shell via a remote builder or `nix develop --system x86_64-linux`.
         ''
       else
-        pkgs.lib.evalModules {
-          modules =
-            [
-              { _module.args = { inherit inputs pkgs; }; }
-              ({ config, ... }: {
-                hostenv.environmentName =
-                  if environmentName == null
-                  then config.defaultEnvironment
-                  else environmentName;
-              })
-              {
-                systemd.globalEnvironment.TZDIR = "${pkgs.tzdata}/share/zoneinfo";
-              }
-            ]
-            ++ hostenvModules
-            ++ modules;
-        };
+        let
+          defaultEnvironment = resolveDefaultEnvironment modules;
+          selectedEnvironmentName =
+            if environmentName == null
+            then defaultEnvironment
+            else environmentName;
+        in
+        evalHostenv
+          (modules ++ [
+            ({ lib, ... }: {
+              defaultEnvironment = lib.mkForce defaultEnvironment;
+            })
+          ])
+          selectedEnvironmentName;
 
 in
 {
@@ -687,6 +692,7 @@ in
     flake.lib.hostenv.module = hostenvModule;
     flake.lib.hostenv.environmentModule = environmentModule;
 
+    # TODO: do not create unknown flake outputs, use lib instead
     flake.modules.hostenv.core = { ... }: {
       options.hostenv = lib.mkOption {
         type = types.submodule hostenvModule;
@@ -694,6 +700,7 @@ in
       };
     };
 
+    # TODO: do not create unknown flake outputs, use lib instead
     flake.makeHostenv = lib.genAttrs systems mkMakeHostenv;
 
     perSystem = { system, ... }: {

@@ -170,12 +170,12 @@ in
         && (request.virtualHost or null) == drupalMainHost
         && (request.path or null) == "/user/login"
         && (request.followRedirects or false)
-        && (request.tlsMode or null) == "insecure"
+        && (request.tlsMode or null) == "strict"
         && hasConstraintRule "allowNonZeroExitStatus" false
         && hasConstraintRule "minHttpStatus" 200
         && hasConstraintRule "maxHttpStatus" 299
         && hasDrupalGeneratorConstraint;
     in
     asserts.assertTrue "provider-full-drupal-deploy-verification" verificationOk
-      "Drupal environments should emit default deployment verification with redirect-tolerant constraints";
+      "Drupal environments should emit default deployment verification with redirect-tolerant constraints and strict TLS";
 }

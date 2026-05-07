@@ -4,7 +4,21 @@ let
   support = import ../support { inherit pkgs lib; };
   asserts = support.asserts;
   providerView = support.providerView;
-  providerPlan = inputs.self.lib.provider.plan;
+  defaultDeploy = {
+    enable = false;
+    providerApiBaseUrl = null;
+    nodeAuthTokenFile = null;
+    nodeAuthTokenFiles = { };
+    reconnectSeconds = 5;
+  };
+  defaultCache = {
+    enable = false;
+  };
+  providerPlan = args: inputs.self.lib.provider.plan (args // {
+    deploy = args.deploy or defaultDeploy;
+    serviceResolution = args.serviceResolution or null;
+    cache = args.cache or defaultCache;
+  });
 
   mkHostenvStub = system:
     let outPath = ../../modules;
@@ -34,7 +48,7 @@ let
           virtualHosts."env1.example" = {
             enableLetsEncrypt = true;
             globalRedirect = null;
-            locations = { };
+            locations."/".return = "302 /custom-root";
             security = {
               csp = "default-src 'self'";
               cspMode = "report-only";
@@ -61,7 +75,8 @@ let
         };
       };
     })
-  ] null;
+  ]
+    null;
 
   hostenvOutput = {
     "${"x86_64-linux"}" = {
@@ -83,7 +98,7 @@ let
           virtualHosts."env1.example" = {
             enableLetsEncrypt = true;
             globalRedirect = null;
-            locations = { };
+            locations."/".return = "302 /custom-root";
             security = {
               csp = "default-src 'self'";
               cspMode = "report-only";
@@ -138,15 +153,19 @@ let
 
   dummyStatePath = pkgs.writers.writeJSON "dummy-state.json" { };
 
-  mkPlan = {
-    hostenvHostname ? "custom.host",
-    state ? { },
-    planSource ? "eval",
-    planPath ? null,
-    deployPublicKeys ? [ "ssh-ed25519 test" ],
-    nodeModules ? [ ],
-    generatedFlake ? { }
-  }:
+  mkPlan =
+    { hostenvHostname ? "custom.host"
+    , state ? { }
+    , planSource ? "eval"
+    , planPath ? null
+    , nodeModules ? [ ]
+    , generatedFlake ? { }
+    , deploy ? defaultDeploy
+    , cache ? defaultCache
+    , deployPublicKeys ? [ "ssh-ed25519 test" ]
+    , serviceResolution ? null
+    , nodeAddresses ? { }
+    }:
     let
       # Build a synthetic flake inputs set: hostenv modules + one project with lib.hostenv output.
       lockData = {
@@ -196,7 +215,10 @@ let
       nodeSystems = { };
       cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
       planSource = planSource;
-      inherit nodeModules generatedFlake;
+      deploy = deploy;
+      cache = cache;
+      serviceResolution = serviceResolution;
+      inherit nodeModules generatedFlake nodeAddresses;
     };
 
   mkProjectInput = { organisation, project, envName ? "main" }:
@@ -444,7 +466,8 @@ let
         cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
         planSource = "eval";
       });
-    in result;
+    in
+    result;
 
   planMissingEnvironments =
     let
@@ -495,7 +518,8 @@ let
         cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
         planSource = "eval";
       });
-    in result;
+    in
+    result;
 
   lockDataSelf = {
     nodes = {
@@ -543,6 +567,43 @@ let
       cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
       planSource = "eval";
     });
+  tryPlan = args:
+    let
+      plan = mkPlan args;
+    in
+    builtins.tryEval (builtins.deepSeq plan true);
+  # Temporary fail-fast coverage while provider-service node wiring is incomplete.
+  # Remove these expected-failure cases once provider.deploy, provider.cache,
+  # and provider.serviceResolution are wired through provider.plan into the
+  # generated node configuration.
+  planDeployEnabledReserved =
+    tryPlan {
+      deploy = defaultDeploy // {
+        enable = true;
+        providerApiBaseUrl = "https://hosting.test";
+        nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
+      };
+    };
+  planDeploySettingReserved =
+    tryPlan {
+      deploy = defaultDeploy // {
+        providerApiBaseUrl = "https://hosting.test";
+      };
+    };
+  planServiceResolutionReserved =
+    tryPlan {
+      serviceResolution = {
+        organisation = "org";
+        project = "proj";
+        environmentName = "env1";
+      };
+    };
+  planCacheReserved =
+    tryPlan {
+      cache = {
+        enable = true;
+      };
+    };
 
   providerPlanVhostConflictState =
     let
@@ -551,49 +612,50 @@ let
       };
       envsExpr = (mkPlan { state = conflictState; }).environments;
       result = builtins.tryEval (builtins.deepSeq envsExpr envsExpr);
-    in asserts.assertTrue "provider-plan-vhost-conflict-state"
+    in
+    asserts.assertTrue "provider-plan-vhost-conflict-state"
       (! result.success)
       "plan generation must fail when virtualHosts overlap with existing state";
 
   providerPlanVhostConflictNewEnvs =
     let
       conflictProjectDir = pkgs.runCommand "hostenv-project-conflict" { } ''
-        mkdir -p $out
-        cat > $out/hostenv.nix <<'EOF'
-        { pkgs, config, ... }: {
-          defaultEnvironment = "env1";
-          environments = {
-            env1 = {
-              enable = true;
-              type = "development";
-              hostenv.userName = "env1";
-              hostenv.hostname = "env1.example";
-              virtualHosts."env1.example" = {
-                enableLetsEncrypt = true;
-                globalRedirect = null;
-                locations = { };
-              };
-            };
-            env2 = {
-              enable = true;
-              type = "development";
-              hostenv.userName = "env2";
-              hostenv.hostname = "env2.example";
-              virtualHosts."env1.example" = {
-                enableLetsEncrypt = true;
-                globalRedirect = null;
-                locations = { };
-              };
-            };
-          };
-          hostenv = {
-            organisation = "org";
-            project = "proj";
-            hostenvHostname = "hosting.test";
-            root = "/srv/fake";
-          };
-        }
-EOF
+                mkdir -p $out
+                cat > $out/hostenv.nix <<'EOF'
+                { pkgs, config, ... }: {
+                  defaultEnvironment = "env1";
+                  environments = {
+                    env1 = {
+                      enable = true;
+                      type = "development";
+                      hostenv.userName = "env1";
+                      hostenv.hostname = "env1.example";
+                      virtualHosts."env1.example" = {
+                        enableLetsEncrypt = true;
+                        globalRedirect = null;
+                        locations = { };
+                      };
+                    };
+                    env2 = {
+                      enable = true;
+                      type = "development";
+                      hostenv.userName = "env2";
+                      hostenv.hostname = "env2.example";
+                      virtualHosts."env1.example" = {
+                        enableLetsEncrypt = true;
+                        globalRedirect = null;
+                        locations = { };
+                      };
+                    };
+                  };
+                  hostenv = {
+                    organisation = "org";
+                    project = "proj";
+                    hostenvHostname = "hosting.test";
+                    root = "/srv/fake";
+                  };
+                }
+        EOF
       '';
 
       conflictEnvEval = makeHostenv [ "${conflictProjectDir}/hostenv.nix" ] null;
@@ -647,7 +709,8 @@ EOF
         planSource = "eval";
       }).environments;
       result = builtins.tryEval (builtins.deepSeq envsExpr envsExpr);
-    in asserts.assertTrue "provider-plan-vhost-conflict-new-envs"
+    in
+    asserts.assertTrue "provider-plan-vhost-conflict-new-envs"
       (! result.success)
       "plan generation must fail when virtualHosts overlap between new environments";
 in
@@ -664,7 +727,8 @@ in
       uids = map (u: plan.environments.${u}.uid) [ user1 user2 ];
       unique = (lib.length uids) == (lib.length (lib.unique uids));
       present = lib.all (u: u != null) uids;
-    in asserts.assertTrue "provider-plan-uids"
+    in
+    asserts.assertTrue "provider-plan-uids"
       (unique && present)
       "UIDs must be unique and present";
 
@@ -677,8 +741,22 @@ in
       ok = (users ? ${user1}) && (users ? ${user2})
         && (vhosts ? "env1.example") && (vhosts ? "env2.example")
         && (providerCfg.deployPublicKeys or [ ]) == [ "ssh-ed25519 test" ];
-    in asserts.assertTrue "provider-plan-node-merge" ok
+    in
+    asserts.assertTrue "provider-plan-node-merge" ok
       "node1 should contain users and vhosts for both environments";
+
+  provider-plan-node-connections =
+    let
+      plan = lib.importJSON (mkPlan {
+        nodeAddresses = { node1 = "bastion.internal.example"; };
+      }).plan;
+      conn = plan.nodeConnections.node1 or { };
+      ok =
+        (conn.hostname or null) == "bastion.internal.example"
+        && !(conn ? verificationHostname);
+    in
+    asserts.assertTrue "provider-plan-node-connections" ok
+      "plan.json should expose SSH hostname only; HTTP verification host is derived from node plus hostenvHostname";
 
   provider-plan-no-deploy-keys-in-envs =
     let
@@ -687,14 +765,16 @@ in
       user1Keys = users.${user1}.openssh.authorizedKeys.keys or [ ];
       user2Keys = users.${user2}.openssh.authorizedKeys.keys or [ ];
       ok = !(lib.elem "ssh-ed25519 test" user1Keys) && !(lib.elem "ssh-ed25519 test" user2Keys);
-    in asserts.assertTrue "provider-plan-no-deploy-keys-in-envs" ok
+    in
+    asserts.assertTrue "provider-plan-no-deploy-keys-in-envs" ok
       "deploy keys should not be appended to environment users";
 
   provider-plan-no-deploy-user =
     let
       plan = lib.importJSON planNoState;
       ok = !(plan.nodes.node1.users.users ? deploy);
-    in asserts.assertTrue "provider-plan-no-deploy-user" ok
+    in
+    asserts.assertTrue "provider-plan-no-deploy-user" ok
       "plan.json should not define the deploy user";
 
   provider-plan-alias-preserved =
@@ -707,12 +787,14 @@ in
     let
       plan = lib.importJSON planWithState;
       prev = plan.environments.${user1}.previousNode or null;
-    in asserts.assertTrue "provider-plan-previous-node"
+    in
+    asserts.assertTrue "provider-plan-previous-node"
       (prev == null)
       "previousNode should be null so DNS discovery can be used";
 
   provider-plan-flake-inputs =
-    let flakeText = builtins.readFile flakeNoState;
+    let
+      flakeText = builtins.readFile flakeNoState;
       ok = lib.strings.hasInfix "parent = {" flakeText
         && lib.strings.hasInfix "url = \"path:..\"" flakeText
         && lib.strings.hasInfix "hostenv = {" flakeText
@@ -720,7 +802,8 @@ in
         && lib.strings.hasInfix "inputs.parent.lib.provider.deployOutputs" flakeText
         && (lib.strings.hasInfix "${user1} =" flakeText || lib.strings.hasInfix "\"${user1}\" =" flakeText)
         && (lib.strings.hasInfix "${user2} =" flakeText || lib.strings.hasInfix "\"${user2}\" =" flakeText);
-    in asserts.assertTrue "provider-plan-flake-inputs" ok
+    in
+    asserts.assertTrue "provider-plan-flake-inputs" ok
       "generated flake should expose hostenv and per-environment inputs";
 
   provider-plan-flake-customization =
@@ -730,7 +813,8 @@ in
         && lib.strings.hasInfix "custom-sops-nix" customFlakeText
         && lib.strings.hasInfix "(inputs.parent + \"/nodes/common.nix\")" customFlakeText
         && !(lib.strings.hasInfix "follows = \"hostenv\"" customFlakeText);
-    in asserts.assertTrue "provider-plan-flake-customization" ok
+    in
+    asserts.assertTrue "provider-plan-flake-customization" ok
       "generated flake should apply extra inputs, env input overrides, and nodeModules";
 
   provider-plan-flake-inputs-quoted =
@@ -738,14 +822,16 @@ in
       ok = lib.strings.hasInfix "\"${quotedInvalidUser}\" =" quotedFlakeText
         && lib.strings.hasInfix "${quotedValidUser} =" quotedFlakeText
         && !(lib.strings.hasInfix "\"${quotedValidUser}\" =" quotedFlakeText);
-    in asserts.assertTrue "provider-plan-flake-inputs-quoted" ok
+    in
+    asserts.assertTrue "provider-plan-flake-inputs-quoted" ok
       "generated flake should quote invalid input identifiers and leave valid ones unquoted";
 
   provider-plan-planSource-disk =
     let
       evalPlanData = lib.importJSON planNoState;
       diskPlanData = lib.importJSON planDisk.plan;
-    in asserts.assertTrue "provider-plan-planSource-disk"
+    in
+    asserts.assertTrue "provider-plan-planSource-disk"
       (evalPlanData == diskPlanData)
       "planSource=\"disk\" should reuse plan.json contents without re-evaluating hostenv";
 
@@ -781,6 +867,52 @@ in
       (hasCsp && hasReportTo && hasReferrer && hasRobots && hasHsts && noCspOnAlias)
       "plan should emit security headers for configured virtual hosts and omit CSP when unset";
 
+  provider-plan-vhost-boundary =
+    let
+      plan = lib.importJSON planNoState;
+      envVhost = plan.environments.${user1}.virtualHosts."env1.example" or { };
+      envAliasVhost = plan.environments.${user1}.virtualHosts."alias.example" or { };
+      nodeVhost = plan.nodes.node1.services.nginx.virtualHosts."env1.example" or { };
+      nodeAliasVhost = plan.nodes.node1.services.nginx.virtualHosts."alias.example" or { };
+      nodeDefaultVhost = plan.nodes.node1.services.nginx.virtualHosts.default or { };
+      ok =
+        (envVhost.enableLetsEncrypt or null) == true
+        && (envAliasVhost.enableLetsEncrypt or null) == true
+        && !(envVhost ? enableACME)
+        && !(envAliasVhost ? enableACME)
+        && (nodeVhost.enableACME or null) == true
+        && (nodeAliasVhost.enableACME or null) == true
+        && !(nodeVhost ? enableLetsEncrypt)
+        && !(nodeAliasVhost ? enableLetsEncrypt)
+        && !(nodeVhost ? allowIndexing)
+        && !(nodeAliasVhost ? allowIndexing)
+        && !(nodeVhost ? security)
+        && !(nodeAliasVhost ? security)
+        && !(nodeVhost ? hsts)
+        && !(nodeAliasVhost ? hsts)
+        && (nodeAliasVhost.locations."/".proxyPass or null) == "http://${user1}_upstream"
+        && (nodeDefaultVhost.rejectSSL or null) == true
+        && (nodeDefaultVhost.default or null) == true
+        && (nodeDefaultVhost.locations."/".return or null) == "444";
+    in
+    asserts.assertTrue "provider-plan-vhost-boundary"
+      ok
+      "plan should keep environment vhosts hostenv-shaped and node vhosts NixOS-shaped";
+
+  provider-plan-root-location-preserved =
+    let
+      plan = lib.importJSON planNoState;
+      envVhost = plan.environments.${user1}.virtualHosts."env1.example" or { };
+      nodeVhost = plan.nodes.node1.services.nginx.virtualHosts."env1.example" or { };
+      ok =
+        (envVhost.locations."/".return or null) == "302 /custom-root"
+        && (nodeVhost.locations."/".return or null) == "302 /custom-root"
+        && (nodeVhost.locations."/".proxyPass or null) == null;
+    in
+    asserts.assertTrue "provider-plan-root-location-preserved"
+      ok
+      "plan should preserve explicit root vhost locations without merging in the generated proxy";
+
   provider-plan-backups-repo-host-per-env =
     let
       mainBackups = backupsMixedPlanData.environments.${backupsMixedMainUser}.hostenv.backupsRepoHost or null;
@@ -794,6 +926,34 @@ in
     asserts.assertTrue "provider-plan-default-lock"
       planDefaultLock.success
       "plan generation should use inputs.self/flake.lock when lockPath is omitted";
+
+  provider-plan-deploy-enabled-reserved =
+    # Temporary: plan generation should fail only until provider.deploy is
+    # wired into provider.plan and generated node configuration.
+    asserts.assertTrue "provider-plan-deploy-enabled-reserved"
+      (! planDeployEnabledReserved.success)
+      "plan generation must fail when reserved provider.deploy wiring is enabled";
+
+  provider-plan-deploy-settings-reserved =
+    # Temporary: remove this once non-default provider.deploy settings are
+    # intentionally propagated instead of rejected.
+    asserts.assertTrue "provider-plan-deploy-settings-reserved"
+      (! planDeploySettingReserved.success)
+      "plan generation must fail when reserved provider.deploy settings are non-default";
+
+  provider-plan-service-resolution-reserved =
+    # Temporary: remove this once provider.serviceResolution is wired into
+    # provider.plan for provider-service secret routing.
+    asserts.assertTrue "provider-plan-service-resolution-reserved"
+      (! planServiceResolutionReserved.success)
+      "plan generation must fail when reserved provider.serviceResolution is configured";
+
+  provider-plan-cache-reserved =
+    # Temporary: remove this once provider.cache is wired into provider.plan
+    # and generated node cache configuration.
+    asserts.assertTrue "provider-plan-cache-reserved"
+      (! planCacheReserved.success)
+      "plan generation must fail when reserved outer provider.cache wiring is enabled";
 
   provider-plan-vhost-conflict-state = providerPlanVhostConflictState;
   provider-plan-vhost-conflict-new-envs = providerPlanVhostConflictNewEnvs;

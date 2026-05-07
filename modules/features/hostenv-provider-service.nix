@@ -12,9 +12,26 @@ in
       haskellDeps = cfg.haskellDeps;
       ghc = pkgs.haskellPackages.ghcWithPackages (p: map (name: p.${name}) haskellDeps);
       serviceBin = pkgs.writeShellScriptBin "hostenv-provider-service" ''
-        exec ${ghc}/bin/runghc -i${serviceSrc} ${serviceSrc}/Main.hs
+        exec ${ghc}/bin/runghc -i${serviceSrc} ${serviceSrc}/Main.hs "$@"
       '';
       proxySocket = "http://unix:${cfg.listenSocket}:/";
+      configFile = pkgs.writeText "hostenv-provider-config.json" (builtins.toJSON {
+        dataDir = cfg.dataDir;
+        repoSource = toString cfg.repoSource;
+        flakeRoot = cfg.flakeRoot;
+        listenSocket = cfg.listenSocket;
+        webhookSecretFile = cfg.webhookSecretFile;
+        webhookSecretsDir = cfg.webhookSecretsDir;
+        webhookHost = cfg.webhookHost;
+        uiBasePath = cfg.uiBasePath;
+        uiBaseUrl = "${cfg.uiScheme}://${cfg.uiHost}";
+        dbUri = cfg.dbUri;
+        gitlabOAuthSecretsFile = cfg.gitlabOAuthSecretsFile;
+        gitlabHosts = cfg.gitlabHosts;
+        gitCredentialsFile = cfg.gitCredentialsFile;
+        gitConfigFile = cfg.gitConfigFile;
+        flakeTemplate = cfg.flakeTemplate;
+      });
 
     in
     {
@@ -38,7 +55,7 @@ in
           default = serviceBin;
           defaultText = lib.literalExpression ''
             pkgs.writeShellScriptBin "hostenv-provider-service" '''
-              exec ''${pkgs.haskellPackages.ghcWithPackages [ ... ]}/bin/runghc -i''${config.services.hostenv-provider.source} ''${config.services.hostenv-provider.source}/Main.hs
+              exec ''${pkgs.haskellPackages.ghcWithPackages [ ... ]}/bin/runghc -i''${config.services.hostenv-provider.source} ''${config.services.hostenv-provider.source}/Main.hs "$@"
             ''';
           '';
           description = "Package providing the hostenv-provider-service executable.";
@@ -177,33 +194,8 @@ in
             pkgs.openssh
             ghc
           ];
-          environment =
-            {
-              XDG_DATA_HOME = config.hostenv.dataDir;
-              HOSTENV_PROVIDER_DATA_DIR = cfg.dataDir;
-              HOSTENV_PROVIDER_REPO_SOURCE = toString cfg.repoSource;
-              HOSTENV_PROVIDER_FLAKE_ROOT = cfg.flakeRoot;
-              HOSTENV_PROVIDER_LISTEN_SOCKET = cfg.listenSocket;
-              HOSTENV_PROVIDER_WEBHOOK_HOST = cfg.webhookHost;
-              HOSTENV_PROVIDER_UI_BASE_PATH = cfg.uiBasePath;
-              HOSTENV_PROVIDER_UI_BASE_URL = "${cfg.uiScheme}://${cfg.uiHost}";
-              HOSTENV_PROVIDER_DB_URI = cfg.dbUri;
-              HOSTENV_PROVIDER_GITLAB_HOSTS = lib.concatStringsSep "," cfg.gitlabHosts;
-              HOSTENV_PROVIDER_GIT_CREDENTIALS_FILE = cfg.gitCredentialsFile;
-              HOSTENV_PROVIDER_GIT_CONFIG_FILE = cfg.gitConfigFile;
-              HOSTENV_PROVIDER_FLAKE_TEMPLATE = cfg.flakeTemplate;
-            }
-            // lib.optionalAttrs (cfg.webhookSecretFile != null) {
-              HOSTENV_PROVIDER_WEBHOOK_SECRET_FILE = cfg.webhookSecretFile;
-            }
-            // lib.optionalAttrs (cfg.webhookSecretsDir != null) {
-              HOSTENV_PROVIDER_WEBHOOK_SECRETS_DIR = cfg.webhookSecretsDir;
-            }
-            // lib.optionalAttrs (cfg.gitlabOAuthSecretsFile != null) {
-              HOSTENV_PROVIDER_GITLAB_SECRETS_FILE = cfg.gitlabOAuthSecretsFile;
-            };
           serviceConfig = {
-            ExecStart = "${cfg.package}/bin/hostenv-provider-service";
+            ExecStart = "${cfg.package}/bin/hostenv-provider-service --config ${configFile}";
             WorkingDirectory = cfg.dataDir;
             Restart = "on-failure";
             RestartSec = "5s";

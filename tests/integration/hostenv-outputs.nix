@@ -5,39 +5,85 @@ let
   asserts = support.asserts;
 
   system = pkgs.stdenv.hostPlatform.system;
-  modules = inputs.import-tree ../../modules;
-  moduleList = if builtins.isList modules then modules else [ modules ];
-  flake = inputs.flake-parts.lib.mkFlake { inherit inputs; } {
-    systems = [ system ];
-    imports = [ inputs.devshell.flakeModule ] ++ moduleList;
+  hostenvModules = inputs.import-tree ../../modules;
+  moduleList = if builtins.isList hostenvModules then hostenvModules else [ hostenvModules ];
 
-    project.enable = true;
+  mkOutputs = { modules, environmentName ? null }:
+    let
+      flake = inputs.flake-parts.lib.mkFlake { inherit inputs; } {
+        systems = [ system ];
+        imports = [ inputs.devshell.flakeModule ] ++ moduleList;
 
-    perSystem = { ... }: {
-      hostenvProject = {
-        makeHostenv = makeHostenv;
-        modules = [
-          ({ ... }: {
-            hostenv = {
-              organisation = "acme";
-              project = "demo";
-              hostenvHostname = "hosting.test";
-              root = ./.;
-            };
-            environments.main = {
-              enable = true;
-              type = "production";
-            };
-          })
-        ];
-        environmentName = "main";
+        project.enable = true;
+
+        perSystem = { ... }: {
+          hostenvProject = {
+            makeHostenv = lib.mkForce makeHostenv;
+            modules = lib.mkForce modules;
+            environmentName = lib.mkForce environmentName;
+          };
+        };
       };
-    };
+    in
+    flake.lib.hostenv.${system};
+
+  outputs = mkOutputs {
+    modules = [
+      ({ ... }: {
+        hostenv = {
+          organisation = "acme";
+          project = "demo";
+          hostenvHostname = "hosting.test";
+          root = ./.;
+        };
+        environments.main = {
+          enable = true;
+          type = "production";
+        };
+      })
+    ];
+    environmentName = "main";
   };
 
-  outputs = flake.lib.hostenv.${system};
-  ok = outputs ? environments && outputs ? defaultEnvironment;
+  productionFallbackOutputs = mkOutputs {
+    modules = [
+      ({ ... }: {
+        hostenv = {
+          organisation = "acme";
+          project = "fallback";
+          hostenvHostname = "hosting.test";
+          root = ./.;
+        };
+        environments.production = {
+          enable = true;
+          type = "production";
+        };
+      })
+    ];
+  };
+  productionFallbackEval = makeHostenv [
+    ({ ... }: {
+      hostenv = {
+        organisation = "acme";
+        project = "fallback";
+        hostenvHostname = "hosting.test";
+        root = ./.;
+      };
+      environments.production = {
+        enable = true;
+        type = "production";
+      };
+    })
+  ] null;
+
+  ok =
+    outputs ? environments
+    && outputs ? defaultEnvironment
+    && (productionFallbackOutputs.defaultEnvironment or null) == "production"
+    && (productionFallbackOutputs.environments ? production)
+    && productionFallbackEval.config.defaultEnvironment == "production"
+    && productionFallbackEval.config.hostenv.environmentName == "production";
 in
 asserts.assertTrue "hostenv-outputs-eval"
   ok
-  "lib.hostenv outputs should include environments/defaultEnvironment for each system"
+  "lib.hostenv outputs and makeHostenv null evals should preserve the single-production default fallback"

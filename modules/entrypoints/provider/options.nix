@@ -1,14 +1,15 @@
 { inputs, lib, config, ... }:
 let
   inherit (lib) mkOption types;
-  hostenvLib = config.flake.lib.hostenv;
   providerNixosModules = [
     config.flake.modules.nixos.provider-common
     config.flake.modules.nixos.hostenv-top-level
-    config.flake.modules.nixos.nginx-frontdoor
     config.flake.modules.nixos.nginx-tuning
     config.flake.modules.nixos.monitoring
   ];
+  libHostenv = config.flake.lib.hostenv;
+  providerServiceDeprecationNote =
+    " Temporary compatibility option while deploy-rs provider tooling remains in use; will be deprecated once provider-service is complete.";
 
   providerNixosSystem =
     { config
@@ -45,8 +46,8 @@ let
       packages = pkgs.${system};
       envUsers = builtins.attrNames envsForNode;
 
-      hostenvEnvModule = {
-        hostenv = {
+      providerPlanModule = {
+        provider.plan = {
           environments = envsForNode;
           defaultEnvironment = plan.defaultEnvironment or "main";
         };
@@ -79,9 +80,7 @@ let
 
       sopsSecrets = userInfo:
         let
-          hostPkgs = pkgs.${localSystem};
-          readYaml = hostenvLib.readYaml;
-          sopsKeys = readYaml hostPkgs secretsPath;
+          sopsKeys = libHostenv.readYaml pkgs.${localSystem} secretsPath;
           orgFromName = name: (environmentWith name).hostenv.organisation;
           orgProjectFromName = name:
             (environmentWith name).hostenv.organisation
@@ -145,7 +144,7 @@ let
             ]
             ++ providerNixosModules
             ++ [
-              hostenvEnvModule
+              providerPlanModule
             ]
             ++ nodeModules
             ++ [
@@ -288,6 +287,11 @@ let
     };
 in
 {
+  # By necessity a lot of these options are duplicated here and in
+  # modules/nixos/provider-common.nix
+  # This is due to the evaluation boundary between the outer flake, plan.json,
+  # and the generated/ flake.
+  # @todo: find a clean way to obviate this code duplication.
   options.provider = {
     enable = mkOption {
       type = types.bool;
@@ -300,13 +304,25 @@ in
       default = "example.invalid";
       description = "Hostenv control-plane hostname (must be set by provider).";
     };
+
     deployUser = mkOption {
       type = types.str;
       default = "deploy";
       description = "SSH/sudo user used for deploy-rs operations.";
     };
-    letsEncrypt = mkOption { type = types.attrs; default = { adminEmail = "admin@example.invalid"; acceptTerms = true; }; };
-    deployPublicKeys = mkOption { type = types.listOf types.str; default = [ ]; description = "SSH public keys for deploy user; must be set by provider."; };
+
+    letsEncrypt = mkOption {
+      type = types.attrs;
+      default = { adminEmail = "admin@example.invalid"; acceptTerms = true; };
+    };
+
+    deployPublicKeys = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      description = "SSH public keys for deploy user;
+      must be set by provider.";
+    };
+
     nixSigning = mkOption {
       type = types.submodule {
         options = {
@@ -320,50 +336,102 @@ in
       default = { };
       description = "Nix signing key configuration shared by generated plan and node configuration.";
     };
+
+    deploy = mkOption {
+      type = types.submodule {
+        options = {
+          enable = lib.mkEnableOption "reserved provider-deploy node agent wiring";
+          providerApiBaseUrl = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = "Reserved base URL for provider deploy APIs used by node workers.";
+          };
+          nodeAuthTokenFile = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = "Reserved default path for node bearer token used in provider-deploy requests.";
+          };
+          nodeAuthTokenFiles = mkOption {
+            type = types.attrsOf types.str;
+            default = { };
+            description = "Reserved map of node name -> provider-deploy bearer token file path.";
+          };
+          reconnectSeconds = mkOption {
+            type = types.int;
+            default = 5;
+            description = "Reserved provider-deploy reconnect delay in seconds.";
+          };
+        };
+      };
+      default = { };
+      description = "Reserved provider-deploy settings. These are rejected until provider-service node agent wiring lands.";
+    };
+
+    serviceResolution = libHostenv.mkServiceResolutionOption { inherit lib; };
+
+    cache = mkOption {
+      type = types.submodule {
+        options = {
+          enable = lib.mkEnableOption "reserved provider-service cache server secret wiring";
+        };
+      };
+      default = { };
+      description = "Reserved provider-service cache secret projection. This is rejected until provider-service cache wiring lands.";
+    };
+
     nodeFor = mkOption {
       type = types.attrs;
       default = { default = null; };
     };
+
     nodeSystems = mkOption {
       type = types.attrs;
       default = { };
       description = "Map of node name -> system string (e.g. x86_64-linux, aarch64-linux).";
     };
+
     nodeAddresses = mkOption {
       type = types.attrsOf types.str;
       default = { };
-      description = "Optional map of node name -> SSH hostname/IP override for deploy-rs.";
+      description = "Optional map of node name -> SSH hostname/IP override for deploy-rs." + providerServiceDeprecationNote;
     };
+
     nodeSshPorts = mkOption {
       type = types.attrsOf types.int;
       default = { };
-      description = "Optional map of node name -> SSH port override for deploy-rs.";
+      description = "Optional map of node name -> SSH port override for deploy-rs." + providerServiceDeprecationNote;
     };
+
     nodeSshOpts = mkOption {
       type = types.attrsOf (types.listOf types.str);
       default = { };
-      description = "Optional map of node name -> extra SSH options for deploy-rs.";
+      description = "Optional map of node name -> extra SSH options for deploy-rs." + providerServiceDeprecationNote;
     };
+
     nodeRemoteBuild = mkOption {
       type = types.attrsOf types.bool;
       default = { };
-      description = "Optional map of node name -> whether deploy-rs should build on the remote host.";
+      description = "Optional map of node name -> whether deploy-rs should build on the remote host." + providerServiceDeprecationNote;
     };
+
     nodeMagicRollback = mkOption {
       type = types.attrsOf types.bool;
       default = { };
-      description = "Optional map of node name -> deploy-rs magicRollback override.";
+      description = "Optional map of node name -> deploy-rs magicRollback override." + providerServiceDeprecationNote;
     };
+
     nodeAutoRollback = mkOption {
       type = types.attrsOf types.bool;
       default = { };
-      description = "Optional map of node name -> deploy-rs autoRollback override.";
+      description = "Optional map of node name -> deploy-rs autoRollback override." + providerServiceDeprecationNote;
     };
+
     nodeModules = mkOption {
       type = types.listOf (types.oneOf [ types.path types.str ]);
       default = [ ];
       description = "Extra NixOS modules applied to every node. Strings are paths relative to the provider root.";
     };
+
     statePath = mkOption {
       type = types.path;
       default =
@@ -371,6 +439,7 @@ in
         then inputs.self + /generated/state.json
         else builtins.throw "provider.statePath: inputs.self is required to resolve defaults; set provider.statePath explicitly.";
     };
+
     planPath = mkOption {
       type = types.path;
       default =
@@ -378,7 +447,10 @@ in
         then inputs.self + /generated/plan.json
         else builtins.throw "provider.planPath: inputs.self is required to resolve defaults; set provider.planPath explicitly.";
     };
+
     planSource = mkOption { type = types.enum [ "disk" "eval" ]; default = "eval"; };
+    plan.autoInit = (lib.mkEnableOption "automatically setup necessary config for tracking state and secrets") // { default = true; };
+
     generatedFlake = mkOption {
       type = types.submodule {
         options = {
@@ -409,6 +481,7 @@ in
       default = { };
       description = "Customization for generated/flake.nix inputs and per-environment inputs.";
     };
+
     cloudflare = mkOption {
       type = types.submodule {
         options = {
