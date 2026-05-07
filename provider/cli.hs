@@ -4,9 +4,9 @@
 -- hostenv-provider CLI: plan | dns-gate | deploy
 -- dns-gate ports the legacy scripts/postgen.hs DNS/ACME gate and Cloudflare upsert logic.
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, displayException, finally, try)
 import Control.Monad (forM, forM_, unless, when)
-import Control.Concurrent (threadDelay)
 import Data.Aeson ((.!=), (.:), (.:?), (.=))
 import Data.Aeson qualified as A
 import Data.Aeson.Key qualified as K
@@ -28,17 +28,17 @@ import Data.Text.Conversions (convertText)
 import Data.Text.Encoding qualified as TE
 import Distribution.Compat.Prelude qualified as Sh
 import Hostenv.Provider.DeployGuidance (FlakeKeyStatus (..), localTrustSetupLines, remoteNodeTrustLines)
-import Hostenv.Provider.DnsBackoff (backoffDelays)
-import Hostenv.Provider.DnsGateFilter
-    ( DnsGateItem (..)
-    , collectDnsGateItems
-    , disableAcmeOnNode
-    , disableLetsEncryptPaths
-    , filterEnvironmentsByNode
-    )
 import Hostenv.Provider.DeployPreflight qualified as Preflight
 import Hostenv.Provider.DeployVerification (NodeConnection (..), nodeConnectionFor)
 import Hostenv.Provider.DeployVerification qualified as Verify
+import Hostenv.Provider.DnsBackoff (backoffDelays)
+import Hostenv.Provider.DnsGateFilter (
+    DnsGateItem (..),
+    collectDnsGateItems,
+    disableAcmeOnNode,
+    disableLetsEncryptPaths,
+    filterEnvironmentsByNode,
+ )
 import Hostenv.Provider.PrevNodeDiscovery qualified as PrevNode
 import Hostenv.Provider.SigningTarget (deployProfilePathInstallable)
 import Options.Applicative qualified as OA
@@ -1476,7 +1476,7 @@ resolvePrevNode explicitSourceFor hostenvHostname discoveryNodes envInfo =
                             <> " matched current node "
                             <> envInfo.node
                             <> " among: "
-                            <> T.intercalate ", " [ nodeName | PrevNode.NodeName nodeName <- matchedNodes ]
+                            <> T.intercalate ", " [nodeName | PrevNode.NodeName nodeName <- matchedNodes]
                             <> "; skipping migration discovery"
                         )
                     pure (Right Nothing)
@@ -1488,7 +1488,7 @@ resolvePrevNode explicitSourceFor hostenvHostname discoveryNodes envInfo =
                                 <> " via "
                                 <> discoveryHost
                                 <> " is ambiguous: matched nodes "
-                                <> T.intercalate ", " [ nodeName | PrevNode.NodeName nodeName <- nodes ]
+                                <> T.intercalate ", " [nodeName | PrevNode.NodeName nodeName <- nodes]
                                 <> " (current node: "
                                 <> envInfo.node
                                 <> "). Set --migration-source "
@@ -1645,16 +1645,15 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                             Nothing -> ["generated/"]
                         sigArgs = if useCheckSigs then ["--checksigs"] else []
                         dryActivateArgs = if useDryActivate then ["--dry-activate"] else []
-                     in
-                    [ "run"
-                    , "nixpkgs#deploy-rs"
-                    , "--"
-                    , "--skip-checks"
-                    ]
-                        <> sigArgs
-                        <> dryActivateArgs
-                        <> remoteBuildArgs
-                        <> targetArgs
+                     in [ "run"
+                        , "nixpkgs#deploy-rs"
+                        , "--"
+                        , "--skip-checks"
+                        ]
+                            <> sigArgs
+                            <> dryActivateArgs
+                            <> remoteBuildArgs
+                            <> targetArgs
             let deployGuard res args = when (res /= ExitSuccess) $ printProviderLine ("hostenv-provider: deploying " <> T.unwords args <> " failed")
 
             when dryRun $ do
@@ -1912,7 +1911,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                                                         if null verificationSpec.evChecks
                                                             then pure Nothing
                                                             else do
-                                                                let verificationHost = (resolveNodeConnection envInfo.node).verificationHostname
+                                                                let verificationHost = Verify.canonicalNodeHostname hostenvHostname envInfo.node
                                                                 printProviderLine ("hostenv-provider: running deployment verification for " <> envName <> " via " <> verificationHost)
                                                                 verificationRes <- try (Verify.runEnvVerification verificationHost verificationSpec) :: IO (Either SomeException [Verify.VerificationCheckResult])
                                                                 case verificationRes of

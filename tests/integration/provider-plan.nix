@@ -164,6 +164,7 @@ let
     , cache ? defaultCache
     , deployPublicKeys ? [ "ssh-ed25519 test" ]
     , serviceResolution ? null
+    , nodeAddresses ? { }
     }:
     let
       # Build a synthetic flake inputs set: hostenv modules + one project with lib.hostenv output.
@@ -217,7 +218,7 @@ let
       deploy = deploy;
       cache = cache;
       serviceResolution = serviceResolution;
-      inherit nodeModules generatedFlake;
+      inherit nodeModules generatedFlake nodeAddresses;
     };
 
   mkProjectInput = { organisation, project, envName ? "main" }:
@@ -746,14 +747,16 @@ in
 
   provider-plan-node-connections =
     let
-      plan = lib.importJSON planNoState;
+      plan = lib.importJSON (mkPlan {
+        nodeAddresses = { node1 = "bastion.internal.example"; };
+      }).plan;
       conn = plan.nodeConnections.node1 or { };
       ok =
-        (conn.hostname or null) == "node1.custom.host"
-        && (conn.verificationHostname or null) == "node1.custom.host";
+        (conn.hostname or null) == "bastion.internal.example"
+        && !(conn ? verificationHostname);
     in
     asserts.assertTrue "provider-plan-node-connections" ok
-      "plan.json should expose both SSH and verification hostnames in nodeConnections";
+      "plan.json should expose SSH hostname only; HTTP verification host is derived from node plus hostenvHostname";
 
   provider-plan-no-deploy-keys-in-envs =
     let

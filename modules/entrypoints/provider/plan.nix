@@ -17,6 +17,7 @@ let
     , statePath ? (if inputs ? self then inputs.self + /generated/state.json else null)
     , planPath ? (if inputs ? self then inputs.self + /generated/plan.json else null)
     , nodeSystems ? { }
+      # Server address overrides, particularly for SSH bastions, private IPs, or management hosts.
     , nodeAddresses ? { }
     , nodeSshPorts ? { }
     , nodeSshOpts ? { }
@@ -570,13 +571,14 @@ let
           mkNodeConnection = node: {
             # Resolve deploy hostname via explicit override first, otherwise use
             # the conventional "<node>.<hostenvHostname>" form.
+            #
+            # This hostname is for SSH/deploy only. HTTP(S) deployment verification
+            # and DNS-gate must not use this value, because nodeAddresses may point
+            # at a bastion, private address, or management hostname.
             hostname =
               if builtins.hasAttr node nodeAddresses
               then nodeAddresses.${node}
               else node + "." + cfgHostenvHostname;
-            # Deployment verification should probe the node's HTTP(S) frontdoor,
-            # not an SSH-only override such as a bastion or management address.
-            verificationHostname = node + "." + cfgHostenvHostname;
             sshOpts =
               let
                 # If a per-node SSH port is configured, convert it to OpenSSH args.
@@ -706,7 +708,7 @@ let
 
                 1. Under **environments** is a JSON representation of hostenv's own modules config, retaining the original structure of that representation.
                 2. Each element under **nodes** is NixOS server configuration, and will be merged into the configuration of that server during build.
-                3. Under **nodeConnections** is node routing metadata used by provider tooling (SSH hostname/options plus the HTTP(S) verification hostname).
+                3. Under **nodeConnections** is node routing metadata used by provider tooling (SSH hostname/options).
 
                 Note: all manual changes to this file will be discarded.
               '';

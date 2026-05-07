@@ -2,25 +2,26 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Hostenv.Provider.DeployVerification
-    ( NodeConnection (..)
-    , defaultNodeConnection
-    , nodeConnectionFor
-    , TargetHostSource (..)
-    , TlsMode (..)
-    , VerificationRequest (..)
-    , VerificationConstraint (..)
-    , VerificationCheck (..)
-    , EnvVerificationSpec (..)
-    , VerificationCheckResult (..)
-    , defaultEnvVerificationSpec
-    , parseEnvVerificationSpec
-    , runEnvVerification
-    , runEnvVerificationWith
-    ) where
+module Hostenv.Provider.DeployVerification (
+    NodeConnection (..),
+    defaultNodeConnection,
+    nodeConnectionFor,
+    TargetHostSource (..),
+    TlsMode (..),
+    VerificationRequest (..),
+    VerificationConstraint (..),
+    VerificationCheck (..),
+    EnvVerificationSpec (..),
+    VerificationCheckResult (..),
+    defaultEnvVerificationSpec,
+    parseEnvVerificationSpec,
+    runEnvVerification,
+    runEnvVerificationWith,
+    canonicalNodeHostname,
+) where
 
 import Control.Monad (forM)
-import Data.Aeson ((.:), (.:?), (.!=))
+import Data.Aeson ((.!=), (.:), (.:?))
 import Data.Aeson qualified as A
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
@@ -35,11 +36,13 @@ import System.Process (readProcessWithExitCode)
 
 data NodeConnection = NodeConnection
     { hostname :: Text
-    , verificationHostname :: Text
     , sshOpts :: [Text]
     }
     deriving (Eq, Show)
 
+{- | Hostname for deploy verification only.
+  Should not be used to verify DNS record correctness.
+-}
 canonicalNodeHostname :: Text -> Text -> Text
 canonicalNodeHostname hostenvHostname nodeName =
     nodeName <> "." <> hostenvHostname
@@ -49,7 +52,6 @@ defaultNodeConnection hostenvHostname nodeName =
     let hostname = canonicalNodeHostname hostenvHostname nodeName
      in NodeConnection
             { hostname = hostname
-            , verificationHostname = hostname
             , sshOpts = []
             }
 
@@ -59,7 +61,6 @@ parseNodeConnection hostenvHostname nodeName =
         let canonicalHostname = canonicalNodeHostname hostenvHostname nodeName
          in NodeConnection
                 <$> o .:? "hostname" .!= canonicalHostname
-                <*> o .:? "verificationHostname" .!= canonicalHostname
                 <*> o .:? "sshOpts" .!= []
 
 nodeConnectionFor :: KM.KeyMap A.Value -> Text -> Text -> NodeConnection
@@ -270,7 +271,7 @@ runOneCheck runCurl targetHost check =
                     { vcrName = check.vcName
                     , vcrPassed = False
                     , vcrHttpStatus = Nothing
-                    , vcrFailures = [ "unsupported verification check type: " <> check.vcType ]
+                    , vcrFailures = ["unsupported verification check type: " <> check.vcType]
                     }
         else do
             let request = check.vcRequest
