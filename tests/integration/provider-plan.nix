@@ -48,7 +48,7 @@ let
           virtualHosts."env1.example" = {
             enableLetsEncrypt = true;
             globalRedirect = null;
-            locations = { };
+            locations."/".return = "302 /custom-root";
             security = {
               csp = "default-src 'self'";
               cspMode = "report-only";
@@ -98,7 +98,7 @@ let
           virtualHosts."env1.example" = {
             enableLetsEncrypt = true;
             globalRedirect = null;
-            locations = { };
+            locations."/".return = "302 /custom-root";
             security = {
               csp = "default-src 'self'";
               cspMode = "report-only";
@@ -898,6 +898,20 @@ in
     asserts.assertTrue "provider-plan-vhost-boundary"
       ok
       "plan should keep environment vhosts hostenv-shaped and node vhosts NixOS-shaped";
+
+  provider-plan-root-location-preserved =
+    let
+      plan = lib.importJSON planNoState;
+      envVhost = plan.environments.${user1}.virtualHosts."env1.example" or { };
+      nodeVhost = plan.nodes.node1.services.nginx.virtualHosts."env1.example" or { };
+      ok =
+        (envVhost.locations."/".return or null) == "302 /custom-root"
+        && (nodeVhost.locations."/".return or null) == "302 /custom-root"
+        && (nodeVhost.locations."/".proxyPass or null) == null;
+    in
+    asserts.assertTrue "provider-plan-root-location-preserved"
+      ok
+      "plan should preserve explicit root vhost locations without merging in the generated proxy";
 
   provider-plan-backups-repo-host-per-env =
     let

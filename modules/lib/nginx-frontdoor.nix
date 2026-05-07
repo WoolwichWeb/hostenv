@@ -105,15 +105,14 @@ let
                 (vhost.extraConfig or "")
                 headerConfig
               ]);
-              locations =
-                (vhost.locations or { }) // (
-                  if (vhost.globalRedirect or null) == null then {
-                    "/" = {
-                      recommendedProxySettings = true;
-                      proxyPass = "http://${user}_upstream";
-                    };
-                  } else { }
-                );
+              locations = (
+                if (vhost.globalRedirect or null) == null then {
+                  "/" = {
+                    recommendedProxySettings = true;
+                    proxyPass = "http://${user}_upstream";
+                  };
+                } else { }
+              ) // (vhost.locations or { });
             } // lib.optionalAttrs (vhostName == primary) {
               http2 = true;
             };
