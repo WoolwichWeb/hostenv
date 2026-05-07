@@ -38,12 +38,12 @@ Optional provider knobs:
 so the provider can discover environments. The shipped project template already does this.
 Client inputs should point at the `.hostenv` flake (e.g. `dir=.hostenv`) so `hostenv.nix` is at the flake root.
 
-2) Populate nodes and secrets:
+1) Populate nodes and secrets:
    - Copy `nodes/sample` to `nodes/<node>/` and edit `configuration.nix`/`hardware-configuration.nix`.
    - Create `secrets/secrets.yaml` with sops.
    - Create `generated/state.json` (can be `{}` initially).
 
-3) Generate plan/state (optional if using planSource=eval):
+2) Generate plan/state (optional if using planSource=eval):
 
 ```
 nix run .#hostenv-provider -- plan
@@ -56,17 +56,31 @@ so deploy-rs can build the exact activation packages and NixOS systems without
 re-evaluating the dynamic hostenv graph. The bundle `generated/{plan.json,
 state.json,flake.nix}` is the deployable, auditable snapshot.
 
-4) DNS/ACME safety + Cloudflare (optional):
+1) DNS/ACME safety + Cloudflare (optional):
 
 ```
 CF_API_TOKEN=... CF_ZONE_ID=... nix run .#hostenv-provider -- dns-gate [--with-dns-update] [-n node]
 ```
 
-5) Deploy:
+1) Deploy:
 
 ```
 nix run .#hostenv-provider -- deploy [-n node]
 ```
+
+End-to-end local VM demo (interactive wizard):
+
+```
+./examples/local-provider-migration/run-demo.sh
+```
+
+Automated end-to-end demo:
+
+```
+./examples/local-provider-migration/run-demo.sh --automated --cleanup
+```
+
+The local demo uses `hostctl` to install temporary hostname mappings for the demo VMs and removes them during teardown/abort.
 
 Outputs:
 
@@ -154,6 +168,7 @@ Example (in a provider hostenv environment config):
   services.hostenv-provider = {
     enable = true;
     gitlabOAuthSecretsFile = "/run/secrets/hostenv/gitlab_oauth";
+    # gitlabHosts = [ "gitlab.com" ];
     webhookSecretsDir = "/run/secrets/hostenv/webhooks";
     # uiHost defaults to webhookHost; uiBasePath defaults to /ui
   };
@@ -178,4 +193,3 @@ Notes:
   `nix flake update <org>__<project>` can access private GitLab repositories.
   Keep structural edits in `flake.template.nix`, not `flake.nix`.
 - The template must include the `{{HOSTENV_PROJECT_INPUTS}}` marker.
-- Tokens are stored unencrypted at rest in the database and git credential file.

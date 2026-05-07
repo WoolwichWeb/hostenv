@@ -16,6 +16,7 @@ import System.Directory (getTemporaryDirectory, removeFile)
 import System.Exit (exitFailure)
 import System.IO (hClose, openTempFile)
 
+import Hostenv.Provider.PrevNodeDiscovery
 import Hostenv.Provider.Service
 
 assert :: Bool -> String -> IO ()
@@ -29,7 +30,11 @@ main = do
   testGitLabToken
   testPlanParsing
   testNodeOrderWithMigrations
+  testNodeOrderWithDnsSkipsNonMigratingEnvDiscovery
+  testNodeOrderWithDnsFallsBackToVhosts
+  testNodeOrderWithDnsIncludesStateOnlyPreviousNode
   testProjectHashSelection
+  testPrevNodeDiscoveryResolution
   testCommandSequence
   testTemplateRender
   testGitCredentials
@@ -76,6 +81,66 @@ testNodeOrderWithMigrations = do
     Left err -> assert False ("nodesForProject failed: " <> show err)
     Right nodes ->
       assert (nodes == ["node-b", "node-a"]) "migration ordering should deploy destination before source"
+
+testNodeOrderWithDnsSkipsNonMigratingEnvDiscovery :: IO ()
+testNodeOrderWithDnsSkipsNonMigratingEnvDiscovery = do
+  let planJson =
+        BLC.pack
+          "{\"hostenvHostname\":\"hosting.test\",\"nodes\":{\"node-a\":{},\"node-b\":{},\"node-c\":{}},\"environments\":{\"env-a\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"projectNameHash\":\"hash-main\"},\"node\":\"node-c\"},\"env-b\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"projectNameHash\":\"hash-dev\"},\"node\":\"node-b\",\"migrations\":[\"db\"]}}}"
+  callsRef <- newIORef ([] :: [(T.Text, T.Text)])
+  let pointsTo vhost expectedHost = do
+        modifyIORef' callsRef (<> [(vhost, expectedHost)])
+        if vhost == "env-a.hosting.test"
+          then pure (expectedHost == "node-a.hosting.test" || expectedHost == "node-b.hosting.test")
+          else pure False
+  result <- nodesForProjectWithDnsWith pointsTo "acme" "site" planJson
+  case result of
+    Left err -> assert False ("nodesForProjectWithDnsWith failed unexpectedly: " <> show err)
+    Right nodes -> do
+      assert (nodes == ["node-b", "node-c"]) "dns node ordering should still include matching nodes"
+      calls <- readIORef callsRef
+      assert
+        (not (any (\(vhost, _) -> vhost == "env-a.hosting.test") calls))
+        "non-migrating env should skip DNS previous-node discovery"
+
+testNodeOrderWithDnsFallsBackToVhosts :: IO ()
+testNodeOrderWithDnsFallsBackToVhosts = do
+  let planJson =
+        BLC.pack
+          "{\"hostenvHostname\":\"hosting.test\",\"nodes\":{\"node-a\":{},\"node-c\":{}},\"environments\":{\"env-a\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"projectNameHash\":\"hash-main\"},\"node\":\"node-c\",\"migrations\":[\"db\"],\"virtualHosts\":{\"www.customer.com\":{}}},\"env-b\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"projectNameHash\":\"hash-dev\"},\"node\":\"node-a\"}}}"
+  callsRef <- newIORef ([] :: [(T.Text, T.Text)])
+  let pointsTo vhost expectedHost = do
+        modifyIORef' callsRef (<> [(vhost, expectedHost)])
+        pure (vhost == "www.customer.com" && expectedHost == "node-a.hosting.test")
+  result <- nodesForProjectWithDnsWith pointsTo "acme" "site" planJson
+  case result of
+    Left err -> assert False ("nodesForProjectWithDnsWith failed unexpectedly: " <> show err)
+    Right nodes -> do
+      assert (nodes == ["node-c", "node-a"]) "vhost fallback should add previous node dependency"
+      calls <- readIORef callsRef
+      assert
+        (map fst calls == ["env-a.hosting.test", "env-a.hosting.test", "www.customer.com", "www.customer.com"])
+        "dns discovery should probe canonical host first and then configured vhosts"
+
+
+testNodeOrderWithDnsIncludesStateOnlyPreviousNode :: IO ()
+testNodeOrderWithDnsIncludesStateOnlyPreviousNode = do
+  let planJson =
+        BLC.pack
+          "{\"hostenvHostname\":\"hosting.test\",\"nodes\":{\"node-c\":{}},\"nodeConnections\":{\"node-a\":{}},\"environments\":{\"env-a\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"projectNameHash\":\"hash-main\"},\"node\":\"node-c\",\"migrations\":[\"db\"]}}}"
+  callsRef <- newIORef ([] :: [(T.Text, T.Text)])
+  let pointsTo vhost expectedHost = do
+        modifyIORef' callsRef (<> [(vhost, expectedHost)])
+        pure (vhost == "env-a.hosting.test" && expectedHost == "node-a.hosting.test")
+  result <- nodesForProjectWithDnsWith pointsTo "acme" "site" planJson
+  case result of
+    Left err -> assert False ("nodesForProjectWithDnsWith failed unexpectedly: " <> show err)
+    Right nodes -> do
+      assert (nodes == ["node-c", "node-a"]) "state-only previous node should be ordered after destination"
+      calls <- readIORef callsRef
+      assert
+        (("env-a.hosting.test", "node-a.hosting.test") `elem` calls)
+        "dns discovery should probe state-only nodeConnections candidates"
 
 
 testCommandSequence :: IO ()
@@ -124,6 +189,80 @@ testProjectHashSelection = do
   case projectHashFor "acme" "site" planJson2 of
     Left err -> assert False ("projectHashFor failed: " <> show err)
     Right hash -> assert (hash == "hash-main") "projectHashFor should prefer main when no production"
+
+testPrevNodeDiscoveryResolution :: IO ()
+testPrevNodeDiscoveryResolution = do
+  assert
+    (canonicalHostInDomain "env-main-a1b2c3" "hosting.test" == "env-main-a1b2c3.hosting.test")
+    "canonical host should append hostenv domain"
+  assert
+    (canonicalHostInDomain "env-main-a1b2c3.hosting.test" "hosting.test" == "env-main-a1b2c3.hosting.test")
+    "canonical host should not duplicate suffix"
+
+  assert
+    ( classifyProbe (NodeName "node-b") (Probe (Hostname "env-main-a1b2c3.hosting.test") [])
+        == ProbeSkipped ProbeNoMatches
+    )
+    "empty matches should skip discovery"
+  assert
+    ( classifyProbe (NodeName "node-b") (Probe (Hostname "env-main-a1b2c3.hosting.test") [NodeName "node-a"])
+        == ProbeResolved (NodeName "node-a")
+    )
+    "single non-current match should resolve previous node"
+  assert
+    ( classifyProbe (NodeName "node-b") (Probe (Hostname "env-main-a1b2c3.hosting.test") [NodeName "node-b"])
+        == ProbeSkipped (ProbeMatchedCurrent [NodeName "node-b"])
+    )
+    "single current-node match should skip discovery"
+  assert
+    ( classifyProbe (NodeName "node-b") (Probe (Hostname "env-main-a1b2c3.hosting.test") [NodeName "node-a", NodeName "node-b"])
+        == ProbeSkipped (ProbeMatchedCurrent [NodeName "node-a", NodeName "node-b"])
+    )
+    "ambiguous matches including current node should skip discovery"
+  assert
+    ( classifyProbe (NodeName "node-c") (Probe (Hostname "env-main-a1b2c3.hosting.test") [NodeName "node-a", NodeName "node-b"])
+        == ProbeAmbiguous [NodeName "node-a", NodeName "node-b"]
+    )
+    "ambiguous matches excluding current node should be fatal"
+  assert
+    ( probeHosts "hosting.test" "env-main-a1b2c3" ["www.customer.com", "ENV-MAIN-A1B2C3.HOSTING.TEST."]
+        == [Hostname "env-main-a1b2c3.hosting.test", Hostname "www.customer.com"]
+    )
+    "probeHosts should probe canonical host first and deduplicate normalized vhosts"
+  assert
+    ( chooseDiscoveryOutcome
+        (NodeName "node-b")
+        [ Probe (Hostname "env-main-a1b2c3.hosting.test") []
+        ]
+        == DiscoverySkipped DiscoveryNoMatches
+    )
+    "host resolution should preserve the no-match skip reason"
+  assert
+    ( chooseDiscoveryOutcome
+        (NodeName "node-b")
+        [ Probe (Hostname "env-main-a1b2c3.hosting.test") [NodeName "node-a", NodeName "node-b"]
+        ]
+        == DiscoverySkipped (DiscoveryMatchedCurrent (Hostname "env-main-a1b2c3.hosting.test") [NodeName "node-a", NodeName "node-b"])
+    )
+    "host resolution should preserve when a probed hostname matched the current node"
+  assert
+    ( chooseDiscoveryOutcome
+        (NodeName "node-b")
+        [ Probe (Hostname "env-main-a1b2c3.hosting.test") []
+        , Probe (Hostname "www.customer.com") [NodeName "node-a"]
+        ]
+        == DiscoveryResolved (Hostname "www.customer.com") (NodeName "node-a")
+    )
+    "vhost fallback should resolve previous node when canonical host has no match"
+  assert
+    ( chooseDiscoveryOutcome
+        (NodeName "node-c")
+        [ Probe (Hostname "env-main-a1b2c3.hosting.test") [NodeName "node-a", NodeName "node-b"]
+        , Probe (Hostname "www.customer.com") [NodeName "node-a"]
+        ]
+        == DiscoveryResolved (Hostname "www.customer.com") (NodeName "node-a")
+    )
+    "vhost fallback should win when canonical host is ambiguous"
 
 
 testTemplateRender :: IO ()

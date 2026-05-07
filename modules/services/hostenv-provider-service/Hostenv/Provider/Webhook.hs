@@ -7,6 +7,7 @@ module Hostenv.Provider.Webhook
   , loadPlan
   ) where
 
+import Control.Concurrent.MVar (MVar, withMVar)
 import Control.Monad (unless)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.ByteString as BS
@@ -43,8 +44,8 @@ loadPlan cfg =
   let AppConfig { appWebhookConfig = WebhookConfig { whPlanPath = planPath } } = cfg
    in BL.readFile planPath
 
-webhookHandler :: AppConfig -> Text -> Maybe Text -> Maybe Text -> BL.ByteString -> Handler WebhookResult
-webhookHandler cfg hash mHubSig mGitlabToken rawBody = do
+webhookHandler :: MVar () -> AppConfig -> Text -> Maybe Text -> Maybe Text -> BL.ByteString -> Handler WebhookResult
+webhookHandler webhookLock cfg hash mHubSig mGitlabToken rawBody = do
   planRaw <- liftIO (loadPlan cfg)
   projectRef <-
     case projectForHash hash planRaw of
@@ -56,7 +57,7 @@ webhookHandler cfg hash mHubSig mGitlabToken rawBody = do
   secretInfo <- liftIO (resolveSecret cfg hash projectRef)
   verifyWebhook secretInfo mHubSig mGitlabToken rawBody
   let AppConfig { appWebhookConfig = webhookCfg } = cfg
-  result <- liftIO $ runWebhookWith (runCommand cfg) (loadPlan cfg) webhookCfg projectRef
+  result <- liftIO $ withMVar webhookLock (\_ -> runWebhookWith (runCommand cfg) (loadPlan cfg) webhookCfg projectRef)
   case result of
     Left err -> throwError (serverError err)
     Right okResult ->

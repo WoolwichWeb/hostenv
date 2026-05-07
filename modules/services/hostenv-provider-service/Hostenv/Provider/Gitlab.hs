@@ -42,12 +42,12 @@ import Hostenv.Provider.Service (GitlabSecrets(..))
 import Hostenv.Provider.Util (randomToken)
 
 
-requireSecrets :: AppConfig -> GitlabSecrets
+requireSecrets :: AppConfig -> Either Text GitlabSecrets
 requireSecrets cfg =
   let AppConfig { appGitlabSecrets = secrets } = cfg
    in case secrets of
-    Just s -> s
-    Nothing -> error "GitLab secrets not configured"
+    Just s -> Right s
+    Nothing -> Left "GitLab OAuth is not configured"
 
 requireManager :: AppConfig -> IO Manager
 requireManager cfg =
@@ -98,28 +98,30 @@ oauthRedirectUri cfg =
 
 exchangeOAuthCode :: AppConfig -> Text -> Text -> IO (Either Text GitlabTokenResponse)
 exchangeOAuthCode cfg host code = do
-  let secrets = requireSecrets cfg
-  let GitlabSecrets { gitlabClientId = clientId, gitlabClientSecret = clientSecret } = secrets
-  manager <- requireManager cfg
-  initialReq <- parseRequest (T.unpack ("https://" <> host <> "/oauth/token"))
-  let params =
-        [ ("client_id", TE.encodeUtf8 clientId)
-        , ("client_secret", TE.encodeUtf8 clientSecret)
-        , ("code", TE.encodeUtf8 code)
-        , ("grant_type", "authorization_code")
-        , ("redirect_uri", TE.encodeUtf8 (oauthRedirectUri cfg))
-        ]
-  let req = initialReq
-        { method = methodPost
-        , requestHeaders = [("Content-Type", "application/x-www-form-urlencoded")]
-        , requestBody = RequestBodyLBS (BL.fromStrict (renderSimpleQuery False params))
-        }
-  resp <- httpLbs req manager
-  if isSuccessStatus (responseStatus resp)
-    then case A.eitherDecode' (responseBody resp) of
-      Left err -> pure (Left (T.pack err))
-      Right token -> pure (Right token)
-    else pure (Left "GitLab OAuth token exchange failed")
+  case requireSecrets cfg of
+    Left err -> pure (Left err)
+    Right secrets -> do
+      let GitlabSecrets { gitlabClientId = clientId, gitlabClientSecret = clientSecret } = secrets
+      manager <- requireManager cfg
+      initialReq <- parseRequest (T.unpack ("https://" <> host <> "/oauth/token"))
+      let params =
+            [ ("client_id", TE.encodeUtf8 clientId)
+            , ("client_secret", TE.encodeUtf8 clientSecret)
+            , ("code", TE.encodeUtf8 code)
+            , ("grant_type", "authorization_code")
+            , ("redirect_uri", TE.encodeUtf8 (oauthRedirectUri cfg))
+            ]
+      let req = initialReq
+            { method = methodPost
+            , requestHeaders = [("Content-Type", "application/x-www-form-urlencoded")]
+            , requestBody = RequestBodyLBS (BL.fromStrict (renderSimpleQuery False params))
+            }
+      resp <- httpLbs req manager
+      if isSuccessStatus (responseStatus resp)
+        then case A.eitherDecode' (responseBody resp) of
+          Left err -> pure (Left (T.pack err))
+          Right token -> pure (Right token)
+        else pure (Left "GitLab OAuth token exchange failed")
 
 fetchGitlabUser :: AppConfig -> Text -> Text -> IO (Either Text GitlabUser)
 fetchGitlabUser cfg host token = do

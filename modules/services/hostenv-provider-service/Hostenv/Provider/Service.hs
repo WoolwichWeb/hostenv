@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -10,6 +11,7 @@ module Hostenv.Provider.Service
   , nodesForProject
   , projectForHash
   , projectHashFor
+  , nodesForProjectWithDnsWith
   , renderProjectInputs
   , renderFlakeTemplate
   , renderGitCredentials
@@ -40,7 +42,8 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (toLower)
-import Data.List (find, foldl', nub, sort, sortOn)
+import Data.Foldable (toList)
+import Data.List (foldl', intersect, nub, sort, sortOn)
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
@@ -51,6 +54,7 @@ import System.Process (readProcessWithExitCode)
 
 import "cryptonite" Crypto.Hash (SHA256)
 import "cryptonite" Crypto.MAC.HMAC (HMAC (..), hmac)
+import Hostenv.Provider.PrevNodeDiscovery qualified as PrevNode
 
 
 constantTimeEq :: BS.ByteString -> BS.ByteString -> Bool
@@ -80,6 +84,14 @@ lookupObj key obj = case KM.lookup key obj of
   Just (Object o) -> Just o
   _ -> Nothing
 
+lookupTextList :: KM.Key -> KM.KeyMap Value -> [Text]
+lookupTextList key obj = case KM.lookup key obj of
+  Just (Array arr) -> mapMaybe asText (toList arr)
+  _ -> []
+  where
+    asText (String t) = Just t
+    asText _ = Nothing
+
 nodesForProject :: Text -> Text -> BL.ByteString -> Either Text [Text]
 nodesForProject org project raw = do
   envs <- decodeEnvironments raw
@@ -108,7 +120,12 @@ nodesForProject org project raw = do
       _ -> Nothing
 
 nodesForProjectWithDns :: Text -> Text -> BL.ByteString -> IO (Either Text [Text])
-nodesForProjectWithDns org project raw = do
+nodesForProjectWithDns = nodesForProjectWithDnsWith dnsPointsTo
+
+-- | Like 'nodesForProject', but for migrating environments where it can infer
+--   a missing previous node from DNS before calculating deploy order.
+nodesForProjectWithDnsWith :: (Text -> Text -> IO Bool) -> Text -> Text -> BL.ByteString -> IO (Either Text [Text])
+nodesForProjectWithDnsWith pointsTo org project raw = do
   case decodePlanRoot raw of
     Left err -> pure (Left err)
     Right root ->
@@ -121,11 +138,9 @@ nodesForProjectWithDns org project raw = do
               Object envObj -> do
                 hostenvObj <- pure (lookupObj (K.fromString "hostenv") envObj)
                 let envName = K.toText kEnv
+                -- Generated plans key environments by hostenv.userName, so the
+                -- attr name and userName should identify the same environment.
                 let envUserName = fromMaybe envName (hostenvObj >>= lookupText (K.fromString "userName"))
-                let vhosts =
-                      case lookupObj (K.fromString "virtualHosts") envObj of
-                        Just vhostsObj -> map (K.toText . fst) (KM.toList vhostsObj)
-                        Nothing -> []
                 case hostenvObj of
                   Just hostenvObj' -> do
                     case (lookupText (K.fromString "organisation") hostenvObj', lookupText (K.fromString "project") hostenvObj') of
@@ -133,20 +148,81 @@ nodesForProjectWithDns org project raw = do
                         case lookupText (K.fromString "node") envObj of
                           Just node -> do
                             let prevNode = lookupText (K.fromString "previousNode") envObj
-                            resolvedPrev <- resolvePrevNodeFromDns hostenvHostname envUserName vhosts prevNode
-                            pure (Just (EnvNodeInfo node resolvedPrev))
+                            let migrateBackups = lookupTextList (K.fromString "migrations") envObj
+                            -- Previous-node discovery probes the canonical
+                            -- hostenv hostname first, then these vhosts.
+                            let vhostsObj = fromMaybe KM.empty (lookupObj (K.fromString "virtualHosts") envObj)
+                            let vhosts = map (K.toText . fst) (KM.toList vhostsObj)
+                            pure (Just (envUserName, node, prevNode, migrateBackups, vhosts))
                           Nothing -> pure Nothing
                       _ -> pure Nothing
                   Nothing -> pure Nothing
               _ -> pure Nothing
-          let nodes = sort (nub (map envNode matches))
-          let deps =
-                [ (envNode info, prev)
-                | info <- matches
-                , Just prev <- [info.envPrevNode]
-                , prev /= info.envNode
-                ]
-          pure (Right (orderNodes nodes deps))
+          let discoveryNodes = PrevNode.discoveryNodeNames root (map (\(_, node, _, _, _) -> node) matches)
+
+          resolvedMatches <- forM matches $ \(envUserName, node, prevNode, migrateBackups, vhosts) -> do
+            resolvedPrev <-
+              -- Only migrating environments need previous-node discovery.
+              if null migrateBackups
+                then pure (Right prevNode)
+                else resolvePrevNodeFromDns hostenvHostname discoveryNodes envUserName vhosts node prevNode
+            pure ((\prev -> EnvNodeInfo node prev) <$> resolvedPrev)
+
+          case sequence resolvedMatches of
+            Left err -> pure (Left err)
+            Right resolvedInfos -> do
+              let nodes = sort (nub (map envNode resolvedInfos <> mapMaybe envPrevNode resolvedInfos))
+              -- A migrating environment depends on its previous node staying
+              -- available long enough to pull data from it.
+              let deps =
+                    [ (envNode info, prev)
+                    | info <- resolvedInfos
+                    , Just prev <- [info.envPrevNode]
+                    , prev /= info.envNode
+                    ]
+              pure (Right (orderNodes nodes deps))
+  where
+    -- Resolve the previous node for one environment. If the plan already set
+    -- previousNode, keep it. Otherwise, probe the canonical hostenv hostname
+    -- first and then the environment's configured vhosts for a match.
+    resolvePrevNodeFromDns :: Maybe Text -> [Text] -> Text -> [Text] -> Text -> Maybe Text -> IO (Either Text (Maybe Text))
+    resolvePrevNodeFromDns hostenvHostname discoveryNodes envName vhosts currentNode prevNode =
+      case prevNode of
+        Just prev -> pure (Right (Just prev))
+        Nothing ->
+          case hostenvHostname of
+            -- Without the hostenv domain we cannot build the canonical probe
+            -- hostname or canonical node hostnames to compare against.
+            Nothing -> pure (Right Nothing)
+            Just host -> do
+              -- Probe the canonical env hostname first, then fall back to
+              -- configured customer-facing vhosts when that is inconclusive.
+              let probedHosts = PrevNode.probeHosts host envName vhosts
+              -- TODO: Finish the refactor by typing plan-derived node/env data
+              -- before it reaches this helper instead of wrapping raw Text here.
+              let candidateNodes = map PrevNode.NodeName discoveryNodes
+              let currentNodeName = PrevNode.NodeName currentNode
+              probes <-
+                forM probedHosts $ \probedHost -> do
+                  PrevNode.probeHost pointsTo host probedHost candidateNodes
+              let resolution = PrevNode.chooseDiscoveryOutcome currentNodeName probes
+              case resolution of
+                PrevNode.DiscoveryResolved _probedHost (PrevNode.NodeName node) -> pure (Right (Just node))
+                PrevNode.DiscoverySkipped _ -> pure (Right Nothing)
+                PrevNode.DiscoveryAmbiguous (PrevNode.Hostname probedHost) nodes ->
+                  pure
+                    ( Left
+                        ( "previous-node discovery for "
+                            <> envName
+                            <> " via "
+                            <> probedHost
+                            <> " is ambiguous: matched nodes "
+                            <> T.intercalate ", " [ nodeName | PrevNode.NodeName nodeName <- nodes ]
+                            <> " (current node: "
+                            <> currentNode
+                            <> "). Set previousNode explicitly."
+                        )
+                    )
 
 data EnvNodeInfo = EnvNodeInfo
   { envNode :: Text
@@ -278,9 +354,10 @@ decodeEnvironmentsFromRoot root =
 stripDot :: Text -> Text
 stripDot = T.dropWhileEnd (== '.')
 
-digRR :: Text -> Text -> IO [Text]
-digRR name rr = do
-  let args = ["+short", T.unpack name, T.unpack rr]
+digRRRaw :: Maybe Text -> Text -> Text -> IO [Text]
+digRRRaw mNameserver name rr = do
+  let serverArgs = maybe [] (\nameserver -> ["@" <> T.unpack nameserver]) mNameserver
+  let args = serverArgs <> ["+short", T.unpack name, T.unpack rr]
   res <- try (readProcessWithExitCode "dig" args "") :: IO (Either IOException (ExitCode, String, String))
   case res of
     Left _ -> pure []
@@ -289,37 +366,54 @@ digRR name rr = do
        in pure (filter (not . T.null) (map toLine (lines out)))
     Right _ -> pure []
 
-digCNAMEs :: Text -> IO [Text]
-digCNAMEs name = digRR name "CNAME"
+zoneCandidates :: Text -> [Text]
+zoneCandidates name =
+  let labels = filter (not . T.null) (T.splitOn "." (T.toLower (stripDot name)))
+      labelCount = length labels
+      indices =
+        if labelCount < 2
+          then []
+          else [0 .. labelCount - 2]
+   in map (\idx -> T.intercalate "." (drop idx labels)) indices
 
-discoverPrevNodeFromDns :: Text -> Text -> [Text] -> IO (Maybe Text)
-discoverPrevNodeFromDns hostenvHostname envName vhosts =
-  let hostenvHost = T.toLower hostenvHostname
-      suffix = "." <> hostenvHost
-      envNameNorm = T.toLower envName
-      envHost =
-        if T.isSuffixOf suffix envNameNorm
-          then envNameNorm
-          else envNameNorm <> suffix
-      go [] = pure Nothing
-      go (vh:rest) = do
-        cn <- digCNAMEs vh
-        case find (T.isSuffixOf suffix) cn of
-          Just cname ->
-            case T.stripSuffix suffix cname of
-              Just node | node /= "" -> pure (Just node)
-              _ -> pure Nothing
-          Nothing -> go rest
-   in go (envHost : vhosts)
+findAuthoritativeNameservers :: Text -> IO [Text]
+findAuthoritativeNameservers name = go (zoneCandidates name)
+  where
+    go [] = pure []
+    go (candidate:rest) = do
+      nameservers <- digRRRaw Nothing candidate "NS"
+      if null nameservers
+        then go rest
+        else pure nameservers
 
-resolvePrevNodeFromDns :: Maybe Text -> Text -> [Text] -> Maybe Text -> IO (Maybe Text)
-resolvePrevNodeFromDns hostenvHostname envName vhosts prevNode =
-  case prevNode of
-    Just prev -> pure (Just prev)
-    Nothing ->
-      case hostenvHostname of
-        Nothing -> pure Nothing
-        Just host -> discoverPrevNodeFromDns host envName vhosts
+digRR :: Text -> Text -> IO [Text]
+digRR name rr = do
+  authoritativeNameservers <- findAuthoritativeNameservers name
+  case authoritativeNameservers of
+    [] -> digRRRaw Nothing name rr
+    nameservers -> do
+      answersByNameserver <- forM nameservers (\nameserver -> digRRRaw (Just nameserver) name rr)
+      let nonEmptyAnswers = filter (not . null) answersByNameserver
+      if null nonEmptyAnswers
+        then digRRRaw Nothing name rr
+        else pure (S.toList (S.fromList (concat nonEmptyAnswers)))
+
+digAddrs :: Text -> IO [Text]
+digAddrs name = do
+  a4 <- digRR name "A"
+  a6 <- digRR name "AAAA"
+  pure (a4 <> a6)
+
+dnsPointsTo :: Text -> Text -> IO Bool
+dnsPointsTo vhost expectedHost = do
+  let expectHostNorm = T.toLower expectedHost
+  cn <- digRR vhost "CNAME"
+  if expectHostNorm `elem` cn
+    then pure True
+    else do
+      expIPs <- digAddrs expectedHost
+      vhIPs <- digAddrs vhost
+      pure (not (null (expIPs `intersect` vhIPs)))
 
 renderProjectInputs :: [(Text, Text)] -> Text
 renderProjectInputs inputs =

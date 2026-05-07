@@ -3,11 +3,13 @@ let
   flakeParts = inputs.flake-parts.lib;
   cfg = config.provider;
   providerPlan = config.flake.lib.provider.plan;
-
+  hostenvInputs = config.flake.lib.hostenvInputs;
   hostenvInput =
-    if inputs ? hostenv then inputs.hostenv
-    else if inputs ? self then inputs.self
-    else throw "provider tooling requires a hostenv input";
+    hostenvInputs.requireInput {
+      inherit inputs;
+      name = "hostenv";
+      context = "provider tooling";
+    };
 
   hostenvRoot = hostenvInput.outPath;
   providerRoot = hostenvRoot + "/provider";
@@ -78,6 +80,9 @@ in
               cloudflare = cfg.cloudflare;
               planSource = cfg.planSource;
               generatedFlake = cfg.generatedFlake;
+              deploy = cfg.deploy;
+              serviceResolution = cfg.serviceResolution;
+              cache = cfg.cache;
             };
       in
       {

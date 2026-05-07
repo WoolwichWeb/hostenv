@@ -27,8 +27,11 @@ loginPage cfg mMsg =
   page cfg "Hostenv Provider" $ do
     maybe mempty alertBox mMsg
     h1_ "Hostenv Provider"
-    p_ "Sign in with GitLab to manage projects."
-    loginButtons
+    case cfg.appGitlabSecrets of
+      Nothing -> p_ "GitLab OAuth is not configured for this provider."
+      Just _ -> do
+        p_ "Sign in with GitLab to manage projects."
+        loginButtons
   where
     AppConfig { appGitlabHosts = hosts } = cfg
     loginButtons :: Html ()

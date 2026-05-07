@@ -1,5 +1,6 @@
-{ ... }:
+{ config, ... }:
 let
+  hostenvInputs = config.flake.lib.hostenvInputs;
   # Provider-side infrastructure generator.
   providerPlan =
     { inputs
@@ -16,6 +17,7 @@ let
     , statePath ? (if inputs ? self then inputs.self + /generated/state.json else null)
     , planPath ? (if inputs ? self then inputs.self + /generated/plan.json else null)
     , nodeSystems ? { }
+      # Server address overrides, particularly for SSH bastions, private IPs, or management hosts.
     , nodeAddresses ? { }
     , nodeSshPorts ? { }
     , nodeSshOpts ? { }
@@ -26,76 +28,28 @@ let
     , planSource ? "eval"
     , generatedFlake ? { }
     , lockPath ? (if inputs ? self then inputs.self + /flake.lock else ../../../flake.lock)
+      # Reserved provider-service configuration. These are accepted only so
+      # provider entrypoint callers can fail fast instead of silently dropping
+      # settings before provider-service node wiring lands.
+      # @todo: when the new provider-service is included, make these mandatory.
+    , deploy ? { }
+    , serviceResolution ? null
+    , cache ? { }
     }:
 
     let
       useEval = planSource == "eval";
       cfgHostenvHostname = hostenvHostname;
       hostenvInput =
-        if inputs ? hostenv then inputs.hostenv
-        else if inputs ? self then inputs.self
-        else builtins.throw "provider plan: missing hostenv input (and inputs.self unavailable).";
+        hostenvInputs.requireInput {
+          inherit inputs;
+          name = "hostenv";
+          context = "provider plan";
+        };
       hostenvMakeHostenv =
         if hostenvInput ? makeHostenv
         then hostenvInput.makeHostenv.${system}
         else builtins.throw "provider plan: hostenv input missing makeHostenv output.";
-      sanitizeHeaderValue = label: value:
-        if value == null then null else
-        if lib.strings.hasInfix "\"" value then
-          builtins.throw "provider plan: ${label} may not contain double quotes"
-        else
-          value;
-      mkHeaderLine = name: value:
-        if value == null then ""
-        else
-          let
-            hasDouble = lib.strings.hasInfix "\"" value;
-            hasSingle = lib.strings.hasInfix "'" value;
-            quote =
-              if hasDouble && !hasSingle then "'"
-              else if hasDouble && hasSingle then
-                builtins.throw "provider plan: ${name} header value may not contain both single and double quotes"
-              else
-                "\"";
-          in
-          ''add_header ${name} ${quote}${value}${quote} always;'';
-
-      mkSecurityHeaders = { vhost, envType }:
-        let
-          security = vhost.security or { };
-          referrerPolicy = security.referrerPolicy or "strict-origin-when-cross-origin";
-          xFrameOptions = security.xFrameOptions or "SAMEORIGIN";
-          xContentTypeOptions = security.xContentTypeOptions or true;
-          reportTo = security.reportTo or null;
-          hstsEnabled =
-            (security.hsts or (vhost.hsts or true))
-            && (vhost.enableLetsEncrypt or false);
-          cspBase = sanitizeHeaderValue "security.csp" (security.csp or null);
-          cspReportTo = security.cspReportTo or null;
-          cspValue =
-            if cspBase == null then null else
-            let trimmed = lib.strings.removeSuffix ";" cspBase;
-            in
-            if cspReportTo == null then
-              trimmed
-            else
-              "${trimmed}; report-to ${cspReportTo}";
-          cspHeaderName =
-            if (security.cspMode or "enforce") == "report-only" then
-              "Content-Security-Policy-Report-Only"
-            else
-              "Content-Security-Policy";
-          allowIndexing = vhost.allowIndexing or (envType == "production");
-        in
-        lib.concatStringsSep "\n" (lib.filter (line: line != "") [
-          (mkHeaderLine "Report-To" reportTo)
-          (mkHeaderLine "Referrer-Policy" referrerPolicy)
-          (if xFrameOptions == null then "" else mkHeaderLine "X-Frame-Options" xFrameOptions)
-          (if xContentTypeOptions then mkHeaderLine "X-Content-Type-Options" "nosniff" else "")
-          (if hstsEnabled then mkHeaderLine "Strict-Transport-Security" "max-age=63072000; includeSubDomains; preload" else "")
-          (if cspValue == null then "" else mkHeaderLine cspHeaderName cspValue)
-          (if allowIndexing then "" else mkHeaderLine "X-Robots-Tag" "noindex")
-        ]);
 
       requirePath = { name, path, hint ? "" }:
         if path == null then
@@ -250,6 +204,46 @@ let
               or add uid values to the existing plan file.
             '';
 
+      deployHasSettings =
+        (deploy.enable or false)
+        || (deploy.providerApiBaseUrl or null) != null
+        || (deploy.nodeAuthTokenFile or null) != null
+        || (deploy.nodeAuthTokenFiles or { }) != { }
+        || (deploy.reconnectSeconds or 5) != 5
+        || (builtins.removeAttrs deploy [
+          "enable"
+          "providerApiBaseUrl"
+          "nodeAuthTokenFile"
+          "nodeAuthTokenFiles"
+          "reconnectSeconds"
+        ]) != { };
+
+      cacheHasSettings =
+        (cache.enable or false)
+        || (builtins.removeAttrs cache [ "enable" ]) != { };
+
+      assertUnsupportedProviderServiceOptions =
+        if deployHasSettings then
+          builtins.throw ''
+            provider plan: provider.deploy is reserved for provider-service node agent wiring, but it is not wired into generated node configuration yet.
+
+            Leave provider.deploy at its defaults until the provider-service node wiring PR lands.
+          ''
+        else if serviceResolution != null then
+          builtins.throw ''
+            provider plan: provider.serviceResolution is reserved for provider-service secret wiring, but it is not wired into generated node configuration yet.
+
+            Leave provider.serviceResolution unset until the provider-service wiring PR lands.
+          ''
+        else if cacheHasSettings then
+          builtins.throw ''
+            provider plan: provider.cache is reserved for provider-service cache wiring, but outer provider.cache settings are not wired into generated node configuration yet.
+
+            Leave provider.cache at its defaults until the provider-service cache wiring PR lands.
+          ''
+        else
+          true;
+
       nextUid =
         let
           minUid = 1001;
@@ -354,13 +348,29 @@ let
                   (
                     envName: envCfg:
                       let
-                        hostenv = envCfg.hostenv;
+                        evaluatedHostenv =
+                          hostenvMakeHostenv [
+                            (inputs.${name} + /hostenv.nix)
+                            ({ config, ... }: {
+                              hostenv.organisation = lib.mkForce orgAndProject.organisation;
+                              hostenv.project = lib.mkForce orgAndProject.project;
+                              hostenv.environmentName = lib.mkForce envName;
+                              hostenv.root = lib.mkForce envRoot;
+                              hostenv.hostenvHostname = lib.mkForce cfgHostenvHostname;
+                            })
+                          ]
+                            null;
+                        effectiveEnvCfg =
+                          if builtins.hasAttr envName evaluatedHostenv.config.environments
+                          then evaluatedHostenv.config.environments.${envName}
+                          else envCfg;
+                        hostenv = effectiveEnvCfg.hostenv;
 
-                        node = nodeFor.${envCfg.type} or nodeFor.default;
+                        node = nodeFor.${effectiveEnvCfg.type} or nodeFor.default;
 
                         authorizedKeys =
                           let
-                            allUsers = builtins.attrValues envCfg.users;
+                            allUsers = builtins.attrValues effectiveEnvCfg.users;
                           in
                           builtins.concatLists (map (u: u.publicKeys or [ ]) allUsers);
 
@@ -373,7 +383,7 @@ let
                           );
                         # All virtualHosts already reserved by other environments.
                         unreservableVHosts = stateVHosts;
-                        conflictsWithState = lib.intersectLists (builtins.attrNames envCfg.virtualHosts) unreservableVHosts;
+                        conflictsWithState = lib.intersectLists (builtins.attrNames effectiveEnvCfg.virtualHosts) unreservableVHosts;
                       in
                       if conflictsWithState != [ ] then
                         builtins.throw ''
@@ -387,51 +397,25 @@ let
                                 (reservedName: vhostName == reservedName)
                                 unreservableVHosts
                             )
-                            envCfg.virtualHosts;
+                            effectiveEnvCfg.virtualHosts;
                           conflicts = lib.subtractLists
-                            (builtins.attrNames envCfg.virtualHosts)
+                            (builtins.attrNames effectiveEnvCfg.virtualHosts)
                             (builtins.attrNames filteredEnvVHosts);
 
-                          virtualHosts =
+                          environmentVirtualHosts =
                             if conflicts != [ ] then
                               builtins.throw ''
                                 provider plan: environment '${envName}' declares virtualHosts that are already reserved in state: ${lib.concatStringsSep ", " conflicts}
                               ''
                             else
-                              builtins.mapAttrs
-                                (
-                                  n: vhost:
-                                    let
-                                      extraConfig = mkSecurityHeaders { vhost = vhost; envType = envCfg.type; };
-                                    in
-                                    (builtins.removeAttrs vhost [ "enableLetsEncrypt" "allowIndexing" "security" "hsts" ]) // {
-                                      enableACME = vhost.enableLetsEncrypt;
-                                      forceSSL = vhost.enableLetsEncrypt;
-                                      extraConfig = extraConfig;
-                                      locations =
-                                        let
-                                          locationDefault =
-                                            if builtins.isNull vhost.globalRedirect then
-                                              {
-                                                "/" = {
-                                                  recommendedProxySettings = true;
-                                                  proxyPass = "http://${envCfg.hostenv.userName}_upstream";
-                                                };
-                                              }
-                                            else
-                                              { };
-                                        in
-                                        vhost.locations // locationDefault;
-                                    }
-                                )
-                                filteredEnvVHosts;
+                              filteredEnvVHosts;
                         in
                         let
-                          envWithMigrations = lib.recursiveUpdate envCfg migrateEnvExtras;
+                          envWithMigrations = lib.recursiveUpdate effectiveEnvCfg migrateEnvExtras;
                           projectEnvCfg =
                             if builtins.hasAttr envName projectEnvironments
                             then projectEnvironments.${envName}
-                            else envCfg;
+                            else effectiveEnvCfg;
                           hostenv' = hostenv // {
                             hostenvHostname = cfgHostenvHostname;
                             backupsRepoHost =
@@ -441,7 +425,8 @@ let
                           };
                         in
                         envWithMigrations // {
-                          inherit node authorizedKeys virtualHosts;
+                          inherit node authorizedKeys;
+                          virtualHosts = environmentVirtualHosts;
                           hostenv = hostenv';
                           repo = repo // { ref = hostenv'.gitRef; };
                         }
@@ -586,6 +571,10 @@ let
           mkNodeConnection = node: {
             # Resolve deploy hostname via explicit override first, otherwise use
             # the conventional "<node>.<hostenvHostname>" form.
+            #
+            # This hostname is for SSH/deploy only. HTTP(S) deployment verification
+            # and DNS-gate must not use this value, because nodeAddresses may point
+            # at a bastion, private address, or management hostname.
             hostname =
               if builtins.hasAttr node nodeAddresses
               then nodeAddresses.${node}
@@ -719,7 +708,7 @@ let
 
                 1. Under **environments** is a JSON representation of hostenv's own modules config, retaining the original structure of that representation.
                 2. Each element under **nodes** is NixOS server configuration, and will be merged into the configuration of that server during build.
-                3. Under **nodeConnections** is deploy SSH metadata used by provider tooling (hostname + ssh options).
+                3. Under **nodeConnections** is node routing metadata used by provider tooling (SSH hostname/options).
 
                 Note: all manual changes to this file will be discarded.
               '';
@@ -752,61 +741,64 @@ let
                     ${nodeName} =
                       let
                         existing = acc.nodes.${elem.node} or { };
+                        nginxCfg = config.flake.lib.hostenv.nginxFrontdoor.mkNodeNginxConfig {
+                          inherit lib;
+                          envs = {
+                            ${elem.hostenv.userName} = elem;
+                          };
+                          runtimeRoot = "/run/hostenv";
+                          defaultEnableLetsEncrypt = letsEncrypt.enable or true;
+                        };
                       in
-                      lib.recursiveUpdate existing {
-                        security.acme = {
-                          acceptTerms = letsEncrypt.acceptTerms;
-                          defaults.email = letsEncrypt.adminEmail;
-                        };
-
-                        provider = {
-                          inherit deployPublicKeys;
-                          inherit deployUser;
-                          nixSigning.trustedPublicKeys = nixSigning.trustedPublicKeys or [ ];
-                        };
-
-                        users.groups.${elem.hostenv.userName} = {
-                          gid = elem.uid;
-                        };
-
-                        users.users.${elem.hostenv.userName} = {
-                          uid = elem.uid;
-                          group = elem.hostenv.userName;
-                          openssh.authorizedKeys.keys = elem.authorizedKeys;
-                          isNormalUser = true;
-                          createHome = true;
-                          linger = true;
-                        };
-
-                        systemd.slices = {
-                          ${sliceName} = {
-                            description = "${firstPart} slice";
-                            sliceConfig = {
-                              CPUAccounting = "yes";
-                              CPUQuota = "200%";
-                              MemoryAccounting = "yes";
-                              MemoryMax = "12G";
+                      lib.recursiveUpdate existing (
+                        lib.recursiveUpdate
+                          {
+                            security.acme = {
+                              acceptTerms = letsEncrypt.acceptTerms;
+                              defaults.email = letsEncrypt.adminEmail;
                             };
-                          };
-                          "user-${elem.hostenv.organisation}-" = { };
-                          "${sliceName}-" = { };
-                        };
 
-                        systemd.services."user@${uid_}" = {
-                          overrideStrategy = "asDropin";
-                          serviceConfig.Slice = "${sliceName}-${uid_}.slice";
-                        };
+                            provider = {
+                              inherit deployPublicKeys;
+                              inherit deployUser;
+                              nixSigning.trustedPublicKeys = nixSigning.trustedPublicKeys or [ ];
+                            };
 
-                        services.nginx.virtualHosts = elem.virtualHosts // {
-                          default = {
-                            serverName = "_";
-                            default = true;
-                            rejectSSL = true;
-                            locations."/".return = "444";
-                          };
-                        };
+                            users.groups.${elem.hostenv.userName} = {
+                              gid = elem.uid;
+                            };
 
-                      };
+                            users.users.${elem.hostenv.userName} = {
+                              uid = elem.uid;
+                              group = elem.hostenv.userName;
+                              openssh.authorizedKeys.keys = elem.authorizedKeys;
+                              isNormalUser = true;
+                              createHome = true;
+                              linger = true;
+                            };
+
+                            systemd.slices = {
+                              ${sliceName} = {
+                                description = "${firstPart} slice";
+                                sliceConfig = {
+                                  CPUAccounting = "yes";
+                                  CPUQuota = "200%";
+                                  MemoryAccounting = "yes";
+                                  MemoryMax = "12G";
+                                };
+                              };
+                              "user-${elem.hostenv.organisation}-" = { };
+                              "${sliceName}-" = { };
+                            };
+
+                            systemd.services."user@${uid_}" = {
+                              overrideStrategy = "asDropin";
+                              serviceConfig.Slice = "${sliceName}-${uid_}.slice";
+                            };
+
+                          }
+                          nginxCfg
+                      );
                   };
                 })
               base
@@ -848,7 +840,7 @@ let
         else statePathChecked;
 
     in
-    assert (assertProjectInputs && assertDiskUids);
+    assert (assertProjectInputs && assertDiskUids && assertUnsupportedProviderServiceOptions);
     {
       flake = generatedFlakeFile;
       plan = generatedConfig;

@@ -4,9 +4,9 @@
 -- hostenv-provider CLI: plan | dns-gate | deploy
 -- dns-gate ports the legacy scripts/postgen.hs DNS/ACME gate and Cloudflare upsert logic.
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, displayException, finally, try)
 import Control.Monad (forM, forM_, unless, when)
-import Control.Concurrent (threadDelay)
 import Data.Aeson ((.!=), (.:), (.:?), (.=))
 import Data.Aeson qualified as A
 import Data.Aeson.Key qualified as K
@@ -16,7 +16,8 @@ import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BLC
 import Data.Char (isAlphaNum, isHexDigit)
 import Data.Foldable (toList)
-import Data.List (find, intersect, (\\))
+import Data.List (intersect, (\\))
+import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe, mapMaybe)
 import Data.Scientific (floatingOrInteger)
 import Data.Set qualified as S
@@ -27,9 +28,18 @@ import Data.Text.Conversions (convertText)
 import Data.Text.Encoding qualified as TE
 import Distribution.Compat.Prelude qualified as Sh
 import Hostenv.Provider.DeployGuidance (FlakeKeyStatus (..), localTrustSetupLines, remoteNodeTrustLines)
-import Hostenv.Provider.DnsBackoff (backoffDelays)
-import Hostenv.Provider.DnsGateFilter (filterEnvironmentsByNode)
 import Hostenv.Provider.DeployPreflight qualified as Preflight
+import Hostenv.Provider.DeployVerification (NodeConnection (..), nodeConnectionFor)
+import Hostenv.Provider.DeployVerification qualified as Verify
+import Hostenv.Provider.DnsBackoff (backoffDelays)
+import Hostenv.Provider.DnsGateFilter (
+    DnsGateItem (..),
+    collectDnsGateItems,
+    disableAcmeOnNode,
+    disableLetsEncryptPaths,
+    filterEnvironmentsByNode,
+ )
+import Hostenv.Provider.PrevNodeDiscovery qualified as PrevNode
 import Hostenv.Provider.SigningTarget (deployProfilePathInstallable)
 import Options.Applicative qualified as OA
 import System.Directory qualified as Dir
@@ -50,6 +60,7 @@ data Command
         { node :: Maybe Text
         , signingKeyFile :: Maybe Text
         , remoteBuild :: Bool
+        , skipVerification :: Bool
         , skipMigrations :: [Text]
         , migrationSources :: [Text]
         , ignoreMigrationErrors :: Bool
@@ -113,6 +124,13 @@ remoteBuildOpt =
             <> OA.help "Force deploy-rs remote builds for all targets in this run"
         )
 
+skipVerificationOpt :: OA.Parser Bool
+skipVerificationOpt =
+    OA.switch
+        ( OA.long "skip-verification"
+            <> OA.help "Skip post-deploy verification checks"
+        )
+
 ignoreMigrationErrorsOpt :: OA.Parser Bool
 ignoreMigrationErrorsOpt =
     OA.switch
@@ -135,7 +153,7 @@ cliParser =
         <$> OA.hsubparser
             ( OA.command "plan" (OA.info (CmdPlan <$> dryRunOpt) (OA.progDesc "Generate plan.json, state.json, and flake.nix"))
                 <> OA.command "dns-gate" (OA.info (CmdDnsGate <$> nodeOpt <*> tokenOpt <*> zoneOpt <*> withDnsUpdateOpt <*> dryRunOpt) (OA.progDesc "Disable ACME/forceSSL for vhosts not pointing at node; add --with-dns-update to upsert Cloudflare records"))
-                <> OA.command "deploy" (OA.info (CmdDeploy <$> nodeOpt <*> signingKeyFileOpt <*> remoteBuildOpt <*> skipMigrationsOpt <*> migrationSourceOpt <*> ignoreMigrationErrorsOpt <*> dryRunOpt) (OA.progDesc "Deploy via deploy-rs"))
+                <> OA.command "deploy" (OA.info (CmdDeploy <$> nodeOpt <*> signingKeyFileOpt <*> remoteBuildOpt <*> skipVerificationOpt <*> skipMigrationsOpt <*> migrationSourceOpt <*> ignoreMigrationErrorsOpt <*> dryRunOpt) (OA.progDesc "Deploy via deploy-rs"))
             )
 
 cliOpts :: OA.ParserInfo CLI
@@ -215,21 +233,6 @@ dnsPointsTo vhost expectedHost = do
             vhIPs <- digAddrs vhost
             pure $ not (null (expIPs `intersect` vhIPs))
 
-discoverPrevNodeFromDns :: Text -> Text -> [Text] -> IO (Maybe Text)
-discoverPrevNodeFromDns hostenvHostname envName vhosts =
-    let suffix = "." <> T.toLower hostenvHostname
-        envHost = envName <> "." <> hostenvHostname
-        go [] = pure Nothing
-        go (vh : rest) = do
-            cn <- digCNAMEs vh
-            case find (T.isSuffixOf suffix) cn of
-                Just cname ->
-                    case T.stripSuffix suffix cname of
-                        Just node | node /= "" -> pure (Just node)
-                        _ -> pure Nothing
-                Nothing -> go rest
-     in go (envHost : vhosts)
-
 -- -------- JSON helpers --------
 lookupText :: KM.Key -> KM.KeyMap A.Value -> Maybe Text
 lookupText k o = case KM.lookup k o of
@@ -260,30 +263,6 @@ lookupBool :: KM.Key -> KM.KeyMap A.Value -> Maybe Bool
 lookupBool k o = case KM.lookup k o of
     Just (A.Bool b) -> Just b
     _ -> Nothing
-
-modifyAt :: [KM.Key] -> (A.Value -> A.Value) -> KM.KeyMap A.Value -> KM.KeyMap A.Value
-modifyAt [] _ obj = obj
-modifyAt [k] f obj = maybe obj (\v -> KM.insert k (f v) obj) (KM.lookup k obj)
-modifyAt (k : ks) f obj =
-    case KM.lookup k obj of
-        Just (A.Object sub) -> KM.insert k (A.Object (modifyAt ks f sub)) obj
-        _ -> obj
-
-setBoolAt :: [Text] -> Bool -> KM.KeyMap A.Value -> KM.KeyMap A.Value
-setBoolAt path b = modifyAt (map K.fromText path) (const (A.Bool b))
-
-disableAcmePaths :: Text -> Text -> KM.KeyMap A.Value -> KM.KeyMap A.Value
-disableAcmePaths name vhostName root =
-    let pEnvEnable = ["environments", name, "virtualHosts", vhostName, "enableACME"]
-        pEnvSSL = ["environments", name, "virtualHosts", vhostName, "forceSSL"]
-     in setBoolAt pEnvSSL False (setBoolAt pEnvEnable False root)
-
-disableAcmeOnNode :: Maybe Text -> Text -> KM.KeyMap A.Value -> KM.KeyMap A.Value
-disableAcmeOnNode Nothing _ root = root
-disableAcmeOnNode (Just nodeName) vhostName root =
-    let pNodeEnable = ["nodes", nodeName, "services", "nginx", "virtualHosts", vhostName, "enableACME"]
-        pNodeSSL = ["nodes", nodeName, "services", "nginx", "virtualHosts", vhostName, "forceSSL"]
-     in setBoolAt pNodeSSL False (setBoolAt pNodeEnable False root)
 
 prettyJson :: BL.ByteString -> IO BL.ByteString
 prettyJson raw = do
@@ -390,36 +369,6 @@ instance A.FromJSON EnvInfo where
                 , uid = uid
                 , deploymentStatus = NotAttempted
                 }
-
-data NodeConnection = NodeConnection
-    { connHostname :: Text
-    , connSshOpts :: [Text]
-    }
-
-instance A.FromJSON NodeConnection where
-    parseJSON = A.withObject "NodeConnection" $ \o ->
-        NodeConnection
-            <$> o .: "hostname"
-            <*> o .:? "sshOpts" .!= []
-
-defaultNodeConnection :: Text -> Text -> NodeConnection
-defaultNodeConnection hostenvHostname nodeName =
-    NodeConnection
-        { connHostname = nodeName <> "." <> hostenvHostname
-        , connSshOpts = []
-        }
-
-lookupNodeConnection :: KM.KeyMap A.Value -> Text -> Maybe NodeConnection
-lookupNodeConnection plan nodeName = do
-    conns <- lookupObj (K.fromString "nodeConnections") plan
-    raw <- KM.lookup (K.fromText nodeName) conns
-    either (const Nothing) Just (iparseEither parseJSON raw)
-
-nodeConnectionFor :: KM.KeyMap A.Value -> Text -> Text -> NodeConnection
-nodeConnectionFor plan hostenvHostname nodeName =
-    fromMaybe
-        (defaultNodeConnection hostenvHostname nodeName)
-        (lookupNodeConnection plan nodeName)
 
 data Snapshot = Snapshot {snapId :: Text}
 
@@ -688,13 +637,6 @@ isSubdomainOf host zone =
 
 type DnsGateKey = (Text, Text)
 
-data DnsGateItem = DnsGateItem
-    { dgiEnvName :: Text
-    , dgiNodeName :: Maybe Text
-    , dgiVhostName :: Text
-    , dgiExpectedHost :: Text
-    }
-
 data DnsUpsertEligibility = UpsertEligible | UpsertIneligible Text
 
 data DnsUpsertOutcome
@@ -709,31 +651,17 @@ data DnsGateMismatch = DnsGateMismatch
     }
 
 dnsGateKey :: DnsGateItem -> DnsGateKey
-dnsGateKey item = (item.dgiEnvName, item.dgiVhostName)
+dnsGateKey item = (item.dgiDiscoveryHost, item.dgiExpectedHost)
 
-collectDnsGateItems :: Text -> KM.KeyMap A.Value -> [DnsGateItem]
-collectDnsGateItems hostenvHostname envs =
-    concatMap collectEnv (KM.toList envs)
+uniqueDnsGateItems :: [DnsGateItem] -> [DnsGateItem]
+uniqueDnsGateItems =
+    reverse . fst . foldl step ([], S.empty)
   where
-    collectEnv (kEnv, vEnv) =
-        case vEnv of
-            A.Object envObj ->
-                let envName = K.toText kEnv
-                    nodeName = lookupText (K.fromString "node") envObj
-                    expectedHostFor vh = maybe vh (<> "." <> hostenvHostname) nodeName
-                    vhosts = fromMaybe KM.empty (lookupObj (K.fromString "virtualHosts") envObj)
-                 in map
-                        (\(vhKey, _) ->
-                            let vhName = K.toText vhKey
-                             in DnsGateItem
-                                    { dgiEnvName = envName
-                                    , dgiNodeName = nodeName
-                                    , dgiVhostName = vhName
-                                    , dgiExpectedHost = expectedHostFor vhName
-                                    }
-                        )
-                        (KM.toList vhosts)
-            _ -> []
+    step (acc, seen) item =
+        let key = dnsGateKey item
+         in if S.member key seen
+                then (acc, seen)
+                else (item : acc, S.insert key seen)
 
 classifyUpsertEligibility :: Bool -> Maybe Text -> Maybe Text -> Maybe Text -> Text -> DnsUpsertEligibility
 classifyUpsertEligibility withDnsUpdate mToken mZoneId mZoneName vhName
@@ -756,7 +684,7 @@ waitForDnsPropagation items = do
   where
     partitionByDns recs = do
         checks <- forM recs $ \item -> do
-            ok <- dnsPointsTo item.dgiVhostName item.dgiExpectedHost
+            ok <- dnsPointsTo item.dgiDiscoveryHost item.dgiExpectedHost
             pure (item, ok)
         pure
             ( [ item
@@ -818,7 +746,7 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
 
             let items = collectDnsGateItems hostenvHostname envs
             checked <- forM items $ \item -> do
-                ok <- dnsPointsTo item.dgiVhostName item.dgiExpectedHost
+                ok <- dnsPointsTo item.dgiDiscoveryHost item.dgiExpectedHost
                 pure (item, ok)
 
             let mismatched =
@@ -826,17 +754,18 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
                     | (item, False) <- checked
                     ]
 
-            (mismatchOutcomesRev, cfDryRunCallsRev) <- foldlM (processMismatch mCfToken mCfZone mCfZoneName withDnsUpdate dryRun) ([], []) mismatched
+            (mismatchOutcomesRev, cfDryRunCallsRev, _seenUpserts) <- foldlM (processMismatch mCfToken mCfZone mCfZoneName withDnsUpdate dryRun) ([], [], M.empty) mismatched
             let mismatchOutcomes = reverse mismatchOutcomesRev
             let cfDryRunCalls = reverse cfDryRunCallsRev
 
             let upsertedItems =
-                    [ mismatch.dgmItem
-                    | mismatch <- mismatchOutcomes
-                    , case mismatch.dgmOutcome of
-                        UpsertSucceeded -> True
-                        _ -> False
-                    ]
+                    uniqueDnsGateItems
+                        [ mismatch.dgmItem
+                        | mismatch <- mismatchOutcomes
+                        , case mismatch.dgmOutcome of
+                            UpsertSucceeded -> True
+                            _ -> False
+                        ]
 
             when (not dryRun && not (null upsertedItems)) $
                 printProviderLine
@@ -858,9 +787,12 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
             forM_ timedOutItems $ \item ->
                 printProviderErrLine
                     ( "hostenv-provider: warning: DNS did not propagate within 10 minutes for "
-                        <> item.dgiVhostName
+                        <> item.dgiDiscoveryHost
                         <> " -> "
                         <> item.dgiExpectedHost
+                        <> " (while gating "
+                        <> item.dgiVhostName
+                        <> ")"
                     )
 
             let shouldDisable mismatch =
@@ -882,7 +814,9 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
                         printProviderErrLine
                             ( "hostenv-provider: warning: disabling ACME/forceSSL for "
                                 <> mismatch.dgmItem.dgiVhostName
-                                <> " because DNS does not point to "
+                                <> " because DNS host "
+                                <> mismatch.dgmItem.dgiDiscoveryHost
+                                <> " does not point to "
                                 <> mismatch.dgmItem.dgiExpectedHost
                                 <> " and remediation is unavailable ("
                                 <> reason
@@ -900,13 +834,15 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
                         printProviderErrLine
                             ( "hostenv-provider: warning: disabling ACME/forceSSL for "
                                 <> mismatch.dgmItem.dgiVhostName
-                                <> " because DNS propagation did not complete in time"
+                                <> " because DNS propagation for host "
+                                <> mismatch.dgmItem.dgiDiscoveryHost
+                                <> " did not complete in time"
                             )
                     UpsertPlanned -> pure ()
 
             let applyDisable planAcc mismatch =
                     let item = mismatch.dgmItem
-                        plan1 = disableAcmePaths item.dgiEnvName item.dgiVhostName planAcc
+                        plan1 = disableLetsEncryptPaths item.dgiEnvName item.dgiVhostName planAcc
                      in disableAcmeOnNode item.dgiNodeName item.dgiVhostName plan1
 
             let plan' = foldl applyDisable plan disableTargets
@@ -936,46 +872,65 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
     readFileTrim p = T.unpack . T.strip . T.pack <$> readFile p
     foldlM f z [] = pure z
     foldlM f z (x : xs) = f z x >>= \z' -> foldlM f z' xs
-    processMismatch mCfToken mCfZone mCfZoneName withDnsUpdate dryRun (outcomes, cfOps) item =
-        case classifyUpsertEligibility withDnsUpdate mCfToken mCfZone mCfZoneName item.dgiVhostName of
-            UpsertIneligible reason ->
-                pure
-                    ( DnsGateMismatch item (UpsertUnavailable reason) : outcomes
-                    , cfOps
-                    )
-            UpsertEligible ->
-                case (mCfToken, mCfZone) of
-                    (Just token, Just zoneId) ->
-                        if dryRun
-                            then
-                                pure
-                                    ( DnsGateMismatch item UpsertPlanned : outcomes
-                                    , ("upsert CNAME " <> item.dgiVhostName <> " -> " <> item.dgiExpectedHost <> " in zone " <> zoneId) : cfOps
+    processMismatch mCfToken mCfZone mCfZoneName withDnsUpdate dryRun (outcomes, cfOps, seenUpserts) item =
+        let key = dnsGateKey item
+         in case M.lookup key seenUpserts of
+                Just cachedOutcome ->
+                    pure
+                        ( DnsGateMismatch item cachedOutcome : outcomes
+                        , cfOps
+                        , seenUpserts
+                        )
+                Nothing ->
+                    case classifyUpsertEligibility withDnsUpdate mCfToken mCfZone mCfZoneName item.dgiDiscoveryHost of
+                        UpsertIneligible reason ->
+                            let outcome = UpsertUnavailable reason
+                             in pure
+                                    ( DnsGateMismatch item outcome : outcomes
+                                    , cfOps
+                                    , M.insert key outcome seenUpserts
                                     )
-                            else do
-                                printProviderLine
-                                    ( "hostenv-provider: upserting Cloudflare CNAME "
-                                        <> item.dgiVhostName
-                                        <> " -> "
-                                        <> item.dgiExpectedHost
-                                    )
-                                upsertResult <- cfUpsertCname token zoneId item.dgiVhostName item.dgiExpectedHost
-                                case upsertResult of
-                                    Right () ->
-                                        pure
-                                            ( DnsGateMismatch item UpsertSucceeded : outcomes
+                        UpsertEligible ->
+                            case (mCfToken, mCfZone) of
+                                (Just token, Just zoneId) ->
+                                    if dryRun
+                                        then
+                                            let outcome = UpsertPlanned
+                                             in pure
+                                                    ( DnsGateMismatch item outcome : outcomes
+                                                    , ("upsert CNAME " <> item.dgiDiscoveryHost <> " -> " <> item.dgiExpectedHost <> " in zone " <> zoneId) : cfOps
+                                                    , M.insert key outcome seenUpserts
+                                                    )
+                                        else do
+                                            printProviderLine
+                                                ( "hostenv-provider: upserting Cloudflare CNAME "
+                                                    <> item.dgiDiscoveryHost
+                                                    <> " -> "
+                                                    <> item.dgiExpectedHost
+                                                )
+                                            upsertResult <- cfUpsertCname token zoneId item.dgiDiscoveryHost item.dgiExpectedHost
+                                            case upsertResult of
+                                                Right () ->
+                                                    let outcome = UpsertSucceeded
+                                                     in pure
+                                                            ( DnsGateMismatch item outcome : outcomes
+                                                            , cfOps
+                                                            , M.insert key outcome seenUpserts
+                                                            )
+                                                Left err ->
+                                                    let outcome = UpsertFailed err
+                                                     in pure
+                                                            ( DnsGateMismatch item outcome : outcomes
+                                                            , cfOps
+                                                            , M.insert key outcome seenUpserts
+                                                            )
+                                _ ->
+                                    let outcome = UpsertUnavailable "Cloudflare credentials are missing"
+                                     in pure
+                                            ( DnsGateMismatch item outcome : outcomes
                                             , cfOps
+                                            , M.insert key outcome seenUpserts
                                             )
-                                    Left err ->
-                                        pure
-                                            ( DnsGateMismatch item (UpsertFailed err) : outcomes
-                                            , cfOps
-                                            )
-                    _ ->
-                        pure
-                            ( DnsGateMismatch item (UpsertUnavailable "Cloudflare credentials are missing") : outcomes
-                            , cfOps
-                            )
 
 runPlan :: Bool -> IO ()
 runPlan dryRun = do
@@ -1080,9 +1035,9 @@ data SshTarget = SshTarget
 mkSshTarget :: Text -> NodeConnection -> SshTarget
 mkSshTarget user conn =
     SshTarget
-        { targetUserHost = user <> "@" <> conn.connHostname
-        , targetHost = conn.connHostname
-        , targetSshOpts = conn.connSshOpts
+        { targetUserHost = user <> "@" <> conn.hostname
+        , targetHost = conn.hostname
+        , targetSshOpts = conn.sshOpts
         }
 
 runRemoteScript :: SshTarget -> Text -> IO ExitCode
@@ -1490,19 +1445,57 @@ clearRestorePlan deployUser nodeConnection envInfo = do
         _ ->
             printProviderLine ("hostenv-provider: no pending restore plan for skipped environment " <> envInfo.userName)
 
-resolvePrevNode :: (Text -> Maybe Text) -> Text -> EnvInfo -> IO (Maybe Text)
-resolvePrevNode explicitSourceFor hostenvHostname envInfo =
+resolvePrevNode :: (Text -> Maybe Text) -> Text -> [Text] -> EnvInfo -> IO (Either Text (Maybe Text))
+resolvePrevNode explicitSourceFor hostenvHostname discoveryNodes envInfo =
     case explicitSourceFor envInfo.userName of
         Just sourceNode -> do
             printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " forced via --migration-source: " <> sourceNode)
-            pure (Just sourceNode)
+            pure (Right (Just sourceNode))
         Nothing -> do
-            discovered <- discoverPrevNodeFromDns hostenvHostname envInfo.userName (envInfo.vhosts)
-            case discovered of
-                Just node -> do
-                    printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " discovered via DNS: " <> node)
-                    pure (Just node)
-                Nothing -> pure Nothing
+            let probedHosts = PrevNode.probeHosts hostenvHostname envInfo.userName envInfo.vhosts
+            -- TODO: Finish the refactor by typing EnvInfo/discoveryNodes at the
+            -- source instead of wrapping raw Text into NodeName here.
+            let candidateNodes = map PrevNode.NodeName discoveryNodes
+            let currentNode = PrevNode.NodeName envInfo.node
+            probes <-
+                forM probedHosts $ \probeHost ->
+                    PrevNode.probeHost dnsPointsTo hostenvHostname probeHost candidateNodes
+            let resolution = PrevNode.chooseDiscoveryOutcome currentNode probes
+            case resolution of
+                PrevNode.DiscoveryResolved (PrevNode.Hostname discoveryHost) (PrevNode.NodeName node) -> do
+                    printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " discovered via DNS " <> discoveryHost <> ": " <> node)
+                    pure (Right (Just node))
+                PrevNode.DiscoverySkipped PrevNode.DiscoveryNoMatches ->
+                    pure (Right Nothing)
+                PrevNode.DiscoverySkipped (PrevNode.DiscoveryMatchedCurrent (PrevNode.Hostname probedHost) matchedNodes) -> do
+                    printProviderLine
+                        ( "hostenv-provider: info: previous-node discovery for "
+                            <> envInfo.userName
+                            <> " via "
+                            <> probedHost
+                            <> " matched current node "
+                            <> envInfo.node
+                            <> " among: "
+                            <> T.intercalate ", " [nodeName | PrevNode.NodeName nodeName <- matchedNodes]
+                            <> "; skipping migration discovery"
+                        )
+                    pure (Right Nothing)
+                PrevNode.DiscoveryAmbiguous (PrevNode.Hostname discoveryHost) nodes ->
+                    pure
+                        ( Left
+                            ( "previous-node discovery for "
+                                <> envInfo.userName
+                                <> " via "
+                                <> discoveryHost
+                                <> " is ambiguous: matched nodes "
+                                <> T.intercalate ", " [nodeName | PrevNode.NodeName nodeName <- nodes]
+                                <> " (current node: "
+                                <> envInfo.node
+                                <> "). Set --migration-source "
+                                <> envInfo.userName
+                                <> "=<node> or set previousNode explicitly."
+                            )
+                        )
 
 writeRestorePlan :: Text -> (Text -> NodeConnection) -> EnvInfo -> Text -> [(Text, Text)] -> IO ()
 writeRestorePlan deployUser nodeConnection envInfo prevNode snapshots = do
@@ -1564,8 +1557,8 @@ writeRestorePlan deployUser nodeConnection envInfo prevNode snapshots = do
         ExitSuccess -> pure ()
         ExitFailure code -> error ("failed to write restore plan for " <> T.unpack envInfo.userName <> " (exit " <> show code <> ")")
 
-runDeploy :: Maybe Text -> Maybe Text -> Bool -> [Text] -> [Text] -> Bool -> Bool -> IO ()
-runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceSpecs ignoreMigrationErrors dryRun = do
+runDeploy :: Maybe Text -> Maybe Text -> Bool -> Bool -> [Text] -> [Text] -> Bool -> Bool -> IO ()
+runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations migrationSourceSpecs ignoreMigrationErrors dryRun = do
     let planPath = "generated/plan.json"
     planExists <- Sh.testfile (fromString (T.unpack planPath))
     when (not planExists) $ do
@@ -1590,18 +1583,32 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
             unless (null duplicateOverrides) $
                 error ("duplicate --migration-source overrides for: " <> T.unpack (T.intercalate ", " duplicateOverrides))
 
-            -- Gets the @EnvInfo@s from JSON (taken from plan.json).
-            envInfosSub <- forM (KM.elems envs) $ \env -> case iparseEither parseJSON env of
-                -- Using lists here (so the type becomes @[[EnvInfo]]@) as
+            -- Gets the @EnvInfo@s and deployment verification specs from JSON.
+            envRowsSub <- forM (KM.elems envs) $ \env -> case iparseEither parseJSON env of
+                -- Using lists here (so the type becomes @[[(EnvInfo, Verify.EnvVerificationSpec)]]@) as
                 -- they're easy to @concat@ later.
                 Left err -> printProviderLine ("hostenv-provider: error reading from plan JSON at '" <> T.pack (show $ fst err) <> " - '" <> T.pack (snd err) <> "'") >> pure []
-                Right env_ -> pure [env_]
+                Right envInfo -> do
+                    verificationSpec <- case env of
+                        A.Object envObj ->
+                            case Verify.parseEnvVerificationSpec envObj of
+                                Left parseErr -> do
+                                    printProviderLine ("hostenv-provider: warning: invalid deploymentVerification for " <> envInfo.userName <> "; using defaults (" <> parseErr <> ")")
+                                    pure Verify.defaultEnvVerificationSpec
+                                Right spec -> pure spec
+                        _ -> pure Verify.defaultEnvVerificationSpec
+                    pure [(envInfo, verificationSpec)]
+
+            let envRows = concat envRowsSub
 
             -- Filter environments to node requested by the user.
-            let envInfosFiltered =
+            let envRowsFiltered =
                     case mNode of
-                        Nothing -> concat envInfosSub
-                        Just n -> filter (\e -> e.node == n) (concat envInfosSub)
+                        Nothing -> envRows
+                        Just n -> filter (\(e, _) -> e.node == n) envRows
+            let envInfosFiltered = map fst envRowsFiltered
+            let envVerificationSpecs = map (\(e, spec) -> (e.userName, spec)) envRowsFiltered
+            let verificationSpecFor envName = fromMaybe Verify.defaultEnvVerificationSpec (lookup envName envVerificationSpecs)
 
             let skipHits =
                     filter
@@ -1611,6 +1618,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
             let sourceHits = filter (\(envName, _) -> any (\e -> e.userName == envName) envInfosFiltered) migrationSources
             let sourceMisses = map fst migrationSources \\ map fst sourceHits
             let sourceFor envName = lookup envName migrationSources
+            let discoveryNodes = PrevNode.discoveryNodeNames plan (uniqueNodeNames (map fst envRows))
 
             -- Perform data migrations if the environment has moved node.
             case mNode of
@@ -1637,16 +1645,15 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                             Nothing -> ["generated/"]
                         sigArgs = if useCheckSigs then ["--checksigs"] else []
                         dryActivateArgs = if useDryActivate then ["--dry-activate"] else []
-                     in
-                    [ "run"
-                    , "nixpkgs#deploy-rs"
-                    , "--"
-                    , "--skip-checks"
-                    ]
-                        <> sigArgs
-                        <> dryActivateArgs
-                        <> remoteBuildArgs
-                        <> targetArgs
+                     in [ "run"
+                        , "nixpkgs#deploy-rs"
+                        , "--"
+                        , "--skip-checks"
+                        ]
+                            <> sigArgs
+                            <> dryActivateArgs
+                            <> remoteBuildArgs
+                            <> targetArgs
             let deployGuard res args = when (res /= ExitSuccess) $ printProviderLine ("hostenv-provider: deploying " <> T.unwords args <> " failed")
 
             when dryRun $ do
@@ -1751,15 +1758,30 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
             forM_ skippedEnvInfos $
                 clearRestorePlan deployUser resolveNodeConnection
 
-            migrations <- fmap catMaybes $
-                forM envInfosFiltered $ \envInfo -> do
+            migrationResolutions <-
+                forM envInfosFiltered $ \envInfo ->
                     if envInfo.userName `elem` skipMigrations || envInfo.migrateBackups == []
-                        then pure Nothing
+                        then pure (Right Nothing)
                         else do
-                            prevNode <- resolvePrevNode sourceFor hostenvHostname envInfo
+                            prevNode <- resolvePrevNode sourceFor hostenvHostname discoveryNodes envInfo
                             pure $ case prevNode of
-                                Just prev | prev /= envInfo.node -> Just (envInfo, prev)
-                                _ -> Nothing
+                                Left err -> Left err
+                                Right (Just prev) | prev /= envInfo.node -> Right (Just (envInfo, prev))
+                                _ -> Right Nothing
+
+            let migrationFatalErrors =
+                    [ err
+                    | Left err <- migrationResolutions
+                    ]
+            when (not (null migrationFatalErrors)) $ do
+                forM_ migrationFatalErrors $
+                    printProviderErrLine . ("hostenv-provider: error: " <>)
+                Sh.exitWith (ExitFailure 1)
+
+            let migrations =
+                    [ migration
+                    | Right (Just migration) <- migrationResolutions
+                    ]
 
             if null migrations
                 then printProviderLine "hostenv-provider: no migrations required"
@@ -1861,8 +1883,81 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSourceS
                                 deployGuard res args
                                 pure (envName, res)
 
-            let failures = any (\(_, code) -> code /= ExitSuccess) envDeployRes
-            when failures $ printProviderLine "hostenv-provider: deployment completed with errors"
+            verificationFatalFailures <-
+                if skipVerification
+                    then do
+                        printProviderLine "hostenv-provider: --skip-verification enabled; skipping post-deploy verification checks"
+                        pure []
+                    else do
+                        let envInfoByName = toNamed envInfosFiltered
+                        let statusSuffix mStatus =
+                                case mStatus of
+                                    Nothing -> ""
+                                    Just status -> " (HTTP " <> T.pack (show status) <> ")"
+                        fmap catMaybes $
+                            forM envDeployRes $ \(envName, deployCode) ->
+                                case deployCode of
+                                    ExitFailure _ -> pure Nothing
+                                    ExitSuccess ->
+                                        case lookup envName envInfoByName of
+                                            Nothing -> do
+                                                printProviderLine ("hostenv-provider: warning: environment metadata missing for " <> envName <> "; skipping verification")
+                                                pure Nothing
+                                            Just envInfo -> do
+                                                let verificationSpec = verificationSpecFor envName
+                                                if not verificationSpec.evEnable
+                                                    then pure Nothing
+                                                    else
+                                                        if null verificationSpec.evChecks
+                                                            then pure Nothing
+                                                            else do
+                                                                let verificationHost = Verify.canonicalNodeHostname hostenvHostname envInfo.node
+                                                                printProviderLine ("hostenv-provider: running deployment verification for " <> envName <> " via " <> verificationHost)
+                                                                verificationRes <- try (Verify.runEnvVerification verificationHost verificationSpec) :: IO (Either SomeException [Verify.VerificationCheckResult])
+                                                                case verificationRes of
+                                                                    Left err -> do
+                                                                        let message = "verification failed for " <> envName <> ": " <> T.pack (displayException err)
+                                                                        if verificationSpec.evEnforce
+                                                                            then printProviderErrLine ("hostenv-provider: error: " <> message) >> pure (Just envName)
+                                                                            else printProviderLine ("hostenv-provider: warning: " <> message) >> pure Nothing
+                                                                    Right checkResults -> do
+                                                                        let failedChecks = filter (not . (.vcrPassed)) checkResults
+                                                                        forM_ checkResults $ \checkResult ->
+                                                                            if checkResult.vcrPassed
+                                                                                then
+                                                                                    printProviderLine
+                                                                                        ( "hostenv-provider: verification check "
+                                                                                            <> checkResult.vcrName
+                                                                                            <> " passed for "
+                                                                                            <> envName
+                                                                                            <> statusSuffix checkResult.vcrHttpStatus
+                                                                                        )
+                                                                                else
+                                                                                    printProviderLine
+                                                                                        ( "hostenv-provider: warning: verification check "
+                                                                                            <> checkResult.vcrName
+                                                                                            <> " failed for "
+                                                                                            <> envName
+                                                                                            <> statusSuffix checkResult.vcrHttpStatus
+                                                                                            <> " ("
+                                                                                            <> T.intercalate "; " checkResult.vcrFailures
+                                                                                            <> ")"
+                                                                                        )
+                                                                        if null failedChecks
+                                                                            then pure Nothing
+                                                                            else
+                                                                                if verificationSpec.evEnforce
+                                                                                    then pure (Just envName)
+                                                                                    else do
+                                                                                        printProviderLine ("hostenv-provider: warning: verification failures ignored for " <> envName <> " (deploymentVerification.enforce=false)")
+                                                                                        pure Nothing
+
+            let deploymentFailures = any (\(_, code) -> code /= ExitSuccess) envDeployRes
+            let verificationFailures = not (null verificationFatalFailures)
+            when deploymentFailures $ printProviderLine "hostenv-provider: deployment completed with errors"
+            when verificationFailures $
+                printProviderErrLine ("hostenv-provider: error: deployment verification failed for: " <> T.intercalate ", " verificationFatalFailures)
+            let failures = deploymentFailures || verificationFailures
             Sh.exitWith $ if failures then ExitFailure 1 else ExitSuccess
 
 quoteDeployTarget :: Text -> Text
@@ -1884,5 +1979,5 @@ main = do
     case cmd of
         CmdPlan dryRun -> runPlan dryRun
         CmdDnsGate mNode mTok mZone withDnsUpdate dryRun -> runDnsGate mNode mTok mZone withDnsUpdate dryRun
-        CmdDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSources ignoreMigrationErrors dryRun ->
-            runDeploy mNode mSigningKeyPath forceRemoteBuild skipMigrations migrationSources ignoreMigrationErrors dryRun
+        CmdDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations migrationSources ignoreMigrationErrors dryRun ->
+            runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations migrationSources ignoreMigrationErrors dryRun
