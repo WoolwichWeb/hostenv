@@ -35,6 +35,37 @@ let
     };
   };
 
+  nginxExtraConfig = env: prefix: {
+    "${prefix}-test-nginx-extra-config" = asserts.assertRun {
+      name = "${prefix}-test-nginx-extra-config";
+      inherit env;
+      script = ''
+        conf="$profile/etc/nginx/nginx.conf"
+        test -f "$conf" || { echo "missing nginx.conf"; exit 1; }
+        if ! awk '
+          prev && $0 ~ /^[[:space:]]*try_files \$uri \/index\.php\?\$query_string;[[:space:]]*$/ {
+            found = 1
+            exit 0
+          }
+
+          {
+            prev = ($0 ~ /^[[:space:]]*# Location mkBefore test marker[[:space:]]*$/)
+          }
+
+          END {
+            exit found ? 0 : 1
+          }
+        ' "$conf"; then
+          echo "Expected '# Location mkBefore test marker' to be followed by 'try_files $uri /index.php?$query_string;'"
+          echo
+          echo "Actual config can be found at:"
+          echo "$conf"
+          exit 1
+        fi
+      '';
+    };
+  };
+
   nginxDebugHeaders = { prod, dev, prefix }: {
     "${prefix}-prod-no-debug-headers" = asserts.assertRun {
       name = "${prefix}-prod-no-debug-headers";
@@ -129,16 +160,18 @@ let
   };
 
 in
-  profileStructure envs.drupalProduction "drupal-prod"
-  // profileStructure envs.drupalDev "drupal-dev"
-  // nginxSyntax envs.drupalProduction "drupal-prod"
-  // nginxSyntax envs.drupalDev "drupal-dev"
-  // (nginxDebugHeaders { prod = envs.drupalProduction; dev = envs.drupalDev; prefix = "drupal"; })
-  // phpConfig envs.drupalDev "drupal-dev"
-  // phpConfig envs.drupalProduction "drupal-prod"
-  // nginxSocketListen envs.drupalProduction "drupal-prod"
-  // nginxSocketListen envs.drupalDev "drupal-dev"
-  // drupalStructure envs.drupalProduction "drupal-prod"
-  // drupalStructure envs.drupalDev "drupal-dev"
-  // drupalRestoreMarker envs.drupalProduction "drupal-prod"
+profileStructure envs.drupalProduction "drupal-prod"
+// profileStructure envs.drupalDev "drupal-dev"
+// nginxSyntax envs.drupalProduction "drupal-prod"
+// nginxSyntax envs.drupalDev "drupal-dev"
+// nginxExtraConfig envs.drupalProduction "drupal-prod"
+// nginxExtraConfig envs.drupalDev "drupal-dev"
+// (nginxDebugHeaders { prod = envs.drupalProduction; dev = envs.drupalDev; prefix = "drupal"; })
+// phpConfig envs.drupalDev "drupal-dev"
+// phpConfig envs.drupalProduction "drupal-prod"
+// nginxSocketListen envs.drupalProduction "drupal-prod"
+// nginxSocketListen envs.drupalDev "drupal-dev"
+// drupalStructure envs.drupalProduction "drupal-prod"
+// drupalStructure envs.drupalDev "drupal-dev"
+// drupalRestoreMarker envs.drupalProduction "drupal-prod"
   // drupalRestoreMarker envs.drupalDev "drupal-dev"

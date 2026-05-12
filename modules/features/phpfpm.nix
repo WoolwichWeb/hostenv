@@ -211,19 +211,33 @@
               )))
             ];
     
-            # The pool PHP package with PHP options from global CLI.
-            effectivePhpCliPackage = lib.mkMerge [
-              (lib.mkIf (poolCfg.phpVersion != "") (lib.mkForce (
-                mkPackageWithConfig poolCfg.phpPackage cfg.cli
-              )))
-    
-              (lib.mkIf (poolCfg.phpVersion == "") (lib.mkForce (
-                let
-                  base = customPhpPackage poolCfg;
-                in
-                mkPackageWithConfig base cfg.cli
-              )))
-            ];
+            # The pool PHP package with the pool's PHP version, extensions,
+            # pool php.ini, and CLI-only php.ini settings. Framework wrappers
+            # such as Drush use this so CLI tools match the PHP-FPM runtime for
+            # the pool while still receiving CLI-specific overrides.
+            effectivePhpCliPackage =
+              let
+                cliPoolCfg = cfg.cli // {
+                  extensions = poolCfg.extensions;
+                  disableExtensions = poolCfg.disableExtensions;
+                  phpOptions = lib.concatStringsSep "\n" [
+                    poolCfg.phpOptions
+                    cfg.cli.phpOptions
+                  ];
+                };
+              in
+              lib.mkMerge [
+                (lib.mkIf (poolCfg.phpVersion != "") (lib.mkForce (
+                  let
+                    base = customPhpPackage poolCfg;
+                  in
+                  mkPackageWithConfig base cliPoolCfg
+                )))
+
+                (lib.mkIf (poolCfg.phpVersion == "") (lib.mkForce (
+                  mkPackageWithConfig poolCfg.phpPackage cliPoolCfg
+                )))
+              ];
     
             # Hostenv convention: pool socket lives in the user runtime dir; user-level nginx
             # proxies FastCGI to it.
