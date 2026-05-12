@@ -1,4 +1,4 @@
-{ pkgs, config, ... }: {
+{ pkgs, config, lib, ... }: {
 
   services.drupal.enable = true;
   services.drupal.backups.enable = true;
@@ -50,5 +50,11 @@
         ];
       };
     };
+  };
+
+  services.nginx.virtualHosts."${config.services.drupal.codebase.name}".locations."/" = {
+    extraConfig = lib.mkBefore ''
+      # Location mkBefore test marker
+    '';
   };
 }
