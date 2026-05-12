@@ -10,7 +10,11 @@ in
       cfg = config.services.nginx;
       env = config.environments.${config.hostenv.environmentName};
       nginxLib = cfgTop.flake.lib.hostenv.nginx;
-      vhostOptions = nginxLib.vhostOptions { inherit lib config pkgs; };
+      topConfig = config;
+      vhostOptions = { name, ... }: nginxLib.vhostOptions {
+        inherit lib name pkgs;
+        config = topConfig;
+      };
       vhostValues = nginxLib.vhostValues {
         inherit lib config pkgs;
         inherit (cfg) virtualHosts enableRouteDebugging;

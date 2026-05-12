@@ -158,13 +158,15 @@ let
       };
 
   vhostOptions =
-    { lib, config, pkgs, ... }:
+    { lib, config, pkgs, name, ... }:
       with lib;
       {
         options = {
           serverName = mkOption {
             type = types.nullOr types.str;
             default = null;
+            apply = value:
+              if value == null then (builtins.traceVerbose { inherit name value; } name) else value;
             description = ''
               Name of this virtual host. Defaults to attribute name in virtualHosts.
             '';
@@ -627,6 +629,9 @@ let
       (mapAttrsToList
         (vhostName: vhost:
         let
+          serverName =
+            if vhost.serverName != null then vhost.serverName else vhostName;
+
           hostListen =
             if vhost.listen != [ ] then vhost.listen
             else
@@ -645,7 +650,7 @@ let
         ''
           server {
             ${concatMapStringsSep "\n" listenString hostListen}
-            server_name ${vhost.serverName} ${concatStringsSep " " vhost.serverAliases};
+            server_name ${serverName} ${concatStringsSep " " vhost.serverAliases};
 
             ${mkBasicAuth vhostName vhost}
 

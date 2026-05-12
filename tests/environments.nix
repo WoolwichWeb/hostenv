@@ -47,4 +47,33 @@ in {
       })
       ./integration/drupal7/hostenv.nix
     ] "main";
+
+  drupal6 =
+    let
+      drupal6src = pkgs.stdenv.mkDerivation {
+        pname = "drupal6-test-source";
+        version = "6.38";
+
+        src = pkgs.fetchurl {
+          url = "https://ftp.drupal.org/files/projects/drupal-6.38.tar.gz";
+          sha256 = "sha256-RqbX7BcOdPPIWxH98PrnTOBpHUJguEi/X6/x8PXzHUs=";
+        };
+
+        installPhase = ''
+          mkdir -p $out
+          cp -r . $out/
+        '';
+      };
+    in
+    makeHostenv [
+      ({ ... }: {
+        hostenv = {
+          organisation = "test";
+          project = "test-project";
+          root = drupal6src;
+          hostenvHostname = "hosting.test";
+        };
+      })
+      ./integration/drupal6/hostenv.nix
+    ] "main";
 }
