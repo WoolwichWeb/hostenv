@@ -317,10 +317,15 @@
           chmod -R u+rw "${cfg.privateFilesDir}"
           chmod -R u+rw "${cfg.drupal6.temporaryDirectory}"
 
-          projectFiles="${toString project}/share/php/${cfg.codebase.name}/web/project_files"
-          if [ -d "$projectFiles" ] && compgen -G "$projectFiles/*" >/dev/null; then
-            cp -r -- "$projectFiles"/* "${cfg.filesDir}/"
-          fi
+          for projectFiles in \
+            "${toString project}/share/php/${cfg.codebase.name}/project_files" \
+            "${toString project}/share/php/${cfg.codebase.name}/web/project_files"
+          do
+            if [ -d "$projectFiles" ] && compgen -G "$projectFiles/*" >/dev/null; then
+              cp -r -- "$projectFiles"/* "${cfg.filesDir}/"
+              break
+            fi
+          done
 
           find "${cfg.filesDir}/" -type d -name '__MACOSX' -print0 | xargs -0 rm -rf
           find "${cfg.filesDir}/" -type f -name '.DS_Store' -delete

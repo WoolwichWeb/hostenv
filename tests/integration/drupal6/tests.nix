@@ -150,6 +150,28 @@ let
     };
   };
 
+  projectFilesContract = { env, prefix, relativePath, seedFile }: {
+    "${prefix}-test-drupal6-project-files-contract" = asserts.assertRun {
+      name = "${prefix}-test-drupal6-project-files-contract";
+      inherit env;
+      script = ''
+        activate="$profile/bin/activate"
+        test -f "$activate" || { echo "missing activate script"; exit 1; }
+
+        projectRoot="$(readlink -f "$profile"/share/php/*)"
+        projectFiles="$projectRoot/${relativePath}"
+        test -f "$projectFiles/${seedFile}" || {
+          echo "missing seeded project file at $projectFiles/${seedFile}"
+          exit 1
+        }
+        grep -F -q "$projectFiles" "$activate" || {
+          echo "activation script does not reference $projectFiles"
+          exit 1
+        }
+      '';
+    };
+  };
+
   cronContract = env: prefix: {
     "${prefix}-test-drupal6-cron-contract" = asserts.assertRun {
       name = "${prefix}-test-drupal6-cron-contract";
@@ -204,6 +226,18 @@ profileStructure envs.drupal6 "drupal6"
 // settingsContract envs.drupal6 "drupal6"
 // drushWrapper envs.drupal6 "drupal6"
 // activationContract envs.drupal6 "drupal6"
+// projectFilesContract {
+  env = envs.drupal6;
+  prefix = "drupal6";
+  relativePath = "web/project_files";
+  seedFile = "root-layout-seed.txt";
+}
+// projectFilesContract {
+  env = envs.drupal6WebRoot;
+  prefix = "drupal6-web-root";
+  relativePath = "project_files";
+  seedFile = "web-root-layout-seed.txt";
+}
 // cronContract envs.drupal6 "drupal6"
 // nginxLegacyDenyRules envs.drupal6 "drupal6"
   // phpSocketIni envs.drupal6 "drupal6"
