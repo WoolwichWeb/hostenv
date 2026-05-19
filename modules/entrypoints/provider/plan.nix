@@ -782,9 +782,9 @@ let
                                 description = "${firstPart} slice";
                                 sliceConfig = {
                                   CPUAccounting = "yes";
-                                  CPUQuota = "200%";
+                                  CPUQuota = "300%";
                                   MemoryAccounting = "yes";
-                                  MemoryMax = "12G";
+                                  MemoryMax = "24G";
                                 };
                               };
                               "user-${elem.hostenv.organisation}-" = { };
