@@ -23,7 +23,7 @@ stages:
 flake-check:
   stage: check
   script:
-    - nix flake check --show-trace --print-build-logs --keep-failed
+    - cachix watch-exec hostenv -- nix flake check --show-trace --print-build-logs --keep-failed
   artifacts:
     when: always
     paths:
@@ -57,7 +57,7 @@ nightly-full-check:
         git checkout main
         nix flake update
         if ! git diff --quiet --exit-code; then
-          nix flake check --show-trace --print-build-logs --keep-failed
+          cachix watch-exec hostenv -- nix flake check --show-trace --print-build-logs --keep-failed
           git config --global user.name "Patch Bot"
           git config --global user.email "patch-bot@hostenv.sh"
           git commit -m "(chore) update flake.lock dependencies" flake.lock
