@@ -201,6 +201,26 @@ let
           echo "legacy Drupal source extension deny rule missing"
           exit 1
         }
+        lineOf() {
+          pattern=$1
+          label=$2
+          line=$(grep -nF "$pattern" "$conf" | head -n1 | cut -d: -f1 || true)
+          test -n "$line" || { echo "$label missing"; exit 1; }
+          printf '%s\n' "$line"
+        }
+
+        hiddenPhpDenyLine=$(lineOf 'location ~ \..*/.*\.php$ {' 'hidden PHP deny rule')
+        privateDenyLine=$(lineOf 'location ~ ^/sites/.*/private/ {' 'private files deny rule')
+        filesPhpDenyLine=$(lineOf 'location ~ ^/sites/[^/]+/files/.*\.php$ {' 'uploaded PHP deny rule')
+        vendorPhpDenyLine=$(lineOf 'location ~ /vendor/.*\.php$ {' 'vendor PHP deny rule')
+        phpHandlerLine=$(lineOf 'location ~ \.php$|^/update.php {' 'PHP handler')
+
+        for denyLine in "$hiddenPhpDenyLine" "$privateDenyLine" "$filesPhpDenyLine" "$vendorPhpDenyLine"; do
+          if [ "$denyLine" -ge "$phpHandlerLine" ]; then
+            echo "PHP deny rules must render before the catch-all PHP handler"
+            exit 1
+          fi
+        done
       '';
     };
   };

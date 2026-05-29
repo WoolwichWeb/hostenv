@@ -30,7 +30,9 @@ module Hostenv.Provider.Service
   , runWebhookWith
   ) where
 
-import Control.Exception (IOException, try)
+import Control.Concurrent (forkIO)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (IOException, SomeException, try)
 import Control.Monad (foldM, forM)
 import Data.Aeson (Value (..))
 import qualified Data.Aeson as A
@@ -43,6 +45,7 @@ import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (toLower)
 import Data.Foldable (toList)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List (foldl', intersect, nub, sort, sortOn)
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
 import qualified Data.Map.Strict as M
@@ -120,7 +123,9 @@ nodesForProject org project raw = do
       _ -> Nothing
 
 nodesForProjectWithDns :: Text -> Text -> BL.ByteString -> IO (Either Text [Text])
-nodesForProjectWithDns = nodesForProjectWithDnsWith dnsPointsTo
+nodesForProjectWithDns org project raw = do
+  dnsCache <- newDnsLookupCache
+  nodesForProjectWithDnsWith (dnsPointsToWith dnsCache) org project raw
 
 -- | Like 'nodesForProject', but for migrating environments where it can infer
 --   a missing previous node from DNS before calculating deploy order.
@@ -354,6 +359,58 @@ decodeEnvironmentsFromRoot root =
 stripDot :: Text -> Text
 stripDot = T.dropWhileEnd (== '.')
 
+normalizeDnsName :: Text -> Text
+normalizeDnsName = T.toLower . stripDot . T.strip
+
+-- | Cache DNS discovery done while checking whether hostnames resolve to the
+-- expected host.
+--
+-- These checks do more than ask the local resolver for one record. For each
+-- hostname, the code first looks for the authoritative nameservers for that
+-- hostname, then asks those nameservers for CNAME, A, or AAAA records. A single
+-- provider-service operation can ask the same questions repeatedly while
+-- comparing many vhosts, so this value keeps the expensive discovery results
+-- for the duration of that operation.
+--
+-- This is intentionally a short-lived cache. Provider-service entry points
+-- create one 'DnsLookupCache' near the start of an operation and pass it
+-- through every DNS comparison in that operation. This is not a general DNS
+-- cache and it does not persist answers between commands. It also does not
+-- cache CNAME, A, or AAAA answers, so each comparison still asks nameservers
+-- for current record data. The first map stores the authoritative nameservers
+-- selected for a full hostname. The second map stores NS records found for zone
+-- names while walking up a hostname.
+data DnsLookupCache = DnsLookupCache
+  (IORef (M.Map Text [Text]))
+  (IORef (M.Map Text [Text]))
+
+newDnsLookupCache :: IO DnsLookupCache
+newDnsLookupCache =
+  DnsLookupCache
+    <$> newIORef M.empty
+    <*> newIORef M.empty
+
+cachedLookup :: (Ord k) => IORef (M.Map k v) -> k -> IO v -> IO v
+cachedLookup cacheRef key loadValue = do
+  cache <- readIORef cacheRef
+  case M.lookup key cache of
+    Just value -> pure value
+    Nothing -> do
+      value <- loadValue
+      modifyIORef' cacheRef (M.insert key value)
+      pure value
+
+tryAny :: IO a -> IO (Either SomeException a)
+tryAny = try
+
+mapConcurrentlyIO :: (a -> IO b) -> [a] -> IO [Either SomeException b]
+mapConcurrentlyIO action values = do
+  resultVars <- forM values $ \value -> do
+    resultVar <- newEmptyMVar
+    _ <- forkIO $ tryAny (action value) >>= putMVar resultVar
+    pure resultVar
+  forM resultVars takeMVar
+
 digRRRaw :: Maybe Text -> Text -> Text -> IO [Text]
 digRRRaw mNameserver name rr = do
   let serverArgs = maybe [] (\nameserver -> ["@" <> T.unpack nameserver]) mNameserver
@@ -368,7 +425,7 @@ digRRRaw mNameserver name rr = do
 
 zoneCandidates :: Text -> [Text]
 zoneCandidates name =
-  let labels = filter (not . T.null) (T.splitOn "." (T.toLower (stripDot name)))
+  let labels = filter (not . T.null) (T.splitOn "." (normalizeDnsName name))
       labelCount = length labels
       indices =
         if labelCount < 2
@@ -376,43 +433,49 @@ zoneCandidates name =
           else [0 .. labelCount - 2]
    in map (\idx -> T.intercalate "." (drop idx labels)) indices
 
-findAuthoritativeNameservers :: Text -> IO [Text]
-findAuthoritativeNameservers name = go (zoneCandidates name)
+findAuthoritativeNameserversWith :: DnsLookupCache -> Text -> IO [Text]
+findAuthoritativeNameserversWith cache@(DnsLookupCache authoritativeCache _) name =
+  cachedLookup authoritativeCache (normalizeDnsName name) (go (zoneCandidates name))
   where
     go [] = pure []
     go (candidate:rest) = do
-      nameservers <- digRRRaw Nothing candidate "NS"
+      nameservers <- findZoneNameservers cache candidate
       if null nameservers
         then go rest
         else pure nameservers
 
-digRR :: Text -> Text -> IO [Text]
-digRR name rr = do
-  authoritativeNameservers <- findAuthoritativeNameservers name
+findZoneNameservers :: DnsLookupCache -> Text -> IO [Text]
+findZoneNameservers (DnsLookupCache _ zoneCache) zone =
+  cachedLookup zoneCache (normalizeDnsName zone) (digRRRaw Nothing zone "NS")
+
+digRRWith :: DnsLookupCache -> Text -> Text -> IO [Text]
+digRRWith cache name rr = do
+  authoritativeNameservers <- findAuthoritativeNameserversWith cache name
   case authoritativeNameservers of
     [] -> digRRRaw Nothing name rr
     nameservers -> do
-      answersByNameserver <- forM nameservers (\nameserver -> digRRRaw (Just nameserver) name rr)
+      queryResults <- mapConcurrentlyIO (\nameserver -> digRRRaw (Just nameserver) name rr) nameservers
+      let answersByNameserver = [answers | Right answers <- queryResults]
       let nonEmptyAnswers = filter (not . null) answersByNameserver
       if null nonEmptyAnswers
         then digRRRaw Nothing name rr
         else pure (S.toList (S.fromList (concat nonEmptyAnswers)))
 
-digAddrs :: Text -> IO [Text]
-digAddrs name = do
-  a4 <- digRR name "A"
-  a6 <- digRR name "AAAA"
+digAddrsWith :: DnsLookupCache -> Text -> IO [Text]
+digAddrsWith cache name = do
+  a4 <- digRRWith cache name "A"
+  a6 <- digRRWith cache name "AAAA"
   pure (a4 <> a6)
 
-dnsPointsTo :: Text -> Text -> IO Bool
-dnsPointsTo vhost expectedHost = do
+dnsPointsToWith :: DnsLookupCache -> Text -> Text -> IO Bool
+dnsPointsToWith cache vhost expectedHost = do
   let expectHostNorm = T.toLower expectedHost
-  cn <- digRR vhost "CNAME"
+  cn <- digRRWith cache vhost "CNAME"
   if expectHostNorm `elem` cn
     then pure True
     else do
-      expIPs <- digAddrs expectedHost
-      vhIPs <- digAddrs vhost
+      expIPs <- digAddrsWith cache expectedHost
+      vhIPs <- digAddrsWith cache vhost
       pure (not (null (expIPs `intersect` vhIPs)))
 
 renderProjectInputs :: [(Text, Text)] -> Text

@@ -158,17 +158,21 @@
               '';
             };
             locations."~ \\..*/.*\\.php$" = {
+              priority = lib.mkDefault 400;
               return = lib.mkDefault 403;
             };
             locations."~ ^/sites/.*/private/" = {
+              priority = lib.mkDefault 405;
               return = lib.mkDefault 403;
             };
             locations."~ ^/sites/[^/]+/files/.*\\.php$" = {
+              priority = lib.mkDefault 410;
               extraConfig = ''
                 deny all;
               '';
             };
             locations."~ /vendor/.*\\.php$" = {
+              priority = lib.mkDefault 420;
               return = lib.mkDefault 404;
               extraConfig = ''
                 deny all;
