@@ -4,7 +4,8 @@
 -- hostenv-provider CLI: plan | dns-gate | deploy
 -- dns-gate ports the legacy scripts/postgen.hs DNS/ACME gate and Cloudflare upsert logic.
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (SomeException, displayException, finally, try)
 import Control.Monad (forM, forM_, unless, when)
 import Data.Aeson ((.!=), (.:), (.:?), (.=))
@@ -16,6 +17,7 @@ import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BLC
 import Data.Char (isAlphaNum, isHexDigit)
 import Data.Foldable (toList)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List (intersect, (\\))
 import Data.Map.Strict qualified as M
 import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe, mapMaybe)
@@ -168,10 +170,64 @@ cliOpts =
 stripDot :: Text -> Text
 stripDot = T.dropWhileEnd (== '.')
 
+normalizeDnsName :: Text -> Text
+normalizeDnsName = T.toLower . stripDot . T.strip
+
+{- | Cache DNS discovery done while checking whether hostnames resolve to the
+expected host.
+
+These checks do more than ask the local resolver for one record. For each
+hostname, the code first looks for the authoritative nameservers for that
+hostname, then asks those nameservers for CNAME, A, or AAAA records. A single
+dns-gate run can ask the same questions repeatedly while comparing many
+vhosts, so this value keeps the expensive discovery results for the duration
+of that run.
+
+This is intentionally a short-lived cache. Command-level callers such as
+dns-gate create one 'DnsLookupCache' near the start of the command and pass
+it through every DNS comparison and propagation recheck in that command.
+This is not a general DNS cache and it does not persist answers between
+commands. It also does not cache CNAME, A, or AAAA answers, so propagation
+rechecks still ask nameservers for current record data. The first map stores
+the authoritative nameservers selected for a full hostname. The second map
+stores NS records found for zone names while walking up a hostname.
+-}
+data DnsLookupCache
+    = DnsLookupCache
+        (IORef (M.Map Text [Text]))
+        (IORef (M.Map Text [Text]))
+
+newDnsLookupCache :: IO DnsLookupCache
+newDnsLookupCache =
+    DnsLookupCache
+        <$> newIORef M.empty
+        <*> newIORef M.empty
+
+cachedLookup :: (Ord k) => IORef (M.Map k v) -> k -> IO v -> IO v
+cachedLookup cacheRef key loadValue = do
+    cache <- readIORef cacheRef
+    case M.lookup key cache of
+        Just value -> pure value
+        Nothing -> do
+            value <- loadValue
+            modifyIORef' cacheRef (M.insert key value)
+            pure value
+
+tryAny :: IO a -> IO (Either SomeException a)
+tryAny = try
+
+mapConcurrentlyIO :: (a -> IO b) -> [a] -> IO [Either SomeException b]
+mapConcurrentlyIO action values = do
+    resultVars <- forM values $ \value -> do
+        resultVar <- newEmptyMVar
+        _ <- forkIO $ tryAny (action value) >>= putMVar resultVar
+        pure resultVar
+    forM resultVars takeMVar
+
 digRRRaw :: Maybe Text -> Text -> Text -> IO [Text]
 digRRRaw mNameserver name rr = do
     let serverArgs = maybe [] (\nameserver -> ["@" <> T.unpack nameserver]) mNameserver
-    let args = serverArgs <> ["+short", T.unpack name, T.unpack rr]
+    let args = serverArgs <> ["+short", "+time=1", "+tries=1", T.unpack name, T.unpack rr]
     (code, out, _err) <- readProcessWithExitCode "dig" args ""
     case code of
         ExitFailure _ -> pure []
@@ -183,7 +239,7 @@ digRRRaw mNameserver name rr = do
 
 zoneCandidates :: Text -> [Text]
 zoneCandidates name =
-    let labels = filter (not . T.null) (T.splitOn "." (T.toLower (stripDot name)))
+    let labels = filter (not . T.null) (T.splitOn "." (normalizeDnsName name))
         labelCount = length labels
         indices =
             if labelCount < 2
@@ -191,46 +247,49 @@ zoneCandidates name =
                 else [0 .. labelCount - 2]
      in map (\idx -> T.intercalate "." (drop idx labels)) indices
 
-findAuthoritativeNameservers :: Text -> IO [Text]
-findAuthoritativeNameservers name = go (zoneCandidates name)
+findAuthoritativeNameserversWith :: DnsLookupCache -> Text -> IO [Text]
+findAuthoritativeNameserversWith cache@(DnsLookupCache authoritativeCache _) name =
+    cachedLookup authoritativeCache (normalizeDnsName name) (go (zoneCandidates name))
   where
     go [] = pure []
     go (candidate : rest) = do
-        nameservers <- digRRRaw Nothing candidate "NS"
+        nameservers <- findZoneNameservers cache candidate
         if null nameservers
             then go rest
             else pure nameservers
 
-digRR :: Text -> Text -> IO [Text]
-digRR name rr = do
-    authoritativeNameservers <- findAuthoritativeNameservers name
+findZoneNameservers :: DnsLookupCache -> Text -> IO [Text]
+findZoneNameservers (DnsLookupCache _ zoneCache) zone =
+    cachedLookup zoneCache (normalizeDnsName zone) (digRRRaw Nothing zone "NS")
+
+digRRWith :: DnsLookupCache -> Text -> Text -> IO [Text]
+digRRWith cache name rr = do
+    authoritativeNameservers <- findAuthoritativeNameserversWith cache name
     case authoritativeNameservers of
         [] -> digRRRaw Nothing name rr
         nameservers -> do
-            answersByNameserver <- forM nameservers (\nameserver -> digRRRaw (Just nameserver) name rr)
+            queryResults <- mapConcurrentlyIO (\nameserver -> digRRRaw (Just nameserver) name rr) nameservers
+            let answersByNameserver = [answers | Right answers <- queryResults]
             let nonEmptyAnswers = filter (not . null) answersByNameserver
             if null nonEmptyAnswers
                 then digRRRaw Nothing name rr
                 else pure (S.toList (S.fromList (concat nonEmptyAnswers)))
 
-digCNAMEs :: Text -> IO [Text]
-digCNAMEs name = digRR name "CNAME"
-
-digAddrs :: Text -> IO [Text]
-digAddrs name = do
-    a4 <- digRR name "A"
-    a6 <- digRR name "AAAA"
+digAddrsWith :: DnsLookupCache -> Text -> IO [Text]
+digAddrsWith cache name = do
+    a4 <- digRRWith cache name "A"
+    a6 <- digRRWith cache name "AAAA"
     pure $ a4 ++ a6
 
-dnsPointsTo :: Text -> Text -> IO Bool
-dnsPointsTo vhost expectedHost = do
+dnsPointsToWith :: DnsLookupCache -> Text -> Text -> IO Bool
+dnsPointsToWith cache vhost expectedHost = do
     let expectHostNorm = T.toLower expectedHost
-    cn <- digCNAMEs vhost
+    cn <- digRRWith cache vhost "CNAME"
     if expectHostNorm `elem` cn
         then pure True
         else do
-            expIPs <- digAddrs expectedHost
-            vhIPs <- digAddrs vhost
+            expIPs <- digAddrsWith cache expectedHost
+            vhIPs <- digAddrsWith cache vhost
             pure $ not (null (expIPs `intersect` vhIPs))
 
 -- -------- JSON helpers --------
@@ -677,14 +736,14 @@ classifyUpsertEligibility withDnsUpdate mToken mZoneId mZoneName vhName
                     else UpsertIneligible ("host is outside Cloudflare zone " <> zoneName)
             Nothing -> UpsertIneligible "could not resolve Cloudflare zone name"
 
-waitForDnsPropagation :: [DnsGateItem] -> IO (S.Set DnsGateKey, [DnsGateItem])
-waitForDnsPropagation items = do
+waitForDnsPropagation :: DnsLookupCache -> [DnsGateItem] -> IO (S.Set DnsGateKey, [DnsGateItem])
+waitForDnsPropagation dnsCache items = do
     (resolved0, unresolved0) <- partitionByDns items
     go resolved0 unresolved0 (backoffDelays 1 30 600)
   where
     partitionByDns recs = do
         checks <- forM recs $ \item -> do
-            ok <- dnsPointsTo item.dgiDiscoveryHost item.dgiExpectedHost
+            ok <- dnsPointsToWith dnsCache item.dgiDiscoveryHost item.dgiExpectedHost
             pure (item, ok)
         pure
             ( [ item
@@ -711,6 +770,7 @@ waitForDnsPropagation items = do
 -- -------- DNS gate --------
 runDnsGate :: Maybe Text -> Maybe Text -> Maybe Text -> Bool -> Bool -> IO ()
 runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
+    dnsCache <- newDnsLookupCache
     let dest = "generated"
     let planPath = dest <> "/plan.json"
     planExists <- Sh.testfile (fromString (T.unpack planPath))
@@ -746,7 +806,7 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
 
             let items = collectDnsGateItems hostenvHostname envs
             checked <- forM items $ \item -> do
-                ok <- dnsPointsTo item.dgiDiscoveryHost item.dgiExpectedHost
+                ok <- dnsPointsToWith dnsCache item.dgiDiscoveryHost item.dgiExpectedHost
                 pure (item, ok)
 
             let mismatched =
@@ -777,7 +837,7 @@ runDnsGate mNode mTok mZone withDnsUpdate dryRun = do
             (propagatedKeys, timedOutItems) <-
                 if dryRun
                     then pure (S.empty, [])
-                    else waitForDnsPropagation upsertedItems
+                    else waitForDnsPropagation dnsCache upsertedItems
 
             when dryRun $
                 when withDnsUpdate $
@@ -1445,8 +1505,8 @@ clearRestorePlan deployUser nodeConnection envInfo = do
         _ ->
             printProviderLine ("hostenv-provider: no pending restore plan for skipped environment " <> envInfo.userName)
 
-resolvePrevNode :: (Text -> Maybe Text) -> Text -> [Text] -> EnvInfo -> IO (Either Text (Maybe Text))
-resolvePrevNode explicitSourceFor hostenvHostname discoveryNodes envInfo =
+resolvePrevNode :: DnsLookupCache -> (Text -> Maybe Text) -> Text -> [Text] -> EnvInfo -> IO (Either Text (Maybe Text))
+resolvePrevNode dnsCache explicitSourceFor hostenvHostname discoveryNodes envInfo =
     case explicitSourceFor envInfo.userName of
         Just sourceNode -> do
             printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " forced via --migration-source: " <> sourceNode)
@@ -1459,7 +1519,7 @@ resolvePrevNode explicitSourceFor hostenvHostname discoveryNodes envInfo =
             let currentNode = PrevNode.NodeName envInfo.node
             probes <-
                 forM probedHosts $ \probeHost ->
-                    PrevNode.probeHost dnsPointsTo hostenvHostname probeHost candidateNodes
+                    PrevNode.probeHost (dnsPointsToWith dnsCache) hostenvHostname probeHost candidateNodes
             let resolution = PrevNode.chooseDiscoveryOutcome currentNode probes
             case resolution of
                 PrevNode.DiscoveryResolved (PrevNode.Hostname discoveryHost) (PrevNode.NodeName node) -> do
@@ -1619,6 +1679,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
             let sourceMisses = map fst migrationSources \\ map fst sourceHits
             let sourceFor envName = lookup envName migrationSources
             let discoveryNodes = PrevNode.discoveryNodeNames plan (uniqueNodeNames (map fst envRows))
+            dnsCache <- newDnsLookupCache
 
             -- Perform data migrations if the environment has moved node.
             case mNode of
@@ -1763,7 +1824,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                     if envInfo.userName `elem` skipMigrations || envInfo.migrateBackups == []
                         then pure (Right Nothing)
                         else do
-                            prevNode <- resolvePrevNode sourceFor hostenvHostname discoveryNodes envInfo
+                            prevNode <- resolvePrevNode dnsCache sourceFor hostenvHostname discoveryNodes envInfo
                             pure $ case prevNode of
                                 Left err -> Left err
                                 Right (Just prev) | prev /= envInfo.node -> Right (Just (envInfo, prev))
