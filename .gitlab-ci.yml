@@ -13,7 +13,7 @@ before_script:
   - nix profile add --accept-flake-config nixpkgs#cachix
   - cachix use fossar
   - cachix use hostenv
-  - cachix authtoken "$cachix_token"
+  - cachix authtoken "$CACHIX_AUTH_TOKEN"
 
 stages:
   - check
