@@ -36,6 +36,11 @@ in
     ${ghc}/bin/runghc -i${src} ${src}/TestDnsBackoff.hs
     echo ok > "$out"
   '';
+  provider-cli-dns-points-to-cache = pkgs.runCommand "provider-cli-dns-points-to-cache" { } ''
+    set -euo pipefail
+    ${ghc}/bin/runghc -i${src} ${src}/TestDnsPointsToCache.hs
+    echo ok > "$out"
+  '';
   provider-cli-prev-node-discovery = pkgs.runCommand "provider-cli-prev-node-discovery" { } ''
     set -euo pipefail
     ${ghc}/bin/runghc -i${src} ${src}/TestPrevNodeDiscovery.hs

@@ -31,8 +31,10 @@ main = do
   testPlanParsing
   testNodeOrderWithMigrations
   testNodeOrderWithDnsSkipsNonMigratingEnvDiscovery
+  testSingleNodePlanSkipsDns
   testNodeOrderWithDnsFallsBackToVhosts
   testNodeOrderWithDnsIncludesStateOnlyPreviousNode
+  testRepeatedDnsChecksAreCached
   testProjectHashSelection
   testPrevNodeDiscoveryResolution
   testCommandSequence
@@ -103,6 +105,23 @@ testNodeOrderWithDnsSkipsNonMigratingEnvDiscovery = do
         (not (any (\(vhost, _) -> vhost == "env-a.hosting.test") calls))
         "non-migrating env should skip DNS previous-node discovery"
 
+testSingleNodePlanSkipsDns :: IO ()
+testSingleNodePlanSkipsDns = do
+  let planJson =
+        BLC.pack
+          "{\"hostenvHostname\":\"hosting.test\",\"nodes\":{\"node-b\":{}},\"environments\":{\"env-b\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"projectNameHash\":\"hash-dev\"},\"node\":\"node-b\",\"migrations\":[\"db\"],\"virtualHosts\":{\"www.customer.com\":{}}}}}"
+  callsRef <- newIORef ([] :: [(T.Text, T.Text)])
+  let pointsTo vhost expectedHost = do
+        modifyIORef' callsRef (<> [(vhost, expectedHost)])
+        pure False
+  result <- nodesForProjectWithDnsWith pointsTo "acme" "site" planJson
+  case result of
+    Left err -> assert False ("nodesForProjectWithDnsWith failed unexpectedly: " <> show err)
+    Right nodes -> do
+      assert (nodes == ["node-b"]) "a single-node plan should not require previous-node DNS checks"
+      calls <- readIORef callsRef
+      assert (null calls) "a single-node plan should skip DNS checks"
+
 testNodeOrderWithDnsFallsBackToVhosts :: IO ()
 testNodeOrderWithDnsFallsBackToVhosts = do
   let planJson =
@@ -141,6 +160,28 @@ testNodeOrderWithDnsIncludesStateOnlyPreviousNode = do
       assert
         (("env-a.hosting.test", "node-a.hosting.test") `elem` calls)
         "dns discovery should probe state-only nodeConnections candidates"
+
+testRepeatedDnsChecksAreCached :: IO ()
+testRepeatedDnsChecksAreCached = do
+  let planJson =
+        BLC.pack
+          "{\"hostenvHostname\":\"hosting.test\",\"nodes\":{\"node-a\":{},\"node-c\":{}},\"environments\":{\"env-a\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"projectNameHash\":\"hash-a\"},\"node\":\"node-c\",\"migrations\":[\"db\"],\"virtualHosts\":{\"www.customer.com\":{}}},\"env-b\":{\"hostenv\":{\"organisation\":\"acme\",\"project\":\"site\",\"projectNameHash\":\"hash-b\"},\"node\":\"node-c\",\"migrations\":[\"db\"],\"virtualHosts\":{\"www.customer.com\":{}}}}}"
+  callsRef <- newIORef ([] :: [(T.Text, T.Text)])
+  let pointsTo vhost expectedHost = do
+        modifyIORef' callsRef (<> [(vhost, expectedHost)])
+        pure (vhost == "www.customer.com" && expectedHost == "node-a.hosting.test")
+  result <- nodesForProjectWithDnsWith pointsTo "acme" "site" planJson
+  case result of
+    Left err -> assert False ("nodesForProjectWithDnsWith failed unexpectedly: " <> show err)
+    Right nodes -> do
+      assert (nodes == ["node-c", "node-a"]) "caching DNS results should not change migration order"
+      calls <- readIORef callsRef
+      assert
+        (length (filter (== ("www.customer.com", "node-a.hosting.test")) calls) == 1)
+        "repeated DNS checks for the same virtual host and previous node should use the cache"
+      assert
+        (length (filter (== ("www.customer.com", "node-c.hosting.test")) calls) == 1)
+        "repeated DNS checks for the same virtual host and current node should use the cache"
 
 
 testCommandSequence :: IO ()
@@ -200,6 +241,29 @@ testPrevNodeDiscoveryResolution = do
     "canonical host should not duplicate suffix"
 
   assert
+    ( previousNodeCandidates
+        (NodeName "node-b")
+        [NodeName "node-b", NodeName "NODE-B.", NodeName "node-c"]
+        == [NodeName "node-c"]
+    )
+    "previousNodeCandidates should normalize names and exclude the current node"
+  assert
+    ( resolveDeclaredPrevNode "node-b" Nothing (Just "node-a")
+        == DeclaredPreviousNode PlanPreviousNode "node-a"
+    )
+    "plan previousNode should resolve before DNS discovery"
+  assert
+    ( resolveDeclaredPrevNode "node-b" (Just "node-c") (Just "node-a")
+        == DeclaredPreviousNode MigrationSourceOverride "node-c"
+    )
+    "--migration-source should take precedence over plan previousNode"
+  assert
+    ( resolveDeclaredPrevNode "node-b" (Just "NODE-B.") (Just "node-a")
+        == DeclaredCurrentNode MigrationSourceOverride "NODE-B."
+    )
+    "a declared current node should mean that no migration is needed"
+
+  assert
     ( classifyProbe (NodeName "node-b") (Probe (Hostname "env-main-a1b2c3.hosting.test") [])
         == ProbeSkipped ProbeNoMatches
     )
@@ -208,7 +272,7 @@ testPrevNodeDiscoveryResolution = do
     ( classifyProbe (NodeName "node-b") (Probe (Hostname "env-main-a1b2c3.hosting.test") [NodeName "node-a"])
         == ProbeResolved (NodeName "node-a")
     )
-    "single non-current match should resolve previous node"
+    "a single possible previous node should be selected"
   assert
     ( classifyProbe (NodeName "node-b") (Probe (Hostname "env-main-a1b2c3.hosting.test") [NodeName "node-b"])
         == ProbeSkipped (ProbeMatchedCurrent [NodeName "node-b"])
@@ -223,7 +287,7 @@ testPrevNodeDiscoveryResolution = do
     ( classifyProbe (NodeName "node-c") (Probe (Hostname "env-main-a1b2c3.hosting.test") [NodeName "node-a", NodeName "node-b"])
         == ProbeAmbiguous [NodeName "node-a", NodeName "node-b"]
     )
-    "ambiguous matches excluding current node should be fatal"
+    "multiple possible previous nodes should fail discovery"
   assert
     ( probeHosts "hosting.test" "env-main-a1b2c3" ["www.customer.com", "ENV-MAIN-A1B2C3.HOSTING.TEST."]
         == [Hostname "env-main-a1b2c3.hosting.test", Hostname "www.customer.com"]
