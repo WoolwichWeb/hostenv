@@ -13,7 +13,6 @@ before_script:
   - nix profile add --accept-flake-config nixpkgs#cachix
   - cachix use fossar
   - cachix use hostenv
-  - cachix authtoken "$CACHIX_AUTH_TOKEN"
 
 stages:
   - check
@@ -22,8 +21,16 @@ stages:
 # This validates flake structure and runs all checks defined in checks.*
 flake-check:
   stage: check
+  # Cachix's auth token variable is 'protected', so it's not available for
+  # unprotected branches in gitlab
   script:
-    - cachix watch-exec hostenv -- nix flake check --show-trace --print-build-logs --keep-failed
+    - |
+        if [ -n "${CACHIX_AUTH_TOKEN:-}" ]; then
+          cachix watch-exec hostenv -- nix flake check --show-trace --print-build-logs --keep-failed
+        else
+          echo "Cachix write token unavailable; running without cache uploads"
+          nix flake check --show-trace --print-build-logs --keep-failed
+        fi
   artifacts:
     when: always
     paths:
