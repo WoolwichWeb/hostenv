@@ -252,11 +252,12 @@
           else
             mysql_sock="$mysql_runtime_dir/mysql.sock"
             if [ ! -S "$mysql_sock" ]; then
-              ${config.systemd.package}/bin/systemctl --user start mysql.service || true
-              for _ in $(seq 1 30); do
-                [ -S "$mysql_sock" ] && break
-                sleep 1
-              done
+              if ${config.systemd.package}/bin/systemctl --user start mysql.service; then
+                for _ in $(seq 1 30); do
+                  [ -S "$mysql_sock" ] && break
+                  sleep 1
+                done
+              fi
             fi
 
             if [ -S "$mysql_sock" ]; then
