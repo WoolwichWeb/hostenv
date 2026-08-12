@@ -17,9 +17,38 @@ before_script:
 stages:
   - check
 
+.nix-failure-artifacts:
+  after_script:
+    - |
+        nix_build_dir=/nix/var/nix/builds
+        artifact_dir="$CI_PROJECT_DIR/nix-build-artifacts"
+
+        mkdir -p "$artifact_dir/builds"
+        {
+          echo "CI job status: ${CI_JOB_STATUS:-unknown}"
+          echo "Nix build directory: $nix_build_dir"
+
+          if [ -d "$nix_build_dir" ]; then
+            ls -la "$nix_build_dir"
+            if cp -a "$nix_build_dir"/. "$artifact_dir/builds"/; then
+              echo "Copied retained Nix build directories into the artifact directory."
+            else
+              echo "WARNING: Some retained Nix build files could not be copied."
+            fi
+          else
+            echo "The Nix build directory does not exist."
+          fi
+        } > "$artifact_dir/inventory.txt" 2>&1
+        cat "$artifact_dir/inventory.txt"
+  artifacts:
+    when: on_failure
+    paths:
+      - nix-build-artifacts/
+
 # Job: Run nix flake check
 # This validates flake structure and runs all checks defined in checks.*
 flake-check:
+  extends: .nix-failure-artifacts
   stage: check
   # Cachix's auth token variable is 'protected', so it's not available for
   # unprotected branches in gitlab
@@ -31,10 +60,6 @@ flake-check:
           echo "Cachix write token unavailable; running without cache uploads"
           nix flake check --show-trace --print-build-logs --keep-failed
         fi
-  artifacts:
-    when: always
-    paths:
-      - /nix/var/nix/builds
   rules:
     - if: '$CI_MERGE_REQUEST_DRAFT == true'
       when: never
@@ -55,6 +80,7 @@ flake-check:
 # It's worth noting that downstream projects won't especially be affected by
 # these updates as they have their own `flake.lock` files that lock nixpkgs.
 nightly-full-check:
+  extends: .nix-failure-artifacts
   stage: check
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
@@ -72,10 +98,6 @@ nightly-full-check:
         else
           echo "No updates available"
         fi
-  artifacts:
-    when: always
-    paths:
-      - /nix/var/nix/builds
   tags:
     - saas-linux-small-arm64
   allow_failure: true
