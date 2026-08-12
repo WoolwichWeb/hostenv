@@ -12,6 +12,7 @@ executable hostenv-provider-service
     Hostenv.Provider.Command
     Hostenv.Provider.Config
     Hostenv.Provider.DB
+    Hostenv.Provider.DnsPointsToCache
     Hostenv.Provider.Gitlab
     Hostenv.Provider.Http
     Hostenv.Provider.PrevNodeDiscovery
@@ -58,6 +59,7 @@ test-suite hostenv-provider-service-tests
   main-is: Test.hs
   hs-source-dirs: .
   other-modules:
+    Hostenv.Provider.DnsPointsToCache
     Hostenv.Provider.PrevNodeDiscovery
     Hostenv.Provider.Service
   default-language: Haskell2010

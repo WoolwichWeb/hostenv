@@ -95,7 +95,7 @@
               ## Top level activation script.
             '')
             (mkAfter ''
-              nix profile remove .hostenv >/dev/null 2>&1
+              nix profile remove .hostenv >/dev/null 2>&1 || true
             '')
           ]);
 

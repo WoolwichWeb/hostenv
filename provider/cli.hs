@@ -41,6 +41,7 @@ import Hostenv.Provider.DnsGateFilter (
     disableLetsEncryptPaths,
     filterEnvironmentsByNode,
  )
+import Hostenv.Provider.DnsPointsToCache (DnsPointsToCache, cacheDnsPointsTo, newDnsPointsToCache)
 import Hostenv.Provider.PrevNodeDiscovery qualified as PrevNode
 import Hostenv.Provider.SigningTarget (deployProfilePathInstallable)
 import Options.Applicative qualified as OA
@@ -1505,57 +1506,65 @@ clearRestorePlan deployUser nodeConnection envInfo = do
         _ ->
             printProviderLine ("hostenv-provider: no pending restore plan for skipped environment " <> envInfo.userName)
 
-resolvePrevNode :: DnsLookupCache -> (Text -> Maybe Text) -> Text -> [Text] -> EnvInfo -> IO (Either Text (Maybe Text))
-resolvePrevNode dnsCache explicitSourceFor hostenvHostname discoveryNodes envInfo =
-    case explicitSourceFor envInfo.userName of
-        Just sourceNode -> do
-            printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " forced via --migration-source: " <> sourceNode)
+resolvePrevNode :: DnsLookupCache -> DnsPointsToCache -> (Text -> Maybe Text) -> Text -> [Text] -> EnvInfo -> IO (Either Text (Maybe Text))
+resolvePrevNode dnsCache dnsPointsToCache explicitSourceFor hostenvHostname discoveryNodes envInfo =
+    case PrevNode.resolveDeclaredPrevNode envInfo.node (explicitSourceFor envInfo.userName) envInfo.prevNode of
+        PrevNode.NoDeclaredPrevNode -> discoverFromDns
+        PrevNode.DeclaredCurrentNode _source _sourceNode ->
+            pure (Right Nothing)
+        PrevNode.DeclaredPreviousNode source sourceNode -> do
+            case source of
+                PrevNode.MigrationSourceOverride ->
+                    printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " forced via --migration-source: " <> sourceNode)
+                PrevNode.PlanPreviousNode ->
+                    printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " configured: " <> sourceNode)
             pure (Right (Just sourceNode))
-        Nothing -> do
-            let probedHosts = PrevNode.probeHosts hostenvHostname envInfo.userName envInfo.vhosts
-            -- TODO: Finish the refactor by typing EnvInfo/discoveryNodes at the
-            -- source instead of wrapping raw Text into NodeName here.
-            let candidateNodes = map PrevNode.NodeName discoveryNodes
-            let currentNode = PrevNode.NodeName envInfo.node
-            probes <-
-                forM probedHosts $ \probeHost ->
-                    PrevNode.probeHost (dnsPointsToWith dnsCache) hostenvHostname probeHost candidateNodes
-            let resolution = PrevNode.chooseDiscoveryOutcome currentNode probes
-            case resolution of
-                PrevNode.DiscoveryResolved (PrevNode.Hostname discoveryHost) (PrevNode.NodeName node) -> do
-                    printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " discovered via DNS " <> discoveryHost <> ": " <> node)
-                    pure (Right (Just node))
-                PrevNode.DiscoverySkipped PrevNode.DiscoveryNoMatches ->
-                    pure (Right Nothing)
-                PrevNode.DiscoverySkipped (PrevNode.DiscoveryMatchedCurrent (PrevNode.Hostname probedHost) matchedNodes) -> do
-                    printProviderLine
-                        ( "hostenv-provider: info: previous-node discovery for "
-                            <> envInfo.userName
-                            <> " via "
-                            <> probedHost
-                            <> " matched current node "
-                            <> envInfo.node
-                            <> " among: "
-                            <> T.intercalate ", " [nodeName | PrevNode.NodeName nodeName <- matchedNodes]
-                            <> "; skipping migration discovery"
-                        )
-                    pure (Right Nothing)
-                PrevNode.DiscoveryAmbiguous (PrevNode.Hostname discoveryHost) nodes ->
-                    pure
-                        ( Left
-                            ( "previous-node discovery for "
-                                <> envInfo.userName
-                                <> " via "
-                                <> discoveryHost
-                                <> " is ambiguous: matched nodes "
-                                <> T.intercalate ", " [nodeName | PrevNode.NodeName nodeName <- nodes]
-                                <> " (current node: "
+  where
+    discoverFromDns = do
+        let probedHosts = PrevNode.probeHosts hostenvHostname envInfo.userName envInfo.vhosts
+        -- TODO: Finish the refactor by typing EnvInfo/discoveryNodes at the
+        -- source instead of wrapping raw Text into NodeName here.
+        let candidateNodes = map PrevNode.NodeName discoveryNodes
+        let currentNode = PrevNode.NodeName envInfo.node
+        let previousNodeCandidates = PrevNode.previousNodeCandidates currentNode candidateNodes
+        if null previousNodeCandidates
+            then pure (Right Nothing)
+            else do
+                let pointsTo = cacheDnsPointsTo dnsPointsToCache (dnsPointsToWith dnsCache)
+                probes <-
+                    forM probedHosts $ \probeHost ->
+                        PrevNode.probeHost pointsTo hostenvHostname probeHost candidateNodes
+                let resolution = PrevNode.chooseDiscoveryOutcome currentNode probes
+                case resolution of
+                    PrevNode.DiscoveryResolved (PrevNode.Hostname discoveryHost) (PrevNode.NodeName node) -> do
+                        printProviderLine ("hostenv: previous node for " <> envInfo.userName <> " discovered via DNS " <> discoveryHost <> ": " <> node)
+                        pure (Right (Just node))
+                    PrevNode.DiscoverySkipped PrevNode.DiscoveryNoMatches ->
+                        pure (Right Nothing)
+                    PrevNode.DiscoverySkipped (PrevNode.DiscoveryMatchedCurrent (PrevNode.Hostname probedHost) _matchedNodes) -> do
+                        printProviderLine
+                            ( "hostenv: DNS for "
+                                <> probedHost
+                                <> " points to the current node "
                                 <> envInfo.node
-                                <> "). Set --migration-source "
+                                <> "; no migration needed for "
                                 <> envInfo.userName
-                                <> "=<node> or set previousNode explicitly."
                             )
-                        )
+                        pure (Right Nothing)
+                    PrevNode.DiscoveryAmbiguous (PrevNode.Hostname discoveryHost) nodes ->
+                        pure
+                            ( Left
+                                ( "DNS for "
+                                    <> discoveryHost
+                                    <> " matches more than one possible previous node for "
+                                    <> envInfo.userName
+                                    <> ": "
+                                    <> T.intercalate ", " [nodeName | PrevNode.NodeName nodeName <- nodes]
+                                    <> ". Set --migration-source "
+                                    <> envInfo.userName
+                                    <> "=<node> or set previousNode explicitly."
+                                )
+                            )
 
 writeRestorePlan :: Text -> (Text -> NodeConnection) -> EnvInfo -> Text -> [(Text, Text)] -> IO ()
 writeRestorePlan deployUser nodeConnection envInfo prevNode snapshots = do
@@ -1680,6 +1689,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
             let sourceFor envName = lookup envName migrationSources
             let discoveryNodes = PrevNode.discoveryNodeNames plan (uniqueNodeNames (map fst envRows))
             dnsCache <- newDnsLookupCache
+            dnsPointsToCache <- newDnsPointsToCache
 
             -- Perform data migrations if the environment has moved node.
             case mNode of
@@ -1824,7 +1834,7 @@ runDeploy mNode mSigningKeyPath forceRemoteBuild skipVerification skipMigrations
                     if envInfo.userName `elem` skipMigrations || envInfo.migrateBackups == []
                         then pure (Right Nothing)
                         else do
-                            prevNode <- resolvePrevNode dnsCache sourceFor hostenvHostname discoveryNodes envInfo
+                            prevNode <- resolvePrevNode dnsCache dnsPointsToCache sourceFor hostenvHostname discoveryNodes envInfo
                             pure $ case prevNode of
                                 Left err -> Left err
                                 Right (Just prev) | prev /= envInfo.node -> Right (Just (envInfo, prev))

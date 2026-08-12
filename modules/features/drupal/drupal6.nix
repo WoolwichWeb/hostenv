@@ -227,11 +227,9 @@
 
         services.drupal = {
           composer.enable = lib.mkDefault false;
-          phpVersion = lib.mkDefault "5.6";
           phpExtensions = lib.mkDefault [
             "curl"
             "gd"
-            "json"
             "mbstring"
             "mysqli"
             "pdo"
@@ -321,8 +319,8 @@
             "${toString project}/share/php/${cfg.codebase.name}/project_files" \
             "${toString project}/share/php/${cfg.codebase.name}/web/project_files"
           do
-            if [ -d "$projectFiles" ] && compgen -G "$projectFiles/*" >/dev/null; then
-              cp -r -- "$projectFiles"/* "${cfg.filesDir}/"
+            if [ -d "$projectFiles" ]; then
+              cp -r -- "$projectFiles"/. "${cfg.filesDir}/"
               break
             fi
           done

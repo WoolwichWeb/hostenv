@@ -238,6 +238,57 @@ let
     };
   };
 
+  php8Compatibility = env: prefix: {
+    "${prefix}-test-php8-compatibility" = asserts.assertRun {
+      name = "${prefix}-test-php8-compatibility";
+      inherit env;
+      script = ''
+        phpBin="$profile/bin/php"
+        test -x "$phpBin" || { echo "PHP CLI not found"; exit 1; }
+
+        version="$($phpBin -r 'echo PHP_VERSION;')"
+        case "$version" in
+          8.*) ;;
+          *) echo "expected PHP 8.*, got: $version"; exit 1;;
+        esac
+
+        webRoot="$(readlink -f "$profile"/share/php/*/web)"
+        test -d "$webRoot" || { echo "Drupal web root not found"; exit 1; }
+
+        while IFS= read -r -d $'\0' file; do
+          output="$($phpBin -d error_reporting=E_ALL -l "$file" 2>&1)"
+          case "$output" in
+            "No syntax errors detected in "*) ;;
+            *) echo "$output"; exit 1;;
+          esac
+        done < <(
+          find "$webRoot" -type f \
+            \( -name '*.php' -o -name '*.inc' -o -name '*.module' \
+               -o -name '*.install' -o -name '*.theme' -o -name '*.engine' \
+               -o -name '*.profile' \) \
+            -print0
+        )
+      '';
+    };
+  };
+
+  mysqlWrapperArgumentContract = env: prefix: {
+    "${prefix}-test-mysql-wrapper-arguments" = asserts.assertRun {
+      name = "${prefix}-test-mysql-wrapper-arguments";
+      inherit env;
+      script = ''
+        for wrapper in mysql mysqldump; do
+          script="$profile/bin/$wrapper"
+          test -x "$script" || { echo "missing $wrapper wrapper"; exit 1; }
+          grep -F -q '"$@"' "$script" || {
+            echo "$wrapper wrapper does not preserve argument boundaries"
+            exit 1
+          }
+        done
+      '';
+    };
+  };
+
 in
 profileStructure envs.drupal6 "drupal6"
 // nginxSyntax envs.drupal6 "drupal6"
@@ -260,4 +311,6 @@ profileStructure envs.drupal6 "drupal6"
 }
 // cronContract envs.drupal6 "drupal6"
 // nginxLegacyDenyRules envs.drupal6 "drupal6"
-  // phpSocketIni envs.drupal6 "drupal6"
+// phpSocketIni envs.drupal6 "drupal6"
+// php8Compatibility envs.drupal6 "drupal6"
+  // mysqlWrapperArgumentContract envs.drupal6 "drupal6"

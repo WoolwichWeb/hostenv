@@ -668,10 +668,19 @@
             defaultDb = if lib.length cfg.ensureDatabases == 1 then builtins.head cfg.ensureDatabases else "";
 
             mysqlScript = pkgs.writeShellScriptBin "mysql" ''
-              ${cfg.package}/bin/mysql -u ${cfg.user} --socket=${cfg.runtimeDir}/mysql.sock ${defaultDb} $@
+              exec ${cfg.package}/bin/mysql \
+                -u ${lib.escapeShellArg cfg.user} \
+                --socket=${lib.escapeShellArg "${cfg.runtimeDir}/mysql.sock"} \
+                ${lib.optionalString (defaultDb != "") (lib.escapeShellArg defaultDb)} \
+                "$@"
             '';
             mysqldumpScript = pkgs.writeShellScriptBin "mysqldump" ''
-              ${cfg.package}/bin/mysqldump --single-transaction -u ${cfg.user} --socket=${cfg.runtimeDir}/mysql.sock ${defaultDb} $@
+              exec ${cfg.package}/bin/mysqldump \
+                --single-transaction \
+                -u ${lib.escapeShellArg cfg.user} \
+                --socket=${lib.escapeShellArg "${cfg.runtimeDir}/mysql.sock"} \
+                ${lib.optionalString (defaultDb != "") (lib.escapeShellArg defaultDb)} \
+                "$@"
             '';
             backupScripts = lib.optionals cfg.backups.enable [
               cfg.backups.scripts.full

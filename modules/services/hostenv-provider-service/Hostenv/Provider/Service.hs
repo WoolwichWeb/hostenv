@@ -57,6 +57,7 @@ import System.Process (readProcessWithExitCode)
 
 import "cryptonite" Crypto.Hash (SHA256)
 import "cryptonite" Crypto.MAC.HMAC (HMAC (..), hmac)
+import Hostenv.Provider.DnsPointsToCache (cacheDnsPointsTo, newDnsPointsToCache)
 import Hostenv.Provider.PrevNodeDiscovery qualified as PrevNode
 
 
@@ -131,6 +132,8 @@ nodesForProjectWithDns org project raw = do
 --   a missing previous node from DNS before calculating deploy order.
 nodesForProjectWithDnsWith :: (Text -> Text -> IO Bool) -> Text -> Text -> BL.ByteString -> IO (Either Text [Text])
 nodesForProjectWithDnsWith pointsTo org project raw = do
+  dnsPointsToCache <- newDnsPointsToCache
+  let cachedPointsTo = cacheDnsPointsTo dnsPointsToCache pointsTo
   case decodePlanRoot raw of
     Left err -> pure (Left err)
     Right root ->
@@ -170,7 +173,7 @@ nodesForProjectWithDnsWith pointsTo org project raw = do
               -- Only migrating environments need previous-node discovery.
               if null migrateBackups
                 then pure (Right prevNode)
-                else resolvePrevNodeFromDns hostenvHostname discoveryNodes envUserName vhosts node prevNode
+                else resolvePrevNodeFromDns cachedPointsTo hostenvHostname discoveryNodes envUserName vhosts node prevNode
             pure ((\prev -> EnvNodeInfo node prev) <$> resolvedPrev)
 
           case sequence resolvedMatches of
@@ -190,44 +193,47 @@ nodesForProjectWithDnsWith pointsTo org project raw = do
     -- Resolve the previous node for one environment. If the plan already set
     -- previousNode, keep it. Otherwise, probe the canonical hostenv hostname
     -- first and then the environment's configured vhosts for a match.
-    resolvePrevNodeFromDns :: Maybe Text -> [Text] -> Text -> [Text] -> Text -> Maybe Text -> IO (Either Text (Maybe Text))
-    resolvePrevNodeFromDns hostenvHostname discoveryNodes envName vhosts currentNode prevNode =
-      case prevNode of
-        Just prev -> pure (Right (Just prev))
-        Nothing ->
+    resolvePrevNodeFromDns :: (Text -> Text -> IO Bool) -> Maybe Text -> [Text] -> Text -> [Text] -> Text -> Maybe Text -> IO (Either Text (Maybe Text))
+    resolvePrevNodeFromDns pointsTo' hostenvHostname discoveryNodes envName vhosts currentNode prevNode =
+      case PrevNode.resolveDeclaredPrevNode currentNode Nothing prevNode of
+        PrevNode.NoDeclaredPrevNode ->
           case hostenvHostname of
             -- Without the hostenv domain we cannot build the canonical probe
             -- hostname or canonical node hostnames to compare against.
             Nothing -> pure (Right Nothing)
             Just host -> do
-              -- Probe the canonical env hostname first, then fall back to
-              -- configured customer-facing vhosts when that is inconclusive.
-              let probedHosts = PrevNode.probeHosts host envName vhosts
               -- TODO: Finish the refactor by typing plan-derived node/env data
               -- before it reaches this helper instead of wrapping raw Text here.
               let candidateNodes = map PrevNode.NodeName discoveryNodes
               let currentNodeName = PrevNode.NodeName currentNode
-              probes <-
-                forM probedHosts $ \probedHost -> do
-                  PrevNode.probeHost pointsTo host probedHost candidateNodes
-              let resolution = PrevNode.chooseDiscoveryOutcome currentNodeName probes
-              case resolution of
-                PrevNode.DiscoveryResolved _probedHost (PrevNode.NodeName node) -> pure (Right (Just node))
-                PrevNode.DiscoverySkipped _ -> pure (Right Nothing)
-                PrevNode.DiscoveryAmbiguous (PrevNode.Hostname probedHost) nodes ->
-                  pure
-                    ( Left
-                        ( "previous-node discovery for "
-                            <> envName
-                            <> " via "
-                            <> probedHost
-                            <> " is ambiguous: matched nodes "
-                            <> T.intercalate ", " [ nodeName | PrevNode.NodeName nodeName <- nodes ]
-                            <> " (current node: "
-                            <> currentNode
-                            <> "). Set previousNode explicitly."
+              let previousNodeCandidates = PrevNode.previousNodeCandidates currentNodeName candidateNodes
+              if null previousNodeCandidates
+                then pure (Right Nothing)
+                else do
+                  -- Probe the canonical env hostname first, then fall back to
+                  -- configured customer-facing vhosts when that is inconclusive.
+                  let probedHosts = PrevNode.probeHosts host envName vhosts
+                  probes <-
+                    forM probedHosts $ \probedHost -> do
+                      PrevNode.probeHost pointsTo' host probedHost candidateNodes
+                  let resolution = PrevNode.chooseDiscoveryOutcome currentNodeName probes
+                  case resolution of
+                    PrevNode.DiscoveryResolved _probedHost (PrevNode.NodeName node) -> pure (Right (Just node))
+                    PrevNode.DiscoverySkipped _ -> pure (Right Nothing)
+                    PrevNode.DiscoveryAmbiguous (PrevNode.Hostname probedHost) nodes ->
+                      pure
+                        ( Left
+                            ( "DNS for "
+                                <> probedHost
+                                <> " matches more than one possible previous node for "
+                                <> envName
+                                <> ": "
+                                <> T.intercalate ", " [ nodeName | PrevNode.NodeName nodeName <- nodes ]
+                                <> ". Set previousNode explicitly."
+                            )
                         )
-                    )
+        PrevNode.DeclaredCurrentNode _source _sourceNode -> pure (Right Nothing)
+        PrevNode.DeclaredPreviousNode _source sourceNode -> pure (Right (Just sourceNode))
 
 data EnvNodeInfo = EnvNodeInfo
   { envNode :: Text
@@ -414,7 +420,7 @@ mapConcurrentlyIO action values = do
 digRRRaw :: Maybe Text -> Text -> Text -> IO [Text]
 digRRRaw mNameserver name rr = do
   let serverArgs = maybe [] (\nameserver -> ["@" <> T.unpack nameserver]) mNameserver
-  let args = serverArgs <> ["+short", T.unpack name, T.unpack rr]
+  let args = serverArgs <> ["+short", "+time=1", "+tries=1", T.unpack name, T.unpack rr]
   res <- try (readProcessWithExitCode "dig" args "") :: IO (Either IOException (ExitCode, String, String))
   case res of
     Left _ -> pure []
