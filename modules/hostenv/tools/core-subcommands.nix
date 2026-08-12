@@ -108,15 +108,13 @@
                       '';
                     }}
 
+                    project_root="$(git rev-parse --show-toplevel)"
                     debug "rsync to $user@$host:/home/$user/code/project/"
                     ${spinner {
                       title = "Deploying project code...";
                       command = ''
-                        --show-error -- rsync --delete \
-                          --exclude-from=../.gitignore --exclude-from=.gitignore \
-                          --exclude '.hostenv/result' --exclude '.devenv' \
-                          --exclude '*.sql' --exclude '*.sql.gz' --exclude '../web/sites/default/files' \
-                          -avz ../ "$user@$host:/home/$user/code/project/"
+                        --show-error -- ${lib.getExe config.hostenv.projectUploadPackage} \
+                          "$project_root/" "$user@$host:/home/$user/code/project/"
                       '';
                     }}
 

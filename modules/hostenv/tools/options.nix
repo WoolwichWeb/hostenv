@@ -54,6 +54,13 @@
         description = "The hostenv CLI package for this project.";
       };
 
+      options.hostenv.projectUploadPackage = lib.mkOption {
+        type = lib.types.package;
+        readOnly = true;
+        internal = true;
+        description = "The internal executable that uploads project files during deployment.";
+      };
+
       options.hostenv.devShells = lib.mkOption {
         type = lib.types.attrsOf lib.types.deferredModule;
         description = "Devshell specifications for hostenv project environments.";

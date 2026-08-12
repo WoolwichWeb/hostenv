@@ -5,6 +5,7 @@
 // (import ./drupal7/tests.nix { inherit pkgs envs; })
 // (import ./drupal6/tests.nix { inherit pkgs envs; })
 // { hostenv-cli-list = import ./cli-list.nix { inherit pkgs makeHostenv; }; }
+// { hostenv-cli-project-upload = import ./cli-deploy.nix { inherit pkgs makeHostenv; }; }
 // { hostenv-outputs-eval = import ./hostenv-outputs.nix { inherit pkgs makeHostenv inputs; }; }
 // (import ./provider-plan.nix { inherit pkgs makeHostenv inputs; })
 // { provider-plan-paths-eval = import ./provider-plan-paths.nix { inherit pkgs inputs; }; }
