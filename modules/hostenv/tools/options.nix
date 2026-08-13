@@ -208,7 +208,9 @@
               description = "Shell code run when this command path exits.";
             };
             commands = mkOption {
-              type = types.lazyAttrsOf commandType;
+              # A strict attrset drops commands disabled with `lib.mkIf false`.
+              # The lazy variant leaves an empty submodule behind instead.
+              type = types.attrsOf commandType;
               default = { };
               description = "Nested command definitions.";
             };
@@ -261,7 +263,9 @@
       };
 
       options.hostenv.cli.commands = mkOption {
-        type = types.lazyAttrsOf commandType;
+        # Using `attrsOf` instead of `lazyAttrsOf` to keep conditionally
+        # disabled commands out of Pog's command tree.
+        type = types.attrsOf commandType;
         default = { };
         description = ''
           Commands for the `hostenv` CLI application.

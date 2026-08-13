@@ -29,12 +29,14 @@ let
           aliases = [ "p" ];
           group = "Test commands";
           parsing = "passthrough";
-          arguments = [{
-            name = "arguments";
-            description = "Values retained by pass-through parsing";
-            variadic = true;
-            completion = pkgs.pog.pog.completions.message "wrapped command arguments";
-          }];
+          arguments = [
+            {
+              name = "arguments";
+              description = "Values retained by pass-through parsing";
+              variadic = true;
+              completion = pkgs.pog.pog.completions.message "wrapped command arguments";
+            }
+          ];
           script = ''
             printf 'env=%s\nforce=%s\ntty=%s\n' "$env_name" "''${force:-0}" "$tty_mode"
             for argument in "$@"; do
@@ -47,16 +49,24 @@ let
           description = "Exercise recursive commands.";
           group = "Test commands";
           commands = {
+            disabled-leaf = lib.mkIf false {
+              description = "This conditionally disabled nested command must not exist.";
+              script = ''
+                printf 'disabled=nested\n'
+              '';
+            };
             leaf = {
               description = "A visible nested command.";
               aliases = [ "l" ];
               parsing = "passthrough";
               executable = "hostenv-tree-leaf";
-              arguments = [{
-                name = "arguments";
-                variadic = true;
-                completion = [ ];
-              }];
+              arguments = [
+                {
+                  name = "arguments";
+                  variadic = true;
+                  completion = [ ];
+                }
+              ];
               beforeExit = ''
                 printf 'cleanup=tree/leaf\n'
               '';
@@ -82,6 +92,13 @@ let
           hidden = true;
           script = ''
             printf 'hidden=root\n'
+          '';
+        };
+
+        disabled-probe = lib.mkIf false {
+          description = "This conditionally disabled root command must not exist.";
+          script = ''
+            printf 'disabled=root\n'
           '';
         };
       };
@@ -134,6 +151,7 @@ asserts.assertRun {
     assert_contains "$TMPDIR/root-help" "environment" "visible commands should appear in root help"
     assert_not_contains "$TMPDIR/root-help" "banner" "hidden built-in commands should not appear in root help"
     assert_not_contains "$TMPDIR/root-help" "hidden-probe" "hidden project commands should not appear in root help"
+    assert_not_contains "$TMPDIR/root-help" "disabled-probe" "conditionally disabled root commands should not appear in root help"
     cmp "$TMPDIR/root-bare-help" "$TMPDIR/root-help" || fail "bare hostenv and hostenv --help should show the same native help"
 
     "${cli}/bin/hostenv" ssh --help > "$TMPDIR/ssh-help"
@@ -144,6 +162,7 @@ asserts.assertRun {
     assert_contains "$TMPDIR/tree-help" "leaf" "parent help should list visible nested commands"
     assert_contains "$TMPDIR/tree-help" "aliases: l" "nested aliases should be documented"
     assert_not_contains "$TMPDIR/tree-help" "secret" "hidden nested commands should not appear in help"
+    assert_not_contains "$TMPDIR/tree-help" "disabled-leaf" "conditionally disabled nested commands should not appear in parent help"
 
     "${cli}/bin/hostenv" p --env main > "$TMPDIR/alias-output"
     assert_contains "$TMPDIR/alias-output" "env=main" "a root command alias should dispatch to the original command"
@@ -162,6 +181,12 @@ asserts.assertRun {
     fi
     if "${cli}/bin/hostenv" list > "$TMPDIR/removed-list-output" 2>&1; then
       fail "the removed handwritten list command should not remain callable"
+    fi
+    if "${cli}/bin/hostenv" disabled-probe > "$TMPDIR/disabled-root-output" 2>&1; then
+      fail "conditionally disabled root commands should not be callable"
+    fi
+    if "${cli}/bin/hostenv" tree disabled-leaf > "$TMPDIR/disabled-nested-output" 2>&1; then
+      fail "conditionally disabled nested commands should not be callable"
     fi
 
     "${cli}/bin/hostenv" --env testing probe alpha --wrapped=one beta --force --tty-mode off gamma \
@@ -202,6 +227,8 @@ asserts.assertRun {
       || fail "root completion should contain visible commands"
     ${pkgs.jq}/bin/jq -e '.values | map(.value) | index("banner") == null and index("hidden-probe") == null' "$TMPDIR/root-completion.json" >/dev/null \
       || fail "root completion should omit hidden commands"
+    ${pkgs.jq}/bin/jq -e '.values | map(.value) | index("disabled-probe") == null' "$TMPDIR/root-completion.json" >/dev/null \
+      || fail "root completion should omit conditionally disabled commands"
 
     "$completion" export hostenv --env "" > "$TMPDIR/environment-completion.json"
     ${pkgs.jq}/bin/jq -e \
