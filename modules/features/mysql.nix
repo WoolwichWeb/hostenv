@@ -609,47 +609,35 @@
           ];
         };
 
-        hostenv.subCommands = {
+        hostenv.cli.commands = {
 
           mysql = {
-            exec = helpers: ''
+            script = helpers: ''
               echo >&2
               echo "$emoji  Running mysql on '$env_name'" >&2
-    
-              case "$tty_mode" in
-                auto|"")
-                  if [ -t 0 ]; then SSH_TTY="-tt"; else SSH_TTY="-T"; fi
-                  ;;
-                on|force|yes|true|1)
-                  SSH_TTY="-tt"
-                  ;;
-                off|no|false|0)
-                  SSH_TTY="-T"
-                  ;;
-                *)
-                  die "invalid --tty value: '$tty_mode' (use: auto|on|off)" 2
-                  ;;
-              esac
-    
-              debug "tty_mode=$tty_mode ssh_flag=$SSH_TTY stdin_is_tty=$([ -t 0 ] && echo yes || echo no)"
               exec ssh $SSH_TTY "$user"@"$host" -- mysql "$@"
             '';
-            makeScript = true;
+            executable = "mysql";
             description = "Run mysql on the remote hostenv environment.";
+            group = "Database";
+            parsing = "passthrough";
+            arguments = [{
+              name = "arguments";
+              description = "Arguments passed to mysql";
+              variadic = true;
+              completion = [ ];
+            }];
           };
 
           mysqldump = {
-            exec = helpers: ''
+            script = helpers: ''
                 echo >&2
                 echo "$emoji  Running mysqldump on '$env_name'" >&2
-    
-                case "$tty_mode" in
-                  on|force|yes|true|1)
-                    debug "ignoring --tty_mode=''${tty_mode} for mysqldump; using no PTY for clean stream"
-                    SSH_TTY="-T"
-                    ;;
-                esac
-    
+
+                if [ "$tty_mode" = "on" ]; then
+                  debug "ignoring --tty-mode='$tty_mode' for mysqldump; using no PTY for a clean stream"
+                fi
+                SSH_TTY="-T"
                 debug "tty_mode=$tty_mode ssh_flag=$SSH_TTY stdin_is_tty=$([ -t 0 ] && echo yes || echo no)"
                 # shellcheck disable=SC2086
                 exec ssh $SSH_TTY "$user"@"$host" bash -s -- "$@" <<'REMOTE' | gunzip -c
@@ -657,8 +645,16 @@
               exec mysqldump "$@" | gzip -c
               REMOTE
             '';
-            makeScript = true;
+            executable = "mysqldump";
             description = "Run mysqldump on the remote hostenv environment, printing the result on stdout (as if it were run locally).";
+            group = "Database";
+            parsing = "passthrough";
+            arguments = [{
+              name = "arguments";
+              description = "Arguments passed to mysqldump";
+              variadic = true;
+              completion = [ ];
+            }];
           };
 
         };

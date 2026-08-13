@@ -193,9 +193,9 @@
           };
         };
 
-        hostenv.subCommands = {
+        hostenv.cli.commands = {
           drush = {
-            exec = helpers: ''
+            script = helpers: ''
               echo >&2
               echo "$emoji  Running drush on '$env_name' " >&2
     
@@ -208,31 +208,23 @@
                   ;;
               esac
     
-              case "$tty_mode" in
-                auto|"")
-                  if [ -t 0 ]; then SSH_TTY="-tt"; else SSH_TTY="-T"; fi
-                  ;;
-                on|force|yes|true|1)
-                  SSH_TTY="-tt"
-                  ;;
-                off|no|false|0)
-                  SSH_TTY="-T"
-                  ;;
-                *)
-                  die "invalid --tty value: '$tty_mode' (use: auto|on|off)" 2
-                  ;;
-              esac
-
               remote_drush=(drush)
               if [ -n "$drush_global_options" ]; then
                 remote_drush+=("$drush_global_options")
               fi
 
-              debug "tty_mode=$tty_mode ssh_flag=$SSH_TTY stdin_is_tty=$([ -t 0 ] && echo yes || echo no)"
               exec ssh $SSH_TTY "$user"@"$host" -- "''${remote_drush[@]}" "$@"
             '';
             description = "Run Drush on the remote Drupal";
-            makeScript = true;
+            executable = "drush";
+            group = "Drupal";
+            parsing = "passthrough";
+            arguments = [{
+              name = "arguments";
+              description = "Arguments passed to Drush";
+              variadic = true;
+              completion = [ ];
+            }];
           };
         };
 

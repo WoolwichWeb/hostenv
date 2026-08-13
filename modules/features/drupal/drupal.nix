@@ -277,9 +277,9 @@
           };
         };
 
-        hostenv.subCommands = {
+        hostenv.cli.commands = {
           cex = {
-            exec = helpers: ''
+            script = helpers: ''
                 # remote drush cex with temp dir + rsync back
                 dest="/tmp/hostenv-''${user}-cex"
                 if ssh -q "$user"@"$host" bash -s -- "$dest" "$@" <<'RS'; then
@@ -301,6 +301,14 @@
                 fi
             '';
             description = "Get a config export from the remote Drupal environment and copy it to your local 'config/sync' directory.";
+            group = "Drupal";
+            parsing = "passthrough";
+            arguments = [{
+              name = "arguments";
+              description = "Arguments passed to `drush cex`";
+              variadic = true;
+              completion = [ ];
+            }];
           };
         };
 

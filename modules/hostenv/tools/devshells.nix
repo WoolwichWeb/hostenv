@@ -3,19 +3,11 @@
   flake.modules.hostenv.tools-devshells =
     { lib, config, pkgs, ... }:
     let
-      subCommandList = lib.attrsToList config.hostenv.subCommands;
-      scripts = builtins.filter (cmd: cmd.value.makeScript) subCommandList;
-
       hostenvShells =
         # Build a hostenv CLI for each environment.
         lib.mapAttrs
           (environmentName: environment:
             let
-              scriptDerivations = builtins.map
-                (cmd: pkgs.writeShellScriptBin cmd.name ''
-                  exec hostenv ${cmd.name} -- "$@"
-                '')
-                scripts;
               # Ensure the project git branch tied to this hostenv environment
               # is checked out.
               envStartup = ''
@@ -38,7 +30,7 @@
                   restic
                   boxes
                   jq
-                ] ++ scriptDerivations;
+                ];
                 startup.hostenv = { text = envStartup; };
               };
               env = [
