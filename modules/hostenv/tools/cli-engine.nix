@@ -14,6 +14,7 @@
       # Pog builds the command parser, help text, and shell completions. Hostenv's
       # work below is limited to adding environment context and package wrappers.
       pog = pkgs.pog.pog;
+      cliProgramName = "hostenv";
       commands = config.hostenv.cli.commands;
 
       # Pog receives one root runtime environment, while Hostenv lets each command
@@ -47,14 +48,22 @@
 
       commandMetadata = collectCommandMetadata [ ] commands;
 
-      # Two commands cannot install programs with the same name into cliPackage.
+      # Wrapper names must be unique and cannot replace either program installed
+      # by Pog for the main CLI.
       standaloneWrappers =
         let
           wrappers = commandMetadata.wrappers;
           names = map (wrapper: wrapper.name) wrappers;
+          reservedNames = [
+            cliProgramName
+            "_${cliProgramName}_complete"
+          ];
+          collisions = builtins.filter (name: builtins.elem name reservedNames) names;
         in
         if builtins.length names != builtins.length (lib.unique names) then
           throw "hostenv: command executable names must be unique"
+        else if collisions != [ ] then
+          throw "hostenv: command executable names are reserved by the CLI: ${builtins.concatStringsSep ", " collisions}"
         else
           wrappers;
       standaloneWrapperNames = map (wrapper: wrapper.name) standaloneWrappers;
@@ -241,7 +250,7 @@
       # This is Pog's generated hostenv program, before standalone wrappers are
       # joined into the final package.
       hostenvCli = pog {
-        name = "hostenv";
+        name = cliProgramName;
         description = "Interact with your hosting environments.";
         version = "0.2.0";
         commands = lib.mapAttrsToList (toPogCommand [ ]) commands;
@@ -288,7 +297,7 @@
       standaloneWrapperPackages = map (
         wrapper:
         pkgs.writeShellScriptBin wrapper.name ''
-          exec ${hostenvCli}/bin/hostenv ${lib.escapeShellArgs wrapper.commandPath} -- "$@"
+          exec ${hostenvCli}/bin/${cliProgramName} ${lib.escapeShellArgs wrapper.commandPath} -- "$@"
         ''
       ) standaloneWrappers;
 
@@ -298,10 +307,12 @@
         name = "hostenv-cli";
         paths = [ hostenvCli ] ++ standaloneWrapperPackages;
         passthru.pog = hostenvCli.pog;
+        meta = hostenvCli.meta // {
+          mainProgram = cliProgramName;
+        };
       };
     in
     {
-
       config.hostenv.cli.commands.banner = lib.mkDefault {
         script = "banner";
         hidden = true;
@@ -313,7 +324,7 @@
       # Provide the main CLI app
       config.hostenv.apps.hostenv = lib.mkDefault {
         type = "app";
-        program = "${cliPackage}/bin/hostenv";
+        program = "${cliPackage}/bin/${cliProgramName}";
       };
     };
 }

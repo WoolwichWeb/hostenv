@@ -89,6 +89,7 @@ let
   ] "main";
 
   cli = env.config.hostenv.cliPackage;
+  cliExecutable = lib.getExe cli;
 in
 asserts.assertRun {
   name = "hostenv-cli-list";
@@ -121,6 +122,9 @@ asserts.assertRun {
         fail "$reason (unexpected: $unexpected)"
       fi
     }
+
+    test "${cliExecutable}" = "${cli}/bin/hostenv" \
+      || fail "lib.getExe should resolve the joined CLI package to bin/hostenv"
 
     "${cli}/bin/hostenv" > "$TMPDIR/root-bare-help"
     "${cli}/bin/hostenv" --help > "$TMPDIR/root-help"
