@@ -9,7 +9,7 @@
       core = {
         ssh = {
           script = helpers: ''
-            exec ssh $SSH_TTY "$user"@"$host" "$@"
+            exec ssh $hostenv_ssh_tty "$hostenv_user"@"$hostenv_host" "$@"
           '';
           description = "Connect to the remote hostenv environment over SSH.";
           group = "Remote access";
@@ -26,7 +26,7 @@
 
         app-log = {
           script = helpers: ''
-            exec ssh $SSH_TTY "$user"@"$host" bash -s -- "$@" <<'REMOTE'
+            exec ssh $hostenv_ssh_tty "$hostenv_user"@"$hostenv_host" bash -s -- "$@" <<'REMOTE'
             set -euo pipefail
             resize
             exec journalctl --user -xe "$@"
@@ -52,11 +52,11 @@
               debug "currentBranch=''${currentBranch}"
 
               if ${helpers.notFlag "force"}; then
-                if [ ! "$currentBranch" = "$env_name" ]; then
-                  deploy_msg="$emoji  Deploy '$currentBranch' to environment '$env_name'?"
+                if [ ! "$currentBranch" = "$hostenv_env_name" ]; then
+                  deploy_msg="$hostenv_emoji  Deploy '$currentBranch' to environment '$hostenv_env_name'?"
                   default="--default=false"
                 else
-                  deploy_msg="$emoji  Deploy '$currentBranch'?"
+                  deploy_msg="$hostenv_emoji  Deploy '$currentBranch'?"
                   default=""
                 fi
                 gum confirm $default --affirmative="Deploy" --negative="Cancel" "$deploy_msg" || exit 67
@@ -65,31 +65,31 @@
                 debug "--force detected, skipping confirmation"
               fi
 
-              debug 'mkdir -p /home/'"$user"'/code/project'
+              debug 'mkdir -p /home/'"$hostenv_user"'/code/project'
 
               ${spinner {
                 title = "Preparing remote directory for project code...";
                 command = ''
-                  --show-error -- ssh $SSH_TTY "$user"@"$host" 'mkdir -p /home/'"$user"'/code/project'
+                  --show-error -- ssh $hostenv_ssh_tty "$hostenv_user"@"$hostenv_host" 'mkdir -p /home/'"$hostenv_user"'/code/project'
                 '';
               }}
 
               project_root="$(git rev-parse --show-toplevel)"
-              debug "rsync to $user@$host:/home/$user/code/project/"
+              debug "rsync to $hostenv_user@$hostenv_host:/home/$hostenv_user/code/project/"
               ${spinner {
                 title = "Deploying project code...";
                 command = ''
                   --show-error -- ${lib.getExe config.hostenv.projectUploadPackage} \
-                    "$project_root/" "$user@$host:/home/$user/code/project/"
+                    "$project_root/" "$hostenv_user@$hostenv_host:/home/$hostenv_user/code/project/"
                 '';
               }}
 
               # Remote build (with FOD auto-fix).
-              debug "ignoring SSH_TTY='$SSH_TTY' while building and activating remote. Using '-T'"
+              debug "ignoring hostenv_ssh_tty='$hostenv_ssh_tty' while building and activating remote. Using '-T'"
               ${spinner {
                 title = "Building & activating $currentBranch...";
                 command = ''
-                              --show-output --show-error -- ssh -T "$user@$host" bash -s -- "$currentBranch" "$user" <<'REMOTE_SCRIPT'
+                              --show-output --show-error -- ssh -T "$hostenv_user@$hostenv_host" bash -s -- "$currentBranch" "$hostenv_user" <<'REMOTE_SCRIPT'
                               set -euo pipefail
 
                               branch="$1"
@@ -144,7 +144,7 @@
                 title = "Updating local hostenv.nix...";
                 command = ''
                   --show-error -- rsync -az \
-                    "$user@$host:/home/$user/code/project/.hostenv/hostenv.nix" \
+                    "$hostenv_user@$hostenv_host:/home/$hostenv_user/code/project/.hostenv/hostenv.nix" \
                     hostenv.nix
                 '';
               }}
@@ -159,7 +159,7 @@
 
         environment = {
           script = helpers: ''
-            jq <<< "$env_cfg"
+            jq <<< "$hostenv_environment"
           '';
           description = "Print hostenv environment information as JSON (defaults to your current environment).";
           group = "Environment information";
@@ -176,13 +176,13 @@
         files-dump = {
           script =
             helpers: with helpers; ''
-              debug "running rsync -az $user@$host:/home/$user/.local/share/{files,private_files} files/"
+              debug "running rsync -az $hostenv_user@$hostenv_host:/home/$hostenv_user/.local/share/{files,private_files} files/"
               mkdir -p files
               ${spinner {
-                title = "Downloading files from '$env_name'...";
+                title = "Downloading files from '$hostenv_env_name'...";
                 command = ''
                   --show-error -- rsync -az \
-                    "$user@$host:/home/$user/.local/share/"{files,private_files} \
+                    "$hostenv_user@$hostenv_host:/home/$hostenv_user/.local/share/"{files,private_files} \
                     files/
                 '';
               }}
@@ -194,14 +194,14 @@
         files-up = {
           script =
             helpers: with helpers; ''
-              debug "running rsync -az files/{files,private_files} $user@$host:/home/$user/.local/share/"
+              debug "running rsync -az files/{files,private_files} $hostenv_user@$hostenv_host:/home/$hostenv_user/.local/share/"
               mkdir -p files
               ${spinner {
-                title = "Uploading files to '$env_name'...";
+                title = "Uploading files to '$hostenv_env_name'...";
                 command = ''
                   --show-error -- rsync -az \
                     files/{files,private_files} \
-                    "$user@$host:/home/$user/.local/share/"
+                    "$hostenv_user@$hostenv_host:/home/$hostenv_user/.local/share/"
                 '';
               }}
             '';

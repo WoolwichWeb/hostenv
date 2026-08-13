@@ -197,7 +197,7 @@
           drush = {
             script = helpers: ''
               echo >&2
-              echo "$emoji  Running drush on '$env_name' " >&2
+              echo "$hostenv_emoji  Running drush on '$hostenv_env_name' " >&2
     
               case "$force" in
                 1)
@@ -213,7 +213,7 @@
                 remote_drush+=("$drush_global_options")
               fi
 
-              exec ssh $SSH_TTY "$user"@"$host" -- "''${remote_drush[@]}" "$@"
+              exec ssh $hostenv_ssh_tty "$hostenv_user"@"$hostenv_host" -- "''${remote_drush[@]}" "$@"
             '';
             description = "Run Drush on the remote Drupal";
             executable = "drush";

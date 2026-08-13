@@ -38,10 +38,30 @@ let
             }
           ];
           script = ''
-            printf 'env=%s\nforce=%s\ntty=%s\n' "$env_name" "''${force:-0}" "$tty_mode"
+            printf 'env=%s\nforce=%s\ntty=%s\n' "$hostenv_env_name" "''${force:-0}" "$tty_mode"
             for argument in "$@"; do
               printf 'arg=<%s>\n' "$argument"
             done
+          '';
+        };
+
+        flag-values = {
+          description = "Preserve values from project-defined flags.";
+          flags = [
+            {
+              name = "user";
+              short = "";
+              argument = "USER";
+            }
+            {
+              name = "host";
+              short = "";
+              argument = "HOST";
+            }
+          ];
+          script = ''
+            printf 'user=%s\nhost=%s\n' "$user" "$host"
+            printf 'hostenv-user=%s\nhostenv-host=%s\n' "$hostenv_user" "$hostenv_host"
           '';
         };
 
@@ -167,6 +187,17 @@ asserts.assertRun {
     "${cli}/bin/hostenv" p --env main > "$TMPDIR/alias-output"
     assert_contains "$TMPDIR/alias-output" "env=main" "a root command alias should dispatch to the original command"
 
+    "${cli}/bin/hostenv" flag-values --env main --user alice --host client.example \
+      > "$TMPDIR/flag-values-output"
+    assert_contains "$TMPDIR/flag-values-output" "user=alice" \
+      "environment setup should not overwrite a project-defined --user flag"
+    assert_contains "$TMPDIR/flag-values-output" "host=client.example" \
+      "environment setup should not overwrite a project-defined --host flag"
+    assert_contains "$TMPDIR/flag-values-output" "hostenv-user=${env.config.hostenv.userName}" \
+      "commands should receive the selected environment's namespaced SSH user"
+    assert_contains "$TMPDIR/flag-values-output" "hostenv-host=${env.config.hostenv.hostname}" \
+      "commands should receive the selected environment's namespaced SSH host"
+
     "${cli}/bin/hostenv" hidden-probe --env main > "$TMPDIR/hidden-root-output"
     assert_contains "$TMPDIR/hidden-root-output" "hidden=root" "a hidden root command should remain callable"
     "${cli}/bin/hostenv" tree secret --env main > "$TMPDIR/hidden-nested-output"
@@ -229,7 +260,6 @@ asserts.assertRun {
       || fail "root completion should omit hidden commands"
     ${pkgs.jq}/bin/jq -e '.values | map(.value) | index("disabled-probe") == null' "$TMPDIR/root-completion.json" >/dev/null \
       || fail "root completion should omit conditionally disabled commands"
-
     "$completion" export hostenv --env "" > "$TMPDIR/environment-completion.json"
     ${pkgs.jq}/bin/jq -e \
       '(.values | map(.value) | sort) == ["main", "testing"] and (.values | all(.description | contains("environment on")))' \

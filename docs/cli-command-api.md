@@ -7,7 +7,7 @@ For example:
 ```nix
 hostenv.cli.commands.mysql = {
   script = helpers: ''
-    exec ssh $SSH_TTY "$user@$host" -- mysql "$@"
+    exec ssh $hostenv_ssh_tty "$hostenv_user@$hostenv_host" -- mysql "$@"
   '';
   description = "Run mysql remotely.";
   group = "Database";
@@ -21,6 +21,19 @@ hostenv.cli.commands.mysql = {
   }];
 };
 ```
+
+Hostenv adds environment context before it runs a command. Context variables
+use a `hostenv_` prefix so they do not overwrite ordinary Pog flag variables:
+
+- `hostenv_env_name`: selected environment name
+- `hostenv_environment`: selected environment metadata as JSON
+- `hostenv_user` and `hostenv_host`: SSH connection details
+- `hostenv_type` and `hostenv_emoji`: environment type and its display icon
+- `hostenv_ssh_tty`: the SSH TTY option selected by `--tty-mode`
+
+For example, a project flag named `user` remains available as `$user`; the
+selected environment's SSH user is available separately as `$hostenv_user`.
+The `hostenv_` variable prefix is reserved for this context.
 
 `executable` creates a standalone program that dispatches through the full
 command path. For example, `executable = "mysql"` on the `mysql` command runs
@@ -55,6 +68,13 @@ hostenv.cli.commands.remote = {
   };
 };
 ```
+
+Command paths must remain distinct after replacing hyphens with underscores
+and joining nested path segments with two underscores. Pog uses that form for
+its Bash function names. For example, `some-command` conflicts with
+`some_command`, and a root command named `remote__add` conflicts with the
+nested command `remote add`. Hostenv reports these conflicts during evaluation
+and asks you to rename one of the commands.
 
 Each command supports Pog's command fields: `script`, `description`,
 `aliases`, `group`, `hidden`, `default`, `parsing`, `flags`,

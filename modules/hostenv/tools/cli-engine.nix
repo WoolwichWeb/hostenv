@@ -31,6 +31,7 @@
             in
             {
               runtimeInputs = result.runtimeInputs ++ command.runtimeInputs ++ children.runtimeInputs;
+              commandPaths = result.commandPaths ++ [ commandPath ] ++ children.commandPaths;
               wrappers =
                 result.wrappers
                 ++ lib.optional (command.executable != null) {
@@ -42,11 +43,35 @@
           )
           {
             runtimeInputs = [ ];
+            commandPaths = [ ];
             wrappers = [ ];
           }
           commandSet;
 
-      commandMetadata = collectCommandMetadata [ ] commands;
+      # Pog turns hyphens into underscores when it creates Bash function names.
+      # It joins command-path segments with two underscores as well. Reject any
+      # command paths that would therefore make Pog generate the same function.
+      commandMetadata =
+        let
+          collected = collectCommandMetadata [ ] commands;
+          pogFunctionName =
+            path: builtins.concatStringsSep "__" (map (builtins.replaceStrings [ "-" ] [ "_" ]) path);
+          pathsByPogFunction = lib.groupBy pogFunctionName collected.commandPaths;
+          collisions = lib.filterAttrs (_: paths: builtins.length paths > 1) pathsByPogFunction;
+          showPath = path: "`${cliProgramName} ${builtins.concatStringsSep " " path}`";
+        in
+        if collisions == { } then
+          collected
+        else
+          throw ''
+            hostenv: command paths collide after Pog converts them to Bash function names:
+            ${lib.concatMapStringsSep "\n" (
+              paths: "  - ${builtins.concatStringsSep " and " (map showPath paths)}"
+            ) (builtins.attrValues collisions)}
+
+            Pog replaces hyphens with underscores and uses two underscores between path segments.
+            Rename one command from each line above.
+          '';
 
       # Wrapper names must be unique and cannot replace either program installed
       # by Pog for the main CLI.
@@ -66,7 +91,6 @@
           throw "hostenv: command executable names are reserved by the CLI: ${builtins.concatStringsSep ", " collisions}"
         else
           wrappers;
-      standaloneWrapperNames = map (wrapper: wrapper.name) standaloneWrappers;
 
       # Environment metadata is embedded in the generated script. Reject values
       # such as functions or derivations here, where the configuration error is
@@ -128,22 +152,22 @@
           set -o pipefail
 
           # Select the environment from --env, the current branch, or the project default.
-          env_name="''${env:-$(
+          hostenv_env_name="''${env:-$(
             git symbolic-ref -q --short HEAD 2>/dev/null || true
           )}"
-          if ${var.empty "env_name"}; then env_name="${config.defaultEnvironment}"; fi
+          if ${var.empty "hostenv_env_name"}; then hostenv_env_name="${config.defaultEnvironment}"; fi
 
-          env_or_null() { jq -c --arg e "$1" '.[$e] // null' <<< ${lib.escapeShellArg environmentsJson}; }
-          env_cfg="$(env_or_null "$env_name")"
-          if ${var.empty "env_cfg"} || [ "$env_cfg" = "null" ]; then
-            die "Unknown environment: $env_name" 2
+          hostenv_environment_or_null() { jq -c --arg e "$1" '.[$e] // null' <<< ${lib.escapeShellArg environmentsJson}; }
+          hostenv_environment="$(hostenv_environment_or_null "$hostenv_env_name")"
+          if ${var.empty "hostenv_environment"} || [ "$hostenv_environment" = "null" ]; then
+            die "Unknown environment: $hostenv_env_name" 2
           fi
 
-          user="$(jq -r '.hostenv.userName' <<< "$env_cfg")"
-          host="$(jq -r '.hostenv.hostname' <<< "$env_cfg")"
-          typ="$(jq -r '.type' <<< "$env_cfg")"
-          emoji="$(
-            case "$typ" in
+          hostenv_user="$(jq -r '.hostenv.userName' <<< "$hostenv_environment")"
+          hostenv_host="$(jq -r '.hostenv.hostname' <<< "$hostenv_environment")"
+          hostenv_type="$(jq -r '.type' <<< "$hostenv_environment")"
+          hostenv_emoji="$(
+            case "$hostenv_type" in
               production)  echo "🚨" ;;
               testing)     echo "🧪" ;;
               development) echo "🛠️" ;;
@@ -153,29 +177,29 @@
 
           case "$tty_mode" in
             auto|"")
-              if [ -t 0 ]; then SSH_TTY="-tt"; else SSH_TTY="-T"; fi
+              if [ -t 0 ]; then hostenv_ssh_tty="-tt"; else hostenv_ssh_tty="-T"; fi
               ;;
             on)
-              SSH_TTY="-tt"
+              hostenv_ssh_tty="-tt"
               ;;
             off)
-              SSH_TTY="-T"
+              hostenv_ssh_tty="-T"
               ;;
             *)
               die "invalid --tty-mode value: '$tty_mode' (use: auto|on|off)" 2
               ;;
           esac
-          debug "tty_mode=$tty_mode ssh_flag=$SSH_TTY stdin_is_tty=$([ -t 0 ] && echo yes || echo no)"
+          debug "tty_mode=$tty_mode ssh_flag=$hostenv_ssh_tty stdin_is_tty=$([ -t 0 ] && echo yes || echo no)"
 
           # Create a quiet direnv configuration once, without overwriting user settings.
-          cfg="''${XDG_CONFIG_HOME:-$HOME/.config}/direnv/direnv.toml"
-          if [ ! -f "$cfg" ]; then
-            mkdir -p "$(dirname "$cfg")"
-            cat >"$cfg" <<'EOF'
+          hostenv_direnv_config="''${XDG_CONFIG_HOME:-$HOME/.config}/direnv/direnv.toml"
+          if [ ! -f "$hostenv_direnv_config" ]; then
+            mkdir -p "$(dirname "$hostenv_direnv_config")"
+            cat >"$hostenv_direnv_config" <<'EOF'
           [global]
           hide_env_diff = true
           EOF
-            bold "Note: Created a direnv config file at: '$cfg'"
+            bold "Note: Created a direnv config file at: '$hostenv_direnv_config'"
             green "You may change the settings there and hostenv will not overwrite them"
             echo
           fi
@@ -183,9 +207,11 @@
           banner() {
             echo
             cat <<BANNER | boxes -d whirly
-          $emoji  Working in hostenv environment: "$env_name" ($typ)
+          $hostenv_emoji  Working in hostenv environment: "$hostenv_env_name" ($hostenv_type)
 
-          Commands: ${builtins.concatStringsSep ", " (standaloneWrapperNames ++ [ "hostenv" ])}
+          Commands: ${
+            builtins.concatStringsSep ", " (map (wrapper: wrapper.name) standaloneWrappers ++ [ "hostenv" ])
+          }
           BANNER
             echo
           }
@@ -247,8 +273,7 @@
           script = scriptWithEnvironment;
         };
 
-      # This is Pog's generated hostenv program, before standalone wrappers are
-      # joined into the final package.
+      # Pog generates the parser, help, and completion files from this tree.
       hostenvCli = pog {
         name = cliProgramName;
         description = "Interact with your hosting environments.";

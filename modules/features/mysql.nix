@@ -614,8 +614,8 @@
           mysql = {
             script = helpers: ''
               echo >&2
-              echo "$emoji  Running mysql on '$env_name'" >&2
-              exec ssh $SSH_TTY "$user"@"$host" -- mysql "$@"
+              echo "$hostenv_emoji  Running mysql on '$hostenv_env_name'" >&2
+              exec ssh $hostenv_ssh_tty "$hostenv_user"@"$hostenv_host" -- mysql "$@"
             '';
             executable = "mysql";
             description = "Run mysql on the remote hostenv environment.";
@@ -632,15 +632,15 @@
           mysqldump = {
             script = helpers: ''
                 echo >&2
-                echo "$emoji  Running mysqldump on '$env_name'" >&2
+                echo "$hostenv_emoji  Running mysqldump on '$hostenv_env_name'" >&2
 
                 if [ "$tty_mode" = "on" ]; then
                   debug "ignoring --tty-mode='$tty_mode' for mysqldump; using no PTY for a clean stream"
                 fi
-                SSH_TTY="-T"
-                debug "tty_mode=$tty_mode ssh_flag=$SSH_TTY stdin_is_tty=$([ -t 0 ] && echo yes || echo no)"
+                hostenv_ssh_tty="-T"
+                debug "tty_mode=$tty_mode ssh_flag=$hostenv_ssh_tty stdin_is_tty=$([ -t 0 ] && echo yes || echo no)"
                 # shellcheck disable=SC2086
-                exec ssh $SSH_TTY "$user"@"$host" bash -s -- "$@" <<'REMOTE' | gunzip -c
+                exec ssh $hostenv_ssh_tty "$hostenv_user"@"$hostenv_host" bash -s -- "$@" <<'REMOTE' | gunzip -c
               set -euo pipefail
               exec mysqldump "$@" | gzip -c
               REMOTE
