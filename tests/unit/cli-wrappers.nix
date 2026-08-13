@@ -30,8 +30,33 @@ in
 {
   hostenv-cli-wrapper-allows-unreserved-name =
     asserts.assertTrue "hostenv-cli-wrapper-allows-unreserved-name"
-      (wrapperNameEvaluation "safe-wrapper").success
-      "The reserved-name fixture must accept an ordinary standalone wrapper name";
+      (wrapperNameEvaluation "safe.wrapper_+-1").success
+      "The wrapper-name fixture must accept documented standalone program names";
+
+  hostenv-cli-wrapper-rejects-relative-path =
+    asserts.assertTrue "hostenv-cli-wrapper-rejects-relative-path"
+      (!(wrapperNameEvaluation "./hostenv").success)
+      "A standalone wrapper must be a program name, not a relative path";
+
+  hostenv-cli-wrapper-rejects-nested-path =
+    asserts.assertTrue "hostenv-cli-wrapper-rejects-nested-path"
+      (!(wrapperNameEvaluation "bin/tool").success)
+      "A standalone wrapper must not contain a path separator";
+
+  hostenv-cli-wrapper-rejects-dot-directory =
+    asserts.assertTrue "hostenv-cli-wrapper-rejects-dot-directory"
+      (!(wrapperNameEvaluation ".").success)
+      "A standalone wrapper must not use the current-directory name";
+
+  hostenv-cli-wrapper-rejects-parent-directory =
+    asserts.assertTrue "hostenv-cli-wrapper-rejects-parent-directory"
+      (!(wrapperNameEvaluation "..").success)
+      "A standalone wrapper must not use the parent-directory name";
+
+  hostenv-cli-wrapper-rejects-whitespace =
+    asserts.assertTrue "hostenv-cli-wrapper-rejects-whitespace"
+      (!(wrapperNameEvaluation "hostenv tool").success)
+      "A standalone wrapper must use conventional program-name characters";
 
   hostenv-cli-wrapper-reserves-main-program =
     asserts.assertTrue "hostenv-cli-wrapper-reserves-main-program"

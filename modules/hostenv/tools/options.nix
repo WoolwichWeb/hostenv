@@ -220,10 +220,18 @@
               description = "Packages added to the root Hostenv CLI's PATH for this command tree.";
             };
             executable = mkOption {
-              type = types.nullOr types.singleLineStr;
+              type = types.nullOr (
+                types.addCheck (types.strMatching "[A-Za-z0-9._+-]+") (name: name != "." && name != "..")
+              );
               default = null;
               example = "mysql";
-              description = "Optional standalone wrapper program that runs this command.";
+              description = ''
+                Optional standalone wrapper program that runs this command.
+
+                This must be a program name, not a path. It may contain letters,
+                numbers, dots, underscores, plus signs, and hyphens. The names
+                `.` and `..` are not allowed.
+              '';
             };
           };
         }
