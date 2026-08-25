@@ -305,7 +305,7 @@
             parsing = "passthrough";
             arguments = [{
               name = "arguments";
-              description = "Arguments passed to `drush cex`";
+              description = "Arguments passed to drush cex";
               variadic = true;
               completion = [ ];
             }];

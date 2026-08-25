@@ -31,7 +31,7 @@
               description = "Long flag name, without leading dashes.";
             };
             short = mkOption {
-              type = types.singleLineStr;
+              type = types.strMatching "([A-Za-z0-9])?";
               default = lib.substring 0 1 config.name;
               description = "Short flag name, without a leading dash. Use an empty string to disable it.";
             };

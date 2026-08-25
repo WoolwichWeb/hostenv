@@ -16,26 +16,81 @@
       pog = pkgs.pog.pog;
       cliProgramName = "hostenv";
       commands = config.hostenv.cli.commands;
+      pogVariableName = builtins.replaceStrings [ "-" ] [ "_" ];
+      shellSafeCommandToken = token: builtins.match "[A-Za-z0-9._+-]+" token != null;
+
+      rootPersistentFlags = [
+        {
+          name = "env";
+          short = "e";
+          description = "Target environment (defaults to the current branch or '${config.defaultEnvironment}')";
+          argument = "ENV";
+          completion = environmentCandidates;
+        }
+        {
+          name = "force";
+          short = "f";
+          description = "Skip confirmations";
+          bool = true;
+        }
+        {
+          name = "tty-mode";
+          short = "";
+          description = "TTY mode for remote commands";
+          argument = "MODE";
+          default = "auto";
+          completion = ttyModeCandidates;
+        }
+      ];
 
       # Pog receives one root runtime environment, while Hostenv lets each command
       # declare its own dependencies. This single tree walk gathers those packages
-      # and records commands that also need a standalone executable.
+      # and records commands that also need a standalone executable. It also
+      # rejects command tokens and visible flags that Pog cannot safely render.
       collectCommandMetadata =
-        parentPath: commandSet:
+        parentPath: inheritedPersistentFlags: commandSet:
         lib.foldlAttrs
           (
             result: name: command:
             let
-              commandPath = parentPath ++ [ name ];
-              children = collectCommandMetadata commandPath command.commands;
+              rawCommandPath = parentPath ++ [ name ];
+              unsafeTokens = builtins.filter (token: !shellSafeCommandToken token) ([ name ] ++ command.aliases);
+              visibleFlags = inheritedPersistentFlags ++ command.persistentFlags ++ command.flags;
+              flagsByPogVariable = lib.groupBy (flag: pogVariableName flag.name) visibleFlags;
+              flagCollisions = lib.filterAttrs (_: flags: builtins.length flags > 1) flagsByPogVariable;
+              checkedCommand =
+                if unsafeTokens != [ ] then
+                  throw ''
+                    hostenv: `${cliProgramName} ${builtins.concatStringsSep " " rawCommandPath}` uses shell-unsafe command names or aliases: ${builtins.concatStringsSep ", " (map builtins.toJSON unsafeTokens)}
+
+                    Command names and aliases may contain only letters, numbers, dots, underscores, plus signs, and hyphens.
+                  ''
+                else if flagCollisions != { } then
+                  throw ''
+                    hostenv: flags collide in `${cliProgramName} ${builtins.concatStringsSep " " rawCommandPath}` after Pog converts their names to Bash variables:
+                    ${lib.concatStringsSep "\n" (lib.mapAttrsToList (
+                      variable: flags:
+                      "  - ${builtins.concatStringsSep " and " (map (flag: "`--${flag.name}`") flags)} both use `${variable}`"
+                    ) flagCollisions)}
+
+                    Pog replaces hyphens with underscores when it creates Bash variable names.
+                    Rename one flag from each line above.
+                  ''
+                else
+                  command;
+              commandPath = builtins.seq checkedCommand rawCommandPath;
+              children = collectCommandMetadata
+                commandPath
+                (inheritedPersistentFlags ++ checkedCommand.persistentFlags)
+                checkedCommand.commands;
             in
             {
-              runtimeInputs = result.runtimeInputs ++ command.runtimeInputs ++ children.runtimeInputs;
+              runtimeInputs = result.runtimeInputs ++ checkedCommand.runtimeInputs ++ children.runtimeInputs;
               commandPaths = result.commandPaths ++ [ commandPath ] ++ children.commandPaths;
               wrappers =
                 result.wrappers
-                ++ lib.optional (command.executable != null) {
-                  name = command.executable;
+                ++ lib.optional (checkedCommand.executable != null) {
+                  name = checkedCommand.executable;
                   inherit commandPath;
                 }
                 ++ children.wrappers;
@@ -53,9 +108,9 @@
       # command paths that would therefore make Pog generate the same function.
       commandMetadata =
         let
-          collected = collectCommandMetadata [ ] commands;
+          collected = collectCommandMetadata [ ] rootPersistentFlags commands;
           pogFunctionName =
-            path: builtins.concatStringsSep "__" (map (builtins.replaceStrings [ "-" ] [ "_" ]) path);
+            path: builtins.concatStringsSep "__" (map pogVariableName path);
           pathsByPogFunction = lib.groupBy pogFunctionName collected.commandPaths;
           collisions = lib.filterAttrs (_: paths: builtins.length paths > 1) pathsByPogFunction;
           showPath = path: "`${cliProgramName} ${builtins.concatStringsSep " " path}`";
@@ -279,29 +334,7 @@
         description = "Interact with your hosting environments.";
         version = "0.2.0";
         commands = lib.mapAttrsToList (toPogCommand [ ]) commands;
-        persistentFlags = [
-          {
-            name = "env";
-            short = "e";
-            description = "Target environment (defaults to the current branch or '${config.defaultEnvironment}')";
-            argument = "ENV";
-            completion = environmentCandidates;
-          }
-          {
-            name = "force";
-            short = "f";
-            description = "Skip confirmations";
-            bool = true;
-          }
-          {
-            name = "tty-mode";
-            short = "";
-            description = "TTY mode for remote commands";
-            argument = "MODE";
-            default = "auto";
-            completion = ttyModeCandidates;
-          }
-        ];
+        persistentFlags = rootPersistentFlags;
         runtimeInputs =
           with pkgs;
           [

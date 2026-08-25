@@ -4,10 +4,14 @@ let
   support = import ../support { inherit pkgs lib; };
   asserts = support.asserts;
   cli = env.config.hostenv.cliPackage;
+  drushProbe = pkgs.writeShellScriptBin "drush" ''
+    : > "$HOSTENV_HELP_DRUSH_PROBE"
+  '';
 in
 asserts.assertRun {
   name = "hostenv-cli-service-wrappers";
   inherit env;
+  buildInputs = [ drushProbe ];
   script = ''
     fail() {
       printf 'hostenv service wrapper assertion failed: %s\n' "$1" >&2
@@ -32,5 +36,12 @@ asserts.assertRun {
       || fail "generated service commands should retain native per-command help"
     grep -Fq -- "ARGUMENTS..." "$TMPDIR/mysql-help" \
       || fail "wrapped service commands should expose their pass-through argument contract"
+
+    export HOSTENV_HELP_DRUSH_PROBE="$TMPDIR/drush-was-invoked"
+    "${cli}/bin/hostenv" cex --help > "$TMPDIR/cex-help"
+    test ! -e "$HOSTENV_HELP_DRUSH_PROBE" \
+      || fail "cex help must not execute command substitutions from its descriptions"
+    grep -Fq -- "Arguments passed to drush cex" "$TMPDIR/cex-help" \
+      || fail "cex help should describe its pass-through arguments as plain text"
   '';
 }

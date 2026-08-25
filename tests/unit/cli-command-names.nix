@@ -52,4 +52,21 @@ in
         }).success
       )
       "A flat command must not silently collide with Pog's nested-path function name";
+
+  hostenv-cli-command-names-reject-whitespace =
+    asserts.assertTrue "hostenv-cli-command-names-reject-whitespace"
+      (!(commandNameEvaluation { "unsafe command".script = "true"; }).success)
+      "A command name must not inject whitespace into Pog's generated shell";
+
+  hostenv-cli-command-aliases-reject-globs =
+    asserts.assertTrue "hostenv-cli-command-aliases-reject-globs"
+      (
+        !(commandNameEvaluation {
+          safe = {
+            aliases = [ "*" ];
+            script = "true";
+          };
+        }).success
+      )
+      "A command alias must not inject a glob into Pog's generated case patterns";
 }
