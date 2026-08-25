@@ -5,21 +5,128 @@ let
   asserts = support.asserts;
 
   env = makeHostenv [
-    ({ ... }: {
+    ({ pkgs, ... }: {
       hostenv = {
         organisation = "acme";
         project = "demo";
         hostenvHostname = "hosting.test";
         root = ./drupal; # any path is fine, not used by this test
       };
-      environments.main = {
-        enable = true;
-        type = "production";
+      environments = {
+        main = {
+          enable = true;
+          type = "production";
+        };
+        testing = {
+          enable = true;
+          type = "testing";
+        };
+      };
+
+      hostenv.cli.commands = {
+        probe = {
+          description = "Exercise pass-through parsing.";
+          aliases = [ "p" ];
+          group = "Test commands";
+          parsing = "passthrough";
+          arguments = [
+            {
+              name = "arguments";
+              description = "Values retained by pass-through parsing";
+              variadic = true;
+              completion = pkgs.pog.pog.completions.message "wrapped command arguments";
+            }
+          ];
+          script = ''
+            printf 'env=%s\nforce=%s\ntty=%s\n' "$hostenv_env_name" "''${force:-0}" "$tty_mode"
+            for argument in "$@"; do
+              printf 'arg=<%s>\n' "$argument"
+            done
+          '';
+        };
+
+        flag-values = {
+          description = "Preserve values from project-defined flags.";
+          flags = [
+            {
+              name = "user";
+              short = "";
+              argument = "USER";
+            }
+            {
+              name = "host";
+              short = "";
+              argument = "HOST";
+            }
+          ];
+          script = ''
+            printf 'user=%s\nhost=%s\n' "$user" "$host"
+            printf 'hostenv-user=%s\nhostenv-host=%s\n' "$hostenv_user" "$hostenv_host"
+          '';
+        };
+
+        tree = {
+          description = "Exercise recursive commands.";
+          group = "Test commands";
+          commands = {
+            disabled-leaf = lib.mkIf false {
+              description = "This conditionally disabled nested command must not exist.";
+              script = ''
+                printf 'disabled=nested\n'
+              '';
+            };
+            leaf = {
+              description = "A visible nested command.";
+              aliases = [ "l" ];
+              parsing = "passthrough";
+              executable = "hostenv-tree-leaf";
+              arguments = [
+                {
+                  name = "arguments";
+                  variadic = true;
+                  completion = [ ];
+                }
+              ];
+              beforeExit = ''
+                printf 'cleanup=tree/leaf\n'
+              '';
+              script = ''
+                printf 'path=tree/leaf\n'
+                for argument in "$@"; do
+                  printf 'arg=<%s>\n' "$argument"
+                done
+              '';
+            };
+            secret = {
+              description = "A callable hidden nested command.";
+              hidden = true;
+              script = ''
+                printf 'hidden=nested\n'
+              '';
+            };
+          };
+        };
+
+        hidden-probe = {
+          description = "A callable hidden root command.";
+          hidden = true;
+          script = ''
+            printf 'hidden=root\n'
+          '';
+        };
+
+        disabled-probe = lib.mkIf false {
+          description = "This conditionally disabled root command must not exist.";
+          script = ''
+            printf 'disabled=root\n'
+          '';
+        };
       };
     })
   ] "main";
 
   cli = env.config.hostenv.cliPackage;
+  cliExecutable = lib.getExe cli;
 in
 asserts.assertRun {
   name = "hostenv-cli-list";
@@ -27,8 +134,149 @@ asserts.assertRun {
   script = ''
     export HOME="$TMPDIR/home"
     export XDG_CONFIG_HOME="$HOME/.config"
-    mkdir -p "$XDG_CONFIG_HOME"
+    mkdir -p "$XDG_CONFIG_HOME/direnv"
+    printf '[global]\nhide_env_diff = true\n' > "$XDG_CONFIG_HOME/direnv/direnv.toml"
 
-    "${cli}/bin/hostenv" list --env main >/dev/null
+    fail() {
+      printf 'hostenv CLI assertion failed: %s\n' "$1" >&2
+      exit 1
+    }
+
+    assert_contains() {
+      local file="$1" expected="$2" reason="$3"
+      grep -Fq -- "$expected" "$file" || {
+        printf '%s\n' "--- $file ---" >&2
+        cat "$file" >&2
+        fail "$reason (missing: $expected)"
+      }
+    }
+
+    assert_not_contains() {
+      local file="$1" unexpected="$2" reason="$3"
+      if grep -Fq -- "$unexpected" "$file"; then
+        printf '%s\n' "--- $file ---" >&2
+        cat "$file" >&2
+        fail "$reason (unexpected: $unexpected)"
+      fi
+    }
+
+    test "${cliExecutable}" = "${cli}/bin/hostenv" \
+      || fail "lib.getExe should resolve the joined CLI package to bin/hostenv"
+
+    "${cli}/bin/hostenv" > "$TMPDIR/root-bare-help"
+    "${cli}/bin/hostenv" --help > "$TMPDIR/root-help"
+    assert_contains "$TMPDIR/root-help" "Usage: hostenv" "root help should be generated by Pog"
+    assert_contains "$TMPDIR/root-help" "Remote access:" "root help should preserve command groups"
+    assert_contains "$TMPDIR/root-help" "Test commands:" "merged project commands should keep their group"
+    assert_contains "$TMPDIR/root-help" "environment" "visible commands should appear in root help"
+    assert_not_contains "$TMPDIR/root-help" "banner" "hidden built-in commands should not appear in root help"
+    assert_not_contains "$TMPDIR/root-help" "hidden-probe" "hidden project commands should not appear in root help"
+    assert_not_contains "$TMPDIR/root-help" "disabled-probe" "conditionally disabled root commands should not appear in root help"
+    cmp "$TMPDIR/root-bare-help" "$TMPDIR/root-help" || fail "bare hostenv and hostenv --help should show the same native help"
+
+    "${cli}/bin/hostenv" ssh --help > "$TMPDIR/ssh-help"
+    assert_contains "$TMPDIR/ssh-help" "Usage: hostenv ssh" "each command should have native help"
+    assert_contains "$TMPDIR/ssh-help" "ARGUMENTS..." "pass-through command help should describe its variadic argument"
+
+    "${cli}/bin/hostenv" tree --help > "$TMPDIR/tree-help"
+    assert_contains "$TMPDIR/tree-help" "leaf" "parent help should list visible nested commands"
+    assert_contains "$TMPDIR/tree-help" "aliases: l" "nested aliases should be documented"
+    assert_not_contains "$TMPDIR/tree-help" "secret" "hidden nested commands should not appear in help"
+    assert_not_contains "$TMPDIR/tree-help" "disabled-leaf" "conditionally disabled nested commands should not appear in parent help"
+
+    "${cli}/bin/hostenv" p --env main > "$TMPDIR/alias-output"
+    assert_contains "$TMPDIR/alias-output" "env=main" "a root command alias should dispatch to the original command"
+
+    "${cli}/bin/hostenv" flag-values --env main --user alice --host client.example \
+      > "$TMPDIR/flag-values-output"
+    assert_contains "$TMPDIR/flag-values-output" "user=alice" \
+      "environment setup should not overwrite a project-defined --user flag"
+    assert_contains "$TMPDIR/flag-values-output" "host=client.example" \
+      "environment setup should not overwrite a project-defined --host flag"
+    assert_contains "$TMPDIR/flag-values-output" "hostenv-user=${env.config.hostenv.userName}" \
+      "commands should receive the selected environment's namespaced SSH user"
+    assert_contains "$TMPDIR/flag-values-output" "hostenv-host=${env.config.hostenv.hostname}" \
+      "commands should receive the selected environment's namespaced SSH host"
+
+    "${cli}/bin/hostenv" hidden-probe --env main > "$TMPDIR/hidden-root-output"
+    assert_contains "$TMPDIR/hidden-root-output" "hidden=root" "a hidden root command should remain callable"
+    "${cli}/bin/hostenv" tree secret --env main > "$TMPDIR/hidden-nested-output"
+    assert_contains "$TMPDIR/hidden-nested-output" "hidden=nested" "a hidden nested command should remain callable"
+
+    if "${cli}/bin/hostenv" unknown-command > "$TMPDIR/unknown-output" 2>&1; then
+      fail "unknown commands should be rejected"
+    fi
+    assert_contains "$TMPDIR/unknown-output" "unknown command" "unknown command errors should explain the problem"
+    if "${cli}/bin/hostenv" help > "$TMPDIR/removed-help-output" 2>&1; then
+      fail "the removed handwritten help command should not remain callable"
+    fi
+    if "${cli}/bin/hostenv" list > "$TMPDIR/removed-list-output" 2>&1; then
+      fail "the removed handwritten list command should not remain callable"
+    fi
+    if "${cli}/bin/hostenv" disabled-probe > "$TMPDIR/disabled-root-output" 2>&1; then
+      fail "conditionally disabled root commands should not be callable"
+    fi
+    if "${cli}/bin/hostenv" tree disabled-leaf > "$TMPDIR/disabled-nested-output" 2>&1; then
+      fail "conditionally disabled nested commands should not be callable"
+    fi
+
+    "${cli}/bin/hostenv" --env testing probe alpha --wrapped=one beta --force --tty-mode off gamma \
+      > "$TMPDIR/passthrough-output"
+    assert_contains "$TMPDIR/passthrough-output" "env=testing" "persistent --env should work before the command name"
+    assert_contains "$TMPDIR/passthrough-output" "force=1" "persistent boolean flags should work after the command name"
+    assert_contains "$TMPDIR/passthrough-output" "tty=off" "persistent value flags should work after the command name"
+    sed -n '/^arg=/p' "$TMPDIR/passthrough-output" > "$TMPDIR/passthrough-arguments"
+    printf '%s\n' 'arg=<alpha>' 'arg=<--wrapped=one>' 'arg=<beta>' 'arg=<gamma>' > "$TMPDIR/expected-arguments"
+    cmp "$TMPDIR/expected-arguments" "$TMPDIR/passthrough-arguments" \
+      || fail "pass-through parsing should retain unknown options and positional argument order"
+
+    "${cli}/bin/hostenv" probe -- --env wrapped -f --tty-mode wrapped \
+      > "$TMPDIR/collision-output"
+    sed -n '/^arg=/p' "$TMPDIR/collision-output" > "$TMPDIR/collision-arguments"
+    printf '%s\n' 'arg=<--env>' 'arg=<wrapped>' 'arg=<-f>' 'arg=<--tty-mode>' 'arg=<wrapped>' \
+      > "$TMPDIR/expected-collision-arguments"
+    cmp "$TMPDIR/expected-collision-arguments" "$TMPDIR/collision-arguments" \
+      || fail "-- should preserve arguments that collide with Hostenv persistent flags"
+
+    "${cli}/bin/hostenv" tree l --env main "alias argument" > "$TMPDIR/nested-alias-output"
+    assert_contains "$TMPDIR/nested-alias-output" "path=tree/leaf" "a nested alias should preserve its command path"
+    assert_contains "$TMPDIR/nested-alias-output" "arg=<alias argument>" "nested commands should preserve argument boundaries"
+    assert_contains "$TMPDIR/nested-alias-output" "cleanup=tree/leaf" "nested command beforeExit hooks should run"
+
+    "${cli}/bin/hostenv-tree-leaf" --env wrapped "two words" "" --force \
+      > "$TMPDIR/wrapper-output"
+    sed -n '/^arg=/p' "$TMPDIR/wrapper-output" > "$TMPDIR/wrapper-arguments"
+    printf '%s\n' 'arg=<--env>' 'arg=<wrapped>' 'arg=<two words>' 'arg=<>' 'arg=<--force>' \
+      > "$TMPDIR/expected-wrapper-arguments"
+    cmp "$TMPDIR/expected-wrapper-arguments" "$TMPDIR/wrapper-arguments" \
+      || fail "standalone wrappers should preserve their nested command path and argument boundaries"
+
+    completion="${cli}/bin/_hostenv_complete"
+    test -x "$completion" || fail "the structured completion query command should be installed"
+    "$completion" export hostenv "" > "$TMPDIR/root-completion.json"
+    ${pkgs.jq}/bin/jq -e '.values | map(.value) | index("environment") != null' "$TMPDIR/root-completion.json" >/dev/null \
+      || fail "root completion should contain visible commands"
+    ${pkgs.jq}/bin/jq -e '.values | map(.value) | index("banner") == null and index("hidden-probe") == null' "$TMPDIR/root-completion.json" >/dev/null \
+      || fail "root completion should omit hidden commands"
+    ${pkgs.jq}/bin/jq -e '.values | map(.value) | index("disabled-probe") == null' "$TMPDIR/root-completion.json" >/dev/null \
+      || fail "root completion should omit conditionally disabled commands"
+    "$completion" export hostenv --env "" > "$TMPDIR/environment-completion.json"
+    ${pkgs.jq}/bin/jq -e \
+      '(.values | map(.value) | sort) == ["main", "testing"] and (.values | all(.description | contains("environment on")))' \
+      "$TMPDIR/environment-completion.json" >/dev/null \
+      || fail "environment completion should use static evaluated names and descriptions"
+
+    "$completion" export hostenv --tty-mode "" > "$TMPDIR/tty-completion.json"
+    ${pkgs.jq}/bin/jq -e '(.values | map(.value) | sort) == ["auto", "off", "on"]' "$TMPDIR/tty-completion.json" >/dev/null \
+      || fail "TTY completion should contain the supported static values"
+
+    test -f "${cli}/share/bash-completion/completions/hostenv" \
+      || fail "Bash completion should be installed"
+    test -f "${cli}/share/fish/vendor_completions.d/hostenv.fish" \
+      || fail "Fish completion should be installed"
+    test -f "${cli}/share/zsh/site-functions/_hostenv" \
+      || fail "Zsh completion should be installed"
+    test -f "${cli}/share/nushell/vendor/autoload/hostenv.nu" \
+      || fail "Nushell completion should be installed"
   '';
 }

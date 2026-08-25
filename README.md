@@ -237,3 +237,10 @@ a question about how something works.
 If you see something that could be better, feel free to open an issue or
 submit an MR (merge request). We'll work things out together as the
 project grows.
+
+---
+
+## Other things you can do
+
+Your project's hostenv.nix can extend the `hostenv` command. See the
+[Hostenv CLI command API](docs/cli-command-api.md) for more information.

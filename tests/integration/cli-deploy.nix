@@ -43,7 +43,7 @@ asserts.assertRun {
       'hostenv deploy no longer invokes the executable covered by the behavioral test'
     assert_cli_contains 'project_root="$(git rev-parse --show-toplevel)"' \
       'the deployment source is no longer derived from the Git repository root'
-    assert_cli_contains '"$project_root/" "$user@$host:/home/$user/code/project/"' \
+    assert_cli_contains '"$project_root/" "$hostenv_user@$hostenv_host:/home/$hostenv_user/code/project/"' \
       'the sync helper is no longer called with the project contents and expected remote destination'
   '';
 }
