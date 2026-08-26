@@ -228,7 +228,11 @@ in
     }
 
     _hostenv_neko_render_build() {
-      case $((_hostenv_spinner_frame % 8)) in
+      # The renderer ticks at 10 FPS so chase/startle animations stay snappy,
+      # but a sitting Neko watching Nix build should feel patient rather than
+      # caffeinated. Advance the build pose only every four renderer frames.
+      _hostenv_neko_build_frame=$((_hostenv_spinner_frame / 4))
+      case $((_hostenv_neko_build_frame % 8)) in
         0|7) _hostenv_neko_build_thing='·' ;;
         1|6) _hostenv_neko_build_thing='✧' ;;
         2|5) _hostenv_neko_build_thing='✦' ;;
@@ -236,7 +240,7 @@ in
       esac
       _hostenv_neko_l1=" /\\_/\\"
       _hostenv_neko_l2="( o.o )     $_hostenv_neko_cyan$_hostenv_neko_build_thing$_hostenv_neko_reset"
-      if [ $((_hostenv_spinner_frame % 2)) -eq 0 ]; then
+      if [ $((_hostenv_neko_build_frame % 2)) -eq 0 ]; then
         _hostenv_neko_l3=' > ^ <'
       else
         _hostenv_neko_l3='  >^< '

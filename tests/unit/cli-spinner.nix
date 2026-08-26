@@ -177,6 +177,15 @@ in
       grep -Fq '_hostenv_neko_step=$((_hostenv_spinner_frame / 2))' \
         ${quietProbe}/bin/hostenv-spinner-quiet-probe \
         || fail "Neko should advance toward the heart only every other 10 FPS frame"
+      grep -Fq '_hostenv_neko_build_frame=$((_hostenv_spinner_frame / 4))' \
+        ${streamProbe}/bin/hostenv-spinner-stream-probe \
+        || fail "build Neko should advance only every four 10 FPS renderer frames"
+      grep -Fq 'case $((_hostenv_neko_build_frame % 8)) in' \
+        ${streamProbe}/bin/hostenv-spinner-stream-probe \
+        || fail "build sparkle should use the slower derived build frame"
+      grep -Fq 'if [ $((_hostenv_neko_build_frame % 2)) -eq 0 ]; then' \
+        ${streamProbe}/bin/hostenv-spinner-stream-probe \
+        || fail "build paw pose should use the slower derived build frame"
       grep -Fq '_hostenv_spinner() {' \
         ${quietProbe}/bin/hostenv-spinner-quiet-probe \
         || fail "Hostneko should use a normal function body so animation state stays visible to ShellCheck"
