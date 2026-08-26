@@ -342,6 +342,7 @@
             openssh
             rsync
             boxes
+            coreutils
             git
             gum
           ]

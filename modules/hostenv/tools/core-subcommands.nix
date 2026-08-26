@@ -6,6 +6,12 @@
   flake.modules.hostenv.tools-core-subcommands =
     { lib, config, ... }:
     let
+      # Gum 2.x uses Bubble Tea with input disabled for `gum spin`, while
+      # Bubble Tea still probes DEC modes 2026/2027. The terminal replies then
+      # leak into the calling shell. Keep interactive `gum confirm`, but use a
+      # query-free shell spinner for non-interactive work.
+      spinner = import ../../../lib/spinner.nix;
+
       core = {
         ssh = {
           script = helpers: ''
@@ -69,8 +75,10 @@
 
               ${spinner {
                 title = "Preparing remote directory for project code...";
+                variant = "prepare";
+                showError = true;
                 command = ''
-                  --show-error -- ssh $hostenv_ssh_tty "$hostenv_user"@"$hostenv_host" 'mkdir -p /home/'"$hostenv_user"'/code/project'
+                  ssh $hostenv_ssh_tty "$hostenv_user"@"$hostenv_host" 'mkdir -p /home/'"$hostenv_user"'/code/project'
                 '';
               }}
 
@@ -78,8 +86,10 @@
               debug "rsync to $hostenv_user@$hostenv_host:/home/$hostenv_user/code/project/"
               ${spinner {
                 title = "Deploying project code...";
+                variant = "upload";
+                showError = true;
                 command = ''
-                  --show-error -- ${lib.getExe config.hostenv.projectUploadPackage} \
+                  ${lib.getExe config.hostenv.projectUploadPackage} \
                     "$project_root/" "$hostenv_user@$hostenv_host:/home/$hostenv_user/code/project/"
                 '';
               }}
@@ -87,9 +97,14 @@
               # Remote build (with FOD auto-fix).
               debug "ignoring hostenv_ssh_tty='$hostenv_ssh_tty' while building and activating remote. Using '-T'"
               ${spinner {
-                title = "Building & activating $currentBranch...";
+                title = "Building $currentBranch...";
+                variant = "build";
+                activationMarker = "__HOSTENV_NEKO_ACTIVATE__";
+                activationTitle = "Activating $currentBranch...";
+                showOutput = true;
+                showError = true;
                 command = ''
-                              --show-output --show-error -- ssh -T "$hostenv_user@$hostenv_host" bash -s -- "$currentBranch" "$hostenv_user" <<'REMOTE_SCRIPT'
+                              ssh -T "$hostenv_user@$hostenv_host" bash -s -- "$currentBranch" "$hostenv_user" <<'REMOTE_SCRIPT'
                               set -euo pipefail
 
                               branch="$1"
@@ -134,6 +149,7 @@
                               done
 
                               nix --quiet --quiet build ".#$branch"
+                              printf '%s\n' '__HOSTENV_NEKO_ACTIVATE__'
                               result/bin/activate
                               nix profile install ".#$branch" --priority 4
                   REMOTE_SCRIPT
@@ -142,14 +158,17 @@
 
               ${spinner {
                 title = "Updating local hostenv.nix...";
+                variant = "sync";
+                finish = "sleep";
+                successTitle = "✅ Deploy complete";
+                showError = true;
                 command = ''
-                  --show-error -- rsync -az \
+                  rsync -az \
                     "$hostenv_user@$hostenv_host:/home/$hostenv_user/code/project/.hostenv/hostenv.nix" \
                     hostenv.nix
                 '';
               }}
 
-              green "✅ Deploy complete"
             '';
           description = ''
             Deploy your local codebase to the remote hostenv environment.
@@ -180,8 +199,10 @@
               mkdir -p files
               ${spinner {
                 title = "Downloading files from '$hostenv_env_name'...";
+                variant = "download";
+                showError = true;
                 command = ''
-                  --show-error -- rsync -az \
+                  rsync -az \
                     "$hostenv_user@$hostenv_host:/home/$hostenv_user/.local/share/"{files,private_files} \
                     files/
                 '';
@@ -198,8 +219,10 @@
               mkdir -p files
               ${spinner {
                 title = "Uploading files to '$hostenv_env_name'...";
+                variant = "upload";
+                showError = true;
                 command = ''
-                  --show-error -- rsync -az \
+                  rsync -az \
                     files/{files,private_files} \
                     "$hostenv_user@$hostenv_host:/home/$hostenv_user/.local/share/"
                 '';
