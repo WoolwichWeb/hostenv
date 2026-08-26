@@ -7,6 +7,7 @@
   // (import ./cli-wrappers.nix { inherit pkgs makeHostenv; })
   // (import ./cli-command-names.nix { inherit pkgs makeHostenv; })
   // (import ./cli-flags.nix { inherit pkgs makeHostenv; })
+  // (import ./cli-spinner.nix { inherit pkgs; })
   // (import ./hostenv-provider-service.nix { inherit pkgs; })
   // (import ./provider-cli.nix { inherit pkgs; })
   // (import ./backups-repo-host.nix { inherit pkgs makeHostenv; })
