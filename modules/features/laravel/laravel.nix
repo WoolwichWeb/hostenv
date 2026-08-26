@@ -138,6 +138,12 @@
         . "$secret_file"
         set +a
 
+        ${lib.optionalString (config.packages != [ ]) ''
+          # laravel_env may extend or replace PATH, but it must not be able to
+          # hide runtime dependencies declared through top-level `packages`.
+          export PATH=${lib.escapeShellArg (lib.makeBinPath config.packages)}:"$PATH"
+        ''}
+
         cd ${lib.escapeShellArg rootDir}
         exec ${laravelPhpPool.effectivePhpCliPackage}/bin/php artisan "$@"
       '';
@@ -204,6 +210,7 @@
                     ++ lib.optional cfg.redis.enable "redis.service";
                   after = [ "network-online.target" "mysql.service" ]
                     ++ lib.optional cfg.redis.enable "redis.service";
+                  path = config.packages;
                   serviceConfig = {
                     ExecStart = "${artisan}/bin/artisan ${lib.escapeShellArgs args}";
                     EnvironmentFile = secretFile;
@@ -533,6 +540,7 @@
                 ++ lib.optional cfg.redis.enable "redis.service";
               after = [ "network-online.target" "mysql.service" ]
                 ++ lib.optional cfg.redis.enable "redis.service";
+              path = config.packages;
               restartIfChanged = false;
               serviceConfig = {
                 Type = "oneshot";

@@ -259,6 +259,14 @@
             # proxies FastCGI to it.
             socket = "${config.hostenv.runtimeDir}/${name}.sock";
             phpOptions = lib.mkBefore cfg.phpOptions;
+
+            # PHP-FPM clears worker environment variables by default. Prepend
+            # project runtime packages to the master process PATH explicitly.
+            # If an EnvironmentFile replaces PATH, declared packages remain
+            # available while provider-supplied PATH entries are preserved.
+            phpEnv = lib.mkIf (config.packages != [ ]) {
+              PATH = lib.mkDefault "${lib.makeBinPath config.packages}:$PATH";
+            };
     
             settings = lib.mapAttrs (_n: lib.mkDefault) ({
               listen = poolCfg.socket;
@@ -458,6 +466,7 @@
               after = [ "network.target" ];
               wantedBy = [ "phpfpm.target" ];
               partOf = [ "phpfpm.target" ];
+              path = config.packages;
               serviceConfig =
                 let
                   cfgFile = fpmCfgFile pool poolOpts;

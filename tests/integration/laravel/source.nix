@@ -21,6 +21,20 @@ let
         mv "$out/composer.json.tmp" "$out/composer.json"
         install -m 0644 ${lockFile} "$out/composer.lock"
 
+        cat >> "$out/routes/console.php" <<'PHP'
+
+\Illuminate\Support\Facades\Artisan::command('hostenv:path-test', function () {
+    $output = [];
+    $status = 0;
+    exec('hello', $output, $status);
+    if ($status !== 0) {
+        throw new \RuntimeException('hello was not available on PATH');
+    }
+    $this->line(implode("\n", $output));
+    $this->line('PATH=' . getenv('PATH'));
+});
+PHP
+
         printf '%s\n' "${name} initial storage" > "$out/storage/hostenv-fixture.txt"
       '';
 in

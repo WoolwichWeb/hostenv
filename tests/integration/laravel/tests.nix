@@ -15,12 +15,14 @@ let
       serviceName = "laravel${major}";
       cfg = env.config.services.laravel;
       user = env.config.hostenv.userName;
+      runtimePackagePath = lib.makeBinPath env.config.packages;
     in
     {
       "laravel-${major}-profile" = asserts.assertRun {
         name = "laravel-${major}-profile";
         inherit env;
         buildInputs = [
+          pkgs.fcgi
           pkgs.jq
           pkgs.nginx
           pkgs.rsync
@@ -36,11 +38,14 @@ let
           nginx_conf="$profile/etc/nginx/nginx.conf"
           units="$profile/systemd/user"
           fpm_conf="$profile/etc/php-fpm.d/${serviceName}.conf"
+          fpm_unit="$units/phpfpm-${serviceName}.service"
+          scheduler_unit="$units/laravel-scheduler-${serviceName}.service"
 
           test -f "$app/public/index.php" || fail "public/index.php was not packaged"
           test -f "$app/vendor/autoload.php" || fail "Composer vendor tree was not packaged"
           test -x "$profile/bin/artisan" || fail "server-side Artisan wrapper is missing"
           test -x "$profile/bin/composer" || fail "Composer is missing from the profile"
+          test -x "$profile/bin/hello" || fail "project runtime package is missing from the profile"
 
           test "$(readlink "$app/storage")" = ${lib.escapeShellArg cfg.storageDir} \
             || fail "storage is not linked to persistent Hostenv data"
@@ -87,6 +92,31 @@ let
           printf '%s\n' "$nginx_output" | grep -Fq 'syntax is ok' || fail "nginx syntax check failed"
 
           grep -Fq 'clear_env = no' "$fpm_conf" || fail "PHP-FPM still clears inherited variables"
+          grep -Fq ${lib.escapeShellArg "env[PATH] = ${runtimePackagePath}:$PATH"} "$fpm_conf" \
+            || fail "PHP-FPM does not prepend declared runtime packages to PATH"
+          grep -Fq '${pkgs.hello}/bin' "$fpm_unit" \
+            || fail "project runtime package is missing from the PHP-FPM service PATH"
+          grep -Fq '${pkgs.hello}/bin' "$scheduler_unit" \
+            || fail "project runtime package is missing from the scheduler service PATH"
+          if grep -Fq '${pkgs.hello}/bin' "$units/mysql.service"; then
+            fail "project runtime package leaked into the MariaDB service PATH"
+          fi
+          if grep -Fq '${pkgs.hello}/bin' "$units/redis.service"; then
+            fail "project runtime package leaked into the Valkey service PATH"
+          fi
+          grep -Fq '/bin/artisan schedule:run --no-interaction' "$scheduler_unit" \
+            || fail "scheduler does not route through the tested Artisan wrapper"
+          grep -Fq 'EnvironmentFile=/run/secrets/${user}/laravel_env' "$scheduler_unit" \
+            || fail "scheduler does not load laravel_env"
+          ${lib.optionalString (major == "12") ''
+            queue_unit="$units/laravel-queue-priority-1.service"
+            grep -Fq '${pkgs.hello}/bin' "$queue_unit" \
+              || fail "project runtime package is missing from the queue-worker service PATH"
+            grep -Fq '/bin/artisan queue:work' "$queue_unit" \
+              || fail "queue worker does not route through the tested Artisan wrapper"
+            grep -Fq 'EnvironmentFile=/run/secrets/${user}/laravel_env' "$queue_unit" \
+              || fail "queue worker does not load laravel_env"
+          ''}
           for extension in bcmath curl fileinfo mbstring openssl pdo_mysql redis tokenizer xml; do
             "$profile/bin/php@${serviceName}" -m | grep -i -x -q "$extension" \
               || fail "PHP extension $extension is missing"
@@ -109,6 +139,86 @@ let
             "$app_copy/storage/framework/views" \
             "$app_copy/storage/logs" \
             "$app_copy/bootstrap/cache"
+
+
+          # Prove PHP-FPM workers receive the Hostenv-controlled application
+          # PATH even if the master process starts with a hostile PATH. This is
+          # the runtime behavior that EnvironmentFile=laravel_env must not undo.
+          cat > "$app_copy/public/hostenv-path-test.php" <<'PHP'
+<?php
+$output = [];
+$status = 0;
+exec('hello', $output, $status);
+http_response_code($status === 0 ? 200 : 500);
+echo "status=$status\n";
+echo implode("\n", $output), "\n";
+echo "path=", getenv('PATH'), "\n";
+PHP
+          provider_path="$tmpdir/provider-bin"
+          mkdir -p "$provider_path"
+          fpm_test_conf="$tmpdir/phpfpm-test.conf"
+          fpm_test_socket="$tmpdir/phpfpm-test.sock"
+          fpm_test_log="$tmpdir/phpfpm-test.log"
+          sed \
+            -e "s|^error_log = .*|error_log = $fpm_test_log|" \
+            -e "s|^listen = .*|listen = $fpm_test_socket|" \
+            "$fpm_conf" > "$fpm_test_conf"
+          fpm_package=$(readlink -f "$profile/etc/php-fpm.d/${serviceName}-php")
+          fpm_ini=$(readlink -f "$profile/etc/php-fpm.d/${serviceName}.ini")
+          PATH="$provider_path" \
+            "$fpm_package/bin/php-fpm" -F -y "$fpm_test_conf" -c "$fpm_ini" \
+            > "$tmpdir/phpfpm-test.stdout" 2>&1 &
+          fpm_test_pid=$!
+          trap 'kill "$fpm_test_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 50); do
+            [ -S "$fpm_test_socket" ] && break
+            sleep 0.1
+          done
+          if [ ! -S "$fpm_test_socket" ]; then
+            cat "$tmpdir/phpfpm-test.stdout" >&2
+            fail "PHP-FPM did not create the path-test socket"
+          fi
+          if ! fpm_response=$(
+            SCRIPT_FILENAME="$app_copy/public/hostenv-path-test.php" \
+            SCRIPT_NAME=/hostenv-path-test.php \
+            REQUEST_METHOD=GET \
+            REQUEST_URI=/hostenv-path-test.php \
+            SERVER_PROTOCOL=HTTP/1.1 \
+            ${pkgs.fcgi}/bin/cgi-fcgi -bind -connect "$fpm_test_socket"
+          ); then
+            cat "$tmpdir/phpfpm-test.stdout" >&2
+            cat "$fpm_test_log" >&2 2>/dev/null || true
+            fail "FastCGI request to PHP-FPM path test failed"
+          fi
+          printf '%s\n' "$fpm_response" | grep -Fq 'status=0' \
+            || fail "PHP-FPM application process could not execute a declared runtime package"
+          printf '%s\n' "$fpm_response" | grep -Fq 'Hello, world!' \
+            || fail "PHP-FPM application process did not execute pkgs.hello"
+          printf '%s\n' "$fpm_response" | grep -Fq "$provider_path" \
+            || fail "PHP-FPM discarded PATH entries supplied by laravel_env"
+          kill "$fpm_test_pid"
+          wait "$fpm_test_pid" || true
+          trap - EXIT
+
+          # Exercise the actual generated Artisan wrapper with a writable test
+          # application and a laravel_env that deliberately replaces PATH. The
+          # wrapper must restore Hostenv's application service PATH afterwards.
+          artisan_test="$tmpdir/artisan"
+          sed \
+            -e "s|/run/secrets/${user}/laravel_env|$tmpdir/laravel_env|g" \
+            -e "s|$project_app|$app_copy|g" \
+            "$profile/bin/artisan" > "$artisan_test"
+          chmod +x "$artisan_test"
+          cat > "$tmpdir/laravel_env" <<EOF
+APP_ENV=testing
+APP_KEY=base64:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+PATH=$provider_path
+EOF
+          artisan_path_output=$(PATH=/also/does/not/contain/hello "$artisan_test" hostenv:path-test)
+          printf '%s\n' "$artisan_path_output" | grep -Fq 'Hello, world!' \
+            || fail "Artisan lost a declared runtime package after loading laravel_env PATH"
+          printf '%s\n' "$artisan_path_output" | grep -Fq "$provider_path" \
+            || fail "Artisan discarded PATH entries supplied by laravel_env"
 
           ${lib.optionalString cfg.redis.enable ''
             redis_test_dir="$tmpdir/valkey"

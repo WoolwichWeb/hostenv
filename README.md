@@ -25,6 +25,10 @@ Here's an example hosting environment for the
 # hostenv.nix
 { pkgs, config, ... }: {
 
+  # Runtime tools needed by the application are available in its shell and
+  # application services.
+  packages = [ pkgs.pdftk ];
+
   services.drupal.enable = true;
   services.drupal.phpVersion = "8.3";
 
@@ -52,6 +56,11 @@ Here's an example hosting environment for the
   };
 }
 ```
+
+The top-level `packages` option is for executables the application needs at
+runtime, such as `pdftk`, ImageMagick, or FFmpeg. Packages are installed in the
+environment profile and added to application-service PATHs; infrastructure
+services such as MariaDB and Valkey do not inherit them.
 
 And here's the same idea for a simple PHP application using the built‑in
 `php-app` module:

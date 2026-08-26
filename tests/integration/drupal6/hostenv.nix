@@ -1,5 +1,7 @@
 { pkgs, config, lib, ... }: {
 
+  packages = [ pkgs.hello ];
+
   services.drupal.enable = true;
   services.drupal.majorVersion = 6;
   services.drupal.backups.enable = true;

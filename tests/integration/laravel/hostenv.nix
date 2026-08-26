@@ -1,5 +1,7 @@
-{ config, ... }:
+{ config, pkgs, ... }:
 {
+  packages = [ pkgs.hello ];
+
   services.laravel = {
     enable = true;
     backups.enable = true;

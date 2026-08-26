@@ -15,7 +15,14 @@ let
         test -d "$profile/systemd/user" || { echo "missing systemd/user"; exit 1; }
         test -f "$profile/bin/activate" || { echo "missing bin/activate"; exit 1; }
         test -f "$profile/bin/drush" || { echo "missing bin/drush"; exit 1; }
+        test -x "$profile/bin/hello" || { echo "missing project runtime package"; exit 1; }
         test -f "$profile/etc/nginx/nginx.conf" || { echo "missing nginx.conf"; exit 1; }
+        cronUnit="$profile/systemd/user/cron-${env.config.services.drupal.codebase.name}.service"
+        test -f "$cronUnit" || { echo "missing Drupal 6 cron unit"; exit 1; }
+        grep -Fq '${pkgs.hello}/bin' "$cronUnit" || {
+          echo "project runtime package missing from Drupal 6 cron PATH"
+          exit 1
+        }
       '';
     };
   };

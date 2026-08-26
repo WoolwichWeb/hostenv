@@ -7,7 +7,7 @@
       failedAssertions = map (x: x.message) (builtins.filter (x: !x.assertion) config.assertions);
 
       inherit (lib) splitString concatStringsSep mkOption mkPackageOption mkMerge
-        mkBefore mkAfter;
+        mkAfter;
       inherit (lib.trivial) showWarnings;
 
       performAssertions =
@@ -29,6 +29,19 @@
     {
       options = {
         programs.ssh.package = mkPackageOption pkgs "opensshWithKerberos" { };
+
+        packages = mkOption {
+          type = types.listOf types.package;
+          default = [ ];
+          example = lib.literalExpression "[ pkgs.pdftk ]";
+          description = ''
+            Packages required by the hosted application at runtime. These are
+            added to the environment profile and made available on the PATH of
+            application services such as PHP-FPM, framework schedulers, and
+            queue workers. They are also available while a deployment is being
+            activated, before the new environment profile is installed.
+          '';
+        };
 
         assertions = mkOption {
           type = types.listOf types.unspecified;
@@ -87,17 +100,26 @@
 
       config =
         let
+          runtimePackagePath = lib.makeBinPath config.packages;
           activateScript = pkgs.writeShellScriptBin "activate" config.activate;
         in
         {
           activate = performAssertions (mkMerge [
-            (mkBefore ''
+            (lib.mkOrder 0 ''
               ## Top level activation script.
+              ${lib.optionalString (config.packages != [ ]) ''
+                # Activation runs before the new profile is installed. Make this
+                # deployment's runtime packages available immediately instead
+                # of relying on the previous profile's PATH.
+                export PATH=${lib.escapeShellArg runtimePackagePath}:"$PATH"
+              ''}
             '')
             (mkAfter ''
               nix profile remove .hostenv >/dev/null 2>&1 || true
             '')
           ]);
+
+          profile = config.packages;
 
           activatePackage = pkgs.buildEnv {
             name = "hostenv-profile";

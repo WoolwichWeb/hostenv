@@ -42,6 +42,7 @@
     };
 
     activate = lib.mkOption { type = lib.types.str; default = ""; };
+    packages = lib.mkOption { type = lib.types.listOf lib.types.package; default = [ ]; };
     profile = lib.mkOption { type = lib.types.listOf lib.types.path; default = [ ]; };
   };
 }

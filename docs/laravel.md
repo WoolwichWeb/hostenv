@@ -59,6 +59,27 @@ its values take precedence over that file. Hostenv does not parse, whitelist,
 or validate the keys in `laravel_env`; Laravel and any configured external
 services own their meaning.
 
+## Runtime packages
+
+Use the top-level `packages` option when Laravel needs an external executable at
+runtime. For example, to make `pdftk` available to application code:
+
+```nix
+{ pkgs, ... }:
+{
+  packages = [ pkgs.pdftk ];
+  services.laravel.enable = true;
+}
+```
+
+Hostenv adds these packages to the environment profile and to the PATH used by
+PHP-FPM, Laravel scheduler jobs, Laravel queue workers, deployment activation,
+and the server-side `artisan` command. If `laravel_env` defines `PATH`,
+Hostenv prepends the paths for declared runtime packages after loading the file,
+so those packages remain available while any additional PATH entries are
+preserved. Project packages are application dependencies; they are not added to
+infrastructure daemons such as MariaDB or Valkey.
+
 ## Application data and activation
 
 `storage` and `bootstrap/cache` are links to writable Hostenv-managed paths.

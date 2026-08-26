@@ -236,7 +236,7 @@
             wants = lib.mkDefault [ "network-online.target" ];
             after = lib.mkDefault [ "network-online.target" ];
             restartIfChanged = lib.mkDefault false;
-            path = [ pkgs.bash ];
+            path = [ pkgs.bash ] ++ config.packages;
             serviceConfig = lib.mkDefault {
               Type = "oneshot";
               ExecStart = "${drush}/bin/drush core:cron";
