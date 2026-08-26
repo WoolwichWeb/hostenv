@@ -20,7 +20,7 @@ let
     , nodesPath
     , secretsFile
     , secretsPath
-    , sopsTopLevelKeys
+    , sopsSecretKeys
     , nodeModules ? [ ]
     , nodeSystems ? { }
     , ...
@@ -86,42 +86,49 @@ let
             (environmentWith name).hostenv.organisation
             + "_" + (environmentWith name).hostenv.project;
           envOnly = packages.lib.filterAttrs (name: _: builtins.elem name envUsers) userInfo.users.users;
+          secretNamesFor = name:
+            lib.unique (
+              [ "backups_secret" "backups_env" ]
+              ++ ((environmentWith name).requiredSecretFiles or [ ])
+            );
+          resolveSecretKey = name: secretName:
+            let
+              scopes = [ name (orgProjectFromName name) (orgFromName name) ];
+              matchingScopes = builtins.filter
+                (scope:
+                  builtins.hasAttr scope sopsSecretKeys
+                  && builtins.elem secretName sopsSecretKeys.${scope}
+                )
+                scopes;
+            in
+            if matchingScopes != [ ] then
+              "${builtins.head matchingScopes}/${secretName}"
+            else
+              throw ''
+                The secrets file does not contain '${secretName}' for '${name}'.
+
+                From the hosting root directory, run `sops edit ${secretsFile}`
+                and add the key at one of these locations:
+
+                - '${name}/${secretName}' (this environment)
+                - '${orgProjectFromName name}/${secretName}' (this project)
+                - '${orgFromName name}/${secretName}' (this organisation).
+              '';
         in
         {
           sops.secrets = packages.lib.concatMapAttrs
             (
               name: _user:
-                let
-                  name' =
-                    if builtins.elem name sopsTopLevelKeys
-                    then name
-                    else if builtins.elem (orgProjectFromName name) sopsTopLevelKeys
-                    then orgProjectFromName name
-                    else if builtins.elem (orgFromName name) sopsTopLevelKeys
-                    then orgFromName name
-                    else
-                      throw ''
-                        The secrets file does not contain any secrets for '${name}'
-
-                        From the hosting root directory, run `sops edit ${secretsFile}` and add an entry for:
-
-                        - '${name}' (this environment) or
-                        - '${orgProjectFromName name}' (this project) or
-                        - '${orgFromName name}' (this organisation).
-                      '';
-                in
-                {
-                  "${name}/backups_secret" = {
-                    owner = name;
-                    group = name;
-                    key = "${name'}/backups_secret";
-                  };
-                  "${name}/backups_env" = {
-                    owner = name;
-                    group = name;
-                    key = "${name'}/backups_env";
-                  };
-                }
+                builtins.listToAttrs (map
+                  (secretName: {
+                    name = "${name}/${secretName}";
+                    value = {
+                      owner = name;
+                      group = name;
+                      key = resolveSecretKey name secretName;
+                    };
+                  })
+                  (secretNamesFor name))
             )
             envOnly;
         };
@@ -167,7 +174,7 @@ let
     , nodesPath
     , secretsFile
     , secretsPath
-    , sopsTopLevelKeys
+    , sopsSecretKeys
     , nodeModules ? [ ]
     , nodeSystems ? { }
     , nodeAddresses ? { }
@@ -182,7 +189,7 @@ let
       pkgs = forEachSystem (system: import nixpkgs { inherit system; });
 
       nixosSystem = node: providerNixosSystem {
-        inherit config node nixpkgs pkgs inputs nodesPath secretsFile secretsPath sopsTopLevelKeys nodeSystems nodeModules;
+        inherit config node nixpkgs pkgs inputs nodesPath secretsFile secretsPath sopsSecretKeys nodeSystems nodeModules;
       };
 
       nodes = builtins.mapAttrs

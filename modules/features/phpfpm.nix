@@ -156,6 +156,17 @@
               '';
             };
     
+            environmentFile = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = ''
+                Optional systemd-compatible environment file loaded by the
+                PHP-FPM service. When set, PHP-FPM inherits those variables and
+                passes them through to workers instead of clearing the process
+                environment.
+              '';
+            };
+
             settings = lib.mkOption {
               type = with lib.types; attrsOf (oneOf [ str int bool ]);
               default = { };
@@ -249,9 +260,11 @@
             socket = "${config.hostenv.runtimeDir}/${name}.sock";
             phpOptions = lib.mkBefore cfg.phpOptions;
     
-            settings = lib.mapAttrs (_n: lib.mkDefault) {
+            settings = lib.mapAttrs (_n: lib.mkDefault) ({
               listen = poolCfg.socket;
-            };
+            } // lib.optionalAttrs (poolCfg.environmentFile != null) {
+              clear_env = false;
+            });
           };
         };
     in
@@ -450,13 +463,15 @@
                   cfgFile = fpmCfgFile pool poolOpts;
                   iniFile = phpIni poolOpts;
                 in
-                {
+                ({
                   Slice = "app-phpfpm.slice";
                   Type = "notify";
                   ExecStart = "${poolOpts.effectivePhpPackage}/bin/php-fpm -y ${cfgFile} -c ${iniFile}";
                   ExecReload = "${pkgs.coreutils}/bin/kill -USR2 $MAINPID";
                   Restart = "always";
-                };
+                } // lib.optionalAttrs (poolOpts.environmentFile != null) {
+                  EnvironmentFile = poolOpts.environmentFile;
+                });
             }
           )
           cfg.pools;

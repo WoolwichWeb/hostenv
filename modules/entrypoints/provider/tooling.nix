@@ -1,47 +1,59 @@
-{ inputs, lib, config, ... }:
+{
+  inputs,
+  lib,
+  config,
+  ...
+}:
 let
   flakeParts = inputs.flake-parts.lib;
   cfg = config.provider;
   providerPlan = config.flake.lib.provider.plan;
   hostenvInputs = config.flake.lib.hostenvInputs;
   readYaml = config.flake.lib.hostenv.readYaml;
-  hostenvInput =
-    hostenvInputs.requireInput {
-      inherit inputs;
-      name = "hostenv";
-      context = "provider tooling";
-    };
+  hostenvInput = hostenvInputs.requireInput {
+    inherit inputs;
+    name = "hostenv";
+    context = "provider tooling";
+  };
 
   hostenvRoot = hostenvInput.outPath;
   providerRoot = hostenvRoot + "/provider";
 
 in
 {
-  options.perSystem = flakeParts.mkPerSystemOption ({ lib, ... }: {
-    options.provider.haskellDevPackages = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      default = [
-        "aeson"
-        "aeson-pretty"
-        "containers"
-        "text"
-        "text-conversions"
-        "bytestring"
-        "optparse-applicative"
-        "turtle"
-      ];
-      description = "Haskell package names to include in the dev shell for provider tooling.";
-    };
+  options.perSystem = flakeParts.mkPerSystemOption (
+    { lib, ... }: {
+      options.provider.haskellDevPackages = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [
+          "aeson"
+          "aeson-pretty"
+          "containers"
+          "text"
+          "text-conversions"
+          "bytestring"
+          "optparse-applicative"
+          "turtle"
+        ];
+        description = "Haskell package names to include in the dev shell for provider tooling.";
+      };
 
-    options.provider.planPaths = lib.mkOption {
-      type = lib.types.attrsOf lib.types.path;
-      default = { };
-      description = "Generated plan/state/flake store paths for provider tooling.";
-    };
-  });
+      options.provider.planPaths = lib.mkOption {
+        type = lib.types.attrsOf lib.types.path;
+        default = { };
+        description = "Generated plan/state/flake store paths for provider tooling.";
+      };
+    }
+  );
 
   config = lib.mkIf cfg.enable {
-    perSystem = { system, pkgs, config, ... }:
+    perSystem =
+      {
+        system,
+        pkgs,
+        config,
+        ...
+      }:
       let
         providerHsDeps = p: map (name: p.${name}) config.provider.haskellDevPackages;
         providerGhc = pkgs.haskellPackages.ghcWithPackages providerHsDeps;
@@ -55,46 +67,49 @@ in
           '';
         };
 
-        # Extract the top-level secret names while generating the plan so
-        # node configuration can use them without parsing YAML itself.
-        sopsTopLevelKeys =
+        # Extract secret names while generating the plan so node configuration
+        # can resolve per-secret scope fallbacks without parsing YAML itself.
+        sopsSecretKeys =
           let
             secretsPath = inputs.self + "/${cfg.secretsFile}";
+            sopsKeys = readYaml pkgs secretsPath;
           in
-            builtins.attrNames (readYaml pkgs secretsPath);
+          pkgs.lib.mapAttrs (
+            _: secrets: if builtins.isAttrs secrets then builtins.attrNames secrets else [ ]
+          ) sopsKeys;
 
-        providerGenerator =
-          providerPlan
-            {
-              inputs = inputs // { hostenv = hostenvInput; };
-              inherit system;
-              lib = pkgs.lib;
-              pkgs = pkgs;
-              letsEncrypt = cfg.letsEncrypt;
-              deployPublicKeys = cfg.deployPublicKeys;
-              deployUser = cfg.deployUser;
-              nixSigning = cfg.nixSigning;
-              hostenvHostname = cfg.hostenvHostname;
-              nodeFor = cfg.nodeFor;
-              nodeSystems = cfg.nodeSystems;
-              nodeAddresses = cfg.nodeAddresses;
-              nodeSshPorts = cfg.nodeSshPorts;
-              nodeSshOpts = cfg.nodeSshOpts;
-              nodeRemoteBuild = cfg.nodeRemoteBuild;
-              nodeMagicRollback = cfg.nodeMagicRollback;
-              nodeAutoRollback = cfg.nodeAutoRollback;
-              nodeModules = cfg.nodeModules;
-              statePath = cfg.statePath;
-              planPath = cfg.planPath;
-              secretsFile = cfg.secretsFile;
-              inherit sopsTopLevelKeys;
-              cloudflare = cfg.cloudflare;
-              planSource = cfg.planSource;
-              generatedFlake = cfg.generatedFlake;
-              deploy = cfg.deploy;
-              serviceResolution = cfg.serviceResolution;
-              cache = cfg.cache;
-            };
+        providerGenerator = providerPlan {
+          inputs = inputs // {
+            hostenv = hostenvInput;
+          };
+          inherit system;
+          lib = pkgs.lib;
+          pkgs = pkgs;
+          letsEncrypt = cfg.letsEncrypt;
+          deployPublicKeys = cfg.deployPublicKeys;
+          deployUser = cfg.deployUser;
+          nixSigning = cfg.nixSigning;
+          hostenvHostname = cfg.hostenvHostname;
+          nodeFor = cfg.nodeFor;
+          nodeSystems = cfg.nodeSystems;
+          nodeAddresses = cfg.nodeAddresses;
+          nodeSshPorts = cfg.nodeSshPorts;
+          nodeSshOpts = cfg.nodeSshOpts;
+          nodeRemoteBuild = cfg.nodeRemoteBuild;
+          nodeMagicRollback = cfg.nodeMagicRollback;
+          nodeAutoRollback = cfg.nodeAutoRollback;
+          nodeModules = cfg.nodeModules;
+          statePath = cfg.statePath;
+          planPath = cfg.planPath;
+          secretsFile = cfg.secretsFile;
+          inherit sopsSecretKeys;
+          cloudflare = cfg.cloudflare;
+          planSource = cfg.planSource;
+          generatedFlake = cfg.generatedFlake;
+          deploy = cfg.deploy;
+          serviceResolution = cfg.serviceResolution;
+          cache = cfg.cache;
+        };
       in
       {
         packages = {
@@ -132,7 +147,8 @@ in
         };
       };
 
-    flake.lib.provider.planPaths = lib.genAttrs config.systems (system:
-      config.allSystems.${system}.provider.planPaths);
+    flake.lib.provider.planPaths = lib.genAttrs config.systems (
+      system: config.allSystems.${system}.provider.planPaths
+    );
   };
 }

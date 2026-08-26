@@ -15,6 +15,23 @@ This template boots a provider flake that consumes hostenv projects and generate
 8. Run `nix run .#hostenv-provider -- plan` to write `generated/{flake.nix,plan.json,state.json}`.
 9. Deploy using your tool of choice (e.g. deploy-rs) pointing at `generated/flake.nix`.
 
+Framework services may request named runtime files. Laravel requests
+`laravel_env`, so add a shell/systemd-compatible multiline value at environment,
+project, or organisation scope:
+
+```yaml
+project-main-a1b2c3d:
+  backups_secret: ENC[AES256_GCM,...]
+  backups_env: ENC[AES256_GCM,...]
+  laravel_env: |
+    APP_KEY=base64:replace-with-the-generated-application-key
+    MAIL_PASSWORD=optional-external-service-password
+```
+
+The provider projects it to `/run/secrets/<environment-user>/laravel_env` and
+owns it as that user. Projects can request restrictive names only; they cannot
+control secret paths, modes, owners, or NixOS configuration.
+
 ## Admin UI template
 
 When the provider UI is enabled (GitLab SSO), it regenerates `flake.nix` from

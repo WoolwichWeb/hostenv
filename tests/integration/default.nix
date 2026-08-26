@@ -4,6 +4,7 @@
 (import ./drupal/tests.nix { inherit pkgs envs; })
 // (import ./drupal7/tests.nix { inherit pkgs envs; })
 // (import ./drupal6/tests.nix { inherit pkgs envs; })
+// (import ./laravel/tests.nix { inherit pkgs envs; })
 // { hostenv-cli-list = import ./cli-list.nix { inherit pkgs makeHostenv; }; }
 // { hostenv-cli-service-wrappers = import ./cli-wrappers.nix { inherit pkgs; env = envs.drupalProduction; }; }
 // { hostenv-cli-project-upload = import ./cli-deploy.nix { inherit pkgs makeHostenv; }; }

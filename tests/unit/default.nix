@@ -15,3 +15,4 @@
   // (import ./mysql-backups-dependency.nix { inherit pkgs makeHostenv; })
   // (import ./migrate-tags.nix { inherit pkgs makeHostenv; })
   // (import ./php-app-migrate.nix { inherit pkgs makeHostenv; })
+  // (import ./required-secret-files.nix { inherit pkgs makeHostenv; })

@@ -69,6 +69,7 @@ let
       environments.main = {
         enable = true;
         type = "production";
+        requiredSecretFiles = [ "laravel_env" ];
         virtualHosts."${hostName}" = {
           enableLetsEncrypt = false;
         };
@@ -88,10 +89,29 @@ let
     cache_auth_password: "dummy"
     ${envName}:
       backups_secret: "dummy"
+    acme_demo:
+      backups_env: "dummy"
+    acme:
+      laravel_env: |
+        APP_KEY=base64:provider-test-key
+        MAIL_PASSWORD=external-service-password
+  '';
+
+  missingRequiredSecretPath = pkgs.writeText "secrets-missing-required.yaml" ''
+    access_tokens: ""
+    cache_auth_password: "dummy"
+    ${envName}:
+      backups_secret: "dummy"
+    acme_demo:
       backups_env: "dummy"
   '';
 
-  sopsTopLevelKeys = [ envName ];
+  sopsSecretKeys = {
+    ${envName} = [ "backups_secret" ];
+    acme_demo = [ "backups_env" ];
+    acme = [ "laravel_env" ];
+  };
+  missingRequiredSecretKeys = builtins.removeAttrs sopsSecretKeys [ "acme" ];
 
   statePath = pkgs.writers.writeJSON "state.json" { };
   lockPath = pkgs.writers.writeJSON "flake.lock" {
@@ -251,7 +271,7 @@ let
       nodesPath
       secretsFile
       secretsPath
-      sopsTopLevelKeys
+      sopsSecretKeys
       ;
     inputs = inputsForSystem;
     nixpkgs = inputs.nixpkgs;
@@ -267,7 +287,7 @@ let
       nodesPath
       secretsFile
       secretsPath
-      sopsTopLevelKeys
+      sopsSecretKeys
       ;
     node = nodeName;
     inputs = inputsForSystem;
@@ -284,7 +304,7 @@ let
       nodesPath
       secretsFile
       secretsPath
-      sopsTopLevelKeys
+      sopsSecretKeys
       ;
     node = nodeName;
     inputs = inputsForSystem;
@@ -299,7 +319,7 @@ let
       nodesPath
       secretsFile
       secretsPath
-      sopsTopLevelKeys
+      sopsSecretKeys
       ;
     node = nodeName;
     inputs = inputsForSystem;
@@ -314,7 +334,7 @@ let
       nodesPath
       secretsFile
       secretsPath
-      sopsTopLevelKeys
+      sopsSecretKeys
       ;
     node = nodeName;
     inputs = inputsForSystem;
@@ -329,7 +349,7 @@ let
       nodesPath
       secretsFile
       secretsPath
-      sopsTopLevelKeys
+      sopsSecretKeys
       ;
     node = nodeName;
     inputs = inputsForSystem;
@@ -344,7 +364,7 @@ let
       nodesPath
       secretsFile
       secretsPath
-      sopsTopLevelKeys
+      sopsSecretKeys
       ;
     node = nodeName;
     inputs = inputsForSystem;
@@ -352,6 +372,19 @@ let
     pkgs = pkgsBySystem;
     localSystem = system;
   };
+  missingRequiredSecretEval = builtins.tryEval (
+    (nixosSystem {
+      config = config;
+      inherit nodeSystems nodesPath secretsFile;
+      secretsPath = missingRequiredSecretPath;
+      sopsSecretKeys = missingRequiredSecretKeys;
+      node = nodeName;
+      inputs = inputsForSystem;
+      nixpkgs = inputs.nixpkgs;
+      pkgs = pkgsBySystem;
+      localSystem = system;
+    }).config.sops.secrets."${envName}/laravel_env".key
+  );
 
   nginxOk = systemEval.config.services.nginx.enable == true;
   vhostOk = builtins.hasAttr hostName systemEval.config.services.nginx.virtualHosts;
@@ -400,8 +433,19 @@ let
   secretsOk =
     builtins.hasAttr "${envName}/backups_secret" systemEval.config.sops.secrets
     && builtins.hasAttr "${envName}/backups_env" systemEval.config.sops.secrets
+    && builtins.hasAttr "${envName}/laravel_env" systemEval.config.sops.secrets
     && !(builtins.hasAttr "deploy/backups_secret" systemEval.config.sops.secrets)
-    && !(builtins.hasAttr "deploy/backups_env" systemEval.config.sops.secrets);
+    && !(builtins.hasAttr "deploy/backups_env" systemEval.config.sops.secrets)
+    && systemEval.config.sops.secrets."${envName}/backups_secret".key == "${envName}/backups_secret"
+    && systemEval.config.sops.secrets."${envName}/backups_env".key == "acme_demo/backups_env"
+    && systemEval.config.sops.secrets."${envName}/laravel_env".key == "acme/laravel_env"
+    && systemEval.config.sops.secrets."${envName}/laravel_env".owner == envName
+    && systemEval.config.sops.secrets."${envName}/laravel_env".group == envName
+    &&
+      systemEval.config.sops.secrets."${envName}/laravel_env".path
+      == "/run/secrets/${envName}/laravel_env";
+  requiredSecretsInPlanOk =
+    generatedPlan.environments.${envName}.requiredSecretFiles == [ "laravel_env" ];
   wheelGroupExists = systemEval.config.users.groups ? wheel;
   wheelPasswordless =
     let
@@ -456,6 +500,8 @@ in
     && deployKeysOk
     && trustedPublicKeysOk
     && secretsOk
+    && requiredSecretsInPlanOk
+    && !missingRequiredSecretEval.success
     && deploySystemSshUserOk
     && deployEnvSshUserOk
     && deployEnvProfileUserOk
