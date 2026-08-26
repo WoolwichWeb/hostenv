@@ -46,7 +46,13 @@
         DB_DATABASE = cfg.databaseName;
         DB_USERNAME = config.hostenv.userName;
         DB_PASSWORD = "";
-      } // cfg.environmentVariables;
+      }
+      // lib.optionalAttrs cfg.redis.enable {
+        REDIS_CLIENT = "phpredis";
+        REDIS_HOST = config.services.redis.socket;
+        REDIS_PORT = "0";
+      }
+      // cfg.environmentVariables;
       generatedEnvFile = pkgs.writeText "laravel.env" (
         lib.concatStringsSep "\n"
           (
@@ -194,8 +200,10 @@
                   description = "Laravel queue worker ${workerName} (${toString processNumber}/${toString worker.processes})";
                   wantedBy = [ "laravel-queue.target" ];
                   partOf = [ "laravel-queue.target" ];
-                  wants = [ "network-online.target" "mysql.service" ];
-                  after = [ "network-online.target" "mysql.service" ];
+                  wants = [ "network-online.target" "mysql.service" ]
+                    ++ lib.optional cfg.redis.enable "redis.service";
+                  after = [ "network-online.target" "mysql.service" ]
+                    ++ lib.optional cfg.redis.enable "redis.service";
                   serviceConfig = {
                     ExecStart = "${artisan}/bin/artisan ${lib.escapeShellArgs args}";
                     EnvironmentFile = secretFile;
@@ -383,6 +391,10 @@
             assertion = builtins.pathExists (config.hostenv.root + /composer.lock);
             message = "services.laravel.composer.enable requires composer.lock in hostenv.root";
           }
+          ++ lib.optional cfg.redis.enable {
+            assertion = config.services.redis.enable;
+            message = "services.laravel.redis.enable requires services.redis.enable = true";
+          }
           ++ lib.optional cfg.backups.enable {
             assertion = config.services.mysql.backups.enable;
             message = "services.laravel.backups.enable requires services.mysql.backups.enable = true";
@@ -476,6 +488,8 @@
           };
         };
 
+        services.redis.enable = lib.mkDefault cfg.redis.enable;
+
         services.mysql = lib.mkMerge [
           mysqlDefaults
           (lib.mkIf cfg.backups.enable {
@@ -515,8 +529,10 @@
           (lib.mkIf cfg.scheduler.enable {
             "laravel-scheduler-${cfg.codebase.name}" = {
               description = "Run the Laravel scheduler";
-              wants = [ "network-online.target" "mysql.service" ];
-              after = [ "network-online.target" "mysql.service" ];
+              wants = [ "network-online.target" "mysql.service" ]
+                ++ lib.optional cfg.redis.enable "redis.service";
+              after = [ "network-online.target" "mysql.service" ]
+                ++ lib.optional cfg.redis.enable "redis.service";
               restartIfChanged = false;
               serviceConfig = {
                 Type = "oneshot";
@@ -526,6 +542,12 @@
             };
           })
           workerServices
+          (lib.mkIf cfg.redis.enable {
+            "phpfpm-${cfg.codebase.name}" = {
+              wants = [ "redis.service" ];
+              after = [ "redis.service" ];
+            };
+          })
         ];
 
         systemd.timers = lib.mkIf cfg.scheduler.enable {
@@ -606,6 +628,21 @@
               echo "hostenv: MariaDB did not create $mysql_sock" >&2
               exit 1
             fi
+
+            ${lib.optionalString cfg.redis.enable ''
+              redis_sock=${lib.escapeShellArg config.services.redis.socket}
+              # Starting an already-running service is a no-op. Starting it
+              # unconditionally also repairs the case where a stale socket was
+              # left behind while the service itself is inactive.
+              if ! ${config.systemd.package}/bin/systemctl --user start redis.service; then
+                echo "hostenv: failed to start Valkey redis.service" >&2
+                exit 1
+              fi
+              if [ ! -S "$redis_sock" ]; then
+                echo "hostenv: Valkey reported ready without creating $redis_sock" >&2
+                exit 1
+              fi
+            ''}
 
             ${lib.optionalString cfg.migrations.enable ''
               ${artisan}/bin/artisan migrate --force

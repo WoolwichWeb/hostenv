@@ -9,7 +9,8 @@ let
     "12" = "12.68.0";
   };
 
-  profileCheck = major: env:
+  profileCheck =
+    major: env:
     let
       serviceName = "laravel${major}";
       cfg = env.config.services.laravel;
@@ -19,7 +20,11 @@ let
       "laravel-${major}-profile" = asserts.assertRun {
         name = "laravel-${major}-profile";
         inherit env;
-        buildInputs = [ pkgs.jq pkgs.nginx pkgs.rsync ];
+        buildInputs = [
+          pkgs.jq
+          pkgs.nginx
+          pkgs.rsync
+        ];
         script = ''
           fail() {
             printf 'Laravel ${major} fixture failed: %s\n' "$1" >&2
@@ -52,6 +57,17 @@ let
             || fail "MariaDB socket default is missing"
           grep -Fq 'HOSTENV_FIXTURE="non-secret"' "$app/.env" \
             || fail "additional non-secret environment value is missing"
+          ${lib.optionalString cfg.redis.enable ''
+            grep -Fq 'REDIS_CLIENT="phpredis"' "$app/.env" \
+              || fail "PhpRedis client default is missing"
+            grep -Fq 'REDIS_HOST="${env.config.services.redis.socket}"' "$app/.env" \
+              || fail "Redis Unix socket default is missing"
+            grep -Fq 'REDIS_PORT="0"' "$app/.env" \
+              || fail "Redis TCP port was not disabled in Laravel config"
+            if grep -Eq '^(CACHE_STORE|CACHE_DRIVER|SESSION_DRIVER|QUEUE_CONNECTION)="redis"$' "$app/.env"; then
+              fail "enabling Redis unexpectedly changed an application driver"
+            fi
+          ''}
           if grep -Fq 'APP_KEY=' "$app/.env"; then
             fail "APP_KEY must not be written to the immutable generated .env"
           fi
@@ -71,7 +87,7 @@ let
           printf '%s\n' "$nginx_output" | grep -Fq 'syntax is ok' || fail "nginx syntax check failed"
 
           grep -Fq 'clear_env = no' "$fpm_conf" || fail "PHP-FPM still clears inherited variables"
-          for extension in bcmath curl fileinfo mbstring openssl pdo_mysql tokenizer xml; do
+          for extension in bcmath curl fileinfo mbstring openssl pdo_mysql redis tokenizer xml; do
             "$profile/bin/php@${serviceName}" -m | grep -i -x -q "$extension" \
               || fail "PHP extension $extension is missing"
           done
@@ -93,6 +109,58 @@ let
             "$app_copy/storage/framework/views" \
             "$app_copy/storage/logs" \
             "$app_copy/bootstrap/cache"
+
+          ${lib.optionalString cfg.redis.enable ''
+            redis_test_dir="$tmpdir/valkey"
+            redis_test_socket="$redis_test_dir/redis.sock"
+            mkdir -p "$redis_test_dir"
+            cat > "$redis_test_dir/valkey.conf" <<EOF
+            port 0
+            tls-port 0
+            cluster-enabled no
+            unixsocket $redis_test_socket
+            unixsocketperm 700
+            dir $redis_test_dir
+            appendonly no
+            daemonize no
+            supervised no
+            logfile ""
+            EOF
+            "$profile/bin/valkey-server" "$redis_test_dir/valkey.conf" \
+              > "$redis_test_dir/valkey.log" 2>&1 &
+            redis_test_pid=$!
+            trap 'kill "$redis_test_pid" 2>/dev/null || true' EXIT
+            for _ in $(seq 1 50); do
+              [ -S "$redis_test_socket" ] && break
+              sleep 0.1
+            done
+            if [ ! -S "$redis_test_socket" ]; then
+              cat "$redis_test_dir/valkey.log" >&2
+              fail "Valkey did not create the Laravel test socket"
+            fi
+
+            # Exercise the generated Laravel/PhpRedis convention through the
+            # framework itself, not just the raw Redis extension. The fixture
+            # copy is writable, so point only this test copy at the temporary
+            # socket while preserving REDIS_CLIENT=phpredis and REDIS_PORT=0.
+            sed -i "s|^REDIS_HOST=.*|REDIS_HOST=\"$redis_test_socket\"|" "$app_copy/.env"
+            LARAVEL_TEST_APP="$app_copy" "$profile/bin/php@${serviceName}" -r '
+              chdir(getenv("LARAVEL_TEST_APP"));
+              require "vendor/autoload.php";
+              $app = require "bootstrap/app.php";
+              $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+              $redis = $app->make("redis")->connection();
+              $redis->set("hostenv:laravel-socket-test", "ok");
+              if ($redis->get("hostenv:laravel-socket-test") !== "ok") {
+                  fwrite(STDERR, "Laravel Redis Unix socket round-trip failed\n");
+                  exit(1);
+              }
+            ' || fail "Laravel could not use the Valkey Unix socket"
+
+            "$profile/bin/valkey-cli" -s "$redis_test_socket" shutdown nosave
+            wait "$redis_test_pid"
+            trap - EXIT
+          ''}
 
           version_output=$("$profile/bin/php@${serviceName}" "$app_copy/artisan" --version)
           printf '%s\n' "$version_output" | grep -Fq 'Laravel Framework ${frameworkVersions.${major}}' \
@@ -120,9 +188,9 @@ let
   cfgDev = envs.laravelDev.config;
   activation12 = cfg12.activate;
   backups12 = cfg12.services.restic.backups;
-  queueServiceNames = builtins.filter
-    (name: lib.hasPrefix "laravel-queue-" name)
-    (builtins.attrNames cfg12.systemd.services);
+  queueServiceNames = builtins.filter (name: lib.hasPrefix "laravel-queue-" name) (
+    builtins.attrNames cfg12.systemd.services
+  );
   priorityUnit = cfg12.systemd.services."laravel-queue-priority-1";
   queueContract =
     builtins.length queueServiceNames == 3
@@ -140,32 +208,50 @@ in
 profileCheck "10" envs.laravel10
 // profileCheck "11" envs.laravel11
 // profileCheck "12" envs.laravel12
-  // {
-  laravel-contracts = asserts.assertTrue "laravel-contracts"
-    (
-      cfg10.environments.main.requiredSecretFiles == [ "laravel_env" ]
-      && cfg10.services.laravel.queue.workers == { }
-      && !(builtins.any (name: lib.hasPrefix "laravel-queue-" name) (builtins.attrNames cfg10.systemd.services))
-      && queueContract
-      && cfg12.services.mysql.settings.mysqld.skip-networking == true
-      && cfg12.services.mysql.ensureDatabases == [ "laravel" ]
-      && backups12 ? laravel
-      && backups12 ? "laravel-migrate"
-      && lib.elem "laravel-migrate" backups12."laravel-migrate".tags
-      && lib.elem cfg12.services.laravel.storageDir backups12.laravel.paths
-      && lib.hasPrefix "laravel_secret_file=" activation12
-      && lib.hasInfix "HOSTENV_RESTORE_LARAVEL_BEGIN" activation12
-      && lib.hasInfix "restore_key=\"laravel-migrate\"" activation12
-      && lib.hasInfix "del(.snapshots" activation12
-      && lib.hasInfix "artisan migrate --force" activation12
-      && lib.hasInfix "artisan optimize" activation12
-      && !(lib.hasInfix "APP_KEY" activation12)
-      && cfg10.environments.main.deploymentVerification.checks != [ ]
-      && (builtins.head cfg10.environments.main.deploymentVerification.checks).request.path == "/"
-      && cfg12.environments.main.deploymentVerification.checks != [ ]
-      && (builtins.head cfg12.environments.main.deploymentVerification.checks).request.path == "/up"
-    )
-    "Laravel runtime, queue, migration, backup, secret, and deployment-verification contracts should evaluate";
+// {
+  laravel-contracts =
+    asserts.assertTrue "laravel-contracts"
+      (
+        cfg10.environments.main.requiredSecretFiles == [ "laravel_env" ]
+        && cfg10.services.laravel.queue.workers == { }
+        && !(builtins.any (name: lib.hasPrefix "laravel-queue-" name) (
+          builtins.attrNames cfg10.systemd.services
+        ))
+        && queueContract
+        && cfg12.services.mysql.settings.mysqld.skip-networking == true
+        && cfg12.services.laravel.redis.enable
+        && cfg12.services.redis.enable
+        && cfg12.services.redis.package == pkgs.valkey
+        && cfg12.services.redis.socket == "${cfg12.hostenv.runtimeDir}/redis.sock"
+        && cfg12.services.redis.appendOnly
+        && lib.elem "redis.service" cfg12.systemd.services."phpfpm-laravel12".wants
+        && lib.elem "redis.service" cfg12.systemd.services."phpfpm-laravel12".after
+        && lib.elem "redis.service" cfg12.systemd.services."laravel-scheduler-laravel12".wants
+        && lib.elem "redis.service" cfg12.systemd.services."laravel-scheduler-laravel12".after
+        && lib.elem "redis.service" priorityUnit.wants
+        && lib.elem "redis.service" priorityUnit.after
+        && lib.hasInfix cfg12.services.redis.socket cfg12.systemd.services.redis.postStart
+        && lib.hasInfix cfg12.services.redis.socket cfg12.systemd.services.redis.postStop
+        && lib.hasInfix "systemctl --user start redis.service" activation12
+        && lib.hasInfix "Valkey reported ready without creating" activation12
+        && cfg12.services.mysql.ensureDatabases == [ "laravel" ]
+        && backups12 ? laravel
+        && backups12 ? "laravel-migrate"
+        && lib.elem "laravel-migrate" backups12."laravel-migrate".tags
+        && lib.elem cfg12.services.laravel.storageDir backups12.laravel.paths
+        && lib.hasPrefix "laravel_secret_file=" activation12
+        && lib.hasInfix "HOSTENV_RESTORE_LARAVEL_BEGIN" activation12
+        && lib.hasInfix "restore_key=\"laravel-migrate\"" activation12
+        && lib.hasInfix "del(.snapshots" activation12
+        && lib.hasInfix "artisan migrate --force" activation12
+        && lib.hasInfix "artisan optimize" activation12
+        && !(lib.hasInfix "APP_KEY" activation12)
+        && cfg10.environments.main.deploymentVerification.checks != [ ]
+        && (builtins.head cfg10.environments.main.deploymentVerification.checks).request.path == "/"
+        && cfg12.environments.main.deploymentVerification.checks != [ ]
+        && (builtins.head cfg12.environments.main.deploymentVerification.checks).request.path == "/up"
+      )
+      "Laravel runtime, queue, migration, backup, secret, and deployment-verification contracts should evaluate";
 
   laravel-development-defaults = asserts.assertRun {
     name = "laravel-development-defaults";

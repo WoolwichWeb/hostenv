@@ -12,6 +12,7 @@
   // (import ./provider-cli.nix { inherit pkgs; })
   // (import ./backups-repo-host.nix { inherit pkgs makeHostenv; })
   // (import ./mysql-backups.nix { inherit pkgs; })
+  // (import ./redis.nix { inherit pkgs; })
   // (import ./mysql-backups-dependency.nix { inherit pkgs makeHostenv; })
   // (import ./migrate-tags.nix { inherit pkgs makeHostenv; })
   // (import ./php-app-migrate.nix { inherit pkgs makeHostenv; })

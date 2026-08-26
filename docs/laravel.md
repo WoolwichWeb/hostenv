@@ -27,6 +27,7 @@ Enable Laravel in the project's `.hostenv/hostenv.nix`:
       "openssl"
       "pdo"
       "pdo_mysql"
+      "redis"
       "tokenizer"
     ];
 
@@ -47,7 +48,9 @@ Enable Laravel in the project's `.hostenv/hostenv.nix`:
 The packaged application is immutable. nginx serves only its `public/`
 directory and sends `/index.php` to PHP-FPM through the environment's Unix
 socket. The project root, dotfiles, and other PHP files are not web-accessible.
-MariaDB also accepts local Unix-socket connections only.
+MariaDB also accepts local Unix-socket connections only. Laravel's default
+PHP extension set includes PhpRedis so the application can use either an
+external Redis-compatible service or Hostenv's optional local Valkey service.
 
 Hostenv writes non-secret defaults for `APP_ENV`, `APP_DEBUG`, `APP_URL`,
 `LOG_CHANNEL`, and the `DB_*` socket connection into the packaged `.env`.
@@ -81,6 +84,42 @@ minute. Its systemd timer can be changed with
 
 The default deployment check requests `/`. Set
 `services.laravel.healthCheckPath` to use an application-specific health route.
+
+## Redis / Valkey
+
+Redis is optional. Enable a local Redis-compatible Valkey service with:
+
+```nix
+{
+  services.laravel.redis.enable = true;
+}
+```
+
+This enables Hostenv's generic `services.redis` service, whose package defaults
+to `pkgs.valkey`. Plain TCP, TLS TCP, and RDMA listeners and cluster mode are
+disabled, so the server listens only on
+`<environment runtime directory>/redis.sock`.
+Hostenv adds these non-secret Laravel defaults to the generated `.env`:
+
+```dotenv
+REDIS_CLIENT=phpredis
+REDIS_HOST=/run/hostenv/user/<environment-user>/redis.sock
+REDIS_PORT=0
+```
+
+Laravel's cache, session, and queue drivers are not changed automatically. For
+Laravel 11 and 12, set `CACHE_STORE=redis`; Laravel 10 uses
+`CACHE_DRIVER=redis`. Sessions and queues use `SESSION_DRIVER=redis` and
+`QUEUE_CONNECTION=redis` across the supported versions. Put these values in
+`services.laravel.environmentVariables` or the provider's `laravel_env` when
+the application should use Redis for those responsibilities.
+
+The underlying service can also be enabled or configured directly with
+`services.redis`. Its data is persisted under
+`<environment data directory>/redis` by default, with append-only persistence
+enabled. Laravel's Restic backup does not currently include Valkey data, so do
+not treat the local Redis service as a disaster-recovery copy of queued or
+otherwise irreplaceable data.
 
 ## Queue workers
 
@@ -122,9 +161,9 @@ MariaDB backup and persistent storage. Migration restores use the same restore
 plan, tags, markers, service ordering, and plan cleanup as Hostenv's Drupal
 restore flow.
 
-Laravel support does not provision Redis, Horizon, Octane, Reverb, PostgreSQL,
-or SQLite. A queue worker may still use an external backend configured through
-`laravel_env`.
+Laravel support does not provision Horizon, Octane, Reverb, PostgreSQL, or
+SQLite. Queue workers may use the local Valkey service or any external backend
+configured through `laravel_env`.
 
 ## Artisan
 

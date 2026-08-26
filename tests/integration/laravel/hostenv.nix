@@ -3,6 +3,7 @@
   services.laravel = {
     enable = true;
     backups.enable = true;
+    redis.enable = true;
     scheduler.timerConfig.OnCalendar = "minutely";
     environmentVariables.HOSTENV_FIXTURE = "non-secret";
   };

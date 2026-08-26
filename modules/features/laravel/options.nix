@@ -1,7 +1,12 @@
 { ... }:
 {
   flake.modules.hostenv.laravelOptions =
-    { lib, config, pkgs, ... }:
+    {
+      lib,
+      config,
+      pkgs,
+      ...
+    }:
     let
       cfg = config.services.laravel;
       utils = import (pkgs.path + "/nixos/lib/utils.nix") { inherit pkgs lib config; };
@@ -19,7 +24,10 @@
           queues = lib.mkOption {
             type = lib.types.listOf (lib.types.strMatching "[A-Za-z0-9_.-]+");
             default = [ ];
-            example = [ "high" "default" ];
+            example = [
+              "high"
+              "default"
+            ];
             description = "Ordered queue names passed to `artisan queue:work --queue`.";
           };
 
@@ -63,7 +71,9 @@
     in
     {
       options.services.laravel = {
-        enable = lib.mkEnableOption ''support for a Laravel application.
+        enable = lib.mkEnableOption ''
+          support for a Laravel application.
+
           Enabling this configures Composer packaging, PHP-FPM, nginx, a
           socket-only MariaDB instance, persistent application data, Artisan,
           scheduling, migrations, and optional backups and queue workers.
@@ -122,8 +132,12 @@
             description = "Hash of Composer dependencies. Update it when Nix reports a fixed-output hash mismatch.";
           };
 
-          enablePlugins = (lib.mkEnableOption "Composer plugins") // { default = true; };
-          enableScripts = (lib.mkEnableOption "Composer scripts") // { default = true; };
+          enablePlugins = (lib.mkEnableOption "Composer plugins") // {
+            default = true;
+          };
+          enableScripts = (lib.mkEnableOption "Composer scripts") // {
+            default = true;
+          };
           enableDev = lib.mkEnableOption "Composer development dependencies";
         };
 
@@ -150,6 +164,7 @@
             "openssl"
             "pdo"
             "pdo_mysql"
+            "redis"
             "tokenizer"
           ];
           description = "PHP extensions enabled for Laravel.";
@@ -192,14 +207,19 @@
             SESSION_DRIVER = "database";
           };
           description = ''
-            Additional non-secret values written to the immutable generated
-            `.env`. Put credentials and other secret values in the provider's
-            `laravel_env` secret instead.
+            Additional values written to Laravel's `.env` file.
+
+            NOTE: should not be used for passwords and other credentials.
+            This is written to the Nix store.
           '';
         };
 
+        redis.enable = lib.mkEnableOption "a local Redis-compatible Valkey service over a Unix socket";
+
         scheduler = {
-          enable = (lib.mkEnableOption "Laravel's scheduler") // { default = true; };
+          enable = (lib.mkEnableOption "Laravel's scheduler") // {
+            default = true;
+          };
           timerConfig = lib.mkOption {
             type = lib.types.attrsOf unitOption;
             default = {
@@ -237,7 +257,10 @@
           example = {
             default = {
               connection = "database";
-              queues = [ "high" "default" ];
+              queues = [
+                "high"
+                "default"
+              ];
               processes = 2;
             };
           };
