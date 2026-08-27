@@ -21,6 +21,9 @@ let
         mv "$out/composer.json.tmp" "$out/composer.json"
         install -m 0644 ${lockFile} "$out/composer.lock"
 
+        mkdir -p "$out/public/css"
+        printf '%s\n' 'source stylesheet replaced by asset package' > "$out/public/css/hostenv.css"
+
         cat >> "$out/routes/console.php" <<'PHP'
 
 \Illuminate\Support\Facades\Artisan::command('hostenv:path-test', function () {

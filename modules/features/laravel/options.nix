@@ -141,6 +141,18 @@
           enableDev = lib.mkEnableOption "Composer development dependencies";
         };
 
+        assets.package = lib.mkOption {
+          type = lib.types.nullOr lib.types.package;
+          default = null;
+          example = lib.literalExpression "pkgs.callPackage ./nix/assets.nix { }";
+          description = ''
+            Optional package containing files to overlay onto Laravel's
+            immutable `public/` directory at build time. The package root is
+            treated as the public-directory root, and its files replace files
+            with the same names from the application source.
+          '';
+        };
+
         phpPackage = lib.mkOption {
           type = lib.types.package;
           default = pkgs.php;

@@ -260,17 +260,18 @@
             socket = "${config.hostenv.runtimeDir}/${name}.sock";
             phpOptions = lib.mkBefore cfg.phpOptions;
 
-            # PHP-FPM clears worker environment variables by default. Prepend
-            # project runtime packages to the master process PATH explicitly.
-            # If an EnvironmentFile replaces PATH, declared packages remain
-            # available while provider-supplied PATH entries are preserved.
+            # Refer to a distinct master-process variable rather than `$PATH`
+            # itself. PHP-FPM does not reliably preserve a PATH that recursively
+            # refers to the variable it is defining.
             phpEnv = lib.mkIf (config.packages != [ ]) {
-              PATH = lib.mkDefault "${lib.makeBinPath config.packages}:$PATH";
+              PATH = lib.mkDefault "$HOSTENV_PHPFPM_PATH";
             };
-    
+
             settings = lib.mapAttrs (_n: lib.mkDefault) ({
               listen = poolCfg.socket;
-            } // lib.optionalAttrs (poolCfg.environmentFile != null) {
+            } // lib.optionalAttrs (poolCfg.environmentFile != null || config.packages != [ ]) {
+              # Project packages are added to the master process PATH by its
+              # start wrapper. Keep that environment in the worker processes.
               clear_env = false;
             });
           };
@@ -471,11 +472,21 @@
                 let
                   cfgFile = fpmCfgFile pool poolOpts;
                   iniFile = phpIni poolOpts;
+                  start = pkgs.writeShellScript "phpfpm-${pool}-start" ''
+                    ${lib.optionalString (config.packages != [ ]) ''
+                      # EnvironmentFile may replace PATH. Add project runtime
+                      # packages after systemd has loaded that file so neither
+                      # source of executables is lost.
+                      export PATH=${lib.escapeShellArg (lib.makeBinPath config.packages)}:"$PATH"
+                      export HOSTENV_PHPFPM_PATH="$PATH"
+                    ''}
+                    exec "$@"
+                  '';
                 in
                 ({
                   Slice = "app-phpfpm.slice";
                   Type = "notify";
-                  ExecStart = "${poolOpts.effectivePhpPackage}/bin/php-fpm -y ${cfgFile} -c ${iniFile}";
+                  ExecStart = "${start} ${poolOpts.effectivePhpPackage}/bin/php-fpm -y ${cfgFile} -c ${iniFile}";
                   ExecReload = "${pkgs.coreutils}/bin/kill -USR2 $MAINPID";
                   Restart = "always";
                 } // lib.optionalAttrs (poolOpts.environmentFile != null) {

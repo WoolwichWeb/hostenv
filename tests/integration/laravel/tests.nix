@@ -15,7 +15,6 @@ let
       serviceName = "laravel${major}";
       cfg = env.config.services.laravel;
       user = env.config.hostenv.userName;
-      runtimePackagePath = lib.makeBinPath env.config.packages;
     in
     {
       "laravel-${major}-profile" = asserts.assertRun {
@@ -42,6 +41,10 @@ let
           scheduler_unit="$units/laravel-scheduler-${serviceName}.service"
 
           test -f "$app/public/index.php" || fail "public/index.php was not packaged"
+          grep -Fq 'hostenv generated stylesheet' "$app/public/css/hostenv.css" \
+            || fail "build-time public asset package was not overlaid"
+          grep -Fq 'hostenv generated script' "$app/public/js/hostenv.js" \
+            || fail "build-time JavaScript asset was not overlaid"
           test -f "$app/vendor/autoload.php" || fail "Composer vendor tree was not packaged"
           test -x "$profile/bin/artisan" || fail "server-side Artisan wrapper is missing"
           test -x "$profile/bin/composer" || fail "Composer is missing from the profile"
@@ -92,8 +95,8 @@ let
           printf '%s\n' "$nginx_output" | grep -Fq 'syntax is ok' || fail "nginx syntax check failed"
 
           grep -Fq 'clear_env = no' "$fpm_conf" || fail "PHP-FPM still clears inherited variables"
-          grep -Fq ${lib.escapeShellArg "env[PATH] = ${runtimePackagePath}:$PATH"} "$fpm_conf" \
-            || fail "PHP-FPM does not prepend declared runtime packages to PATH"
+          grep -Fq 'env[PATH] = $HOSTENV_PHPFPM_PATH' "$fpm_conf" \
+            || fail "PHP-FPM does not import the merged application PATH"
           grep -Fq '${pkgs.hello}/bin' "$fpm_unit" \
             || fail "project runtime package is missing from the PHP-FPM service PATH"
           grep -Fq '${pkgs.hello}/bin' "$scheduler_unit" \
@@ -165,8 +168,10 @@ PHP
             "$fpm_conf" > "$fpm_test_conf"
           fpm_package=$(readlink -f "$profile/etc/php-fpm.d/${serviceName}-php")
           fpm_ini=$(readlink -f "$profile/etc/php-fpm.d/${serviceName}.ini")
+          fpm_start=$(sed -n 's|^ExecStart=\([^ ]*\) .*|\1|p' "$fpm_unit")
+          test -x "$fpm_start" || fail "PHP-FPM start wrapper is missing"
           PATH="$provider_path" \
-            "$fpm_package/bin/php-fpm" -F -y "$fpm_test_conf" -c "$fpm_ini" \
+            "$fpm_start" "$fpm_package/bin/php-fpm" -F -y "$fpm_test_conf" -c "$fpm_ini" \
             > "$tmpdir/phpfpm-test.stdout" 2>&1 &
           fpm_test_pid=$!
           trap 'kill "$fpm_test_pid" 2>/dev/null || true' EXIT
@@ -179,6 +184,9 @@ PHP
             fail "PHP-FPM did not create the path-test socket"
           fi
           if ! fpm_response=$(
+            # cgi-fcgi forwards its environment as request parameters. Do not
+            # let the check's build PATH mask the PHP-FPM worker PATH.
+            ${pkgs.coreutils}/bin/env -u PATH \
             SCRIPT_FILENAME="$app_copy/public/hostenv-path-test.php" \
             SCRIPT_NAME=/hostenv-path-test.php \
             REQUEST_METHOD=GET \
@@ -194,8 +202,10 @@ PHP
             || fail "PHP-FPM application process could not execute a declared runtime package"
           printf '%s\n' "$fpm_response" | grep -Fq 'Hello, world!' \
             || fail "PHP-FPM application process did not execute pkgs.hello"
-          printf '%s\n' "$fpm_response" | grep -Fq "$provider_path" \
-            || fail "PHP-FPM discarded PATH entries supplied by laravel_env"
+          if ! printf '%s\n' "$fpm_response" | grep -Fq "$provider_path"; then
+            printf '%s\n' "$fpm_response" >&2
+            fail "PHP-FPM discarded PATH entries supplied by laravel_env"
+          fi
           kill "$fpm_test_pid"
           wait "$fpm_test_pid" || true
           trap - EXIT

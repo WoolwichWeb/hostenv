@@ -110,6 +110,11 @@
           rm -rf bootstrap/cache
           ln -s ${lib.escapeShellArg cfg.bootstrapCacheDir} bootstrap/cache
 
+          ${lib.optionalString (cfg.assets.package != null) ''
+            mkdir -p public
+            cp -a ${cfg.assets.package}/. public/
+          ''}
+
           runHook postBuild
         '';
 

@@ -4,6 +4,11 @@
 
   services.laravel = {
     enable = true;
+    assets.package = pkgs.runCommand "laravel-test-public-assets" { } ''
+      mkdir -p "$out/css" "$out/js"
+      printf '%s\n' 'hostenv generated stylesheet' > "$out/css/hostenv.css"
+      printf '%s\n' 'hostenv generated script' > "$out/js/hostenv.js"
+    '';
     backups.enable = true;
     redis.enable = true;
     scheduler.timerConfig.OnCalendar = "minutely";
