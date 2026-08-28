@@ -17,9 +17,10 @@ let
     , pkgs
     , node
     , inputs
-    , localSystem
     , nodesPath
+    , secretsFile
     , secretsPath
+    , sopsTopLevelKeys
     , nodeModules ? [ ]
     , nodeSystems ? { }
     , ...
@@ -80,7 +81,6 @@ let
 
       sopsSecrets = userInfo:
         let
-          sopsKeys = libHostenv.readYaml pkgs.${localSystem} secretsPath;
           orgFromName = name: (environmentWith name).hostenv.organisation;
           orgProjectFromName = name:
             (environmentWith name).hostenv.organisation
@@ -93,17 +93,17 @@ let
               name: _user:
                 let
                   name' =
-                    if builtins.hasAttr name sopsKeys
+                    if builtins.elem name sopsTopLevelKeys
                     then name
-                    else if builtins.hasAttr (orgProjectFromName name) sopsKeys
+                    else if builtins.elem (orgProjectFromName name) sopsTopLevelKeys
                     then orgProjectFromName name
-                    else if builtins.hasAttr (orgFromName name) sopsKeys
+                    else if builtins.elem (orgFromName name) sopsTopLevelKeys
                     then orgFromName name
                     else
                       throw ''
                         The secrets file does not contain any secrets for '${name}'
 
-                        From the hosting root directory, run `sops secrets/secrets.yaml` and add an entry for:
+                        From the hosting root directory, run `sops edit ${secretsFile}` and add an entry for:
 
                         - '${name}' (this environment) or
                         - '${orgProjectFromName name}' (this project) or
@@ -165,7 +165,9 @@ let
     , systems
     , localSystem
     , nodesPath
+    , secretsFile
     , secretsPath
+    , sopsTopLevelKeys
     , nodeModules ? [ ]
     , nodeSystems ? { }
     , nodeAddresses ? { }
@@ -180,7 +182,7 @@ let
       pkgs = forEachSystem (system: import nixpkgs { inherit system; });
 
       nixosSystem = node: providerNixosSystem {
-        inherit config node nixpkgs pkgs inputs localSystem nodesPath secretsPath nodeSystems nodeModules;
+        inherit config node nixpkgs pkgs inputs nodesPath secretsFile secretsPath sopsTopLevelKeys nodeSystems nodeModules;
       };
 
       nodes = builtins.mapAttrs
@@ -430,6 +432,12 @@ in
       type = types.listOf (types.oneOf [ types.path types.str ]);
       default = [ ];
       description = "Extra NixOS modules applied to every node. Strings are paths relative to the provider root.";
+    };
+
+    secretsFile = mkOption {
+      type = types.str;
+      default = "secrets/secrets.yaml";
+      description = "Path to the provider SOPS secrets file, relative to the provider repository root.";
     };
 
     statePath = mkOption {

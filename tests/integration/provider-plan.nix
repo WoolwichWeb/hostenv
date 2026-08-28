@@ -1,4 +1,8 @@
-{ pkgs, makeHostenv, inputs }:
+{
+  pkgs,
+  makeHostenv,
+  inputs,
+}:
 let
   lib = pkgs.lib;
   support = import ../support { inherit pkgs lib; };
@@ -14,15 +18,24 @@ let
   defaultCache = {
     enable = false;
   };
-  providerPlan = args: inputs.self.lib.provider.plan (args // {
-    deploy = args.deploy or defaultDeploy;
-    serviceResolution = args.serviceResolution or null;
-    cache = args.cache or defaultCache;
-  });
+  providerPlan =
+    args:
+    inputs.self.lib.provider.plan (
+      args
+      // {
+        deploy = args.deploy or defaultDeploy;
+        serviceResolution = args.serviceResolution or null;
+        cache = args.cache or defaultCache;
+        secretsFile = args.secretsFile or "secrets/secrets.yaml";
+      }
+    );
 
-  mkHostenvStub = system:
-    let outPath = ../../modules;
-    in {
+  mkHostenvStub =
+    system:
+    let
+      outPath = ../../modules;
+    in
+    {
       inherit outPath;
       modules = outPath;
       makeHostenv.${system} = makeHostenv;
@@ -75,8 +88,7 @@ let
         };
       };
     })
-  ]
-    "env1";
+  ] "env1";
 
   hostenvOutput = {
     "${"x86_64-linux"}" = {
@@ -154,18 +166,19 @@ let
   dummyStatePath = pkgs.writers.writeJSON "dummy-state.json" { };
 
   mkPlan =
-    { hostenvHostname ? "custom.host"
-    , state ? { }
-    , planSource ? "eval"
-    , planPath ? null
-    , nodeModules ? [ ]
-    , generatedFlake ? { }
-    , deploy ? defaultDeploy
-    , cache ? defaultCache
-    , deployPublicKeys ? [ "ssh-ed25519 test" ]
-    , serviceResolution ? null
-    , nodeAddresses ? { }
-    , projectHostenvOutput ? hostenvOutput
+    {
+      hostenvHostname ? "custom.host",
+      state ? { },
+      planSource ? "eval",
+      planPath ? null,
+      nodeModules ? [ ],
+      generatedFlake ? { },
+      deploy ? defaultDeploy,
+      cache ? defaultCache,
+      deployPublicKeys ? [ "ssh-ed25519 test" ],
+      serviceResolution ? null,
+      nodeAddresses ? { },
+      projectHostenvOutput ? hostenvOutput,
     }:
     let
       # Build a synthetic flake inputs set: hostenv modules + one project with lib.hostenv output.
@@ -189,9 +202,7 @@ let
       lockPath = pkgs.writers.writeJSON "flake.lock" lockData;
 
       statePathEffective =
-        if state == { }
-        then dummyStatePath
-        else pkgs.writers.writeJSON "state.json" state;
+        if state == { } then dummyStatePath else pkgs.writers.writeJSON "state.json" state;
 
       inputsEffective = {
         hostenv = mkHostenvStub "x86_64-linux";
@@ -199,7 +210,9 @@ let
         org__proj = {
           outPath = projectDir;
           __toString = self: toString projectDir;
-          lib = { hostenv = projectHostenvOutput; };
+          lib = {
+            hostenv = projectHostenvOutput;
+          };
         };
       };
     in
@@ -207,14 +220,26 @@ let
       inputs = inputsEffective;
       system = "x86_64-linux";
       inherit lib pkgs hostenvHostname;
-      letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
+      letsEncrypt = {
+        adminEmail = "ops@example.test";
+        acceptTerms = true;
+      };
       deployPublicKeys = deployPublicKeys;
-      nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
+      nodeFor = {
+        default = "node1";
+        production = "node1";
+        testing = "node1";
+        development = "node1";
+      };
       statePath = statePathEffective;
       planPath = planPath;
       lockPath = lockPath;
       nodeSystems = { };
-      cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
+      cloudflare = {
+        enable = false;
+        zoneId = null;
+        apiTokenFile = null;
+      };
       planSource = planSource;
       deploy = deploy;
       cache = cache;
@@ -222,7 +247,12 @@ let
       inherit nodeModules generatedFlake nodeAddresses;
     };
 
-  mkProjectInput = { organisation, project, envName ? "main" }:
+  mkProjectInput =
+    {
+      organisation,
+      project,
+      envName ? "main",
+    }:
     let
       projectDir = pkgs.runCommand "hostenv-project-${project}" { } ''
         mkdir -p $out
@@ -265,7 +295,6 @@ let
       inherit projectDir eval input;
     };
 
-
   emptyProjectHostenvOutput = {
     "${"x86_64-linux"}" = {
       environments = { };
@@ -302,21 +331,20 @@ let
 
   providerEnvs = envsEval.config.environments;
 
-  sampleProjects =
-    providerView.toProjects {
-      envs = providerEnvs;
-      baseRepo = {
-        type = "git";
-        dir = ".";
-        ref = "main";
-        url = "https://example.invalid";
-        owner = "";
-        repo = "";
-      };
-      node = "node1";
-      hostenvHostname = "ignored.example";
-      rootBase = "/src";
+  sampleProjects = providerView.toProjects {
+    envs = providerEnvs;
+    baseRepo = {
+      type = "git";
+      dir = ".";
+      ref = "main";
+      url = "https://example.invalid";
+      owner = "";
+      repo = "";
     };
+    node = "node1";
+    hostenvHostname = "ignored.example";
+    rootBase = "/src";
+  };
 
   user1 = (lib.head sampleProjects).hostenv.userName;
   user2 = (lib.head (lib.tail sampleProjects)).hostenv.userName;
@@ -325,32 +353,46 @@ let
   planNoState = evalRun.plan;
   stateNoState = evalRun.state;
   flakeNoState = evalRun.flake;
-  planWithState = (mkPlan {
-    state = {
-      ${user1} = { uid = 2001; node = "node1"; virtualHosts = [ "env1.example" "alias.example" ]; };
-    };
-  }).plan;
-  planDisk =
-    mkPlan {
-      planSource = "disk";
-      planPath = planNoState;
-      state = lib.importJSON stateNoState;
-    };
-  planCustom =
-    mkPlan {
-      nodeModules = [ "nodes/common.nix" ];
-      generatedFlake = {
-        inputs = {
-          extraInput = { url = "github:example/extra"; };
+  planWithState =
+    (mkPlan {
+      state = {
+        ${user1} = {
+          uid = 2001;
+          node = "node1";
+          virtualHosts = [
+            "env1.example"
+            "alias.example"
+          ];
         };
-        envInputs = {
-          follows = { nixpkgs = "parent/custom-nixpkgs"; };
-          extra = _env: {
-            inputs = { sops-nix = { follows = "parent/custom-sops-nix"; }; };
+      };
+    }).plan;
+  planDisk = mkPlan {
+    planSource = "disk";
+    planPath = planNoState;
+    state = lib.importJSON stateNoState;
+  };
+  planCustom = mkPlan {
+    nodeModules = [ "nodes/common.nix" ];
+    generatedFlake = {
+      inputs = {
+        extraInput = {
+          url = "github:example/extra";
+        };
+      };
+      envInputs = {
+        follows = {
+          nixpkgs = "parent/custom-nixpkgs";
+        };
+        extra = _env: {
+          inputs = {
+            sops-nix = {
+              follows = "parent/custom-sops-nix";
+            };
           };
         };
       };
     };
+  };
   customFlakeText = builtins.readFile planCustom.flake;
 
   backupsMixedProjectDir = pkgs.runCommand "hostenv-project-backups-mixed" { } ''
@@ -419,23 +461,43 @@ let
     };
     system = "x86_64-linux";
     inherit lib pkgs;
-    letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
+    letsEncrypt = {
+      adminEmail = "ops@example.test";
+      acceptTerms = true;
+    };
     deployPublicKeys = [ "ssh-ed25519 test" ];
     hostenvHostname = "custom.host";
-    nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
+    nodeFor = {
+      default = "node1";
+      production = "node1";
+      testing = "node1";
+      development = "node1";
+    };
     statePath = dummyStatePath;
     planPath = null;
     lockPath = backupsMixedLockPath;
     nodeSystems = { };
-    cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
+    cloudflare = {
+      enable = false;
+      zoneId = null;
+      apiTokenFile = null;
+    };
     planSource = "eval";
   };
   backupsMixedPlanData = lib.importJSON backupsMixedPlan.plan;
   backupsMixedMainUser = backupsMixedEval.config.environments.main.hostenv.userName;
   backupsMixedTestUser = backupsMixedEval.config.environments.test.hostenv.userName;
 
-  quotedInvalidProject = mkProjectInput { organisation = "acme"; project = "4demo"; envName = "main"; };
-  quotedValidProject = mkProjectInput { organisation = "acme"; project = "demo-project"; envName = "main"; };
+  quotedInvalidProject = mkProjectInput {
+    organisation = "acme";
+    project = "4demo";
+    envName = "main";
+  };
+  quotedValidProject = mkProjectInput {
+    organisation = "acme";
+    project = "demo-project";
+    envName = "main";
+  };
 
   quotedInputs = {
     hostenv = mkHostenvStub "x86_64-linux";
@@ -467,15 +529,27 @@ let
     inputs = quotedInputs;
     system = "x86_64-linux";
     inherit lib pkgs;
-    letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
+    letsEncrypt = {
+      adminEmail = "ops@example.test";
+      acceptTerms = true;
+    };
     deployPublicKeys = [ "ssh-ed25519 test" ];
     hostenvHostname = "hosting.test";
-    nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
+    nodeFor = {
+      default = "node1";
+      production = "node1";
+      testing = "node1";
+      development = "node1";
+    };
     statePath = dummyStatePath;
     planPath = null;
     lockPath = quotedLockPath;
     nodeSystems = { };
-    cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
+    cloudflare = {
+      enable = false;
+      zoneId = null;
+      apiTokenFile = null;
+    };
     planSource = "eval";
   };
   quotedFlakeText = builtins.readFile quotedPlan.flake;
@@ -491,15 +565,27 @@ let
         inputs = minimalInputs;
         system = "x86_64-linux";
         inherit lib pkgs;
-        letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
+        letsEncrypt = {
+          adminEmail = "ops@example.test";
+          acceptTerms = true;
+        };
         deployPublicKeys = [ "ssh-ed25519 test" ];
         hostenvHostname = "custom.host";
-        nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
+        nodeFor = {
+          default = "node1";
+          production = "node1";
+          testing = "node1";
+          development = "node1";
+        };
         statePath = dummyStatePath;
         planPath = null;
         lockPath = lockPath;
         nodeSystems = { };
-        cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
+        cloudflare = {
+          enable = false;
+          zoneId = null;
+          apiTokenFile = null;
+        };
         planSource = "eval";
       });
     in
@@ -543,15 +629,27 @@ let
         inputs = badInputs;
         system = "x86_64-linux";
         inherit lib pkgs;
-        letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
+        letsEncrypt = {
+          adminEmail = "ops@example.test";
+          acceptTerms = true;
+        };
         deployPublicKeys = [ "ssh-ed25519 test" ];
         hostenvHostname = "custom.host";
-        nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
+        nodeFor = {
+          default = "node1";
+          production = "node1";
+          testing = "node1";
+          development = "node1";
+        };
         statePath = dummyStatePath;
         planPath = null;
         lockPath = lockPath;
         nodeSystems = { };
-        cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
+        cloudflare = {
+          enable = false;
+          zoneId = null;
+          apiTokenFile = null;
+        };
         planSource = "eval";
       });
     in
@@ -580,30 +678,44 @@ let
     cp ${selfLockFile} $out/flake.lock
   '';
 
-  planDefaultLock =
-    builtins.tryEval (providerPlan {
-      inputs = {
-        self = selfLockDir;
-        hostenv = mkHostenvStub "x86_64-linux";
-        org__proj = {
-          outPath = projectDir;
-          __toString = self: toString projectDir;
-          lib = { hostenv = hostenvOutput; };
+  planDefaultLock = builtins.tryEval (providerPlan {
+    inputs = {
+      self = selfLockDir;
+      hostenv = mkHostenvStub "x86_64-linux";
+      org__proj = {
+        outPath = projectDir;
+        __toString = self: toString projectDir;
+        lib = {
+          hostenv = hostenvOutput;
         };
       };
-      system = "x86_64-linux";
-      inherit lib pkgs;
-      letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-      deployPublicKeys = [ "ssh-ed25519 test" ];
-      hostenvHostname = "custom.host";
-      nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
-      statePath = dummyStatePath;
-      planPath = null;
-      nodeSystems = { };
-      cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
-      planSource = "eval";
-    });
-  tryPlan = args:
+    };
+    system = "x86_64-linux";
+    inherit lib pkgs;
+    letsEncrypt = {
+      adminEmail = "ops@example.test";
+      acceptTerms = true;
+    };
+    deployPublicKeys = [ "ssh-ed25519 test" ];
+    hostenvHostname = "custom.host";
+    nodeFor = {
+      default = "node1";
+      production = "node1";
+      testing = "node1";
+      development = "node1";
+    };
+    statePath = dummyStatePath;
+    planPath = null;
+    nodeSystems = { };
+    cloudflare = {
+      enable = false;
+      zoneId = null;
+      apiTokenFile = null;
+    };
+    planSource = "eval";
+  });
+  tryPlan =
+    args:
     let
       plan = mkPlan args;
     in
@@ -612,46 +724,45 @@ let
   # Remove these expected-failure cases once provider.deploy, provider.cache,
   # and provider.serviceResolution are wired through provider.plan into the
   # generated node configuration.
-  planDeployEnabledReserved =
-    tryPlan {
-      deploy = defaultDeploy // {
-        enable = true;
-        providerApiBaseUrl = "https://hosting.test";
-        nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
-      };
+  planDeployEnabledReserved = tryPlan {
+    deploy = defaultDeploy // {
+      enable = true;
+      providerApiBaseUrl = "https://hosting.test";
+      nodeAuthTokenFile = "/run/secrets/hostenv/provider_node_token";
     };
-  planDeploySettingReserved =
-    tryPlan {
-      deploy = defaultDeploy // {
-        providerApiBaseUrl = "https://hosting.test";
-      };
+  };
+  planDeploySettingReserved = tryPlan {
+    deploy = defaultDeploy // {
+      providerApiBaseUrl = "https://hosting.test";
     };
-  planServiceResolutionReserved =
-    tryPlan {
-      serviceResolution = {
-        organisation = "org";
-        project = "proj";
-        environmentName = "env1";
-      };
+  };
+  planServiceResolutionReserved = tryPlan {
+    serviceResolution = {
+      organisation = "org";
+      project = "proj";
+      environmentName = "env1";
     };
-  planCacheReserved =
-    tryPlan {
-      cache = {
-        enable = true;
-      };
+  };
+  planCacheReserved = tryPlan {
+    cache = {
+      enable = true;
     };
+  };
 
   providerPlanVhostConflictState =
     let
       conflictState = {
-        other = { uid = 2500; virtualHosts = [ "env1.example" ]; };
+        other = {
+          uid = 2500;
+          virtualHosts = [ "env1.example" ];
+        };
       };
       envsExpr = (mkPlan { state = conflictState; }).environments;
       result = builtins.tryEval (builtins.deepSeq envsExpr envsExpr);
     in
-    asserts.assertTrue "provider-plan-vhost-conflict-state"
-      (! result.success)
-      "plan generation must fail when virtualHosts overlap with existing state";
+    asserts.assertTrue "provider-plan-vhost-conflict-state" (
+      !result.success
+    ) "plan generation must fail when virtualHosts overlap with existing state";
 
   providerPlanVhostConflictNewEnvs =
     let
@@ -725,30 +836,45 @@ let
         org__proj = {
           outPath = conflictProjectDir;
           __toString = self: toString conflictProjectDir;
-          lib = { hostenv = hostenvOutputConflict; };
+          lib = {
+            hostenv = hostenvOutputConflict;
+          };
         };
       };
 
-      envsExpr = (providerPlan {
-        inputs = inputsConflict;
-        system = "x86_64-linux";
-        inherit lib pkgs;
-        letsEncrypt = { adminEmail = "ops@example.test"; acceptTerms = true; };
-        deployPublicKeys = [ "ssh-ed25519 test" ];
-        hostenvHostname = "custom.host";
-        nodeFor = { default = "node1"; production = "node1"; testing = "node1"; development = "node1"; };
-        statePath = dummyStatePath;
-        planPath = null;
-        lockPath = lockPath;
-        nodeSystems = { };
-        cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
-        planSource = "eval";
-      }).environments;
+      envsExpr =
+        (providerPlan {
+          inputs = inputsConflict;
+          system = "x86_64-linux";
+          inherit lib pkgs;
+          letsEncrypt = {
+            adminEmail = "ops@example.test";
+            acceptTerms = true;
+          };
+          deployPublicKeys = [ "ssh-ed25519 test" ];
+          hostenvHostname = "custom.host";
+          nodeFor = {
+            default = "node1";
+            production = "node1";
+            testing = "node1";
+            development = "node1";
+          };
+          statePath = dummyStatePath;
+          planPath = null;
+          lockPath = lockPath;
+          nodeSystems = { };
+          cloudflare = {
+            enable = false;
+            zoneId = null;
+            apiTokenFile = null;
+          };
+          planSource = "eval";
+        }).environments;
       result = builtins.tryEval (builtins.deepSeq envsExpr envsExpr);
     in
-    asserts.assertTrue "provider-plan-vhost-conflict-new-envs"
-      (! result.success)
-      "plan generation must fail when virtualHosts overlap between new environments";
+    asserts.assertTrue "provider-plan-vhost-conflict-new-envs" (
+      !result.success
+    ) "plan generation must fail when virtualHosts overlap between new environments";
 in
 {
 
@@ -756,9 +882,9 @@ in
     let
       plan = lib.importJSON emptyProjectPlan.plan;
     in
-    asserts.assertTrue "provider-plan-empty-project-environments"
-      (plan.environments == { })
-      "a project with no environments should produce an empty provider environment plan";
+    asserts.assertTrue "provider-plan-empty-project-environments" (
+      plan.environments == { }
+    ) "a project with no environments should produce an empty provider environment plan";
 
   provider-plan-ignores-disabled-phantom-default =
     let
@@ -766,26 +892,31 @@ in
       flakeText = builtins.readFile phantomMainPlan.flake;
     in
     asserts.assertTrue "provider-plan-ignores-disabled-phantom-default"
-      ((builtins.attrNames plan.environments) == [ user1 ]
-        && !(lib.strings.hasInfix "phantom-main" flakeText))
+      (
+        (builtins.attrNames plan.environments) == [ user1 ]
+        && !(lib.strings.hasInfix "phantom-main" flakeText)
+      )
       "provider planning should use enabled project environments, not a disabled default leaked by evaluation";
 
   provider-plan-hostname =
-    let plan = lib.importJSON planNoState;
-    in asserts.assertTrue "provider-plan-hostname"
-      (plan.hostenvHostname == "custom.host")
-      "hostenvHostname should propagate to plan.json";
+    let
+      plan = lib.importJSON planNoState;
+    in
+    asserts.assertTrue "provider-plan-hostname" (
+      plan.hostenvHostname == "custom.host"
+    ) "hostenvHostname should propagate to plan.json";
 
   provider-plan-uids =
     let
       plan = lib.importJSON planNoState;
-      uids = map (u: plan.environments.${u}.uid) [ user1 user2 ];
+      uids = map (u: plan.environments.${u}.uid) [
+        user1
+        user2
+      ];
       unique = (lib.length uids) == (lib.length (lib.unique uids));
       present = lib.all (u: u != null) uids;
     in
-    asserts.assertTrue "provider-plan-uids"
-      (unique && present)
-      "UIDs must be unique and present";
+    asserts.assertTrue "provider-plan-uids" (unique && present) "UIDs must be unique and present";
 
   provider-plan-node-merge =
     let
@@ -793,8 +924,11 @@ in
       users = plan.nodes.node1.users.users or { };
       providerCfg = plan.nodes.node1.provider or { };
       vhosts = plan.nodes.node1.services.nginx.virtualHosts or { };
-      ok = (users ? ${user1}) && (users ? ${user2})
-        && (vhosts ? "env1.example") && (vhosts ? "env2.example")
+      ok =
+        (users ? ${user1})
+        && (users ? ${user2})
+        && (vhosts ? "env1.example")
+        && (vhosts ? "env2.example")
         && (providerCfg.deployPublicKeys or [ ]) == [ "ssh-ed25519 test" ];
     in
     asserts.assertTrue "provider-plan-node-merge" ok
@@ -802,13 +936,15 @@ in
 
   provider-plan-node-connections =
     let
-      plan = lib.importJSON (mkPlan {
-        nodeAddresses = { node1 = "bastion.internal.example"; };
-      }).plan;
+      plan =
+        lib.importJSON
+          (mkPlan {
+            nodeAddresses = {
+              node1 = "bastion.internal.example";
+            };
+          }).plan;
       conn = plan.nodeConnections.node1 or { };
-      ok =
-        (conn.hostname or null) == "bastion.internal.example"
-        && !(conn ? verificationHostname);
+      ok = (conn.hostname or null) == "bastion.internal.example" && !(conn ? verificationHostname);
     in
     asserts.assertTrue "provider-plan-node-connections" ok
       "plan.json should expose SSH hostname only; HTTP verification host is derived from node plus hostenvHostname";
@@ -829,32 +965,36 @@ in
       plan = lib.importJSON planNoState;
       ok = !(plan.nodes.node1.users.users ? deploy);
     in
-    asserts.assertTrue "provider-plan-no-deploy-user" ok
-      "plan.json should not define the deploy user";
+    asserts.assertTrue "provider-plan-no-deploy-user" ok "plan.json should not define the deploy user";
 
   provider-plan-alias-preserved =
-    let plan = lib.importJSON planWithState;
-    in asserts.assertTrue "provider-plan-alias-preserved"
-      (plan.environments.${user1}.virtualHosts ? "alias.example")
-      "aliases from state should be preserved";
+    let
+      plan = lib.importJSON planWithState;
+    in
+    asserts.assertTrue "provider-plan-alias-preserved" (
+      plan.environments.${user1}.virtualHosts ? "alias.example"
+    ) "aliases from state should be preserved";
 
   provider-plan-previous-node =
     let
       plan = lib.importJSON planWithState;
       prev = plan.environments.${user1}.previousNode or null;
     in
-    asserts.assertTrue "provider-plan-previous-node"
-      (prev == null)
-      "previousNode should be null so DNS discovery can be used";
+    asserts.assertTrue "provider-plan-previous-node" (
+      prev == null
+    ) "previousNode should be null so DNS discovery can be used";
 
   provider-plan-flake-inputs =
     let
       flakeText = builtins.readFile flakeNoState;
-      ok = lib.strings.hasInfix "parent = {" flakeText
+      ok =
+        lib.strings.hasInfix "parent = {" flakeText
         && lib.strings.hasInfix "url = \"path:..\"" flakeText
         && lib.strings.hasInfix "hostenv = {" flakeText
         && lib.strings.hasInfix "follows = \"parent/hostenv\"" flakeText
         && lib.strings.hasInfix "inputs.parent.lib.provider.deployOutputs" flakeText
+        && lib.strings.hasInfix "secretsFile = \"secrets/secrets.yaml\"" flakeText
+        && lib.strings.hasInfix "inputs.parent + \"/secrets/secrets.yaml\"" flakeText
         && (lib.strings.hasInfix "${user1} =" flakeText || lib.strings.hasInfix "\"${user1}\" =" flakeText)
         && (lib.strings.hasInfix "${user2} =" flakeText || lib.strings.hasInfix "\"${user2}\" =" flakeText);
     in
@@ -863,7 +1003,8 @@ in
 
   provider-plan-flake-customization =
     let
-      ok = lib.strings.hasInfix "extraInput = {" customFlakeText
+      ok =
+        lib.strings.hasInfix "extraInput = {" customFlakeText
         && lib.strings.hasInfix "custom-nixpkgs" customFlakeText
         && lib.strings.hasInfix "custom-sops-nix" customFlakeText
         && lib.strings.hasInfix "(inputs.parent + \"/nodes/common.nix\")" customFlakeText
@@ -874,7 +1015,8 @@ in
 
   provider-plan-flake-inputs-quoted =
     let
-      ok = lib.strings.hasInfix "\"${quotedInvalidUser}\" =" quotedFlakeText
+      ok =
+        lib.strings.hasInfix "\"${quotedInvalidUser}\" =" quotedFlakeText
         && lib.strings.hasInfix "${quotedValidUser} =" quotedFlakeText
         && !(lib.strings.hasInfix "\"${quotedValidUser}\" =" quotedFlakeText);
     in
@@ -886,18 +1028,16 @@ in
       evalPlanData = lib.importJSON planNoState;
       diskPlanData = lib.importJSON planDisk.plan;
     in
-    asserts.assertTrue "provider-plan-planSource-disk"
-      (evalPlanData == diskPlanData)
-      "planSource=\"disk\" should reuse plan.json contents without re-evaluating hostenv";
+    asserts.assertTrue "provider-plan-planSource-disk" (
+      evalPlanData == diskPlanData
+    ) "planSource=\"disk\" should reuse plan.json contents without re-evaluating hostenv";
 
   provider-plan-missing-projects-asserts =
-    asserts.assertTrue "provider-plan-missing-projects-asserts"
-      (! planMissingProjects.success)
+    asserts.assertTrue "provider-plan-missing-projects-asserts" (!planMissingProjects.success)
       "plan generation must fail early when no client projects expose outputs.lib.hostenv";
 
   provider-plan-missing-environments-asserts =
-    asserts.assertTrue "provider-plan-missing-environments-asserts"
-      (! planMissingEnvironments.success)
+    asserts.assertTrue "provider-plan-missing-environments-asserts" (!planMissingEnvironments.success)
       "plan generation must fail early when a client flake lib.hostenv output lacks environments";
 
   provider-plan-security-headers =
@@ -918,9 +1058,9 @@ in
       hasRobots = lib.strings.hasInfix "X-Robots-Tag" extraConfig;
       hasHsts = lib.strings.hasInfix "Strict-Transport-Security" extraConfig;
     in
-    asserts.assertTrue "provider-plan-security-headers"
-      (hasCsp && hasReportTo && hasReferrer && hasRobots && hasHsts && noCspOnAlias)
-      "plan should emit security headers for configured virtual hosts and omit CSP when unset";
+    asserts.assertTrue "provider-plan-security-headers" (
+      hasCsp && hasReportTo && hasReferrer && hasRobots && hasHsts && noCspOnAlias
+    ) "plan should emit security headers for configured virtual hosts and omit CSP when unset";
 
   provider-plan-vhost-boundary =
     let
@@ -950,8 +1090,7 @@ in
         && (nodeDefaultVhost.default or null) == true
         && (nodeDefaultVhost.locations."/".return or null) == "444";
     in
-    asserts.assertTrue "provider-plan-vhost-boundary"
-      ok
+    asserts.assertTrue "provider-plan-vhost-boundary" ok
       "plan should keep environment vhosts hostenv-shaped and node vhosts NixOS-shaped";
 
   provider-plan-root-location-preserved =
@@ -964,51 +1103,51 @@ in
         && (nodeVhost.locations."/".return or null) == "302 /custom-root"
         && (nodeVhost.locations."/".proxyPass or null) == null;
     in
-    asserts.assertTrue "provider-plan-root-location-preserved"
-      ok
+    asserts.assertTrue "provider-plan-root-location-preserved" ok
       "plan should preserve explicit root vhost locations without merging in the generated proxy";
 
   provider-plan-backups-repo-host-per-env =
     let
-      mainBackups = backupsMixedPlanData.environments.${backupsMixedMainUser}.hostenv.backupsRepoHost or null;
-      testBackups = backupsMixedPlanData.environments.${backupsMixedTestUser}.hostenv.backupsRepoHost or null;
+      mainBackups =
+        backupsMixedPlanData.environments.${backupsMixedMainUser}.hostenv.backupsRepoHost or null;
+      testBackups =
+        backupsMixedPlanData.environments.${backupsMixedTestUser}.hostenv.backupsRepoHost or null;
     in
-    asserts.assertTrue "provider-plan-backups-repo-host-per-env"
-      (mainBackups == "s3:https://backups-main.invalid" && testBackups == null)
-      "plan should preserve per-environment backupsRepoHost values from project outputs";
+    asserts.assertTrue "provider-plan-backups-repo-host-per-env" (
+      mainBackups == "s3:https://backups-main.invalid" && testBackups == null
+    ) "plan should preserve per-environment backupsRepoHost values from project outputs";
 
   provider-plan-default-lock =
-    asserts.assertTrue "provider-plan-default-lock"
-      planDefaultLock.success
+    asserts.assertTrue "provider-plan-default-lock" planDefaultLock.success
       "plan generation should use inputs.self/flake.lock when lockPath is omitted";
 
   provider-plan-deploy-enabled-reserved =
     # Temporary: plan generation should fail only until provider.deploy is
     # wired into provider.plan and generated node configuration.
-    asserts.assertTrue "provider-plan-deploy-enabled-reserved"
-      (! planDeployEnabledReserved.success)
-      "plan generation must fail when reserved provider.deploy wiring is enabled";
+    asserts.assertTrue "provider-plan-deploy-enabled-reserved" (
+      !planDeployEnabledReserved.success
+    ) "plan generation must fail when reserved provider.deploy wiring is enabled";
 
   provider-plan-deploy-settings-reserved =
     # Temporary: remove this once non-default provider.deploy settings are
     # intentionally propagated instead of rejected.
-    asserts.assertTrue "provider-plan-deploy-settings-reserved"
-      (! planDeploySettingReserved.success)
-      "plan generation must fail when reserved provider.deploy settings are non-default";
+    asserts.assertTrue "provider-plan-deploy-settings-reserved" (
+      !planDeploySettingReserved.success
+    ) "plan generation must fail when reserved provider.deploy settings are non-default";
 
   provider-plan-service-resolution-reserved =
     # Temporary: remove this once provider.serviceResolution is wired into
     # provider.plan for provider-service secret routing.
-    asserts.assertTrue "provider-plan-service-resolution-reserved"
-      (! planServiceResolutionReserved.success)
-      "plan generation must fail when reserved provider.serviceResolution is configured";
+    asserts.assertTrue "provider-plan-service-resolution-reserved" (
+      !planServiceResolutionReserved.success
+    ) "plan generation must fail when reserved provider.serviceResolution is configured";
 
   provider-plan-cache-reserved =
     # Temporary: remove this once provider.cache is wired into provider.plan
     # and generated node cache configuration.
-    asserts.assertTrue "provider-plan-cache-reserved"
-      (! planCacheReserved.success)
-      "plan generation must fail when reserved outer provider.cache wiring is enabled";
+    asserts.assertTrue "provider-plan-cache-reserved" (
+      !planCacheReserved.success
+    ) "plan generation must fail when reserved outer provider.cache wiring is enabled";
 
   provider-plan-vhost-conflict-state = providerPlanVhostConflictState;
   provider-plan-vhost-conflict-new-envs = providerPlanVhostConflictNewEnvs;

@@ -27,6 +27,8 @@ let
     , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
     , planSource ? "eval"
     , generatedFlake ? { }
+    , secretsFile
+    , sopsTopLevelKeys ? [ ]
     , lockPath ? (if inputs ? self then inputs.self + /flake.lock else ../../../flake.lock)
       # Reserved provider-service configuration. These are accepted only so
       # provider entrypoint callers can fail fast instead of silently dropping
@@ -663,7 +665,9 @@ let
                       inputs.parent.lib.provider.deployOutputs {
                         inherit config nixpkgs deploy-rs systems inputs localSystem;
                         nodesPath = ../nodes;
-                        secretsPath = ../secrets/secrets.yaml;
+                        secretsFile = ${lib.generators.toPretty { } secretsFile};
+                        secretsPath = inputs.parent + "/${secretsFile}";
+                        sopsTopLevelKeys = ${lib.generators.toPretty { } sopsTopLevelKeys};
                         nodeSystems = ${lib.generators.toPretty {} nodeSystems};
                         nodeAddresses = ${lib.generators.toPretty {} nodeAddresses};
                         nodeSshPorts = ${lib.generators.toPretty {} nodeSshPorts};
