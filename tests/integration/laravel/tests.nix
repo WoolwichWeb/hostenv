@@ -290,6 +290,10 @@ EOF
           printf '%s\n' "$precedence_output" | grep -Fq 'provider-secret-value' \
             || fail "an inherited provider value did not override generated .env defaults"
 
+          # Test the security boundary by behavior, not by requiring the secret
+          # check to occupy a particular textual position in the composed
+          # activation script. Safe prologue code, such as the runtime-package
+          # PATH setup, may run first; persistent state and services may not.
           activation_output=$(
             XDG_CONFIG_HOME="$tmpdir/config" \
             XDG_STATE_HOME="$tmpdir/state" \
@@ -324,6 +328,96 @@ EOF
     && priorityUnit.serviceConfig.Restart == "always"
     && priorityUnit.serviceConfig.KillSignal == "SIGTERM"
     && priorityUnit.serviceConfig.TimeoutStopSec == "120";
+
+  laravelContractChecks = [
+    {
+      name = "Laravel 10 requests laravel_env";
+      passed = cfg10.environments.main.requiredSecretFiles == [ "laravel_env" ];
+    }
+    {
+      name = "Laravel 10 has no queue workers by default";
+      passed =
+        cfg10.services.laravel.queue.workers == { }
+        && !(builtins.any (name: lib.hasPrefix "laravel-queue-" name) (
+          builtins.attrNames cfg10.systemd.services
+        ));
+    }
+    {
+      name = "Laravel 12 queue worker configuration";
+      passed = queueContract;
+    }
+    {
+      name = "Laravel 12 uses socket-only MariaDB";
+      passed =
+        cfg12.services.mysql.settings.mysqld.skip-networking == true
+        && cfg12.services.mysql.ensureDatabases == [ "laravel" ];
+    }
+    {
+      name = "Laravel 12 enables socket-backed Valkey";
+      passed =
+        cfg12.services.laravel.redis.enable
+        && cfg12.services.redis.enable
+        && cfg12.services.redis.package == pkgs.valkey
+        && cfg12.services.redis.socket == "${cfg12.hostenv.runtimeDir}/redis.sock"
+        && cfg12.services.redis.appendOnly;
+    }
+    {
+      name = "Laravel services wait for Valkey";
+      passed =
+        lib.elem "redis.service" cfg12.systemd.services."phpfpm-laravel12".wants
+        && lib.elem "redis.service" cfg12.systemd.services."phpfpm-laravel12".after
+        && lib.elem "redis.service" cfg12.systemd.services."laravel-scheduler-laravel12".wants
+        && lib.elem "redis.service" cfg12.systemd.services."laravel-scheduler-laravel12".after
+        && lib.elem "redis.service" priorityUnit.wants
+        && lib.elem "redis.service" priorityUnit.after;
+    }
+    {
+      name = "Valkey lifecycle checks its Unix socket";
+      passed =
+        lib.hasInfix cfg12.services.redis.socket cfg12.systemd.services.redis.postStart
+        && lib.hasInfix cfg12.services.redis.socket cfg12.systemd.services.redis.postStop
+        && lib.hasInfix "systemctl --user start redis.service" activation12
+        && lib.hasInfix "Valkey reported ready without creating" activation12;
+    }
+    {
+      name = "Laravel backup configuration";
+      passed =
+        backups12 ? laravel
+        && backups12 ? "laravel-migrate"
+        && lib.elem "laravel-migrate" backups12."laravel-migrate".tags
+        && lib.elem cfg12.services.laravel.storageDir backups12.laravel.paths;
+    }
+    {
+      name = "Laravel restore, migration, and optimization activation";
+      passed =
+        lib.hasInfix "HOSTENV_RESTORE_LARAVEL_BEGIN" activation12
+        && lib.hasInfix "restore_key=\"laravel-migrate\"" activation12
+        && lib.hasInfix "del(.snapshots" activation12
+        && lib.hasInfix "artisan migrate --force" activation12
+        && lib.hasInfix "artisan optimize" activation12;
+    }
+    {
+      name = "Laravel activation excludes APP_KEY";
+      passed = !(lib.hasInfix "APP_KEY" activation12);
+    }
+    {
+      name = "Laravel 10 default deployment health check";
+      passed =
+        cfg10.environments.main.deploymentVerification.checks != [ ]
+        && (builtins.head cfg10.environments.main.deploymentVerification.checks).request.path == "/";
+    }
+    {
+      name = "Laravel 12 configured deployment health check";
+      passed =
+        cfg12.environments.main.deploymentVerification.checks != [ ]
+        && (builtins.head cfg12.environments.main.deploymentVerification.checks).request.path == "/up";
+    }
+  ];
+
+  failedLaravelContracts = builtins.filter (check: !check.passed) laravelContractChecks;
+  laravelContractFailure =
+    "Laravel contracts failed:\n"
+    + lib.concatMapStringsSep "\n" (check: "- ${check.name}") failedLaravelContracts;
 in
 profileCheck "10" envs.laravel10
 // profileCheck "11" envs.laravel11
@@ -331,47 +425,8 @@ profileCheck "10" envs.laravel10
 // {
   laravel-contracts =
     asserts.assertTrue "laravel-contracts"
-      (
-        cfg10.environments.main.requiredSecretFiles == [ "laravel_env" ]
-        && cfg10.services.laravel.queue.workers == { }
-        && !(builtins.any (name: lib.hasPrefix "laravel-queue-" name) (
-          builtins.attrNames cfg10.systemd.services
-        ))
-        && queueContract
-        && cfg12.services.mysql.settings.mysqld.skip-networking == true
-        && cfg12.services.laravel.redis.enable
-        && cfg12.services.redis.enable
-        && cfg12.services.redis.package == pkgs.valkey
-        && cfg12.services.redis.socket == "${cfg12.hostenv.runtimeDir}/redis.sock"
-        && cfg12.services.redis.appendOnly
-        && lib.elem "redis.service" cfg12.systemd.services."phpfpm-laravel12".wants
-        && lib.elem "redis.service" cfg12.systemd.services."phpfpm-laravel12".after
-        && lib.elem "redis.service" cfg12.systemd.services."laravel-scheduler-laravel12".wants
-        && lib.elem "redis.service" cfg12.systemd.services."laravel-scheduler-laravel12".after
-        && lib.elem "redis.service" priorityUnit.wants
-        && lib.elem "redis.service" priorityUnit.after
-        && lib.hasInfix cfg12.services.redis.socket cfg12.systemd.services.redis.postStart
-        && lib.hasInfix cfg12.services.redis.socket cfg12.systemd.services.redis.postStop
-        && lib.hasInfix "systemctl --user start redis.service" activation12
-        && lib.hasInfix "Valkey reported ready without creating" activation12
-        && cfg12.services.mysql.ensureDatabases == [ "laravel" ]
-        && backups12 ? laravel
-        && backups12 ? "laravel-migrate"
-        && lib.elem "laravel-migrate" backups12."laravel-migrate".tags
-        && lib.elem cfg12.services.laravel.storageDir backups12.laravel.paths
-        && lib.hasPrefix "laravel_secret_file=" activation12
-        && lib.hasInfix "HOSTENV_RESTORE_LARAVEL_BEGIN" activation12
-        && lib.hasInfix "restore_key=\"laravel-migrate\"" activation12
-        && lib.hasInfix "del(.snapshots" activation12
-        && lib.hasInfix "artisan migrate --force" activation12
-        && lib.hasInfix "artisan optimize" activation12
-        && !(lib.hasInfix "APP_KEY" activation12)
-        && cfg10.environments.main.deploymentVerification.checks != [ ]
-        && (builtins.head cfg10.environments.main.deploymentVerification.checks).request.path == "/"
-        && cfg12.environments.main.deploymentVerification.checks != [ ]
-        && (builtins.head cfg12.environments.main.deploymentVerification.checks).request.path == "/up"
-      )
-      "Laravel runtime, queue, migration, backup, secret, and deployment-verification contracts should evaluate";
+      (failedLaravelContracts == [ ])
+      laravelContractFailure;
 
   laravel-development-defaults = asserts.assertRun {
     name = "laravel-development-defaults";
