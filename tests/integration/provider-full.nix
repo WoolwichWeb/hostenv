@@ -89,6 +89,7 @@ let
     lockPath = lockPath;
     nodeSystems = { };
     cloudflare = { enable = false; zoneId = null; apiTokenFile = null; };
+    secretsFile = "secrets/secrets.yaml";
   };
 
   planData = lib.importJSON planEval.plan;

@@ -177,6 +177,7 @@ let
     planPath = null;
     lockPath = lockPath;
     nodeSystems = nodeSystems;
+    secretsFile = "secrets/secrets.yaml";
   }).plan;
 
   config = lib.recursiveUpdate generatedPlan {
