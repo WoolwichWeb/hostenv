@@ -855,6 +855,8 @@ in
         && lib.strings.hasInfix "hostenv = {" flakeText
         && lib.strings.hasInfix "follows = \"parent/hostenv\"" flakeText
         && lib.strings.hasInfix "inputs.parent.lib.provider.deployOutputs" flakeText
+        && lib.strings.hasInfix "secretsFile = \"secrets/secrets.yaml\"" flakeText
+        && lib.strings.hasInfix "inputs.parent + \"/secrets/secrets.yaml\"" flakeText
         && (lib.strings.hasInfix "${user1} =" flakeText || lib.strings.hasInfix "\"${user1}\" =" flakeText)
         && (lib.strings.hasInfix "${user2} =" flakeText || lib.strings.hasInfix "\"${user2}\" =" flakeText);
     in

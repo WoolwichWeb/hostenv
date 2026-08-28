@@ -4,6 +4,10 @@ let
   asserts = import ../support/assert.nix { inherit pkgs lib; };
 
   system = pkgs.stdenv.hostPlatform.system;
+  foreignSystem =
+    if system == "x86_64-linux"
+    then "aarch64-linux"
+    else "x86_64-linux";
   projectInputName = "acme__demo";
   aliasHostName = "alias.hostenv.test";
   nodeName = "node-a";
@@ -75,6 +79,7 @@ let
 
   projectEval = makeHostenv [ (projectDir + /hostenv.nix) ] "main";
 
+  secretsFile = "secrets/secrets.yaml";
   secretsPath = pkgs.writeText "secrets.yaml" ''
     access_tokens: ""
     cache_auth_password: "dummy"
@@ -82,6 +87,8 @@ let
       backups_secret: "dummy"
       backups_env: "dummy"
   '';
+
+  sopsTopLevelKeys = [ envName ];
 
   statePath = pkgs.writers.writeJSON "state.json" { };
   lockPath = pkgs.writers.writeJSON "flake.lock" {
@@ -221,7 +228,7 @@ let
 
   nixosSystem = providerFlake.lib.provider.nixosSystem;
   deployOutputs = providerFlake.lib.provider.deployOutputs {
-    inherit config nodeSystems nodesPath secretsPath;
+    inherit config nodeSystems nodesPath secretsFile secretsPath sopsTopLevelKeys;
     inputs = inputsForSystem;
     nixpkgs = inputs.nixpkgs;
     deploy-rs = inputs.deploy-rs;
@@ -230,17 +237,18 @@ let
   };
   deployProfiles = deployOutputs.deploy.nodes.${nodeName}.profiles;
   systemEval = nixosSystem {
-    inherit config nodeSystems nodesPath secretsPath;
+    inherit config nodeSystems nodesPath secretsFile secretsPath sopsTopLevelKeys;
     node = nodeName;
     inputs = inputsForSystem;
     nixpkgs = inputs.nixpkgs;
     pkgs = pkgsBySystem;
-    localSystem = system;
+    # Secret routing must not depend on the system doing the evaluation.
+    localSystem = foreignSystem;
   };
 
   systemMismatch = builtins.tryEval (nixosSystem {
     config = configMismatch;
-    inherit nodeSystems nodesPath secretsPath;
+    inherit nodeSystems nodesPath secretsFile secretsPath sopsTopLevelKeys;
     node = nodeName;
     inputs = inputsForSystem;
     nixpkgs = inputs.nixpkgs;
@@ -249,7 +257,7 @@ let
   });
   systemDeployReserved = nixosSystem {
     config = configDeployReserved;
-    inherit nodeSystems nodesPath secretsPath;
+    inherit nodeSystems nodesPath secretsFile secretsPath sopsTopLevelKeys;
     node = nodeName;
     inputs = inputsForSystem;
     nixpkgs = inputs.nixpkgs;
@@ -258,7 +266,7 @@ let
   };
   systemServiceResolutionReserved = nixosSystem {
     config = configServiceResolutionReserved;
-    inherit nodeSystems nodesPath secretsPath;
+    inherit nodeSystems nodesPath secretsFile secretsPath sopsTopLevelKeys;
     node = nodeName;
     inputs = inputsForSystem;
     nixpkgs = inputs.nixpkgs;
@@ -267,7 +275,7 @@ let
   };
   systemCacheMissing = nixosSystem {
     config = configCacheMissing;
-    inherit nodeSystems nodesPath secretsPath;
+    inherit nodeSystems nodesPath secretsFile secretsPath sopsTopLevelKeys;
     node = nodeName;
     inputs = inputsForSystem;
     nixpkgs = inputs.nixpkgs;
@@ -276,7 +284,7 @@ let
   };
   systemPreRendered = nixosSystem {
     config = configPreRendered;
-    inherit nodeSystems nodesPath secretsPath;
+    inherit nodeSystems nodesPath secretsFile secretsPath sopsTopLevelKeys;
     node = nodeName;
     inputs = inputsForSystem;
     nixpkgs = inputs.nixpkgs;

@@ -54,6 +54,14 @@ in
           '';
         };
 
+        # Extract the top-level secret names while generating the plan so
+        # node configuration can use them without parsing YAML itself.
+        sopsTopLevelKeys =
+          let
+            secretsPath = inputs.self + "/${cfg.secretsFile}";
+          in
+            builtins.attrNames (config.flake.lib.hostenv.readYaml pkgs secretsPath);
+
         providerGenerator =
           providerPlan
             {
@@ -77,6 +85,8 @@ in
               nodeModules = cfg.nodeModules;
               statePath = cfg.statePath;
               planPath = cfg.planPath;
+              secretsFile = cfg.secretsFile;
+              inherit sopsTopLevelKeys;
               cloudflare = cfg.cloudflare;
               planSource = cfg.planSource;
               generatedFlake = cfg.generatedFlake;
