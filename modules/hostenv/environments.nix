@@ -100,10 +100,10 @@ in
       };
 
       options.defaultEnvironment = lib.mkOption {
-        type = types.str;
-        description = "Name of the default environment for the project.";
+        type = types.nullOr types.str;
+        description = "Name of the default environment for the project, or null when no default can be selected.";
         example = "production";
-        default = "main";
+        default = null;
       };
 
       options.exportedEnvironments = lib.mkOption {
@@ -115,7 +115,7 @@ in
 
       config =
         let
-          productionEnvs = lib.filterAttrs (_: v: (v.enable or false) && v.type == "production") config.environments;
+          productionEnvs = lib.filterAttrs (_: v: v.enable && v.type == "production") config.environments;
           productionNames = builtins.attrNames productionEnvs;
         in
         {

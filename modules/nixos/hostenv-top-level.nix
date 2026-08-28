@@ -21,9 +21,9 @@
         };
 
         defaultEnvironment = lib.mkOption {
-          type = lib.types.str;
-          default = "main";
-          description = "Default environment name for hostenv.";
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = "Default environment name for hostenv, when one is defined.";
         };
 
         runtimeRoot = lib.mkOption {

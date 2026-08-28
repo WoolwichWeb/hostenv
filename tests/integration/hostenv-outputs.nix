@@ -74,7 +74,81 @@ let
         type = "production";
       };
     })
-  ] null;
+  ] "production";
+
+  nullMakeHostenvFails = !(builtins.tryEval (makeHostenv [
+    ({ ... }: {
+      hostenv = {
+        organisation = "acme";
+        project = "explicit-only";
+        hostenvHostname = "hosting.test";
+        root = ./.;
+      };
+      environments.bonza.enable = true;
+    })
+  ] null)).success;
+
+  unknownMakeHostenvFails = !(builtins.tryEval (makeHostenv [
+    ({ ... }: {
+      hostenv = {
+        organisation = "acme";
+        project = "explicit-only";
+        hostenvHostname = "hosting.test";
+        root = ./.;
+      };
+      environments.bonza.enable = true;
+    })
+  ] "main")).success;
+
+  singleTestingOutputs = mkOutputs {
+    modules = [
+      ({ ... }: {
+        hostenv = {
+          organisation = "acme";
+          project = "bonza-project";
+          hostenvHostname = "hosting.test";
+          root = ./.;
+        };
+        environments.bonza = {
+          enable = true;
+          type = "testing";
+        };
+      })
+    ];
+  };
+
+  emptyOutputs = mkOutputs {
+    modules = [
+      ({ ... }: {
+        hostenv = {
+          organisation = "acme";
+          project = "empty-project";
+          hostenvHostname = "hosting.test";
+          root = ./.;
+        };
+        # Removing every environment should remain valid even if an old explicit
+        # default is left behind in the project configuration.
+        defaultEnvironment = "main";
+      })
+    ];
+  };
+
+  multipleTestingOutputs = mkOutputs {
+    modules = [
+      ({ ... }: {
+        hostenv = {
+          organisation = "acme";
+          project = "ambiguous-project";
+          hostenvHostname = "hosting.test";
+          root = ./.;
+        };
+        environments = {
+          bonza.enable = true;
+          cobber.enable = true;
+        };
+      })
+    ];
+  };
 
   ok =
     outputs ? environments
@@ -82,8 +156,17 @@ let
     && (productionFallbackOutputs.defaultEnvironment or null) == "production"
     && (productionFallbackOutputs.environments ? production)
     && productionFallbackEval.config.defaultEnvironment == "production"
-    && productionFallbackEval.config.hostenv.environmentName == "production";
+    && productionFallbackEval.config.hostenv.environmentName == "production"
+    && nullMakeHostenvFails
+    && unknownMakeHostenvFails
+    && singleTestingOutputs.defaultEnvironment == "bonza"
+    && (singleTestingOutputs.environments ? bonza)
+    && !(singleTestingOutputs.environments ? main)
+    && emptyOutputs.defaultEnvironment == null
+    && emptyOutputs.environments == { }
+    && multipleTestingOutputs.defaultEnvironment == "bonza"
+    && (builtins.attrNames multipleTestingOutputs.environments) == [ "bonza" "cobber" ];
 in
 asserts.assertTrue "hostenv-outputs-eval"
   ok
-  "lib.hostenv outputs and makeHostenv null evals should preserve the single-production default fallback"
+  "project discovery should select real defaults without synthesizing main, and allow projects with no default"

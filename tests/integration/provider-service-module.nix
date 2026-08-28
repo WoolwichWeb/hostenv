@@ -19,7 +19,7 @@ let
         type = "testing";
       };
     })
-  ] null;
+  ] "main";
 
   vhostNames = builtins.tryEval (builtins.attrNames env.config.services.nginx.virtualHosts);
   fallbackServerName = builtins.tryEval env.config.services.nginx.virtualHosts."example.test".serverName;

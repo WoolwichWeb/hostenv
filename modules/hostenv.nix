@@ -189,7 +189,7 @@ let
 
           shortName =
             lib.concatStringsSep "-" (
-              builtins.map slugify [
+              map slugify [
                 config.project
                 config.environmentName
               ]
@@ -204,7 +204,7 @@ let
           # Note: we use environmentName and not safeEnvironmentName as the latter
           # is stripped of some characters that are valid in git branch names,
           # '/' and '--' for example.
-          gitRef = lib.mkDefault (config.environmentName or "main");
+          gitRef = lib.mkDefault config.environmentName;
           runtimeDir = lib.mkForce "${config.runtimeRoot}/user/${config.userName}";
           upstreamRuntimeDir = lib.mkForce "${config.runtimeRoot}/nginx/${config.userName}";
           dataDir = lib.mkForce "/home/${config.userName}/.local/share";
@@ -214,6 +214,30 @@ let
           backupsEnvFile = lib.mkForce "/run/secrets/${config.userName}/backups_env";
           projectNameHash = lib.mkForce slugHash;
         };
+    };
+
+  # The subset of per-environment configuration needed to choose the
+  # environment. This allows us to avoid full Hostenv evaluation of all
+  # environments when only one is needed.
+  environmentSelectionModule =
+    { lib, ... }:
+    {
+      options = {
+        enable = lib.mkEnableOption "this environment on hostenv";
+        type = lib.mkOption {
+          type = lib.types.enum [
+            "development"
+            "testing"
+            "production"
+          ];
+          default = "development";
+          description = ''
+            Environment type, setting this to production exposes this environment
+            to search engines.
+            Only one environment may be production.
+          '';
+        };
+      };
     };
 
   # Per-environment config.
@@ -228,7 +252,6 @@ let
       lib,
       config,
       name,
-      options,
       ...
     }:
     let
@@ -253,26 +276,14 @@ let
       };
     in
     {
-      options = {
-        enable = lib.mkEnableOption "this environment on hostenv";
+      # Import the small subset of environment options defined above in
+      # our full environment option set.
+      imports = [ environmentSelectionModule ];
 
+      options = {
         users = lib.mkOption {
           type = types.attrsOf (types.submodule user);
           default = allUsers;
-        };
-
-        type = lib.mkOption {
-          type = types.enum [
-            "development"
-            "testing"
-            "production"
-          ];
-          default = "development";
-          description = ''
-            Environment type, setting this to production exposes this environment
-            to search engines.
-            Only one environment may be production.
-          '';
         };
 
         virtualHosts =
@@ -282,7 +293,7 @@ let
           lib.mkOption {
             type = types.attrsOf (
               types.submodule (
-                { options, config, ... }: {
+                { config, ... }: {
                   options = {
 
                     locations = lib.mkOption {
@@ -375,7 +386,7 @@ let
                               apply =
                                 value:
                                 if value != null && lib.strings.hasInfix "\"" value then
-                                  builtins.throw "virtualHosts.<host>.security.csp may not contain double quotes"
+                                  throw "virtualHosts.<host>.security.csp may not contain double quotes"
                                 else
                                   value;
                             };
@@ -408,7 +419,7 @@ let
                               apply =
                                 value:
                                 if value != null && lib.strings.hasInfix "'" value then
-                                  builtins.throw "virtualHosts.<host>.security.reportTo may not contain single quotes"
+                                  throw "virtualHosts.<host>.security.reportTo may not contain single quotes"
                                 else
                                   value;
                             };
@@ -649,7 +660,7 @@ let
       config.virtualHosts.${config.hostenv.hostname} = lib.mkDefault { };
     };
 
-  mkMakeHostenv =
+  mkHostenvFunctions =
     system:
     let
       pkgs = import inputs.nixpkgs {
@@ -672,6 +683,44 @@ let
           [ pogOver ];
       };
 
+      # Evaluate only the configuration required to discover project
+      # environments and choose a default environment.
+      #
+      # Unlike evalHostenv, this deliberately does not load the Hostenv runtime
+      # modules and does not define hostenv.environmentName.
+      evalEnvironmentSelection =
+        modules:
+        pkgs.lib.evalModules {
+          modules = [
+            { _module.args = { inherit inputs pkgs; }; }
+            ({ lib, ... }: {
+              # We deliberately ignore unknown options, only evaluating
+              # what is necessary to discover environments and select the default.
+              config._module.check = false;
+
+              options = {
+                defaultEnvironment = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = null;
+                };
+
+                environments = lib.mkOption {
+                  default = { };
+                  type = lib.types.attrsOf (
+                    lib.types.submoduleWith {
+                      modules = [
+                        environmentSelectionModule
+                        { _module.check = false; }
+                      ];
+                    }
+                  );
+                };
+              };
+            })
+          ]
+          ++ modules;
+        };
+
       evalHostenv =
         modules: selectedEnvironmentName:
         pkgs.lib.evalModules {
@@ -689,62 +738,70 @@ let
         };
 
       resolveDefaultEnvironment =
+        selectionConfig:
+        let
+          enabledNames = builtins.attrNames (
+            lib.filterAttrs (_: env: env.enable) selectionConfig.environments
+          );
+
+          productionNames = builtins.attrNames (
+            lib.filterAttrs (_: env: env.enable && env.type == "production") selectionConfig.environments
+          );
+        in
+        # No enabled environments is a valid desired state. In particular,
+        # a stale explicit default must not keep a deleted environment alive.
+        if enabledNames == [ ] then
+          null
+        else if selectionConfig.defaultEnvironment != null then
+          selectionConfig.defaultEnvironment
+        else if productionNames != [ ] then
+          builtins.head productionNames
+        else if builtins.length enabledNames > 0 then
+          if builtins.elem "main" enabledNames then "main" else builtins.head enabledNames
+        else
+          null;
+
+      discoverProject =
         modules:
         let
-          discoveryEnvironmentName = "__HOSTENV_INTERNAL_DEFAULT_DISCOVERY__";
-          discoveryEval = evalHostenv (
+          selectionEval = evalEnvironmentSelection modules;
+        in
+        {
+          environments = selectionEval.config.environments;
+          defaultEnvironment = resolveDefaultEnvironment selectionEval.config;
+        };
+
+      makeHostenv =
+        modules: environmentName:
+        let
+          project = discoverProject modules;
+        in
+        if !builtins.isString environmentName then
+          throw "makeHostenv: environmentName must be a string"
+        else if !(builtins.hasAttr environmentName project.environments) then
+          throw "makeHostenv: environment '${environmentName}' is not defined by the project"
+        else
+          evalHostenv (
             modules
             ++ [
               ({ lib, ... }: {
-                # Use a synthetic environment name so default-environment
-                # discovery does not recurse through the normal current-env path.
-                environments.${discoveryEnvironmentName}.enable = lib.mkDefault false;
+                defaultEnvironment = lib.mkForce project.defaultEnvironment;
               })
             ]
-          ) discoveryEnvironmentName;
-
-          # List of production environment names
-          productionNames = builtins.attrNames (
-            lib.filterAttrs (
-              _: env: (env.enable or false) && env.type == "production"
-            ) discoveryEval.config.environments
-          );
-
-          # True if the environment config explicitly sets a
-          # default environment
-          hasExplicitDefaultEnvironment =
-            let
-              defaultPrio = (lib.modules.mkOptionDefault null).priority;
-            in
-            discoveryEval.options.defaultEnvironment.highestPrio != defaultPrio;
-        in
-        if hasExplicitDefaultEnvironment then
-          discoveryEval.config.defaultEnvironment
-        else if productionNames != [ ] then
-          builtins.head productionNames
-        else
-          "main";
+          ) environmentName;
     in
-    modules: environmentName:
-    let
-      defaultEnvironment = resolveDefaultEnvironment modules;
-      selectedEnvironmentName = if environmentName == null then defaultEnvironment else environmentName;
-    in
-    evalHostenv (
-      modules
-      ++ [
-        ({ lib, ... }: {
-          defaultEnvironment = lib.mkForce defaultEnvironment;
-        })
-      ]
-    ) selectedEnvironmentName;
+    {
+      inherit discoverProject makeHostenv;
+    };
+
+  hostenvFunctions = lib.genAttrs systems mkHostenvFunctions;
 
 in
 {
   options.flake.makeHostenv = lib.mkOption {
     type = lib.types.attrsOf (lib.types.functionTo (lib.types.functionTo lib.types.unspecified));
     readOnly = true;
-    description = "Per-system function: modules -> environmentName -> evalModules result.";
+    description = "Evaluate a specific declared project environment.";
   };
 
   options.perSystem = fp.mkPerSystemOption (
@@ -752,7 +809,7 @@ in
       options.hostenv.makeHostenv = lib.mkOption {
         type = lib.types.functionTo (lib.types.functionTo lib.types.unspecified);
         readOnly = true;
-        description = "Per-system makeHostenv helper (modules -> environmentName -> evalModules).";
+        description = "Evaluate a specific declared project environment.";
       };
     }
   );
@@ -760,6 +817,9 @@ in
   config = {
     flake.lib.hostenv.module = hostenvModule;
     flake.lib.hostenv.environmentModule = environmentModule;
+    flake.lib.hostenv.discoverProject = lib.mapAttrs (
+      _: functions: functions.discoverProject
+    ) hostenvFunctions;
 
     # TODO: do not create unknown flake outputs, use lib instead
     flake.modules.hostenv.core = { ... }: {
@@ -770,7 +830,7 @@ in
     };
 
     # TODO: do not create unknown flake outputs, use lib instead
-    flake.makeHostenv = lib.genAttrs systems mkMakeHostenv;
+    flake.makeHostenv = lib.mapAttrs (_: functions: functions.makeHostenv) hostenvFunctions;
 
     perSystem = { system, ... }: {
       hostenv.makeHostenv = config.flake.makeHostenv.${system};

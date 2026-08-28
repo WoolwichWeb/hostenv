@@ -44,7 +44,7 @@ let
     EOF
   '';
 
-  projectSkeletonEval = makeHostenv [ (projectSkeletonDir + /hostenv.nix) ] null;
+  projectSkeletonEval = makeHostenv [ (projectSkeletonDir + /hostenv.nix) ] "main";
   envName = projectSkeletonEval.config.environments.main.hostenv.userName;
   hostName = projectSkeletonEval.config.environments.main.hostenv.hostname;
 
@@ -73,7 +73,7 @@ let
     EOF
   '';
 
-  projectEval = makeHostenv [ (projectDir + /hostenv.nix) ] null;
+  projectEval = makeHostenv [ (projectDir + /hostenv.nix) ] "main";
 
   secretsPath = pkgs.writeText "secrets.yaml" ''
     access_tokens: ""

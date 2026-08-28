@@ -49,7 +49,7 @@ let
       providerPlanModule = {
         provider.plan = {
           environments = envsForNode;
-          defaultEnvironment = plan.defaultEnvironment or "main";
+          defaultEnvironment = plan.defaultEnvironment or null;
         };
       };
 
