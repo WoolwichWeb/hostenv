@@ -32,7 +32,7 @@ let
           };
         })
       ];
-      eval = makeHostenv modules null;
+      eval = makeHostenv modules "main";
       sanitisedEnvs = lib.mapAttrs (_: env: env // {
         hostenv = env.hostenv // { root = "/src/${project}"; };
       }) eval.config.environments;

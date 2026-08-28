@@ -19,11 +19,17 @@
       pogVariableName = builtins.replaceStrings [ "-" ] [ "_" ];
       shellSafeCommandToken = token: builtins.match "[A-Za-z0-9._+-]+" token != null;
 
+      defaultEnvironmentDescription =
+        if config.defaultEnvironment == null then
+          "Target environment (defaults to the current branch)"
+        else
+          "Target environment (defaults to the current branch or '${config.defaultEnvironment}')";
+
       rootPersistentFlags = [
         {
           name = "env";
           short = "e";
-          description = "Target environment (defaults to the current branch or '${config.defaultEnvironment}')";
+          description = defaultEnvironmentDescription;
           argument = "ENV";
           completion = environmentCandidates;
         }
@@ -210,7 +216,12 @@
           hostenv_env_name="''${env:-$(
             git symbolic-ref -q --short HEAD 2>/dev/null || true
           )}"
-          if ${var.empty "hostenv_env_name"}; then hostenv_env_name="${config.defaultEnvironment}"; fi
+          ${lib.optionalString (config.defaultEnvironment != null) ''
+            if ${var.empty "hostenv_env_name"}; then hostenv_env_name="${config.defaultEnvironment}"; fi
+          ''}
+          if ${var.empty "hostenv_env_name"}; then
+            die "Could not determine an environment. Pass --env or run Hostenv from a configured environment branch." 2
+          fi
 
           hostenv_environment_or_null() { jq -c --arg e "$1" '.[$e] // null' <<< ${lib.escapeShellArg environmentsJson}; }
           hostenv_environment="$(hostenv_environment_or_null "$hostenv_env_name")"

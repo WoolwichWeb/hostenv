@@ -25,7 +25,7 @@ let
         backups.enable = true;
       };
     })
-  ] null;
+  ] "main";
 
   backups = env.config.services.restic.backups;
   hasMigrate = backups ? "php-app-migrate" && (backups."php-app-migrate".timerConfig or "") == null;

@@ -35,7 +35,7 @@ let
         backups.enable = true;
       };
     })
-  ] null;
+  ] "main";
   drupalFail = lib.any (a: a.assertion == false) drupalEnv.config.assertions;
 
   phpAppEnv = makeHostenv [
@@ -46,7 +46,7 @@ let
         backups.enable = true;
       };
     })
-  ] null;
+  ] "main";
   phpAppFail = lib.any (a: a.assertion == false) phpAppEnv.config.assertions;
 
 in

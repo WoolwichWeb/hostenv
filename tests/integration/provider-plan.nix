@@ -76,7 +76,7 @@ let
       };
     })
   ]
-    null;
+    "env1";
 
   hostenvOutput = {
     "${"x86_64-linux"}" = {
@@ -165,6 +165,7 @@ let
     , deployPublicKeys ? [ "ssh-ed25519 test" ]
     , serviceResolution ? null
     , nodeAddresses ? { }
+    , projectHostenvOutput ? hostenvOutput
     }:
     let
       # Build a synthetic flake inputs set: hostenv modules + one project with lib.hostenv output.
@@ -198,7 +199,7 @@ let
         org__proj = {
           outPath = projectDir;
           __toString = self: toString projectDir;
-          lib = { hostenv = hostenvOutput; };
+          lib = { hostenv = projectHostenvOutput; };
         };
       };
     in
@@ -246,7 +247,7 @@ let
         }
         EOF
       '';
-      eval = makeHostenv [ (projectDir + /hostenv.nix) ] null;
+      eval = makeHostenv [ (projectDir + /hostenv.nix) ] envName;
       input = {
         outPath = projectDir;
         __toString = self: toString projectDir;
@@ -263,6 +264,41 @@ let
     {
       inherit projectDir eval input;
     };
+
+
+  emptyProjectHostenvOutput = {
+    "${"x86_64-linux"}" = {
+      environments = { };
+      # The provider must not require or dereference a default when there are
+      # no deployment targets; tolerate stale outputs from older projects too.
+      defaultEnvironment = "main";
+    };
+  };
+
+  emptyProjectPlan = mkPlan {
+    projectHostenvOutput = emptyProjectHostenvOutput;
+  };
+
+  phantomMainProjectHostenvOutput = {
+    "${"x86_64-linux"}" = {
+      environments = {
+        env1 = envsEval.config.environments.env1;
+        main = envsEval.config.environments.env1 // {
+          enable = false;
+          hostenv = envsEval.config.environments.env1.hostenv // {
+            environmentName = "main";
+            gitRef = "main";
+            userName = "phantom-main";
+          };
+        };
+      };
+      defaultEnvironment = "main";
+    };
+  };
+
+  phantomMainPlan = mkPlan {
+    projectHostenvOutput = phantomMainProjectHostenvOutput;
+  };
 
   providerEnvs = envsEval.config.environments;
 
@@ -352,7 +388,7 @@ let
     }
     EOF
   '';
-  backupsMixedEval = makeHostenv [ (backupsMixedProjectDir + /hostenv.nix) ] null;
+  backupsMixedEval = makeHostenv [ (backupsMixedProjectDir + /hostenv.nix) ] "main";
   backupsMixedInput = {
     outPath = backupsMixedProjectDir;
     __toString = self: toString backupsMixedProjectDir;
@@ -658,7 +694,7 @@ let
         EOF
       '';
 
-      conflictEnvEval = makeHostenv [ "${conflictProjectDir}/hostenv.nix" ] null;
+      conflictEnvEval = makeHostenv [ "${conflictProjectDir}/hostenv.nix" ] "env1";
 
       hostenvOutputConflict = {
         "${"x86_64-linux"}" = {
@@ -715,6 +751,25 @@ let
       "plan generation must fail when virtualHosts overlap between new environments";
 in
 {
+
+  provider-plan-empty-project-environments =
+    let
+      plan = lib.importJSON emptyProjectPlan.plan;
+    in
+    asserts.assertTrue "provider-plan-empty-project-environments"
+      (plan.environments == { })
+      "a project with no environments should produce an empty provider environment plan";
+
+  provider-plan-ignores-disabled-phantom-default =
+    let
+      plan = lib.importJSON phantomMainPlan.plan;
+      flakeText = builtins.readFile phantomMainPlan.flake;
+    in
+    asserts.assertTrue "provider-plan-ignores-disabled-phantom-default"
+      ((builtins.attrNames plan.environments) == [ user1 ]
+        && !(lib.strings.hasInfix "phantom-main" flakeText))
+      "provider planning should use enabled project environments, not a disabled default leaked by evaluation";
+
   provider-plan-hostname =
     let plan = lib.importJSON planNoState;
     in asserts.assertTrue "provider-plan-hostname"

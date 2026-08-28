@@ -36,7 +36,7 @@ let
       };
       services.restic.backups."drupal-migrate".tags = lib.mkForce [ "daily" ];
     })
-  ] null;
+  ] "main";
   drupalFail = lib.any (a: a.assertion == false) drupalEnv.config.assertions;
 
   phpAppEnv = makeHostenv [
@@ -48,7 +48,7 @@ let
       };
       services.restic.backups."php-app-migrate".tags = lib.mkForce [ "daily" ];
     })
-  ] null;
+  ] "main";
   phpAppFail = lib.any (a: a.assertion == false) phpAppEnv.config.assertions;
 
 in

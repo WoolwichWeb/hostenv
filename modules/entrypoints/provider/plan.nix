@@ -310,56 +310,40 @@ let
                     if builtins.hasAttr "environments" projectHostenvSystem then projectHostenvSystem.environments
                     else builtins.throw "provider plan: input '${name}' is missing lib.hostenv.${system}.environments (export outputs.lib.hostenv.<system>.environments from the project flake).";
 
-                  defaultEnvName =
-                    if builtins.hasAttr "defaultEnvironment" projectHostenvSystem
-                    then projectHostenvSystem.defaultEnvironment
-                    else builtins.throw "provider plan: input '${name}' is missing lib.hostenv.${system}.defaultEnvironment (export outputs.lib.hostenv from the project flake).";
-
-                  envCfg =
-                    if builtins.hasAttr defaultEnvName projectEnvironments then projectEnvironments.${defaultEnvName}
-                    else builtins.throw "provider plan: defaultEnvironment '${defaultEnvName}' missing in ${name}.lib.hostenv.${system}.environments";
-
-                  envRoot =
-                    if envCfg ? hostenv && envCfg.hostenv ? root then envCfg.hostenv.root
-                    else builtins.throw "provider plan: environment '${defaultEnvName}' in ${name} is missing hostenv.root";
-
-                  minimalHostenv =
-                    hostenvMakeHostenv [
-                      (inputs.${name} + /hostenv.nix)
-                      ({ config, ... }: {
-                        hostenv.organisation = lib.mkForce orgAndProject.organisation;
-                        hostenv.project = lib.mkForce orgAndProject.project;
-                        hostenv.environmentName = lib.mkForce config.defaultEnvironment;
-                        hostenv.root = lib.mkForce envRoot;
-                        hostenv.hostenvHostname = lib.mkForce cfgHostenvHostname;
-                      })
-                    ]
-                      null;
-
-                  migrateEnvExtras =
-                    let
-                      resticBackups = minimalHostenv.config.services.restic.backups or { };
-                      migrateBackupKeys = builtins.filter (n: lib.hasSuffix "-migrate" n) (builtins.attrNames resticBackups);
-                    in
-                    { migrations = migrateBackupKeys; };
+                  # The project output is authoritative for which environments
+                  # exist. Disabled environments are retained in project metadata
+                  # but are not deployment targets.
+                  enabledProjectEnvironments =
+                    lib.filterAttrs (_: env: env.enable) projectEnvironments;
 
                 in
                 lib.attrsets.mapAttrsToList
                   (
                     envName: envCfg:
                       let
+                        envRoot =
+                          if envCfg ? hostenv && envCfg.hostenv ? root then envCfg.hostenv.root
+                          else builtins.throw "provider plan: environment '${envName}' in ${name} is missing hostenv.root";
+
                         evaluatedHostenv =
                           hostenvMakeHostenv [
                             (inputs.${name} + /hostenv.nix)
-                            ({ config, ... }: {
+                            ({ ... }: {
                               hostenv.organisation = lib.mkForce orgAndProject.organisation;
                               hostenv.project = lib.mkForce orgAndProject.project;
-                              hostenv.environmentName = lib.mkForce envName;
                               hostenv.root = lib.mkForce envRoot;
                               hostenv.hostenvHostname = lib.mkForce cfgHostenvHostname;
                             })
                           ]
-                            null;
+                            envName;
+
+                        migrateEnvExtras =
+                          let
+                            resticBackups = evaluatedHostenv.config.services.restic.backups or { };
+                            migrateBackupKeys = builtins.filter (n: lib.hasSuffix "-migrate" n) (builtins.attrNames resticBackups);
+                          in
+                          { migrations = migrateBackupKeys; };
+
                         effectiveEnvCfg =
                           if builtins.hasAttr envName evaluatedHostenv.config.environments
                           then evaluatedHostenv.config.environments.${envName}
@@ -412,10 +396,7 @@ let
                         in
                         let
                           envWithMigrations = lib.recursiveUpdate effectiveEnvCfg migrateEnvExtras;
-                          projectEnvCfg =
-                            if builtins.hasAttr envName projectEnvironments
-                            then projectEnvironments.${envName}
-                            else effectiveEnvCfg;
+                          projectEnvCfg = envCfg;
                           hostenv' = hostenv // {
                             hostenvHostname = cfgHostenvHostname;
                             backupsRepoHost =
@@ -431,7 +412,7 @@ let
                           repo = repo // { ref = hostenv'.gitRef; };
                         }
                   )
-                  minimalHostenv.config.environments
+                  enabledProjectEnvironments
               )
               projectInputs) else [ ];
 
