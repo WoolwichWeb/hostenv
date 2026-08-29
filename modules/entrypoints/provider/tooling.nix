@@ -4,6 +4,7 @@ let
   cfg = config.provider;
   providerPlan = config.flake.lib.provider.plan;
   hostenvInputs = config.flake.lib.hostenvInputs;
+  readYaml = config.flake.lib.hostenv.readYaml;
   hostenvInput =
     hostenvInputs.requireInput {
       inherit inputs;
@@ -60,7 +61,7 @@ in
           let
             secretsPath = inputs.self + "/${cfg.secretsFile}";
           in
-            builtins.attrNames (config.flake.lib.hostenv.readYaml pkgs secretsPath);
+            builtins.attrNames (readYaml pkgs secretsPath);
 
         providerGenerator =
           providerPlan
