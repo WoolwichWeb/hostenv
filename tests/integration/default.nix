@@ -10,6 +10,7 @@
 // { hostenv-outputs-eval = import ./hostenv-outputs.nix { inherit pkgs makeHostenv inputs; }; }
 // (import ./provider-plan.nix { inherit pkgs makeHostenv inputs; })
 // { provider-plan-paths-eval = import ./provider-plan-paths.nix { inherit pkgs inputs; }; }
+// { provider-tooling-plan-paths-eval = import ./provider-tooling.nix { inherit pkgs inputs; }; }
 // (import ./provider-full.nix { inherit pkgs makeHostenv inputs; })
 // (import ./provider-nixos-system.nix { inherit pkgs makeHostenv inputs; })
 // { provider-service-module-eval = import ./provider-service-module.nix { inherit pkgs makeHostenv; }; }
