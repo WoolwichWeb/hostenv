@@ -244,3 +244,11 @@ project grows.
 
 Your project's hostenv.nix can extend the `hostenv` command. See the
 [Hostenv CLI command API](docs/cli-command-api.md) for more information.
+
+## License
+
+Hostenv is licensed under the GNU General Public License,
+version 3 or later. See `LICENSE`.
+
+Portions of Hostenv are derived from Nixpkgs/NixOS and home-manager, which
+are licensed under the MIT License. See `LICENSES/MIT-nixpkgs` and `LICENSES/MIT-home-manager`.

@@ -1,9 +1,14 @@
+# Portions of this file are derived from the Nixpkgs/NixOS project,
+# originally licensed under the MIT License.
+#
+# Original source:
+# https://github.com/NixOS/nixpkgs/blob/nixos-26.05/nixos/modules/services/web-servers/phpfpm/default.nix
+#
+# See LICENSES/MIT-nixpkgs.
+
 { ... }:
 {
   flake.modules.hostenv.phpfpm =
-    # Based on:
-    # https://github.com/NixOS/nixpkgs/blob/nixos-24.11/nixos/modules/services/web-servers/phpfpm/default.nix
-    # https://github.com/cachix/devenv/blob/main/src/modules/languages/php.nix
     { config, lib, pkgs, inputs, ... }:
     
     let

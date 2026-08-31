@@ -1,9 +1,14 @@
+# Portions of this file are derived from the Nixpkgs/NixOS project,
+# originally licensed under the MIT License.
+#
+# Original source:
+# https://github.com/NixOS/nixpkgs/blob/staging-26.05/nixos/modules/services/backup/restic.nix
+#
+# See LICENSES/MIT-nixpkgs.
+
 { ... }:
 {
   flake.modules.hostenv.restic =
-    # Liberally cribbed from:
-    # https://github.com/NixOS/nixpkgs/blob/staging-24.11/nixos/modules/services/backup/restic.nix
-    
     { config, lib, pkgs, ... }:
     let
       cfg = config.services.restic;
