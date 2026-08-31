@@ -86,11 +86,14 @@ let
             (environmentWith name).hostenv.organisation
             + "_" + (environmentWith name).hostenv.project;
           envOnly = packages.lib.filterAttrs (name: _: builtins.elem name envUsers) userInfo.users.users;
+          requiredSecretNamesFor = name:
+            lib.unique ((environmentWith name).requiredSecretFiles or [ ]);
           secretNamesFor = name:
             lib.unique (
               [ "backups_secret" "backups_env" ]
-              ++ ((environmentWith name).requiredSecretFiles or [ ])
+              ++ (requiredSecretNamesFor name)
             );
+          secretRestartServiceName = name: "hostenv-required-secrets-${name}";
           resolveSecretKey = name: secretName:
             let
               scopes = [ name (orgProjectFromName name) (orgFromName name) ];
@@ -116,7 +119,7 @@ let
               '';
         in
         {
-          sops.secrets = packages.lib.concatMapAttrs
+          sops.secrets = lib.concatMapAttrs
             (
               name: _user:
                 builtins.listToAttrs (map
@@ -126,9 +129,69 @@ let
                       owner = name;
                       group = name;
                       key = resolveSecretKey name secretName;
+                      restartUnits = lib.optional
+                        (builtins.elem secretName (requiredSecretNamesFor name))
+                        "${secretRestartServiceName name}.service";
                     };
                   })
                   (secretNamesFor name))
+            )
+            envOnly;
+
+          # sops-nix can restart only system services directly, while Hostenv
+          # application services run in the environment user's systemd
+          # manager.
+          # Find any active user services that load any provider-managed
+          # runtime secret and restarting those services through the
+          # user's manager.
+          systemd.services = lib.concatMapAttrs
+            (
+              name: user:
+                lib.optionalAttrs (requiredSecretNamesFor name != [ ]) {
+                  ${secretRestartServiceName name} = {
+                    description = "Restart ${name} services after runtime secrets change";
+                    wantedBy = [ "multi-user.target" ];
+                    wants = [ "user@${toString user.uid}.service" ];
+                    after = [ "user@${toString user.uid}.service" ];
+                    environment = {
+                      XDG_RUNTIME_DIR = "/run/user/${toString user.uid}";
+                      DBUS_SESSION_BUS_ADDRESS = "unix:path=/run/user/${toString user.uid}/bus";
+                    };
+                    serviceConfig = {
+                      Type = "oneshot";
+                      User = name;
+                      RemainAfterExit = true;
+                    };
+                    script = ''
+                      secret_root=${lib.escapeShellArg "/run/secrets/${name}/"}
+                      units=()
+
+                      while read -r unit _; do
+                        if [ -z "$unit" ]; then
+                          continue
+                        fi
+
+                        service_type="$(${packages.systemd}/bin/systemctl --user show \
+                          --property=Type --value "$unit")"
+                        if [ "$service_type" = oneshot ]; then
+                          continue
+                        fi
+
+                        environment_files="$(${packages.systemd}/bin/systemctl --user show \
+                          --property=EnvironmentFiles --value "$unit")"
+                        if printf '%s\n' "$environment_files" \
+                          | ${packages.gnugrep}/bin/grep -Fq "$secret_root"; then
+                          units+=("$unit")
+                        fi
+                      done < <(${packages.systemd}/bin/systemctl --user list-units \
+                        --type=service --state=active --no-legend --plain --no-pager)
+
+                      if [ "''${#units[@]}" -gt 0 ]; then
+                        ${packages.systemd}/bin/systemctl --user restart -- "''${units[@]}"
+                      fi
+                    '';
+                  };
+                }
             )
             envOnly;
         };
@@ -162,7 +225,7 @@ let
             ];
         }
     else
-      throw "hostenv provider: environment keys must match hostenv.userName (mismatched: ${builtins.toString envUserMismatch})";
+      throw "hostenv provider: environment keys must match hostenv.userName (mismatched: ${toString envUserMismatch})";
 
   providerDeployOutputs =
     { inputs
@@ -247,7 +310,7 @@ let
             let
               portOpts =
                 if builtins.hasAttr node nodeSshPorts
-                then [ "-p" (builtins.toString nodeSshPorts.${node}) ]
+                then [ "-p" (toString nodeSshPorts.${node}) ]
                 else [ ];
               extraOpts =
                 if builtins.hasAttr node nodeSshOpts
@@ -458,7 +521,7 @@ in
       default =
         if inputs ? self
         then inputs.self + /generated/state.json
-        else builtins.throw "provider.statePath: inputs.self is required to resolve defaults; set provider.statePath explicitly.";
+        else throw "provider.statePath: inputs.self is required to resolve defaults; set provider.statePath explicitly.";
     };
 
     planPath = mkOption {
@@ -466,7 +529,7 @@ in
       default =
         if inputs ? self
         then inputs.self + /generated/plan.json
-        else builtins.throw "provider.planPath: inputs.self is required to resolve defaults; set provider.planPath explicitly.";
+        else throw "provider.planPath: inputs.self is required to resolve defaults; set provider.planPath explicitly.";
     };
 
     planSource = mkOption { type = types.enum [ "disk" "eval" ]; default = "eval"; };

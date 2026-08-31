@@ -444,6 +444,21 @@ let
     &&
       systemEval.config.sops.secrets."${envName}/laravel_env".path
       == "/run/secrets/${envName}/laravel_env";
+  secretRestartUnitName = "hostenv-required-secrets-${envName}";
+  secretRestartService = systemEval.config.systemd.services.${secretRestartUnitName} or null;
+  requiredSecretRestartsUserServicesOk =
+    systemEval.config.sops.secrets."${envName}/laravel_env".restartUnits
+    == [ "${secretRestartUnitName}.service" ]
+    && (systemEval.config.sops.secrets."${envName}/backups_secret".restartUnits or [ ]) == [ ]
+    && (systemEval.config.sops.secrets."${envName}/backups_env".restartUnits or [ ]) == [ ]
+    && secretRestartService != null
+    && secretRestartService.serviceConfig.User == envName
+    && secretRestartService.serviceConfig.Type == "oneshot"
+    && secretRestartService.serviceConfig.RemainAfterExit == true
+    && lib.elem "user@${toString systemEval.config.users.users.${envName}.uid}.service"
+      secretRestartService.after
+    && lib.strings.hasInfix "/run/secrets/${envName}/" secretRestartService.script
+    && lib.strings.hasInfix "systemctl --user restart" secretRestartService.script;
   requiredSecretsInPlanOk =
     generatedPlan.environments.${envName}.requiredSecretFiles == [ "laravel_env" ];
   wheelGroupExists = systemEval.config.users.groups ? wheel;
@@ -500,6 +515,7 @@ in
     && deployKeysOk
     && trustedPublicKeysOk
     && secretsOk
+    && requiredSecretRestartsUserServicesOk
     && requiredSecretsInPlanOk
     && !missingRequiredSecretEval.success
     && deploySystemSshUserOk
@@ -508,6 +524,8 @@ in
     && firewallPortsOk
     && !systemMismatch.success
   ) "provider nixosSystem should enforce env key/userName alignment";
+  provider-nixos-system-required-secret-restart-script =
+    pkgs.writeShellScript "provider-required-secret-restart" secretRestartService.script;
   provider-nixos-system-wheel-sudo = asserts.assertTrue "provider-nixos-system-wheel-sudo" (
     wheelGroupExists && wheelPasswordless
   ) "provider nixosSystem should keep wheel group and passwordless sudo";

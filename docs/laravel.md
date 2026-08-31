@@ -59,6 +59,11 @@ its values take precedence over that file. Hostenv does not parse, whitelist,
 or validate the keys in `laravel_env`; Laravel and any configured external
 services own their meaning.
 
+Changing `laravel_env` through the provider restarts active long-running
+services that load it, including PHP-FPM and configured queue workers. Artisan
+commands and scheduler runs are one-shot processes and read the current file
+when each process starts.
+
 ## Runtime packages
 
 Use the top-level `packages` option when Laravel needs an external executable at
