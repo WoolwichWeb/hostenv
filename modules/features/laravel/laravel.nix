@@ -1,7 +1,12 @@
 { ... }:
 {
   flake.modules.hostenv.laravel =
-    { lib, config, pkgs, ... }:
+    {
+      lib,
+      config,
+      pkgs,
+      ...
+    }:
     let
       cfg = config.services.laravel;
       env = config.environments.${config.hostenv.environmentName};
@@ -9,7 +14,8 @@
       migrateBackupName = "laravel-migrate";
       laravelPhpPool = config.services.phpfpm.pools.${cfg.codebase.name};
 
-      canonicalVHostFor = envCfg:
+      canonicalVHostFor =
+        envCfg:
         let
           envHostName = envCfg.hostenv.hostname;
           defaultVHost =
@@ -29,11 +35,10 @@
       canonicalVHost = canonicalVHostFor env;
       canonicalVHostConfig = env.virtualHosts.${canonicalVHost};
       canonicalUri =
-        (if canonicalVHostConfig.enableLetsEncrypt then "https://" else "http://")
-        + canonicalVHost;
+        (if canonicalVHostConfig.enableLetsEncrypt then "https://" else "http://") + canonicalVHost;
 
-      dotenvEscape = value:
-        "\"${builtins.replaceStrings [ "\\" "\"" "$" ] [ "\\\\" "\\\"" "\\$" ] value}\"";
+      dotenvEscape =
+        value: "\"${builtins.replaceStrings [ "\\" "\"" "$" ] [ "\\\\" "\\\"" "\\$" ] value}\"";
       generatedEnvironment = {
         APP_ENV = env.type;
         APP_DEBUG = if env.type == "production" then "false" else "true";
@@ -54,20 +59,20 @@
       }
       // cfg.environmentVariables;
       generatedEnvFile = pkgs.writeText "laravel.env" (
-        lib.concatStringsSep "\n"
-          (
-            lib.mapAttrsToList (name: value: "${name}=${dotenvEscape value}") generatedEnvironment
-          ) + "\n"
+        lib.concatStringsSep "\n" (
+          lib.mapAttrsToList (name: value: "${name}=${dotenvEscape value}") generatedEnvironment
+        )
+        + "\n"
       );
 
       cleanProjectSource = lib.cleanSourceWith {
         src = config.hostenv.root;
-        filter = path: _type:
+        filter =
+          path: _type:
           let
             fileName = baseNameOf path;
           in
-          fileName != ".env"
-          && !(lib.hasPrefix ".env." fileName);
+          fileName != ".env" && !(lib.hasPrefix ".env." fileName);
       };
 
       composerProject = laravelPhpPool.effectivePhpCliPackage.buildComposerProject2 (finalAttrs: {
@@ -159,7 +164,8 @@
         pathsToLink = [ "/bin" ];
       };
 
-      mkLaravelDeploymentVerification = envCfg:
+      mkLaravelDeploymentVerification =
+        envCfg:
         let
           virtualHost = canonicalVHostFor envCfg;
         in
@@ -180,62 +186,79 @@
                 timeoutSeconds = 15;
               };
               constraints = [
-                { rule = "allowNonZeroExitStatus"; value = false; }
-                { rule = "minHttpStatus"; value = 200; }
-                { rule = "maxHttpStatus"; value = 299; }
+                {
+                  rule = "allowNonZeroExitStatus";
+                  value = false;
+                }
+                {
+                  rule = "minHttpStatus";
+                  value = 200;
+                }
+                {
+                  rule = "maxHttpStatus";
+                  value = 299;
+                }
               ];
             }
           ];
         };
 
-      workerServices = lib.concatMapAttrs
-        (workerName: worker:
-          builtins.listToAttrs (map
-            (processNumber:
-              let
-                args =
-                  [ "queue:work" ]
-                  ++ lib.optional (worker.connection != null) worker.connection
-                  ++ lib.optional (worker.queues != [ ]) "--queue=${lib.concatStringsSep "," worker.queues}"
-                  ++ [
-                    "--sleep=${toString worker.sleep}"
-                    "--timeout=${toString worker.timeout}"
-                    "--max-time=${toString worker.maxLifetime}"
-                    "--no-interaction"
-                  ]
-                  ++ lib.optional (worker.tries != null) "--tries=${toString worker.tries}";
-              in
-              {
-                name = "laravel-queue-${workerName}-${toString processNumber}";
-                value = {
-                  description = "Laravel queue worker ${workerName} (${toString processNumber}/${toString worker.processes})";
-                  wantedBy = [ "laravel-queue.target" ];
-                  partOf = [ "laravel-queue.target" ];
-                  wants = [ "network-online.target" "mysql.service" ]
-                    ++ lib.optional cfg.redis.enable "redis.service";
-                  after = [ "network-online.target" "mysql.service" ]
-                    ++ lib.optional cfg.redis.enable "redis.service";
-                  path = config.packages;
-                  serviceConfig = {
-                    ExecStart = "${artisan}/bin/artisan ${lib.escapeShellArgs args}";
-                    EnvironmentFile = secretFile;
-                    Restart = "always";
-                    RestartSec = "5s";
-                    KillSignal = "SIGTERM";
-                    TimeoutStopSec = toString worker.stopTimeout;
-                  };
+      workerServices = lib.concatMapAttrs (
+        workerName: worker:
+        builtins.listToAttrs (
+          map (
+            processNumber:
+            let
+              args = [
+                "queue:work"
+              ]
+              ++ lib.optional (worker.connection != null) worker.connection
+              ++ lib.optional (worker.queues != [ ]) "--queue=${lib.concatStringsSep "," worker.queues}"
+              ++ [
+                "--sleep=${toString worker.sleep}"
+                "--timeout=${toString worker.timeout}"
+                "--max-time=${toString worker.maxLifetime}"
+                "--no-interaction"
+              ]
+              ++ lib.optional (worker.tries != null) "--tries=${toString worker.tries}";
+            in
+            {
+              name = "laravel-queue-${workerName}-${toString processNumber}";
+              value = {
+                description = "Laravel queue worker ${workerName} (${toString processNumber}/${toString worker.processes})";
+                wantedBy = [ "laravel-queue.target" ];
+                partOf = [ "laravel-queue.target" ];
+                wants = [
+                  "network-online.target"
+                  "mysql.service"
+                ]
+                ++ lib.optional cfg.redis.enable "redis.service";
+                after = [
+                  "network-online.target"
+                  "mysql.service"
+                ]
+                ++ lib.optional cfg.redis.enable "redis.service";
+                path = config.packages;
+                serviceConfig = {
+                  ExecStart = "${artisan}/bin/artisan ${lib.escapeShellArgs args}";
+                  EnvironmentFile = secretFile;
+                  Restart = "always";
+                  RestartSec = "5s";
+                  KillSignal = "SIGTERM";
+                  TimeoutStopSec = toString worker.stopTimeout;
                 };
-              })
-            (lib.range 1 worker.processes))
+              };
+            }
+          ) (lib.range 1 worker.processes)
         )
-        cfg.queue.workers;
+      ) cfg.queue.workers;
 
       mysqlDefaults = {
         enable = lib.mkDefault true;
         package = lib.mkDefault pkgs.mariadb;
         user = config.hostenv.userName;
         dataDir = "${config.hostenv.dataDir}/mysql";
-        initialDatabases = [{ name = cfg.databaseName; }];
+        initialDatabases = [ { name = cfg.databaseName; } ];
         ensureDatabases = [ cfg.databaseName ];
         ensureUsers = [
           {
@@ -264,7 +287,8 @@
             query_cache_size = lib.mkDefault "128M";
             query_cache_limit = lib.mkDefault "8M";
             transaction_isolation = "READ-COMMITTED";
-            innodb_buffer_pool_size = lib.mkDefault "10G";
+            innodb_buffer_pool_size = lib.mkDefault "1G";
+            innodb_buffer_pool_size_max = lib.mkDefault "1G";
             innodb_log_buffer_size = lib.mkDefault "16M";
             innodb_log_file_size = lib.mkDefault "128M";
             innodb_flush_method = lib.mkDefault "O_DIRECT";
@@ -319,7 +343,9 @@
 
           echo "hostenv: restoring Laravel database and storage"
           restore_tmp="$(mktemp -d)"
-          restic_migrate="${config.services.restic.wrapperScripts.${migrateBackupName}}/bin/restic-${migrateBackupName}"
+          restic_migrate="${
+            config.services.restic.wrapperScripts.${migrateBackupName}
+          }/bin/restic-${migrateBackupName}"
 
           ${config.systemd.package}/bin/systemctl --user stop laravel-queue.target || true
           ${config.systemd.package}/bin/systemctl --user stop nginx.service || true
@@ -376,45 +402,47 @@
     in
     {
       config = lib.mkIf cfg.enable {
-        assertions =
-          [
-            {
-              assertion = lib.hasPrefix "/" cfg.storageDir;
-              message = "services.laravel.storageDir must be an absolute path";
-            }
-            {
-              assertion = lib.hasPrefix "/" cfg.bootstrapCacheDir;
-              message = "services.laravel.bootstrapCacheDir must be an absolute path";
-            }
-            {
-              assertion = builtins.all
-                (name: builtins.match "[A-Za-z_][A-Za-z0-9_]*" name != null)
-                (builtins.attrNames cfg.environmentVariables);
-              message = "services.laravel.environmentVariables names must match [A-Za-z_][A-Za-z0-9_]*";
-            }
-            {
-              assertion = builtins.all
-                (name: builtins.match "[A-Za-z0-9_-]+" name != null)
-                (builtins.attrNames cfg.queue.workers);
-              message = "services.laravel.queue.workers names must match [A-Za-z0-9_-]+";
-            }
-          ]
-          ++ lib.optional cfg.composer.enable {
-            assertion = builtins.pathExists (config.hostenv.root + /composer.lock);
-            message = "services.laravel.composer.enable requires composer.lock in hostenv.root";
+        assertions = [
+          {
+            assertion = lib.hasPrefix "/" cfg.storageDir;
+            message = "services.laravel.storageDir must be an absolute path";
           }
-          ++ lib.optional cfg.redis.enable {
-            assertion = config.services.redis.enable;
-            message = "services.laravel.redis.enable requires services.redis.enable = true";
+          {
+            assertion = lib.hasPrefix "/" cfg.bootstrapCacheDir;
+            message = "services.laravel.bootstrapCacheDir must be an absolute path";
           }
-          ++ lib.optional cfg.backups.enable {
-            assertion = config.services.mysql.backups.enable;
-            message = "services.laravel.backups.enable requires services.mysql.backups.enable = true";
+          {
+            assertion = builtins.all (name: builtins.match "[A-Za-z_][A-Za-z0-9_]*" name != null) (
+              builtins.attrNames cfg.environmentVariables
+            );
+            message = "services.laravel.environmentVariables names must match [A-Za-z_][A-Za-z0-9_]*";
           }
-          ++ lib.optional
+          {
+            assertion = builtins.all (name: builtins.match "[A-Za-z0-9_-]+" name != null) (
+              builtins.attrNames cfg.queue.workers
+            );
+            message = "services.laravel.queue.workers names must match [A-Za-z0-9_-]+";
+          }
+        ]
+        ++ lib.optional cfg.composer.enable {
+          assertion = builtins.pathExists (config.hostenv.root + /composer.lock);
+          message = "services.laravel.composer.enable requires composer.lock in hostenv.root";
+        }
+        ++ lib.optional cfg.redis.enable {
+          assertion = config.services.redis.enable;
+          message = "services.laravel.redis.enable requires services.redis.enable = true";
+        }
+        ++ lib.optional cfg.backups.enable {
+          assertion = config.services.mysql.backups.enable;
+          message = "services.laravel.backups.enable requires services.mysql.backups.enable = true";
+        }
+        ++
+          lib.optional
             (cfg.backups.enable && builtins.hasAttr migrateBackupName config.services.restic.backups)
             {
-              assertion = lib.elem migrateBackupName (config.services.restic.backups.${migrateBackupName}.tags or [ ]);
+              assertion = lib.elem migrateBackupName (
+                config.services.restic.backups.${migrateBackupName}.tags or [ ]
+              );
               message = "services.restic.backups.laravel-migrate.tags must include \"laravel-migrate\"";
             };
 
@@ -430,7 +458,7 @@
             default = lib.mkDefault true;
             forceSSL = lib.mkDefault false;
             root = lib.mkDefault "${rootDir}/public";
-            listen = lib.mkDefault [{ addr = "unix:${config.hostenv.upstreamRuntimeDir}/in.sock"; }];
+            listen = lib.mkDefault [ { addr = "unix:${config.hostenv.upstreamRuntimeDir}/in.sock"; } ];
 
             locations."/".extraConfig = ''
               try_files $uri $uri/ /index.php?$query_string;
@@ -512,7 +540,10 @@
         services.restic.backups = lib.mkIf cfg.backups.enable {
           laravel = {
             backupPrepareCommand = "${config.services.mysql.backups.scripts.full}/bin/mysql-backup-full";
-            paths = [ config.services.mysql.backups.backupDir cfg.storageDir ];
+            paths = [
+              config.services.mysql.backups.backupDir
+              cfg.storageDir
+            ];
             passwordFile = config.hostenv.backupsSecretFile;
             environmentFile = cfg.backups.restic.environmentFile;
             initialize = true;
@@ -527,13 +558,19 @@
           ${migrateBackupName} = {
             timerConfig = null;
             backupPrepareCommand = "${config.services.mysql.backups.scripts.incremental}/bin/mysql-backup-incremental";
-            paths = [ config.services.mysql.backups.backupDir cfg.storageDir ];
+            paths = [
+              config.services.mysql.backups.backupDir
+              cfg.storageDir
+            ];
             passwordFile = config.hostenv.backupsSecretFile;
             environmentFile = cfg.backups.restic.environmentFile;
             initialize = true;
             createWrapper = lib.mkForce true;
             wantsUnits = [ "mysql.service" ];
-            tags = [ migrateBackupName "migrate" ];
+            tags = [
+              migrateBackupName
+              "migrate"
+            ];
           };
         };
 
@@ -541,10 +578,16 @@
           (lib.mkIf cfg.scheduler.enable {
             "laravel-scheduler-${cfg.codebase.name}" = {
               description = "Run the Laravel scheduler";
-              wants = [ "network-online.target" "mysql.service" ]
-                ++ lib.optional cfg.redis.enable "redis.service";
-              after = [ "network-online.target" "mysql.service" ]
-                ++ lib.optional cfg.redis.enable "redis.service";
+              wants = [
+                "network-online.target"
+                "mysql.service"
+              ]
+              ++ lib.optional cfg.redis.enable "redis.service";
+              after = [
+                "network-online.target"
+                "mysql.service"
+              ]
+              ++ lib.optional cfg.redis.enable "redis.service";
               path = config.packages;
               restartIfChanged = false;
               serviceConfig = {
@@ -593,12 +636,14 @@
           executable = "artisan";
           group = "Laravel";
           parsing = "passthrough";
-          arguments = [{
-            name = "arguments";
-            description = "Arguments passed to Artisan";
-            variadic = true;
-            completion = [ ];
-          }];
+          arguments = [
+            {
+              name = "arguments";
+              description = "Arguments passed to Artisan";
+              variadic = true;
+              completion = [ ];
+            }
+          ];
         };
 
         activate = lib.mkMerge [
@@ -672,7 +717,11 @@
           '')
         ];
 
-        profile = [ project artisan composer ];
+        profile = [
+          project
+          artisan
+          composer
+        ];
       };
     };
 }
