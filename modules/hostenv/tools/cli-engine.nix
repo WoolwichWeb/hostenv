@@ -74,10 +74,14 @@
                 else if flagCollisions != { } then
                   throw ''
                     hostenv: flags collide in `${cliProgramName} ${builtins.concatStringsSep " " rawCommandPath}` after Pog converts their names to Bash variables:
-                    ${lib.concatStringsSep "\n" (lib.mapAttrsToList (
-                      variable: flags:
-                      "  - ${builtins.concatStringsSep " and " (map (flag: "`--${flag.name}`") flags)} both use `${variable}`"
-                    ) flagCollisions)}
+                    ${lib.concatStringsSep "\n" (
+                      lib.mapAttrsToList (
+                        variable: flags:
+                        "  - ${
+                            builtins.concatStringsSep " and " (map (flag: "`--${flag.name}`") flags)
+                          } both use `${variable}`"
+                      ) flagCollisions
+                    )}
 
                     Pog replaces hyphens with underscores when it creates Bash variable names.
                     Rename one flag from each line above.
@@ -85,10 +89,9 @@
                 else
                   command;
               commandPath = builtins.seq checkedCommand rawCommandPath;
-              children = collectCommandMetadata
-                commandPath
-                (inheritedPersistentFlags ++ checkedCommand.persistentFlags)
-                checkedCommand.commands;
+              children = collectCommandMetadata commandPath (
+                inheritedPersistentFlags ++ checkedCommand.persistentFlags
+              ) checkedCommand.commands;
             in
             {
               runtimeInputs = result.runtimeInputs ++ checkedCommand.runtimeInputs ++ children.runtimeInputs;
@@ -115,8 +118,7 @@
       commandMetadata =
         let
           collected = collectCommandMetadata [ ] rootPersistentFlags commands;
-          pogFunctionName =
-            path: builtins.concatStringsSep "__" (map pogVariableName path);
+          pogFunctionName = path: builtins.concatStringsSep "__" (map pogVariableName path);
           pathsByPogFunction = lib.groupBy pogFunctionName collected.commandPaths;
           collisions = lib.filterAttrs (_: paths: builtins.length paths > 1) pathsByPogFunction;
           showPath = path: "`${cliProgramName} ${builtins.concatStringsSep " " path}`";
@@ -350,7 +352,7 @@
           with pkgs;
           [
             jq
-            openssh
+            config.programs.ssh.package
             rsync
             boxes
             coreutils

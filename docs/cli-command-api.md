@@ -11,7 +11,9 @@ hostenv.cli.commands.mysql = {
   '';
   description = "Run mysql remotely.";
   group = "Database";
-  runtimeInputs = [ pkgs.openssh ];
+  # This is included just to show the attribute is available. No packages are
+  # needed at runtime in this example.
+  # runtimeInputs = [ pkgs.somePackage ];
   executable = "mysql";
   parsing = "passthrough";
   arguments = [{

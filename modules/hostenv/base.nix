@@ -4,7 +4,7 @@
     { config, pkgs, lib, ... }:
     let
       types = lib.types;
-      failedAssertions = builtins.map (x: x.message) (builtins.filter (x: !x.assertion) config.assertions);
+      failedAssertions = map (x: x.message) (builtins.filter (x: !x.assertion) config.assertions);
 
       inherit (lib) splitString concatStringsSep mkOption mkPackageOption mkMerge
         mkBefore mkAfter;
@@ -22,13 +22,13 @@
         then
           throw ''
             Failed assertions:
-            ${concatStringsSep "\n" (builtins.map formatAssertionMessage failedAssertions)}
+            ${concatStringsSep "\n" (map formatAssertionMessage failedAssertions)}
           ''
         else showWarnings config.warnings;
     in
     {
       options = {
-        programs.ssh.package = mkPackageOption pkgs "openssh" { };
+        programs.ssh.package = mkPackageOption pkgs "opensshWithKerberos" { };
 
         assertions = mkOption {
           type = types.listOf types.unspecified;
