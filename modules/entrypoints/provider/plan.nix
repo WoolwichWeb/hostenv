@@ -756,7 +756,13 @@ let
                             users.users.${elem.hostenv.userName} = {
                               uid = elem.uid;
                               group = elem.hostenv.userName;
-                              openssh.authorizedKeys.keys = elem.authorizedKeys;
+                              
+                              # deploy-rs SSHs directly as the environment user so activation runs
+                              # in a real user session. Allow provider deployment keys in addition
+                              # to keys granted through the client environment configuration.
+                              openssh.authorizedKeys.keys =
+                                lib.unique (deployPublicKeys ++ elem.authorizedKeys);
+
                               isNormalUser = true;
                               createHome = true;
                               linger = true;
