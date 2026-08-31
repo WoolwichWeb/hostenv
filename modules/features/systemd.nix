@@ -1,11 +1,20 @@
+# Portions of this file are derived from the Nixpkgs/NixOS and home-manager projects,
+# originally licensed under the MIT License.
+#
+# Original source:
+# https://github.com/NixOS/nixpkgs/blob/nixos-26.05/nixos/modules/system/boot/systemd.nix
+# https://github.com/NixOS/nixpkgs/blob/nixos-26.05/nixos/modules/system/boot/systemd/user.nix
+# https://github.com/nix-community/home-manager/blob/82c265faf4e3161d6015db07c9b0f1ee36a9029b/modules/systemd.nix#L521-L547
+#
+# See:
+#   LICENSES/MIT-nixpkgs.
+#   LICENSES/MIT-home-manager.
+
 { ... }:
 {
   flake.modules.hostenv.systemd =
-    # Liberally cribs from:
-    # https://github.com/NixOS/nixpkgs/blob/nixos-24.11/nixos/modules/system/boot/systemd.nix
-    # And removes all the system-level options. Plus:
-    # https://github.com/NixOS/nixpkgs/blob/nixos-24.11/nixos/modules/system/boot/systemd/user.nix
-    #
+    # Based on nixpkgs' systemd.nix but with all the system-level
+    # config removed.
     # @todo: add support for restarting/reloading a service when an arbitrary
     # derivation changes. As opposed to `reloadIfChanged` and `restartIfChanged`.
     

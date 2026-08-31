@@ -1,8 +1,14 @@
+# Portions of this file are derived from the Nixpkgs/NixOS project,
+# originally licensed under the MIT License.
+#
+# Original source:
+# https://github.com/NixOS/nixpkgs/blob/nixos-26.05/nixos/modules/services/databases/mysql.nix
+#
+# See LICENSES/MIT-nixpkgs.
+
 { ... }:
 {
   flake.modules.hostenv.mysql =
-    # Liberally cribbed from:
-    # https://github.com/NixOS/nixpkgs/blob/nixos-24.11/nixos/modules/services/databases/mysql.nix
     # Simple example and reasoning for writing modules this way:
     # https://discourse.nixos.org/t/passing-parameters-into-import/34082/4
     { config, lib, pkgs, ... }:
