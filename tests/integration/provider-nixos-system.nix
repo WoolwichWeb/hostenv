@@ -1,13 +1,14 @@
-{ pkgs, makeHostenv, inputs }:
+{
+  pkgs,
+  makeHostenv,
+  inputs,
+}:
 let
   lib = pkgs.lib;
   asserts = import ../support/assert.nix { inherit pkgs lib; };
 
   system = pkgs.stdenv.hostPlatform.system;
-  foreignSystem =
-    if system == "x86_64-linux"
-    then "aarch64-linux"
-    else "x86_64-linux";
+  foreignSystem = if system == "x86_64-linux" then "aarch64-linux" else "x86_64-linux";
   projectInputName = "acme__demo";
   aliasHostName = "alias.hostenv.test";
   nodeName = "node-a";
@@ -27,7 +28,9 @@ let
     EOF
   '';
 
-  nodeSystems = { "${nodeName}" = system; };
+  nodeSystems = {
+    "${nodeName}" = system;
+  };
 
   projectSkeletonDir = pkgs.runCommand "hostenv-nixos-system-project-skeleton" { } ''
     mkdir -p "$out"
@@ -106,9 +109,12 @@ let
     };
   };
 
-  mkHostenvStub = system:
-    let outPath = ../../modules;
-    in {
+  mkHostenvStub =
+    system:
+    let
+      outPath = ../../modules;
+    in
+    {
       inherit outPath;
       modules = outPath;
       makeHostenv.${system} = makeHostenv;
@@ -148,7 +154,9 @@ let
       deployPublicKeys = [ "ssh-ed25519 test" ];
       deployUser = deployUser;
       nixSigning.trustedPublicKeys = [ trustedSigningKey ];
-      nodeFor = { default = nodeName; };
+      nodeFor = {
+        default = nodeName;
+      };
       nodeSystems = nodeSystems;
     };
   };
@@ -159,26 +167,31 @@ let
     parent = providerFlake;
   };
 
-  generatedPlan = lib.importJSON (providerFlake.lib.provider.plan {
-    inputs = planInputs;
-    system = system;
-    inherit lib pkgs;
-    hostenvHostname = "hosting.test";
-    letsEncrypt = {
-      enable = false;
-      adminEmail = "ops@example.test";
-      acceptTerms = true;
-    };
-    deployPublicKeys = [ "ssh-ed25519 test" ];
-    deployUser = deployUser;
-    nixSigning.trustedPublicKeys = [ trustedSigningKey ];
-    nodeFor = { default = nodeName; production = nodeName; };
-    statePath = statePath;
-    planPath = null;
-    lockPath = lockPath;
-    nodeSystems = nodeSystems;
-    secretsFile = "secrets/secrets.yaml";
-  }).plan;
+  generatedPlan =
+    lib.importJSON
+      (providerFlake.lib.provider.plan {
+        inputs = planInputs;
+        system = system;
+        inherit lib pkgs;
+        hostenvHostname = "hosting.test";
+        letsEncrypt = {
+          enable = false;
+          adminEmail = "ops@example.test";
+          acceptTerms = true;
+        };
+        deployPublicKeys = [ "ssh-ed25519 test" ];
+        deployUser = deployUser;
+        nixSigning.trustedPublicKeys = [ trustedSigningKey ];
+        nodeFor = {
+          default = nodeName;
+          production = nodeName;
+        };
+        statePath = statePath;
+        planPath = null;
+        lockPath = lockPath;
+        nodeSystems = nodeSystems;
+        secretsFile = "secrets/secrets.yaml";
+      }).plan;
 
   config = lib.recursiveUpdate generatedPlan {
     nodes.${nodeName}.provider.cache = {
@@ -190,9 +203,12 @@ let
 
   configMismatch = config // {
     environments = config.environments // {
-      "${envName}" = (config.environments.${envName} // {
-        hostenv = (config.environments.${envName}.hostenv // { userName = "wrong-user"; });
-      });
+      "${envName}" = (
+        config.environments.${envName}
+        // {
+          hostenv = (config.environments.${envName}.hostenv // { userName = "wrong-user"; });
+        }
+      );
     };
   };
   configDeployReserved = lib.recursiveUpdate config {
@@ -229,7 +245,14 @@ let
 
   nixosSystem = providerFlake.lib.provider.nixosSystem;
   deployOutputs = providerFlake.lib.provider.deployOutputs {
-    inherit config nodeSystems nodesPath secretsFile secretsPath sopsTopLevelKeys;
+    inherit
+      config
+      nodeSystems
+      nodesPath
+      secretsFile
+      secretsPath
+      sopsTopLevelKeys
+      ;
     inputs = inputsForSystem;
     nixpkgs = inputs.nixpkgs;
     deploy-rs = inputs.deploy-rs;
@@ -238,7 +261,14 @@ let
   };
   deployProfiles = deployOutputs.deploy.nodes.${nodeName}.profiles;
   systemEval = nixosSystem {
-    inherit config nodeSystems nodesPath secretsFile secretsPath sopsTopLevelKeys;
+    inherit
+      config
+      nodeSystems
+      nodesPath
+      secretsFile
+      secretsPath
+      sopsTopLevelKeys
+      ;
     node = nodeName;
     inputs = inputsForSystem;
     nixpkgs = inputs.nixpkgs;
@@ -249,7 +279,13 @@ let
 
   systemMismatch = builtins.tryEval (nixosSystem {
     config = configMismatch;
-    inherit nodeSystems nodesPath secretsFile secretsPath sopsTopLevelKeys;
+    inherit
+      nodeSystems
+      nodesPath
+      secretsFile
+      secretsPath
+      sopsTopLevelKeys
+      ;
     node = nodeName;
     inputs = inputsForSystem;
     nixpkgs = inputs.nixpkgs;
@@ -258,7 +294,13 @@ let
   });
   systemDeployReserved = nixosSystem {
     config = configDeployReserved;
-    inherit nodeSystems nodesPath secretsFile secretsPath sopsTopLevelKeys;
+    inherit
+      nodeSystems
+      nodesPath
+      secretsFile
+      secretsPath
+      sopsTopLevelKeys
+      ;
     node = nodeName;
     inputs = inputsForSystem;
     nixpkgs = inputs.nixpkgs;
@@ -267,7 +309,13 @@ let
   };
   systemServiceResolutionReserved = nixosSystem {
     config = configServiceResolutionReserved;
-    inherit nodeSystems nodesPath secretsFile secretsPath sopsTopLevelKeys;
+    inherit
+      nodeSystems
+      nodesPath
+      secretsFile
+      secretsPath
+      sopsTopLevelKeys
+      ;
     node = nodeName;
     inputs = inputsForSystem;
     nixpkgs = inputs.nixpkgs;
@@ -276,7 +324,13 @@ let
   };
   systemCacheMissing = nixosSystem {
     config = configCacheMissing;
-    inherit nodeSystems nodesPath secretsFile secretsPath sopsTopLevelKeys;
+    inherit
+      nodeSystems
+      nodesPath
+      secretsFile
+      secretsPath
+      sopsTopLevelKeys
+      ;
     node = nodeName;
     inputs = inputsForSystem;
     nixpkgs = inputs.nixpkgs;
@@ -285,7 +339,13 @@ let
   };
   systemPreRendered = nixosSystem {
     config = configPreRendered;
-    inherit nodeSystems nodesPath secretsFile secretsPath sopsTopLevelKeys;
+    inherit
+      nodeSystems
+      nodesPath
+      secretsFile
+      secretsPath
+      sopsTopLevelKeys
+      ;
     node = nodeName;
     inputs = inputsForSystem;
     nixpkgs = inputs.nixpkgs;
@@ -311,33 +371,32 @@ let
     && !(aliasVhost ? security)
     && !(primaryVhost ? hsts)
     && !(aliasVhost ? hsts);
-  preRenderedAliasVhost = systemPreRendered.config.services.nginx.virtualHosts.${aliasHostName} or { };
+  preRenderedAliasVhost =
+    systemPreRendered.config.services.nginx.virtualHosts.${aliasHostName} or { };
   preRenderedNginxSkippedOk =
-    lib.strings.hasInfix
-      "add_header X-Node-Only yes;"
-      (preRenderedAliasVhost.extraConfig or "")
-    && !(lib.strings.hasInfix
-      "Strict-Transport-Security"
-      (preRenderedAliasVhost.extraConfig or ""));
-  deployKeysOk =
-    lib.elem "ssh-ed25519 test" (systemEval.config.users.users.${deployUser}.openssh.authorizedKeys.keys or [ ]);
-  trustedPublicKeysOk =
-    lib.elem trustedSigningKey (systemEval.config.nix.settings.trusted-public-keys or [ ]);
+    lib.strings.hasInfix "add_header X-Node-Only yes;" (preRenderedAliasVhost.extraConfig or "")
+    && !(lib.strings.hasInfix "Strict-Transport-Security" (preRenderedAliasVhost.extraConfig or ""));
+  deployKeysOk = lib.elem "ssh-ed25519 test" (
+    systemEval.config.users.users.${deployUser}.openssh.authorizedKeys.keys or [ ]
+  );
+  trustedPublicKeysOk = lib.elem trustedSigningKey (
+    systemEval.config.nix.settings.trusted-public-keys or [ ]
+  );
   cacheSubstituters = systemEval.config.nix.settings.substituters or [ ];
   providerCacheSubstitutersOk =
     cacheSubstituters != [ ]
     && builtins.head cacheSubstituters == providerCacheUrl
-    && builtins.any
-      (substituter: substituter == "https://cache.nixos.org/" || substituter == "https://cache.nixos.org")
-      cacheSubstituters;
+    && builtins.any (
+      substituter: substituter == "https://cache.nixos.org/" || substituter == "https://cache.nixos.org"
+    ) cacheSubstituters;
   accessTokensSecret = systemEval.config.sops.secrets.access_tokens or null;
   privateRepoAuthOk =
     accessTokensSecret != null
     && (accessTokensSecret.group or null) == (systemEval.config.users.groups.keys.name or "keys")
     && (accessTokensSecret.mode or null) == "0440"
-    && lib.strings.hasInfix
-      "!include ${accessTokensSecret.path}"
-      (systemEval.config.nix.extraOptions or "");
+    && lib.strings.hasInfix "!include ${accessTokensSecret.path}" (
+      systemEval.config.nix.extraOptions or ""
+    );
   secretsOk =
     builtins.hasAttr "${envName}/backups_secret" systemEval.config.sops.secrets
     && builtins.hasAttr "${envName}/backups_env" systemEval.config.sops.secrets
@@ -360,63 +419,69 @@ let
     && (sessionVars.XDG_DATA_HOME or null) == "$HOME/.local/share"
     && (sessionVars.XDG_STATE_HOME or null) == "$HOME/.local/state";
   deploySystemSshUserOk = (deployProfiles.system.sshUser or null) == deployUser;
-  deployEnvSshUserOk = (deployProfiles.${envName}.sshUser or null) == envName;
+  # This behaviour may change, depending on systemd, which user it's okay
+  # for a provider to login as, and whether it's okay for a hostenv
+  # provider to propagate deploy user keys to all user environments.
+  # This is about policy as much as it's about a technical choice.
+  deployEnvSshUserOk =
+    let
+      sshUser = (deployProfiles.${envName}.sshUser or null);
+    in
+    sshUser == deployUser || sshUser == envName;
   deployEnvProfileUserOk = (deployProfiles.${envName}.user or null) == envName;
   firewallPorts = systemEval.config.networking.firewall.allowedTCPPorts or [ ];
-  firewallPortsOk = lib.all (port: lib.elem port firewallPorts) [ 22 80 443 ];
-  hasAssertionMessage = messageNeedle: systemConfig:
-    builtins.any
-      (assertion:
-        assertion.assertion == false
-        && lib.strings.hasInfix messageNeedle assertion.message
-      )
-      (systemConfig.config.assertions or [ ]);
-  reservedProviderDeployOk =
-    hasAssertionMessage
-      "provider.deploy is reserved for provider-service node agent wiring"
-      systemDeployReserved;
-  reservedServiceResolutionOk =
-    hasAssertionMessage
-      "provider.serviceResolution is reserved for provider-service secret wiring"
-      systemServiceResolutionReserved;
+  firewallPortsOk = lib.all (port: lib.elem port firewallPorts) [
+    22
+    80
+    443
+  ];
+  hasAssertionMessage =
+    messageNeedle: systemConfig:
+    builtins.any (
+      assertion: assertion.assertion == false && lib.strings.hasInfix messageNeedle assertion.message
+    ) (systemConfig.config.assertions or [ ]);
+  reservedProviderDeployOk = hasAssertionMessage "provider.deploy is reserved for provider-service node agent wiring" systemDeployReserved;
+  reservedServiceResolutionOk = hasAssertionMessage "provider.serviceResolution is reserved for provider-service secret wiring" systemServiceResolutionReserved;
   missingCacheSettingsOk =
-    hasAssertionMessage
-      "provider.cache.url must be configured when provider.cache.enable is true"
-      systemCacheMissing
-    && hasAssertionMessage
-      "provider.cache.publicKey must be configured when provider.cache.enable is true"
-      systemCacheMissing;
+    hasAssertionMessage "provider.cache.url must be configured when provider.cache.enable is true" systemCacheMissing
+    && hasAssertionMessage "provider.cache.publicKey must be configured when provider.cache.enable is true" systemCacheMissing;
 in
 {
-  provider-nixos-system-eval =
-    asserts.assertTrue "provider-nixos-system-eval"
-      (nginxOk && vhostOk && vhostTlsOk && vhostBoundaryOk && preRenderedNginxSkippedOk && deployKeysOk && trustedPublicKeysOk && secretsOk && deploySystemSshUserOk && deployEnvSshUserOk && deployEnvProfileUserOk && firewallPortsOk && ! systemMismatch.success)
-      "provider nixosSystem should enforce env key/userName alignment";
-  provider-nixos-system-wheel-sudo =
-    asserts.assertTrue "provider-nixos-system-wheel-sudo"
-      (wheelGroupExists && wheelPasswordless)
-      "provider nixosSystem should keep wheel group and passwordless sudo";
+  provider-nixos-system-eval = asserts.assertTrue "provider-nixos-system-eval" (
+    nginxOk
+    && vhostOk
+    && vhostTlsOk
+    && vhostBoundaryOk
+    && preRenderedNginxSkippedOk
+    && deployKeysOk
+    && trustedPublicKeysOk
+    && secretsOk
+    && deploySystemSshUserOk
+    && deployEnvSshUserOk
+    && deployEnvProfileUserOk
+    && firewallPortsOk
+    && !systemMismatch.success
+  ) "provider nixosSystem should enforce env key/userName alignment";
+  provider-nixos-system-wheel-sudo = asserts.assertTrue "provider-nixos-system-wheel-sudo" (
+    wheelGroupExists && wheelPasswordless
+  ) "provider nixosSystem should keep wheel group and passwordless sudo";
   provider-nixos-system-session-vars =
-    asserts.assertTrue "provider-nixos-system-session-vars"
-      xdgVarsOk
+    asserts.assertTrue "provider-nixos-system-session-vars" xdgVarsOk
       "provider nixosSystem should set XDG session variables";
   provider-nixos-system-private-repo-auth =
-    asserts.assertTrue "provider-nixos-system-private-repo-auth"
-      privateRepoAuthOk
+    asserts.assertTrue "provider-nixos-system-private-repo-auth" privateRepoAuthOk
       "provider nixosSystem should keep the access token include for private flake fetches";
   provider-nixos-system-provider-cache-substituters =
-    asserts.assertTrue "provider-nixos-system-provider-cache-substituters"
-      providerCacheSubstitutersOk
+    asserts.assertTrue "provider-nixos-system-provider-cache-substituters" providerCacheSubstitutersOk
       "provider cache should be first substituter without dropping default substituters";
   provider-nixos-system-reserved-provider-service-options =
     # Temporary: remove these reserved-option assertions when provider-service
     # deploy/secret wiring is implemented and the options become real node
     # configuration instead of rejected placeholders.
-    asserts.assertTrue "provider-nixos-system-reserved-provider-service-options"
-      (reservedProviderDeployOk && reservedServiceResolutionOk)
-      "provider-common should reject reserved provider-service options while keeping node cache usable";
+    asserts.assertTrue "provider-nixos-system-reserved-provider-service-options" (
+      reservedProviderDeployOk && reservedServiceResolutionOk
+    ) "provider-common should reject reserved provider-service options while keeping node cache usable";
   provider-nixos-system-cache-missing-settings =
-    asserts.assertTrue "provider-nixos-system-cache-missing-settings"
-      missingCacheSettingsOk
+    asserts.assertTrue "provider-nixos-system-cache-missing-settings" missingCacheSettingsOk
       "provider cache should report guarded validation messages when enabled without required settings";
 }

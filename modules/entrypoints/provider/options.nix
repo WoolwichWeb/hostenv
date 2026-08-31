@@ -274,11 +274,17 @@ let
               };
             } // builtins.mapAttrs
               (name: environment: {
+                sshUser = config.deployUser or "deploy";
                 user = name;
-                # Environment activation must run in a real user session so
-                # systemd --user units can start reliably.
-                sshUser = name;
-                path = deploy-rs.lib.${remoteSystem}.activate.custom environment "./bin/activate";
+                path = deploy-rs.lib.${remoteSystem}.activate.custom
+                  environment
+                  ''
+                    # Setup paths for systemd, so 'systemctl --user' works
+                    # as expected.
+                    export XDG_RUNTIME_DIR="/run/user/$UID"
+                    export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+                    exec ./bin/activate
+                  '';
               })
               (environmentsWith node).${remoteSystem};
           checks = { };
