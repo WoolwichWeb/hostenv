@@ -86,6 +86,8 @@ let
           grep -Fq 'location ~ /\.(?!well-known).*' "$nginx_conf" || fail "hidden-file protection is missing"
           grep -Fq 'fastcgi_pass unix:${env.config.hostenv.runtimeDir}/${serviceName}.sock;' "$nginx_conf" \
             || fail "FastCGI Unix socket is missing"
+          grep -Fq 'fastcgi_read_timeout 300s;' "$nginx_conf" \
+            || fail "shared FastCGI read timeout is not 300 seconds"
           if grep -Fq "root $project_app;" "$nginx_conf"; then
             fail "nginx must never serve the Laravel project root"
           fi

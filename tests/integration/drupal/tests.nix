@@ -34,6 +34,10 @@ let
       script = ''
         nginxConf="$profile/etc/nginx/nginx.conf"
         test -f "$nginxConf" || { echo "nginx.conf not found"; exit 1; }
+        grep -Fq 'fastcgi_read_timeout 300s;' "$nginxConf" || {
+          echo "shared FastCGI read timeout is not 300 seconds"
+          exit 1
+        }
         tmpdir=$(mktemp -d)
         mkdir -p "$tmpdir"/{logs,run}
         output=$("$profile"/bin/nginx -e "$tmpdir/error.log" -t -c "$nginxConf" -p "$tmpdir" 2>&1 || true)
