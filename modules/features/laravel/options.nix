@@ -8,7 +8,6 @@
       ...
     }:
     let
-      cfg = config.services.laravel;
       utils = import (pkgs.path + "/nixos/lib/utils.nix") { inherit pkgs lib config; };
       inherit (utils.systemdUtils.unitOptions) unitOption;
 
@@ -190,11 +189,8 @@
 
         phpOptions = lib.mkOption {
           type = lib.types.lines;
-          default = ''
-            upload_max_filesize = ${cfg.maxRequestSize}
-            post_max_size = ${cfg.maxRequestSize}
-          '';
-          description = "Options appended to the Laravel PHP-FPM pool's `php.ini`.";
+          default = "";
+          description = "Additional options appended to the Laravel PHP-FPM pool's `php.ini`.";
         };
 
         storageDir = lib.mkOption {

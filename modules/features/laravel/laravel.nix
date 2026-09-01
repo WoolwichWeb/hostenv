@@ -446,6 +446,11 @@
               message = "services.restic.backups.laravel-migrate.tags must include \"laravel-migrate\"";
             };
 
+        services.laravel.phpOptions = lib.mkBefore ''
+          upload_max_filesize = ${cfg.maxRequestSize}
+          post_max_size = ${cfg.maxRequestSize}
+        '';
+
         environments.${config.hostenv.environmentName} = {
           requiredSecretFiles = [ "laravel_env" ];
           deploymentVerification = lib.mkDefault (mkLaravelDeploymentVerification env);
