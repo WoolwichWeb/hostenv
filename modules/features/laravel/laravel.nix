@@ -22,7 +22,7 @@
             if builtins.hasAttr envHostName envCfg.virtualHosts then
               envCfg.virtualHosts.${envHostName}
             else
-              builtins.throw ''
+              throw ''
                 ${envHostName} was not in the environment's virtual hosts.
                 Available virtual hosts: ${builtins.toJSON (builtins.attrNames envCfg.virtualHosts)}
               '';
@@ -665,6 +665,13 @@
           (lib.mkOrder 50 ''
             mkdir -p ${lib.escapeShellArg cfg.storageDir} ${lib.escapeShellArg cfg.bootstrapCacheDir}
             chmod -R u+rwX ${lib.escapeShellArg cfg.storageDir} ${lib.escapeShellArg cfg.bootstrapCacheDir}
+
+            # Clear the contents of Laravel's cache directory.
+            # After an update, this directory may contain links to old
+            # generations of app code in the Nix store. This ensures that
+            # cannot happen.
+            find ${lib.escapeShellArg cfg.bootstrapCacheDir} -mindepth 1 -maxdepth 1 -print0 \
+              | xargs -0 -r rm -rf --
 
             storage_seed_marker=${lib.escapeShellArg "${config.hostenv.stateDir}/hostenv/laravel-storage-initialized"}
             if [ ! -e "$storage_seed_marker" ]; then
