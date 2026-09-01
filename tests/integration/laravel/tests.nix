@@ -81,6 +81,7 @@ let
           fi
 
           grep -Fq "root $project_app/public;" "$nginx_conf" || fail "nginx does not expose only public/"
+          grep -Fq 'index index.php;' "$nginx_conf" || fail "Laravel front-controller index is missing"
           grep -Fq 'location = /index.php' "$nginx_conf" || fail "front controller location is missing"
           grep -Fq 'location ~ /\.(?!well-known).*' "$nginx_conf" || fail "hidden-file protection is missing"
           grep -Fq 'fastcgi_pass unix:${env.config.hostenv.runtimeDir}/${serviceName}.sock;' "$nginx_conf" \
@@ -206,6 +207,59 @@ PHP
             printf '%s\n' "$fpm_response" >&2
             fail "PHP-FPM discarded PATH entries supplied by laravel_env"
           fi
+
+          # Exercise the generated nginx and PHP-FPM configuration together.
+          # Rewrite only machine-specific paths so both daemons can run inside
+          # the build sandbox; retain the generated location and index rules.
+          cat > "$app_copy/public/index.php" <<'PHP'
+<?php
+header('Content-Type: text/plain');
+echo "hostenv Laravel index reached\n";
+PHP
+          nginx_test_conf="$tmpdir/nginx-test.conf"
+          nginx_test_socket="$tmpdir/nginx-test.sock"
+          nginx_test_state="$tmpdir/nginx-state"
+          mkdir -p "$nginx_test_state"
+          sed \
+            -e "s|^pid .*|pid $tmpdir/nginx.pid;|" \
+            -e "s|^error_log .*|error_log $tmpdir/nginx-error.log notice;|" \
+            -e 's|access_log syslog:server=unix:/dev/log combined;|access_log off;|' \
+            -e "s|${env.config.hostenv.stateDir}/nginx/|$nginx_test_state/|g" \
+            -e "s|listen unix:${env.config.hostenv.upstreamRuntimeDir}/in.sock default_server;|listen unix:$nginx_test_socket default_server;|" \
+            -e "s|root $project_app/public;|root $app_copy/public;|" \
+            -e "s|fastcgi_pass unix:${env.config.hostenv.runtimeDir}/${serviceName}.sock;|fastcgi_pass unix:$fpm_test_socket;|" \
+            "$nginx_conf" > "$nginx_test_conf"
+          "$profile/bin/nginx" -c "$nginx_test_conf" -p "$tmpdir" \
+            > "$tmpdir/nginx-test.stdout" 2>&1 &
+          nginx_test_pid=$!
+          trap 'kill "$nginx_test_pid" "$fpm_test_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 50); do
+            [ -S "$nginx_test_socket" ] && break
+            sleep 0.1
+          done
+          if [ ! -S "$nginx_test_socket" ]; then
+            cat "$tmpdir/nginx-test.stdout" >&2
+            cat "$tmpdir/nginx-error.log" >&2 2>/dev/null || true
+            fail "nginx did not create the Laravel HTTP test socket"
+          fi
+          nginx_status=$(
+            ${pkgs.curl}/bin/curl \
+              --silent \
+              --show-error \
+              --unix-socket "$nginx_test_socket" \
+              --output "$tmpdir/nginx-response" \
+              --write-out '%{http_code}' \
+              http://localhost/
+          )
+          test "$nginx_status" = 200 || {
+            cat "$tmpdir/nginx-response" >&2
+            cat "$tmpdir/nginx-error.log" >&2 2>/dev/null || true
+            fail "Laravel root returned HTTP $nginx_status instead of reaching index.php"
+          }
+          grep -Fq 'hostenv Laravel index reached' "$tmpdir/nginx-response" \
+            || fail "Laravel root response did not come from public/index.php"
+          kill "$nginx_test_pid"
+          wait "$nginx_test_pid" || true
           kill "$fpm_test_pid"
           wait "$fpm_test_pid" || true
           trap - EXIT

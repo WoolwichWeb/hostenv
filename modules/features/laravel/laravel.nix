@@ -460,9 +460,10 @@
             root = lib.mkDefault "${rootDir}/public";
             listen = lib.mkDefault [ { addr = "unix:${config.hostenv.upstreamRuntimeDir}/in.sock"; } ];
 
-            locations."/".extraConfig = ''
-              try_files $uri $uri/ /index.php?$query_string;
-            '';
+            locations."/" = {
+              index = lib.mkDefault "index.php";
+              tryFiles = lib.mkDefault "$uri $uri/ /index.php?$query_string";
+            };
 
             locations."= /index.php" = {
               priority = 100;
