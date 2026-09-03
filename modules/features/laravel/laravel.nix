@@ -636,7 +636,7 @@
               remote_artisan+=(--no-interaction)
             fi
 
-            exec ssh $hostenv_ssh_tty "$hostenv_user"@"$hostenv_host" -- "''${remote_artisan[@]}" "$@"
+            hostenv_ssh_exec "''${remote_artisan[@]}" "$@"
           '';
           description = "Run Artisan on the remote Laravel environment.";
           executable = "artisan";

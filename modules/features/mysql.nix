@@ -621,7 +621,7 @@
             script = helpers: ''
               echo >&2
               echo "$hostenv_emoji  Running mysql on '$hostenv_env_name'" >&2
-              exec ssh $hostenv_ssh_tty "$hostenv_user"@"$hostenv_host" -- mysql "$@"
+              hostenv_ssh_exec mysql "$@"
             '';
             executable = "mysql";
             description = "Run mysql on the remote hostenv environment.";
@@ -645,8 +645,7 @@
                 fi
                 hostenv_ssh_tty="-T"
                 debug "tty_mode=$tty_mode ssh_flag=$hostenv_ssh_tty stdin_is_tty=$([ -t 0 ] && echo yes || echo no)"
-                # shellcheck disable=SC2086
-                exec ssh $hostenv_ssh_tty "$hostenv_user"@"$hostenv_host" bash -s -- "$@" <<'REMOTE' | gunzip -c
+                hostenv_ssh_run bash -s -- "$@" <<'REMOTE' | gunzip -c
               set -euo pipefail
               exec mysqldump "$@" | gzip -c
               REMOTE

@@ -246,7 +246,7 @@
                 remote_drush+=("$drush_global_options")
               fi
 
-              exec ssh $hostenv_ssh_tty "$hostenv_user"@"$hostenv_host" -- "''${remote_drush[@]}" "$@"
+              hostenv_ssh_exec "''${remote_drush[@]}" "$@"
             '';
             description = "Run Drush on the remote Drupal";
             executable = "drush";

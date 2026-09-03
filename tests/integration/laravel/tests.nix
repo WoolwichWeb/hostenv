@@ -507,6 +507,34 @@ profileCheck "10" envs.laravel10
       "$cli/bin/hostenv" artisan --help > "$TMPDIR/artisan-help"
       grep -Fq 'Arguments passed to Artisan' "$TMPDIR/artisan-help"
       grep -Fq 'remote_artisan+=(--no-interaction)' "$cli/bin/hostenv"
+      grep -Fq 'hostenv_quote_remote_command' "$cli/bin/hostenv"
+      grep -Fq 'hostenv_ssh_exec "''${remote_artisan[@]}" "$@"' "$cli/bin/hostenv"
+
+      # Exercise the generated quoting helper with shell metacharacters that
+      # must survive OpenSSH flattening argv into a remote command.
+      sed -n '/hostenv_quote_remote_command() {/,/^[[:space:]]*}/p' "$cli/bin/hostenv" \
+        > "$TMPDIR/hostenv-quote-function"
+      . "$TMPDIR/hostenv-quote-function"
+      remote_command="$(hostenv_quote_remote_command \
+        artisan \
+        tinker \
+        '--execute=Example\Namespace\Command::run();' \
+        "single quote: O'Reilly" \
+        '$HOME; $(false)' \
+        "")"
+      EXPECTED_QUOTE="single quote: O'Reilly" \
+      EXPECTED_LITERAL='$HOME; $(false)' \
+      REMOTE_COMMAND="$remote_command" ${pkgs.bash}/bin/bash -c '
+        set -euo pipefail
+        eval "set -- $REMOTE_COMMAND"
+        test "$#" -eq 6
+        test "$1" = artisan
+        test "$2" = tinker
+        test "$3" = "--execute=Example\\Namespace\\Command::run();"
+        test "$4" = "$EXPECTED_QUOTE"
+        test "$5" = "$EXPECTED_LITERAL"
+        test "$6" = ""
+      '
     '';
   };
 
