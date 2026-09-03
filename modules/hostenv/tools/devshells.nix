@@ -24,7 +24,7 @@
             in
             {
               devshell = {
-                name = "hostenv-${environmentName}";
+                name = "devshell-${environmentName}";
                 packages = with pkgs; [
                   config.hostenv.cliPackage
                   restic
@@ -44,7 +44,7 @@
         // {
           default = {
             devshell = {
-              name = "hostenv";
+              name = "devshell";
               # On startup of the project CLI, we check if the current git
               # branch is tied to a hostenv environment. If it is, we set the
               # CLI to work with that environment. If it is not, we warn the
