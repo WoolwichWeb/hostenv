@@ -27,7 +27,7 @@
 
           checks = import ../../tests {
             inherit pkgs envs makeHostenv inputs;
-            documentation = config.documentation;
+            documentationEnabled = config.documentation.checks.enable;
           };
 
           packages = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {

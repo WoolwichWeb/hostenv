@@ -1,4 +1,4 @@
-{ pkgs, makeHostenv, documentation }:
+{ pkgs, makeHostenv, documentationEnabled }:
 
 # Fast/unit-style suites
 (import ./restic.nix { inherit pkgs; })
@@ -8,8 +8,8 @@
   // (import ./cli-command-names.nix { inherit pkgs makeHostenv; })
   // (import ./cli-flags.nix { inherit pkgs makeHostenv; })
   // (import ./cli-spinner.nix { inherit pkgs; })
-  // (import ./hostenv-provider-service.nix { inherit pkgs documentation; })
-  // (import ./provider-cli.nix { inherit pkgs documentation; })
+  // (import ./hostenv-provider-service.nix { inherit pkgs documentationEnabled; })
+  // (import ./provider-cli.nix { inherit pkgs documentationEnabled; })
   // (import ./backups-repo-host.nix { inherit pkgs makeHostenv; })
   // (import ./mysql-backups.nix { inherit pkgs; })
   // (import ./redis.nix { inherit pkgs; })
