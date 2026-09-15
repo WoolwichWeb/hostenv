@@ -50,7 +50,7 @@ let
   };
 
   exportEnvironment = environment: {
-    inherit (environment) enable type deploymentVerification;
+    inherit (environment) enable type deploymentVerification requiredSecretFiles;
 
     users = lib.mapAttrs (_: user: exportUser user) environment.users;
     virtualHosts = lib.mapAttrs (_: virtualHost: exportVirtualHost virtualHost) environment.virtualHosts;

@@ -17,7 +17,10 @@ let
       flake.lib = {
         provider.plan =
           args:
-          assert args.sopsTopLevelKeys == [ "provider-test" ];
+          assert
+            args.sopsSecretKeys == {
+              "provider-test" = [ "backups_secret" ];
+            };
           {
             plan = expectedPlan;
             state = expectedState;
@@ -27,7 +30,9 @@ let
           outPath = ../..;
         };
         hostenv.readYaml = _pkgs: _path: {
-          "provider-test" = { };
+          "provider-test" = {
+            backups_secret = "";
+          };
         };
       };
     };

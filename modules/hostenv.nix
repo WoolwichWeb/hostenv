@@ -286,6 +286,19 @@ let
           default = allUsers;
         };
 
+        requiredSecretFiles = lib.mkOption {
+          type = types.listOf (types.strMatching "[A-Za-z0-9_]+");
+          default = [ ];
+          description = ''
+            Secret files this environment requires from its hosting provider.
+
+            Each name is resolved by the provider from its SOPS configuration
+            and projected to `/run/secrets/<environment-user>/<name>`. Projects
+            can request names only; paths, ownership, and modes remain under
+            provider control.
+          '';
+        };
+
         virtualHosts =
           let
             envConfig = config;

@@ -3,7 +3,8 @@ let
   lib = pkgs.lib;
   asserts = (import ../support { inherit pkgs lib; }).asserts;
 
-  # Force the CLI package far enough to run Pog command-name validation.
+  # Force the CLI package far enough to evaluate Hostenv's Pog compatibility
+  # checks for generated command names.
   commandNameEvaluation =
     commandDefinitions:
     builtins.tryEval (

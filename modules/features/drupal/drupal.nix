@@ -1,7 +1,12 @@
 { ... }:
 {
   flake.modules.hostenv.drupal =
-    { lib, config, pkgs, ... }:
+    {
+      lib,
+      config,
+      pkgs,
+      ...
+    }:
     let
       cfg = config.services.drupal;
       env = config.environments.${config.hostenv.environmentName};
@@ -17,16 +22,19 @@
       # This final PHP package is then used in various places in the code, so
       # the same version of PHP is used everywhere.
       drupalPhpPool = config.services.phpfpm.pools."${cfg.codebase.name}";
-      canonicalVHostFor = envCfg:
+      canonicalVHostFor =
+        envCfg:
         let
           envHostName = envCfg.hostenv.hostname;
           hasDefaultHost = builtins.hasAttr envHostName envCfg.virtualHosts;
           defaultVHost =
-            if hasDefaultHost then envCfg.virtualHosts.${envHostName} else
-            builtins.throw ''
-              ${envHostName} was not in the environment's hosts.
-              Available virtualHosts: ${builtins.toJSON (builtins.attrNames envCfg.virtualHosts)}
-            '';
+            if hasDefaultHost then
+              envCfg.virtualHosts.${envHostName}
+            else
+              builtins.throw ''
+                ${envHostName} was not in the environment's hosts.
+                Available virtualHosts: ${builtins.toJSON (builtins.attrNames envCfg.virtualHosts)}
+              '';
           redirectedToCanonical =
             defaultVHost ? globalRedirect
             && defaultVHost.globalRedirect != null
@@ -35,21 +43,18 @@
         if redirectedToCanonical then defaultVHost.globalRedirect else envHostName;
       canonicalVHost = canonicalVHostFor env;
       canonicalVHostConfig = env.virtualHosts.${canonicalVHost};
-      canonicalProtocol =
-        if canonicalVHostConfig.enableLetsEncrypt
-        then "https://"
-        else "http://";
+      canonicalProtocol = if canonicalVHostConfig.enableLetsEncrypt then "https://" else "http://";
       canonicalUri = canonicalProtocol + canonicalVHost;
 
       hostenvSettingsFile = pkgs.writeText "settings.hostenv.php" ''
         <?php
-    
+
         // config.services.drupal.settings.privateFilesDir
         $settings['file_private_path'] = "${cfg.privateFilesDir}";
-    
+
         // config.services.drupal.settings.errorReporting
         error_reporting(${cfg.settings.errorReporting});
-    
+
         // config.services.drupal.settings.trustedHostPatterns
         $settings['trusted_host_patterns'] = array_merge(
           $settings['trusted_host_patterns'] ?? [], [
@@ -57,10 +62,10 @@
             builtins.map (pattern: "'${pattern}',") cfg.settings.trustedHostPatterns
           )}
         ]);
-    
+
         // config.services.drupal.settings.databases
         ${cfg.settings.databases}
-    
+
         // config.services.drupal.settings.extraSettings
         ${cfg.settings.extraSettings}
       '';
@@ -76,21 +81,21 @@
         dontPatchShebangs = true;
         buildInputs = [ drupalPhpPool.effectivePhpCliPackage.packages.composer ];
 
-        src =
-          (drupalPhpPool.effectivePhpCliPackage.buildComposerProject2 (finalAttrs: {
+        src = (
+          drupalPhpPool.effectivePhpCliPackage.buildComposerProject2 (finalAttrs: {
             pname = cfg.codebase.name;
             version = cfg.codebase.version;
             src = lib.cleanSourceWith {
               src = config.hostenv.root;
-              filter = path: type: baseNameOf path == "composer.json"
-                || baseNameOf path == "composer.lock";
+              filter = path: type: baseNameOf path == "composer.json" || baseNameOf path == "composer.lock";
             };
             composerLock = config.hostenv.root + /composer.lock;
             vendorHash = cfg.composer.dependencyHash;
             composerNoPlugins = !cfg.composer.enablePlugins;
             composerNoScripts = !cfg.composer.enableScripts;
             composerNoDev = !cfg.composer.enableDev;
-          }));
+          })
+        );
 
         buildPhase = ''
           pushd share/php/${cfg.codebase.name}
@@ -105,79 +110,78 @@
         '';
       };
 
-      project = pkgs.stdenvNoCC.mkDerivation
-        {
-          pname = cfg.codebase.name;
-          version = cfg.codebase.version;
-          src = config.hostenv.root;
-          dontPatchShebangs = true;
+      project = pkgs.stdenvNoCC.mkDerivation {
+        pname = cfg.codebase.name;
+        version = cfg.codebase.version;
+        src = config.hostenv.root;
+        dontPatchShebangs = true;
 
-          buildPhase =
-            let
-              settingsPhp = ''
-                // HOSTENV_SETTINGS_INCLUDE_BEGIN
-                if (isset($app_root) && isset($site_path)) {
-                  $sitesDir = $app_root . '/' . $site_path;
-                } else {
-                  $sitesDir = __DIR__;
-                }
-    
-                if (file_exists('${hostenvSettingsFile}')) {
-                  include '${hostenvSettingsFile}';
-                } else {
-                  echo('Could not find settings file');
-                  throw new Exception('Could not find settings file: "${hostenvSettingsFile}"');
-                }
-                // HOSTENV_SETTINGS_INCLUDE_END
-              '';
-              settingsPhpSnippet = pkgs.writeText "settings.hostenv.include.php" settingsPhp;
-            in
-            ''
-              ${lib.optionalString cfg.composer.enable ''
-              cp -r ${composerPackage}/share/php/${cfg.codebase.name}/. .
-              ''}
+        buildPhase =
+          let
+            settingsPhp = ''
+              // HOSTENV_SETTINGS_INCLUDE_BEGIN
+              if (isset($app_root) && isset($site_path)) {
+                $sitesDir = $app_root . '/' . $site_path;
+              } else {
+                $sitesDir = __DIR__;
+              }
 
-              if [ -d web ]; then
-                export WEBROOT="web/"
-              else
-                export WEBROOT=""
-              fi
-
-              settings_path="$WEBROOT"sites/default/settings.php
-              default_settings_path="$WEBROOT"sites/default/default.settings.php
-
-              if [ ! -f "$settings_path" ]; then
-                if [ -f "$default_settings_path" ]; then
-                  cp "$default_settings_path" "$settings_path"
-                else
-                  printf '%s\n' '<?php' > "$settings_path"
-                fi
-              fi
-
-              if ! grep -q 'HOSTENV_SETTINGS_INCLUDE_BEGIN' "$settings_path"; then
-                cat ${settingsPhpSnippet} >> "$settings_path"
-              fi
-
-              [ -d "$WEBROOT"sites/default/files ] && mv "$WEBROOT"sites/default/files ./project_files
-
-              rm -f "$WEBROOT"sites/default/files
-              ln -s "${cfg.filesDir}" "$WEBROOT"sites/default/files
-              ln -s "${hostenvSettingsFile}" "$WEBROOT"sites/default/hostenv.settings.php
+              if (file_exists('${hostenvSettingsFile}')) {
+                include '${hostenvSettingsFile}';
+              } else {
+                echo('Could not find settings file');
+                throw new Exception('Could not find settings file: "${hostenvSettingsFile}"');
+              }
+              // HOSTENV_SETTINGS_INCLUDE_END
             '';
+            settingsPhpSnippet = pkgs.writeText "settings.hostenv.include.php" settingsPhp;
+          in
+          ''
+            ${lib.optionalString cfg.composer.enable ''
+              cp -r ${composerPackage}/share/php/${cfg.codebase.name}/. .
+            ''}
 
-          installPhase = ''
-            # This standardises on web accessible files being in `/web`, allowing
-            # unofficial support for Drupal 7.
             if [ -d web ]; then
-              mkdir -p $out/share/php/${cfg.codebase.name}
-              cp -r . $out/share/php/${cfg.codebase.name}/
+              export WEBROOT="web/"
             else
-              mkdir -p $out/share/php/${cfg.codebase.name}/web
-              cp -r . $out/share/php/${cfg.codebase.name}/web/
+              export WEBROOT=""
             fi
+
+            settings_path="$WEBROOT"sites/default/settings.php
+            default_settings_path="$WEBROOT"sites/default/default.settings.php
+
+            if [ ! -f "$settings_path" ]; then
+              if [ -f "$default_settings_path" ]; then
+                cp "$default_settings_path" "$settings_path"
+              else
+                printf '%s\n' '<?php' > "$settings_path"
+              fi
+            fi
+
+            if ! grep -q 'HOSTENV_SETTINGS_INCLUDE_BEGIN' "$settings_path"; then
+              cat ${settingsPhpSnippet} >> "$settings_path"
+            fi
+
+            [ -d "$WEBROOT"sites/default/files ] && mv "$WEBROOT"sites/default/files ./project_files
+
+            rm -f "$WEBROOT"sites/default/files
+            ln -s "${cfg.filesDir}" "$WEBROOT"sites/default/files
+            ln -s "${hostenvSettingsFile}" "$WEBROOT"sites/default/hostenv.settings.php
           '';
 
-        };
+        installPhase = ''
+          # This standardises on web accessible files being in `/web`, allowing
+          # unofficial support for Drupal 7.
+          if [ -d web ]; then
+            mkdir -p $out/share/php/${cfg.codebase.name}
+            cp -r . $out/share/php/${cfg.codebase.name}/
+          else
+            mkdir -p $out/share/php/${cfg.codebase.name}/web
+            cp -r . $out/share/php/${cfg.codebase.name}/web/
+          fi
+        '';
+
+      };
 
       drush =
         let
@@ -186,7 +190,7 @@
         in
         pkgs.writeShellScriptBin "drush" ''
           set -euo pipefail
-          
+
           # Only add --uri if caller didn't specify one.
           add_uri=true
           for arg in "$@"; do
@@ -194,12 +198,12 @@
               --uri=*|-l|--uri) add_uri=false; break;;
             esac
           done
-    
+
           args=("--root=${webRoot}")
           if $add_uri; then
             args+=("--uri=${canonicalUri}")
           fi
-    
+
           exec -a drush ${rootDir}/vendor/bin/drush "''${args[@]}" "$@"
         '';
     in
@@ -236,7 +240,7 @@
             wants = lib.mkDefault [ "network-online.target" ];
             after = lib.mkDefault [ "network-online.target" ];
             restartIfChanged = lib.mkDefault false;
-            path = [ pkgs.bash ];
+            path = [ pkgs.bash ] ++ config.packages;
             serviceConfig = lib.mkDefault {
               Type = "oneshot";
               ExecStart = "${drush}/bin/drush core:cron";
@@ -282,7 +286,9 @@
             script = helpers: ''
                 # remote drush cex with temp dir + rsync back
                 dest="/tmp/hostenv-$hostenv_user-cex"
-                if ssh -q "$hostenv_user"@"$hostenv_host" bash -s -- "$dest" "$@" <<'RS'; then
+                remote_command="$(hostenv_quote_remote_command bash -s -- "$dest" "$@")"
+                cleanup_command="$(hostenv_quote_remote_command rm -rf -- "$dest")"
+                if ssh -q "$hostenv_user"@"$hostenv_host" "$remote_command" <<'RS'; then
               set -euo pipefail
               dest="$1"; shift
               [ -d "$dest" ] && rm -rf -- "$dest"
@@ -291,24 +297,24 @@
               drush --quiet cex --destination="$dest" "$@"
               RS
                   rsync -az --delete "$hostenv_user@$hostenv_host:$dest/" ../config/sync/
-                  # shellcheck disable=SC2016
-                  ssh -q "$hostenv_user"@"$hostenv_host" "rm -rf -- $(printf %q '$dest')" || true
+                  ssh -q "$hostenv_user"@"$hostenv_host" "$cleanup_command" || true
                   green "🗂️  Config exported from '$hostenv_env_name'"
                 else
-                  # shellcheck disable=SC2016
-                  ssh -q "$hostenv_user"@"$hostenv_host" "rm -rf -- $(printf %q '$dest')" || true
+                  ssh -q "$hostenv_user"@"$hostenv_host" "$cleanup_command" || true
                   die "Config export failed" 1
                 fi
             '';
             description = "Get a config export from the remote Drupal environment and copy it to your local 'config/sync' directory.";
             group = "Drupal";
             parsing = "passthrough";
-            arguments = [{
-              name = "arguments";
-              description = "Arguments passed to drush cex";
-              variadic = true;
-              completion = [ ];
-            }];
+            arguments = [
+              {
+                name = "arguments";
+                description = "Arguments passed to drush cex";
+                variadic = true;
+                completion = [ ];
+              }
+            ];
           };
         };
 
@@ -318,12 +324,12 @@
           mkdir -p "${cfg.privateFilesDir}"
           chmod -R u+rw "${cfg.filesDir}"
           chmod -R u+rw "${cfg.privateFilesDir}"
-          
+
           projectFiles="${toString project}/share/php/${cfg.codebase.name}/project_files"
           if [ ! -z "$projectFiles" ] && [  -d "$projectFiles" ]; then
             cp -r -- "$projectFiles"/* ${cfg.filesDir}/
           fi
-    
+
           find "${cfg.filesDir}/" -type d -name '__MACOSX' -print0 | xargs -0 rm -rf
           find "${cfg.filesDir}/" -type f -name '.DS_Store' -delete
 
@@ -346,8 +352,11 @@
               pathsToLink = [ "/bin" ];
             };
           in
-          [ project drush composer ];
+          [
+            project
+            drush
+            composer
+          ];
       };
-    }
-  ;
+    };
 }

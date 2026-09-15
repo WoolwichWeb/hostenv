@@ -1,22 +1,30 @@
 { ... }:
 {
   flake.modules.hostenv.drupalCommon =
-    { lib, config, pkgs, ... }:
+    {
+      lib,
+      config,
+      pkgs,
+      ...
+    }:
     let
       cfg = config.services.drupal;
       env = config.environments.${config.hostenv.environmentName};
       mkDefaultAttrs = lib.mapAttrs (_: lib.mkDefault);
 
-      canonicalVHostFor = envCfg:
+      canonicalVHostFor =
+        envCfg:
         let
           envHostName = envCfg.hostenv.hostname;
           hasDefaultHost = builtins.hasAttr envHostName envCfg.virtualHosts;
           defaultVHost =
-            if hasDefaultHost then envCfg.virtualHosts.${envHostName} else
-            builtins.throw ''
-              ${envHostName} was not in the environment's hosts.
-              Available virtualHosts: ${builtins.toJSON (builtins.attrNames envCfg.virtualHosts)}
-            '';
+            if hasDefaultHost then
+              envCfg.virtualHosts.${envHostName}
+            else
+              throw ''
+                ${envHostName} was not in the environment's hosts.
+                Available virtualHosts: ${builtins.toJSON (builtins.attrNames envCfg.virtualHosts)}
+              '';
           redirectedToCanonical =
             defaultVHost ? globalRedirect
             && defaultVHost.globalRedirect != null
@@ -25,16 +33,28 @@
         if redirectedToCanonical then defaultVHost.globalRedirect else envHostName;
 
       drupalGeneratorRegex = ''<meta[[:space:]]+name="Generator"[[:space:]]+content="Drupal [0-9]'';
-      mkDrupalDeploymentVerification = envCfg:
+      mkDrupalDeploymentVerification =
+        envCfg:
         let
           canonicalVHost = canonicalVHostFor envCfg;
-          drupalVerificationConstraints =
-            [
-              { rule = "allowNonZeroExitStatus"; value = false; }
-              { rule = "minHttpStatus"; value = 200; }
-              { rule = "maxHttpStatus"; value = 299; }
-              { rule = "stdoutRegexMustMatch"; value = drupalGeneratorRegex; }
-            ];
+          drupalVerificationConstraints = [
+            {
+              rule = "allowNonZeroExitStatus";
+              value = false;
+            }
+            {
+              rule = "minHttpStatus";
+              value = 200;
+            }
+            {
+              rule = "maxHttpStatus";
+              value = 299;
+            }
+            {
+              rule = "stdoutRegexMustMatch";
+              value = drupalGeneratorRegex;
+            }
+          ];
         in
         {
           enable = true;
@@ -61,18 +81,29 @@
     in
     {
       config = lib.mkIf cfg.enable {
+        services.drupal.phpOptions = lib.mkBefore ''
+          upload_max_filesize = ${cfg.maxRequestSize}
+          post_max_size = ${cfg.maxRequestSize}
+        '';
+
         assertions =
           (lib.optional cfg.backups.enable {
             assertion = config.services.mysql.backups.enable;
             message = "services.drupal.backups.enable requires services.mysql.backups.enable = true";
           })
-          ++ (lib.optional (cfg.backups.enable && builtins.hasAttr migrateBackupName config.services.restic.backups) {
-            assertion = lib.elem migrateBackupName (config.services.restic.backups.${migrateBackupName}.tags or [ ]);
-            message = "services.restic.backups.drupal-migrate.tags must include \"drupal-migrate\" so migrations can locate snapshots";
-          });
+          ++ (lib.optional
+            (cfg.backups.enable && builtins.hasAttr migrateBackupName config.services.restic.backups)
+            {
+              assertion = lib.elem migrateBackupName (
+                config.services.restic.backups.${migrateBackupName}.tags or [ ]
+              );
+              message = "services.restic.backups.drupal-migrate.tags must include \"drupal-migrate\" so migrations can locate snapshots";
+            }
+          );
 
-        environments.${config.hostenv.environmentName}.deploymentVerification =
-          lib.mkDefault (mkDrupalDeploymentVerification env);
+        environments.${config.hostenv.environmentName}.deploymentVerification = lib.mkDefault (
+          mkDrupalDeploymentVerification env
+        );
 
         services.mysql.backups = lib.mkIf cfg.backups.enable {
           enable = lib.mkDefault true;
@@ -110,10 +141,12 @@
             initialize = true;
             createWrapper = lib.mkForce true;
             wantsUnits = [ "mysql.service" ];
-            tags = [ migrateBackupName "migrate" ];
+            tags = [
+              migrateBackupName
+              "migrate"
+            ];
           };
         };
-
 
         services.nginx.clientMaxBodySize = cfg.maxRequestSize;
         # Note: check drupal.nix and drupal6.nix for more version-specific
@@ -189,7 +222,7 @@
               return = lib.mkDefault "200 '${config.buildReference}'";
             };
 
-            listen = lib.mkDefault [{ addr = "unix:${config.hostenv.upstreamRuntimeDir}/in.sock"; }];
+            listen = lib.mkDefault [ { addr = "unix:${config.hostenv.upstreamRuntimeDir}/in.sock"; } ];
           };
         };
 
@@ -198,7 +231,7 @@
             script = helpers: ''
               echo >&2
               echo "$hostenv_emoji  Running drush on '$hostenv_env_name' " >&2
-    
+
               case "$force" in
                 1)
                   drush_global_options="--no-interaction"
@@ -207,148 +240,154 @@
                   drush_global_options=""
                   ;;
               esac
-    
+
               remote_drush=(drush)
               if [ -n "$drush_global_options" ]; then
                 remote_drush+=("$drush_global_options")
               fi
 
-              exec ssh $hostenv_ssh_tty "$hostenv_user"@"$hostenv_host" -- "''${remote_drush[@]}" "$@"
+              hostenv_ssh_exec "''${remote_drush[@]}" "$@"
             '';
             description = "Run Drush on the remote Drupal";
             executable = "drush";
             group = "Drupal";
             parsing = "passthrough";
-            arguments = [{
-              name = "arguments";
-              description = "Arguments passed to Drush";
-              variadic = true;
-              completion = [ ];
-            }];
+            arguments = [
+              {
+                name = "arguments";
+                description = "Arguments passed to Drush";
+                variadic = true;
+                completion = [ ];
+              }
+            ];
           };
         };
 
-        activate = lib.optionalString cfg.backups.enable (lib.mkBefore ''
-          # HOSTENV_RESTORE_DRUPAL_BEGIN
-          restore_marker_dir="${config.hostenv.stateDir}/hostenv/restored"
-          restore_marker="$restore_marker_dir/drupal"
-          restore_plan="${config.hostenv.runtimeDir}/restore/plan.json"
-          db_initialized=0
-          restore_key="${migrateBackupName}"
-          mysql_runtime_dir="${config.services.mysql.runtimeDir}"
+        activate = lib.optionalString cfg.backups.enable (
+          lib.mkBefore ''
+            # HOSTENV_RESTORE_DRUPAL_BEGIN
+            restore_marker_dir="${config.hostenv.stateDir}/hostenv/restored"
+            restore_marker="$restore_marker_dir/drupal"
+            restore_plan="${config.hostenv.runtimeDir}/restore/plan.json"
+            db_initialized=0
+            restore_key="${migrateBackupName}"
+            mysql_runtime_dir="${config.services.mysql.runtimeDir}"
 
-          export XDG_RUNTIME_DIR="''${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+            export XDG_RUNTIME_DIR="''${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
-          if [ -f "$restore_marker" ]; then
-            db_initialized=1
-          else
-            mysql_sock="$mysql_runtime_dir/mysql.sock"
-            if [ ! -S "$mysql_sock" ]; then
-              if ${config.systemd.package}/bin/systemctl --user start mysql.service; then
+            if [ -f "$restore_marker" ]; then
+              db_initialized=1
+            else
+              mysql_sock="$mysql_runtime_dir/mysql.sock"
+              if [ ! -S "$mysql_sock" ]; then
+                if ${config.systemd.package}/bin/systemctl --user start mysql.service; then
+                  for _ in $(seq 1 30); do
+                    [ -S "$mysql_sock" ] && break
+                    sleep 1
+                  done
+                fi
+              fi
+
+              if [ -S "$mysql_sock" ]; then
+                table_count="$(${config.services.mysql.package}/bin/mysql -N -u ${config.hostenv.userName} \
+                  --socket="$mysql_sock" \
+                  -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${cfg.databaseName}';" 2>/dev/null || echo 0)"
+                if [ "''${table_count:-0}" -gt 0 ]; then
+                  db_initialized=1
+                fi
+              fi
+            fi
+
+            if [ "$db_initialized" -eq 0 ] && [ ! -f "$restore_marker" ]; then
+              if [ ! -f "$restore_plan" ]; then
+                echo "hostenv: restore plan not found; skipping Drupal restore"
+              else
+                echo "hostenv: attempting Drupal restore"
+                restore_snapshot="$(${pkgs.jq}/bin/jq -r '.snapshots["'"$restore_key"'"] // empty' "$restore_plan")"
+                if [ -z "$restore_snapshot" ]; then
+                  echo "hostenv: restore plan missing snapshot id for $restore_key" >&2
+                  exit 1
+                fi
+
+                restore_tmp="$(mktemp -d)"
+                restic_migrate="${
+                  config.services.restic.wrapperScripts.${migrateBackupName}
+                }/bin/restic-${migrateBackupName}"
+
+                ${config.systemd.package}/bin/systemctl --user stop nginx.service || true
+                ${config.systemd.package}/bin/systemctl --user stop phpfpm.target || true
+                ${config.systemd.package}/bin/systemctl --user stop mysql.service || true
+
+                if ! "$restic_migrate" restore "$restore_snapshot" --target "$restore_tmp"; then
+                  echo "hostenv: restic restore failed" >&2
+                  rm -rf "$restore_tmp"
+                  exit 1
+                fi
+
+                restore_state_dir="$restore_tmp/${lib.removePrefix "/" config.services.mysql.backups.backupDir}"
+                if ! ${config.services.mysql.backups.scripts.restore}/bin/mysql-backup-restore \
+                  "$restore_state_dir" \
+                  "${config.services.mysql.dataDir}"; then
+                  echo "hostenv: mysql restore failed" >&2
+                  rm -rf "$restore_tmp"
+                  exit 1
+                fi
+
+                restore_files_dir="$restore_tmp/${lib.removePrefix "/" cfg.filesDir}"
+                if [ -d "$restore_files_dir" ]; then
+                  rm -rf "${cfg.filesDir}"
+                  mkdir -p "${cfg.filesDir}"
+                  if ! cp -a "$restore_files_dir/." "${cfg.filesDir}/"; then
+                    echo "hostenv: failed to restore Drupal files directory" >&2
+                    rm -rf "$restore_tmp"
+                    exit 1
+                  fi
+                fi
+
+                restore_private_dir="$restore_tmp/${lib.removePrefix "/" cfg.privateFilesDir}"
+                if [ -d "$restore_private_dir" ]; then
+                  rm -rf "${cfg.privateFilesDir}"
+                  mkdir -p "${cfg.privateFilesDir}"
+                  if ! cp -a "$restore_private_dir/." "${cfg.privateFilesDir}/"; then
+                    echo "hostenv: failed to restore Drupal private files directory" >&2
+                    rm -rf "$restore_tmp"
+                    exit 1
+                  fi
+                fi
+
+                ${config.systemd.package}/bin/systemctl --user start mysql.service || true
                 for _ in $(seq 1 30); do
-                  [ -S "$mysql_sock" ] && break
+                  [ -S "$mysql_runtime_dir/mysql.sock" ] && break
                   sleep 1
                 done
-              fi
-            fi
-
-            if [ -S "$mysql_sock" ]; then
-              table_count="$(${config.services.mysql.package}/bin/mysql -N -u ${config.hostenv.userName} \
-                --socket="$mysql_sock" \
-                -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${cfg.databaseName}';" 2>/dev/null || echo 0)"
-              if [ "''${table_count:-0}" -gt 0 ]; then
-                db_initialized=1
-              fi
-            fi
-          fi
-
-          if [ "$db_initialized" -eq 0 ] && [ ! -f "$restore_marker" ]; then
-            if [ ! -f "$restore_plan" ]; then
-              echo "hostenv: restore plan not found; skipping Drupal restore"
-            else
-              echo "hostenv: attempting Drupal restore"
-              restore_snapshot="$(${pkgs.jq}/bin/jq -r '.snapshots["'"$restore_key"'"] // empty' "$restore_plan")"
-              if [ -z "$restore_snapshot" ]; then
-                echo "hostenv: restore plan missing snapshot id for $restore_key" >&2
-                exit 1
-              fi
-
-              restore_tmp="$(mktemp -d)"
-              restic_migrate="${config.services.restic.wrapperScripts.${migrateBackupName}}/bin/restic-${migrateBackupName}"
-
-              ${config.systemd.package}/bin/systemctl --user stop nginx.service || true
-              ${config.systemd.package}/bin/systemctl --user stop phpfpm.target || true
-              ${config.systemd.package}/bin/systemctl --user stop mysql.service || true
-
-              if ! "$restic_migrate" restore "$restore_snapshot" --target "$restore_tmp"; then
-                echo "hostenv: restic restore failed" >&2
-                rm -rf "$restore_tmp"
-                exit 1
-              fi
-
-              restore_state_dir="$restore_tmp/${lib.removePrefix "/" config.services.mysql.backups.backupDir}"
-              if ! ${config.services.mysql.backups.scripts.restore}/bin/mysql-backup-restore \
-                "$restore_state_dir" \
-                "${config.services.mysql.dataDir}"; then
-                echo "hostenv: mysql restore failed" >&2
-                rm -rf "$restore_tmp"
-                exit 1
-              fi
-
-              restore_files_dir="$restore_tmp/${lib.removePrefix "/" cfg.filesDir}"
-              if [ -d "$restore_files_dir" ]; then
-                rm -rf "${cfg.filesDir}"
-                mkdir -p "${cfg.filesDir}"
-                if ! cp -a "$restore_files_dir/." "${cfg.filesDir}/"; then
-                  echo "hostenv: failed to restore Drupal files directory" >&2
+                if [ ! -S "$mysql_runtime_dir/mysql.sock" ]; then
+                  echo "hostenv: mysql did not start after restore" >&2
                   rm -rf "$restore_tmp"
                   exit 1
                 fi
-              fi
+                ${config.systemd.package}/bin/systemctl --user start phpfpm.target || true
+                ${config.systemd.package}/bin/systemctl --user start nginx.service || true
 
-              restore_private_dir="$restore_tmp/${lib.removePrefix "/" cfg.privateFilesDir}"
-              if [ -d "$restore_private_dir" ]; then
-                rm -rf "${cfg.privateFilesDir}"
-                mkdir -p "${cfg.privateFilesDir}"
-                if ! cp -a "$restore_private_dir/." "${cfg.privateFilesDir}/"; then
-                  echo "hostenv: failed to restore Drupal private files directory" >&2
-                  rm -rf "$restore_tmp"
-                  exit 1
+                mkdir -p "$restore_marker_dir"
+                touch "$restore_marker"
+                rm -rf "$restore_tmp"
+              fi
+            fi
+            if [ -f "$restore_plan" ]; then
+              plan_tmp="$(mktemp)"
+              if ${pkgs.jq}/bin/jq -e '(.snapshots // {}) | has("'"$restore_key"'")' "$restore_plan" >/dev/null; then
+                ${pkgs.jq}/bin/jq 'del(.snapshots["'"$restore_key"'"])' "$restore_plan" > "$plan_tmp"
+                if ${pkgs.jq}/bin/jq -e '(.snapshots // {}) | length == 0' "$plan_tmp" >/dev/null; then
+                  rm -f "$restore_plan"
+                else
+                  mv "$plan_tmp" "$restore_plan"
                 fi
               fi
-
-              ${config.systemd.package}/bin/systemctl --user start mysql.service || true
-              for _ in $(seq 1 30); do
-                [ -S "$mysql_runtime_dir/mysql.sock" ] && break
-                sleep 1
-              done
-              if [ ! -S "$mysql_runtime_dir/mysql.sock" ]; then
-                echo "hostenv: mysql did not start after restore" >&2
-                rm -rf "$restore_tmp"
-                exit 1
-              fi
-              ${config.systemd.package}/bin/systemctl --user start phpfpm.target || true
-              ${config.systemd.package}/bin/systemctl --user start nginx.service || true
-
-              mkdir -p "$restore_marker_dir"
-              touch "$restore_marker"
-              rm -rf "$restore_tmp"
+              rm -f "$plan_tmp"
             fi
-          fi
-          if [ -f "$restore_plan" ]; then
-            plan_tmp="$(mktemp)"
-            if ${pkgs.jq}/bin/jq -e '(.snapshots // {}) | has("'"$restore_key"'")' "$restore_plan" >/dev/null; then
-              ${pkgs.jq}/bin/jq 'del(.snapshots["'"$restore_key"'"])' "$restore_plan" > "$plan_tmp"
-              if ${pkgs.jq}/bin/jq -e '(.snapshots // {}) | length == 0' "$plan_tmp" >/dev/null; then
-                rm -f "$restore_plan"
-              else
-                mv "$plan_tmp" "$restore_plan"
-              fi
-            fi
-            rm -f "$plan_tmp"
-          fi
-          # HOSTENV_RESTORE_DRUPAL_END
-        '');
+            # HOSTENV_RESTORE_DRUPAL_END
+          ''
+        );
 
         services.phpfpm.phpPackage = lib.mkDefault cfg.phpPackage;
         services.phpfpm.phpVersion = lib.mkDefault cfg.phpVersion;

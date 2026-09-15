@@ -172,6 +172,13 @@ in
           description = "nginx server_names_hash_bucket_size; bumped to handle long hostenv hostnames.";
         };
 
+        fastcgiReadTimeout = lib.mkOption {
+          type = lib.types.str;
+          default = "300s";
+          example = "120s";
+          description = "FastCGI response read timeout.";
+        };
+
         clientMaxBodySize = lib.mkOption {
           type = lib.types.str;
           default = "100m";
@@ -248,6 +255,7 @@ in
     
             fastcgi_buffers 16 16k;
             fastcgi_buffer_size 32k;
+            fastcgi_read_timeout ${cfg.fastcgiReadTimeout};
             client_max_body_size ${cfg.clientMaxBodySize};
     
             default_type application/octet-stream;

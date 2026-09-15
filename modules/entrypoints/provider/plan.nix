@@ -28,7 +28,7 @@ let
     , planSource ? "eval"
     , generatedFlake ? { }
     , secretsFile
-    , sopsTopLevelKeys ? [ ]
+    , sopsSecretKeys ? { }
     , lockPath ? (if inputs ? self then inputs.self + /flake.lock else ../../../flake.lock)
       # Reserved provider-service configuration. These are accepted only so
       # provider entrypoint callers can fail fast instead of silently dropping
@@ -667,7 +667,7 @@ let
                         nodesPath = ../nodes;
                         secretsFile = ${lib.generators.toPretty { } secretsFile};
                         secretsPath = inputs.parent + "/${secretsFile}";
-                        sopsTopLevelKeys = ${lib.generators.toPretty { } sopsTopLevelKeys};
+                        sopsSecretKeys = ${lib.generators.toPretty { } sopsSecretKeys};
                         nodeSystems = ${lib.generators.toPretty {} nodeSystems};
                         nodeAddresses = ${lib.generators.toPretty {} nodeAddresses};
                         nodeSshPorts = ${lib.generators.toPretty {} nodeSshPorts};

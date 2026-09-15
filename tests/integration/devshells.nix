@@ -1,9 +1,10 @@
-{ pkgs, makeHostenv, inputs }:
+{
+  pkgs,
+  makeHostenv,
+  inputs,
+}:
 let
   lib = pkgs.lib;
-  support = import ../support { inherit pkgs lib; };
-  asserts = support.asserts;
-
   system = pkgs.stdenv.hostPlatform.system;
   modules = inputs.import-tree ../../modules;
   moduleList = if builtins.isList modules then modules else [ modules ];
@@ -19,8 +20,8 @@ let
         modules = [
           ({ ... }: {
             hostenv = {
-              organisation = "acme";
-              project = "demo";
+              organisation = lib.mkForce "acme";
+              project = lib.mkForce "demo";
               hostenvHostname = "hosting.test";
               root = ./.;
             };
@@ -35,9 +36,20 @@ let
     };
   };
 
-  shell = flake.devShells.${system}.default;
-  ok = lib.isDerivation shell;
+  defaultShell = flake.devShells.${system}.default;
+  environmentShell = flake.devShells.${system}.main;
+  defaultProfile = defaultShell.config.devshell.package;
+  environmentProfile = environmentShell.config.devshell.package;
 in
-asserts.assertTrue "devshells-eval"
-  ok
-  "devShells output should evaluate to a derivation"
+assert lib.isDerivation defaultShell;
+assert lib.isDerivation environmentShell;
+pkgs.runCommand "devshells-eval" { } ''
+  test -x ${defaultProfile}/bin/devshell
+  test ! -e ${defaultProfile}/bin/hostenv
+
+  test -x ${environmentProfile}/bin/devshell-main
+  test -x ${environmentProfile}/bin/hostenv
+  test ! -e ${environmentProfile}/bin/hostenv-main
+
+  touch "$out"
+''

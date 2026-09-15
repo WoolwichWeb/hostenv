@@ -32,7 +32,7 @@
 
         app-log = {
           script = helpers: ''
-            exec ssh $hostenv_ssh_tty "$hostenv_user"@"$hostenv_host" bash -s -- "$@" <<'REMOTE'
+            hostenv_ssh_exec bash -s -- "$@" <<'REMOTE'
             set -euo pipefail
             resize
             exec journalctl --user -xe "$@"
@@ -78,7 +78,7 @@
                 variant = "prepare";
                 showError = true;
                 command = ''
-                  ssh $hostenv_ssh_tty "$hostenv_user"@"$hostenv_host" 'mkdir -p /home/'"$hostenv_user"'/code/project'
+                  hostenv_ssh_run mkdir -p "/home/$hostenv_user/code/project"
                 '';
               }}
 
@@ -104,7 +104,8 @@
                 showOutput = true;
                 showError = true;
                 command = ''
-                              ssh -T "$hostenv_user@$hostenv_host" bash -s -- "$currentBranch" "$hostenv_user" <<'REMOTE_SCRIPT'
+                              remote_command="$(hostenv_quote_remote_command bash -s -- "$currentBranch" "$hostenv_user")"
+                              ssh -T "$hostenv_user@$hostenv_host" "$remote_command" <<'REMOTE_SCRIPT'
                               set -euo pipefail
 
                               branch="$1"

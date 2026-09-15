@@ -43,6 +43,35 @@ Client inputs should point at the `.hostenv` flake (e.g. `dir=.hostenv`) so `hos
    - Create `secrets/secrets.yaml` with sops.
    - Create `generated/state.json` (can be `{}` initially).
 
+Project services may request provider-managed secret files by name through
+`environments.<name>.requiredSecretFiles`. Names are restricted to letters,
+numbers, and underscores. The provider resolves each requested name from the
+environment, then the project, then the organisation and writes it to
+`/run/secrets/<environment-user>/<name>` with that environment user as owner
+and group. Projects cannot choose a path, mode, owner, or arbitrary NixOS
+configuration.
+
+For example, Laravel automatically requests `laravel_env`. A provider SOPS file
+can supply it at environment scope:
+
+```yaml
+myproject-main-a1b2c3d:
+  backups_secret: ENC[AES256_GCM,...]
+  backups_env: ENC[AES256_GCM,...]
+  laravel_env: |
+    APP_KEY=base64:replace-with-the-generated-application-key
+    MAIL_USERNAME=optional-external-service-user
+    MAIL_PASSWORD=optional-external-service-password
+```
+
+The same key may instead be placed below `<organisation>_<project>` or
+`<organisation>` to share it with narrower scopes that do not override it. The
+decrypted `laravel_env` value must use the shell/systemd-compatible `KEY=value`
+subset. Hostenv requires the file but intentionally does not inspect it for an
+`APP_KEY` or restrict the environment variable names a trusted provider sets.
+Provider evaluation fails with the three checked SOPS paths when a requested
+key is absent.
+
 2) Generate plan/state (optional if using planSource=eval):
 
 ```
@@ -92,6 +121,7 @@ Outputs:
 Optional per-environment settings:
 
 - `environments.<name>.hostenv.backupsRepoHost`, `backupsEnvFile`, `backupsSecretFile` for restic repo + secrets
+- `environments.<name>.requiredSecretFiles` for validated provider-managed runtime secret names
 - `environments.<name>.virtualHosts.<host>.allowIndexing` to control search engine indexing
 - `environments.<name>.virtualHosts.<host>.security` for CSP and common headers (`csp`, `cspMode`, `cspReportTo`, `reportTo`, `referrerPolicy`, etc.)
 - `hostenv.monitoring.enable` to turn on basic exporters/labels

@@ -2,6 +2,14 @@
 
 let
   drupalRoot = import ./integration/drupal/source.nix { inherit pkgs; };
+  laravelSources = import ./integration/laravel/source.nix { inherit pkgs; };
+  laravelSecretSource = pkgs.runCommand "laravel-secret-source" { } ''
+    mkdir -p "$out/public" "$out/storage" "$out/bootstrap/cache"
+    printf '%s\n' '<?php echo "ok";' > "$out/public/index.php"
+    printf '%s\n' '#!/usr/bin/env php' '<?php' > "$out/artisan"
+    printf '%s\n' 'APP_KEY=hostenv-secret-must-not-enter-project-output' > "$out/.env"
+    printf '%s\n' 'APP_KEY=hostenv-local-secret-must-not-enter-project-output' > "$out/.env.local"
+  '';
 
   drupal6Revision = "7e1e3f37a5d82521f61a4544927bf71142cd4e23";
   drupal6Source = pkgs.fetchFromGitHub {
@@ -42,6 +50,25 @@ let
     })
     ./integration/drupal/hostenv.nix
   ];
+
+  mkLaravelEnvironment = { major, source, dependencyHash, environmentName ? "main", extraModule ? { } }:
+    makeHostenv [
+      ({ ... }: {
+        hostenv = {
+          organisation = "test";
+          project = "laravel${toString major}";
+          root = source;
+          hostenvHostname = "hosting.test";
+        };
+        services.laravel = {
+          codebase.name = "laravel${toString major}";
+          composer.dependencyHash = dependencyHash;
+        };
+      })
+      ./integration/laravel/hostenv.nix
+      extraModule
+    ]
+      environmentName;
 in
 {
   drupalDev = makeHostenv baseModules "dev";
@@ -113,4 +140,72 @@ in
       })
       ./integration/drupal6/hostenv.nix
     ] "main";
+
+  laravel10 = mkLaravelEnvironment {
+    major = 10;
+    source = laravelSources.laravel10;
+    dependencyHash = "sha256-ZlFQXrsLyvUwSOAVJk/lbYNXqEqIJd4BX3nYi6xTj4w=";
+  };
+
+  laravel11 = mkLaravelEnvironment {
+    major = 11;
+    source = laravelSources.laravel11;
+    dependencyHash = "sha256-nShTGWFXHpyioJExTpnS/EhVGMpB5ikaJjvGGl3zFDU=";
+  };
+
+  laravel12 = mkLaravelEnvironment {
+    major = 12;
+    source = laravelSources.laravel12;
+    dependencyHash = "sha256-djftix9X6LjZaAROnZEgwXUxZ9UoszBevDDE6w6noIU=";
+    extraModule = { ... }: {
+      services.laravel = {
+        healthCheckPath = "/up";
+        optimize.enable = true;
+        queue.workers = {
+          priority = {
+            connection = "database";
+            queues = [ "high" "default" ];
+            processes = 2;
+            sleep = 2;
+            timeout = 75;
+            maxLifetime = 1800;
+            tries = 5;
+            stopTimeout = 120;
+          };
+          external = {
+            connection = "sqs";
+            processes = 1;
+          };
+        };
+      };
+    };
+  };
+
+  laravelDev = mkLaravelEnvironment {
+    major = 12;
+    source = laravelSources.laravel12;
+    dependencyHash = "sha256-djftix9X6LjZaAROnZEgwXUxZ9UoszBevDDE6w6noIU=";
+    environmentName = "dev";
+  };
+
+  laravelSecretExclusion = makeHostenv [
+    ({ ... }: {
+      hostenv = {
+        organisation = "test";
+        project = "laravelsecret";
+        root = laravelSecretSource;
+        hostenvHostname = "hosting.test";
+      };
+      services.laravel = {
+        enable = true;
+        composer.enable = false;
+        migrations.enable = false;
+        scheduler.enable = false;
+      };
+      environments.main = {
+        enable = true;
+        type = "production";
+      };
+    })
+  ] "main";
 }

@@ -175,8 +175,10 @@ asserts.assertRun {
     cmp "$TMPDIR/root-bare-help" "$TMPDIR/root-help" || fail "bare hostenv and hostenv --help should show the same native help"
 
     "${cli}/bin/hostenv" ssh --help > "$TMPDIR/ssh-help"
+    "${cli}/bin/hostenv" ssh -h > "$TMPDIR/ssh-short-help"
     assert_contains "$TMPDIR/ssh-help" "Usage: hostenv ssh" "each command should have native help"
     assert_contains "$TMPDIR/ssh-help" "ARGUMENTS..." "pass-through command help should describe its variadic argument"
+    cmp "$TMPDIR/ssh-help" "$TMPDIR/ssh-short-help" || fail "ssh -h and --help should show the same native help"
 
     "${cli}/bin/hostenv" tree --help > "$TMPDIR/tree-help"
     assert_contains "$TMPDIR/tree-help" "leaf" "parent help should list visible nested commands"

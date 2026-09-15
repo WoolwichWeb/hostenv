@@ -115,16 +115,13 @@
 
         phpOptions = lib.mkOption {
           type = lib.types.lines;
-          default = ''
-            upload_max_filesize = ${cfg.maxRequestSize}
-            post_max_size = ${cfg.maxRequestSize}
-          '';
+          default = "";
           example =
             ''
               date.timezone = "CET"
             '';
           description = ''
-            Options appended to the PHP configuration file {file}`php.ini`.
+            Additional options appended to the PHP configuration file {file}`php.ini`.
           '';
         };
 
