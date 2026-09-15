@@ -134,12 +134,10 @@
             List of database names and their initial schemas that should be used to create databases on the first startup
             of MySQL. The schema attribute is optional: If not specified, an empty database is created.
           '';
-          example = lib.literalExpression ''
-            [
-              { name = "foodatabase"; schema = ./foodatabase.sql; }
-              { name = "bardatabase"; }
-            ]
-          '';
+          example = [
+            { name = "foodatabase"; schema = ./foodatabase.sql; }
+            { name = "bardatabase"; }
+          ];
         };
 
         initialScript = lib.mkOption {
@@ -205,22 +203,20 @@
             option is changed. This means that users created and permissions assigned once through this option or
             otherwise have to be removed manually.
           '';
-          example = lib.literalExpression ''
-            [
-              {
-                name = "nextcloud";
-                ensurePermissions = {
-                  "nextcloud.*" = "ALL PRIVILEGES";
-                };
-              }
-              {
-                name = "backup";
-                ensurePermissions = {
-                  "*.*" = "SELECT, LOCK TABLES";
-                };
-              }
-            ]
-          '';
+          example = [
+            {
+              name = "nextcloud";
+              ensurePermissions = {
+                "nextcloud.*" = "ALL PRIVILEGES";
+              };
+            }
+            {
+              name = "backup";
+              ensurePermissions = {
+                "*.*" = "SELECT, LOCK TABLES";
+              };
+            }
+          ];
         };
 
         replication = {
@@ -259,7 +255,7 @@
           masterPort = lib.mkOption {
             type = lib.types.port;
             default = 3306;
-            description = "Port number on which the MySQL master server runs.";
+            description = "Port number on which the MySQL master server is listening.";
           };
         };
 
@@ -349,7 +345,7 @@
             toolBin =
               if cfg.backups.tool == "mariabackup"
               then "${cfg.backups.toolPackage}/bin/mariabackup"
-              else "${cfg.backups.toolPackage}/bin/xtrabackup";
+              else "${pkgs.percona-xtrabackup}/bin/xtrabackup";
 
             # Scripts using this will block until the lock below is released.
             lockSetup = ''
@@ -563,31 +559,13 @@
                       ) | ${cfg.package}/bin/mysql -u ${superUser} -N --socket=${cfg.runtimeDir}/mysql.sock
                     ''}
     
-                  ${lib.optionalString (cfg.replication.role == "slave")
-                    ''
-                      # Set up the replication slave
-    
-                      ( echo "stop slave;"
-                        echo "change master to master_host='${cfg.replication.masterHost}', master_user='${cfg.replication.masterUser}', master_password='${cfg.replication.masterPassword}';"
-                        echo "start slave;"
-                      ) | ${cfg.package}/bin/mysql -u ${superUser} -N --socket=${cfg.runtimeDir}/mysql.sock
-                    ''}
-    
-                  ${lib.optionalString (cfg.initialScript != null)
-                    ''
-                      # Execute initial script
-                      # using toString to avoid copying the file to nix store if given as path instead of string,
-                      # as it might contain credentials
-                      cat ${toString cfg.initialScript} | ${cfg.package}/bin/mysql -u ${superUser} -N --socket=${cfg.runtimeDir}/mysql.sock
-                    ''}
-    
-                  rm ${cfg.dataDir}/mysql_init
+                  touch ${cfg.dataDir}/mysql_init_complete
+                  rm -f ${cfg.dataDir}/mysql_init
               fi
     
-              ${lib.optionalString (cfg.ensureDatabases != []) ''
-                (
-                ${lib.concatMapStrings (database: ''
-                  echo "CREATE DATABASE IF NOT EXISTS \`${database}\`;"
+              ${lib.concatMapStrings (database: ''
+                # Create the database if it doesn't exist
+                ( echo "CREATE DATABASE IF NOT EXISTS \`${database}\`;"
                 '') cfg.ensureDatabases}
                 ) | ${cfg.package}/bin/mysql -N --socket=${cfg.runtimeDir}/mysql.sock
               ''}
@@ -621,7 +599,7 @@
             script = helpers: ''
               echo >&2
               echo "$hostenv_emoji  Running mysql on '$hostenv_env_name'" >&2
-              exec ssh $hostenv_ssh_tty "$hostenv_user"@"$hostenv_host" -- mysql "$@"
+              hostenv_ssh_exec mysql "$@"
             '';
             executable = "mysql";
             description = "Run mysql on the remote hostenv environment.";
@@ -645,8 +623,7 @@
                 fi
                 hostenv_ssh_tty="-T"
                 debug "tty_mode=$tty_mode ssh_flag=$hostenv_ssh_tty stdin_is_tty=$([ -t 0 ] && echo yes || echo no)"
-                # shellcheck disable=SC2086
-                exec ssh $hostenv_ssh_tty "$hostenv_user"@"$hostenv_host" bash -s -- "$@" <<'REMOTE' | gunzip -c
+                hostenv_ssh_run bash -s -- "$@" <<'REMOTE' | gunzip -c
               set -euo pipefail
               exec mysqldump "$@" | gzip -c
               REMOTE
