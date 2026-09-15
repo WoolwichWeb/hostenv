@@ -196,7 +196,7 @@
       ttyModeCandidates = [
         {
           value = "auto";
-          description = "Allocate a TTY when standard input is a terminal";
+          description = "Allocate a TTY when standard input and output are terminals";
           tag = "TTY modes";
         }
         {
@@ -296,7 +296,7 @@
 
           case "$tty_mode" in
             auto|"")
-              if [ -t 0 ]; then hostenv_ssh_tty="-tt"; else hostenv_ssh_tty="-T"; fi
+              if [ -t 0 ] && [ -t 1 ]; then hostenv_ssh_tty="-tt"; else hostenv_ssh_tty="-T"; fi
               ;;
             on)
               hostenv_ssh_tty="-tt"
@@ -308,7 +308,7 @@
               die "invalid --tty-mode value: '$tty_mode' (use: auto|on|off)" 2
               ;;
           esac
-          debug "tty_mode=$tty_mode ssh_flag=$hostenv_ssh_tty stdin_is_tty=$([ -t 0 ] && echo yes || echo no)"
+          debug "tty_mode=$tty_mode ssh_flag=$hostenv_ssh_tty stdin_is_tty=$([ -t 0 ] && echo yes || echo no) stdout_is_tty=$([ -t 1 ] && echo yes || echo no)"
 
           # Create a quiet direnv configuration once, without overwriting user settings.
           hostenv_direnv_config="''${XDG_CONFIG_HOME:-$HOME/.config}/direnv/direnv.toml"

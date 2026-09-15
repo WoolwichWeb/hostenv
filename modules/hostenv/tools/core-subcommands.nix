@@ -32,11 +32,7 @@
 
         app-log = {
           script = helpers: ''
-            hostenv_ssh_exec bash -s -- "$@" <<'REMOTE'
-            set -euo pipefail
-            resize
-            exec journalctl --user -xe "$@"
-            REMOTE
+            hostenv_ssh_exec journalctl --user -xe "$@"
           '';
           description = "View remote application logs.";
           group = "Remote access";
