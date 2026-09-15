@@ -6,6 +6,7 @@
 // (import ./drupal6/tests.nix { inherit pkgs envs; })
 // (import ./laravel/tests.nix { inherit pkgs envs; })
 // { hostenv-cli-list = import ./cli-list.nix { inherit pkgs makeHostenv; }; }
+// { hostenv-cli-legacy-completion = import ./cli-legacy-completion.nix { inherit pkgs makeHostenv; }; }
 // { hostenv-cli-service-wrappers = import ./cli-wrappers.nix { inherit pkgs; env = envs.drupalProduction; }; }
 // { hostenv-cli-project-upload = import ./cli-deploy.nix { inherit pkgs makeHostenv; }; }
 // { hostenv-outputs-eval = import ./hostenv-outputs.nix { inherit pkgs makeHostenv inputs; }; }
@@ -18,4 +19,4 @@
 // { devshells-eval = import ./devshells.nix { inherit pkgs makeHostenv inputs; }; }
 // (import ./socket-contract.nix { inherit pkgs envs; })
 // { hostenv-hostname = import ./hostname.nix { inherit pkgs makeHostenv; }; }
-  // { public-env-json = import ./public-env-json.nix { inherit pkgs makeHostenv; }; }
+// { public-env-json = import ./public-env-json.nix { inherit pkgs makeHostenv; }; }
