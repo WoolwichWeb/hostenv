@@ -1,12 +1,15 @@
-{ pkgs }:
+{ pkgs, documentation }:
 let
   src = ../../modules/services/hostenv-provider-service;
-  servicePkg = pkgs.haskell.lib.dontHaddock (
-    pkgs.haskellPackages.callCabal2nix "hostenv-provider-service" src { }
-  );
+  rawServicePkg = pkgs.haskellPackages.callCabal2nix "hostenv-provider-service" src { };
+  servicePkg =
+    if documentation.haskell.haddock.enable then
+      rawServicePkg
+    else
+      pkgs.haskell.lib.dontHaddock rawServicePkg;
   ghc =
     (pkgs.haskellPackages.ghcWithPackages.override {
-      installDocumentation = false;
+      installDocumentation = documentation.haskell.dependencies.enable;
     })
       (p: [
         p.aeson

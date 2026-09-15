@@ -1,6 +1,6 @@
 { inputs, lib, config, ... }:
 {
-  perSystem = { system, pkgs, ... }:
+  perSystem = { system, pkgs, config, ... }:
     lib.mkIf (!(inputs ? hostenv))
       (
         let
@@ -25,7 +25,10 @@
             environmentName = "main";
           };
 
-          checks = import ../../tests { inherit pkgs envs makeHostenv inputs; };
+          checks = import ../../tests {
+            inherit pkgs envs makeHostenv inputs;
+            documentation = config.documentation;
+          };
 
           packages = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
             drupal6-vm-test = import ../../tests/integration/drupal6/vm-test.nix {
