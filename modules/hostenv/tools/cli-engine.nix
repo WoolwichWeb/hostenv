@@ -131,7 +131,7 @@
           collected
         else
           throw ''
-            hostenv: command paths collide after Pog converts them to Bash functions:
+            hostenv: command paths collide after Pog converts them to Bash function names:
             ${lib.concatMapStringsSep "\n" (
               paths: "  - ${builtins.concatStringsSep " and " (map showPath paths)}"
             ) (builtins.attrValues collisions)}
