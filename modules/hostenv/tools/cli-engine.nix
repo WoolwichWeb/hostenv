@@ -11,12 +11,14 @@
       ...
     }:
     let
-      # Pog builds the command parser, help text, and shell completions. Hostenv's
-      # work below is limited to adding environment context and package wrappers.
+      # Pog owns command parsing, help, completion, and normal command-tree
+      # validation. Hostenv adds environment context, package wrappers, plus
+      # some checks for duplicate commands and flags that Pog's own checks
+      # don't cover just yet.
       pog = pkgs.pog.pog;
       cliProgramName = "hostenv";
       commands = config.hostenv.cli.commands;
-      pogVariableName = builtins.replaceStrings [ "-" ] [ "_" ];
+      pogBashVariableName = builtins.replaceStrings [ "-" ] [ "_" ];
       shellSafeCommandToken = token: builtins.match "[A-Za-z0-9._+-]+" token != null;
 
       defaultEnvironmentDescription =
@@ -49,10 +51,10 @@
         }
       ];
 
-      # Pog receives one root runtime environment, while Hostenv lets each command
-      # declare its own dependencies. This single tree walk gathers those packages
-      # and records commands that also need a standalone executable. It also
-      # rejects command tokens and visible flags that Pog cannot safely render.
+      # Walk hostenv's nested command attribute set to collect each command's
+      # `runtimeInputs` and standalone scripts.
+      # Also checks for command and flag names that would collide or generate
+      # unsafe Bash code in Pog.
       collectCommandMetadata =
         parentPath: inheritedPersistentFlags: commandSet:
         lib.foldlAttrs
@@ -62,8 +64,10 @@
               rawCommandPath = parentPath ++ [ name ];
               unsafeTokens = builtins.filter (token: !shellSafeCommandToken token) ([ name ] ++ command.aliases);
               visibleFlags = inheritedPersistentFlags ++ command.persistentFlags ++ command.flags;
-              flagsByPogVariable = lib.groupBy (flag: pogVariableName flag.name) visibleFlags;
-              flagCollisions = lib.filterAttrs (_: flags: builtins.length flags > 1) flagsByPogVariable;
+              flagsByPogVariable = lib.groupBy (flag: pogBashVariableName flag.name) visibleFlags;
+              flagCollisions = lib.filterAttrs (
+                _: flags: builtins.length (lib.unique (map (flag: flag.name) flags)) > 1
+              ) flagsByPogVariable;
               checkedCommand =
                 if unsafeTokens != [ ] then
                   throw ''
@@ -118,8 +122,8 @@
       commandMetadata =
         let
           collected = collectCommandMetadata [ ] rootPersistentFlags commands;
-          pogFunctionName = path: builtins.concatStringsSep "__" (map pogVariableName path);
-          pathsByPogFunction = lib.groupBy pogFunctionName collected.commandPaths;
+          pogBashFunctionName = path: builtins.concatStringsSep "__" (map pogBashVariableName path);
+          pathsByPogFunction = lib.groupBy pogBashFunctionName collected.commandPaths;
           collisions = lib.filterAttrs (_: paths: builtins.length paths > 1) pathsByPogFunction;
           showPath = path: "`${cliProgramName} ${builtins.concatStringsSep " " path}`";
         in
@@ -212,6 +216,53 @@
       # TTY policy, and defines the banner used by the development shell.
       environmentPreamble =
         helpers: with helpers; ''
+          # OpenSSH joins remote command arguments with spaces before sending
+          # them to the server. Quote every argv element before crossing that
+          # boundary so the remote shell reconstructs the original argv.
+          hostenv_quote_remote_command() {
+            local remote_command="" separator="" quoted arg
+            for arg in "$@"; do
+              # Single-quote the complete argument. Embedded single quotes are
+              # escaped by closing and reopening the single-quoted word.
+              quoted="''${arg//\'/\'\\\'\'}"
+              remote_command+="$separator'$quoted'"
+              separator=" "
+            done
+            printf '%s' "$remote_command"
+          }
+          hostenv_ssh_run() {
+            if [ "$#" -eq 0 ]; then
+              case "$hostenv_ssh_tty" in
+                -tt) ssh -tt "$hostenv_user@$hostenv_host" ;;
+                -T) ssh -T "$hostenv_user@$hostenv_host" ;;
+                *) die "unexpected SSH TTY flag: '$hostenv_ssh_tty'" 2 ;;
+              esac
+              return
+            fi
+            local remote_command
+            remote_command="$(hostenv_quote_remote_command "$@")"
+            case "$hostenv_ssh_tty" in
+              -tt) ssh -tt "$hostenv_user@$hostenv_host" "$remote_command" ;;
+              -T) ssh -T "$hostenv_user@$hostenv_host" "$remote_command" ;;
+              *) die "unexpected SSH TTY flag: '$hostenv_ssh_tty'" 2 ;;
+            esac
+          }
+          hostenv_ssh_exec() {
+            if [ "$#" -eq 0 ]; then
+              case "$hostenv_ssh_tty" in
+                -tt) exec ssh -tt "$hostenv_user@$hostenv_host" ;;
+                -T) exec ssh -T "$hostenv_user@$hostenv_host" ;;
+                *) die "unexpected SSH TTY flag: '$hostenv_ssh_tty'" 2 ;;
+              esac
+            fi
+            local remote_command
+            remote_command="$(hostenv_quote_remote_command "$@")"
+            case "$hostenv_ssh_tty" in
+              -tt) exec ssh -tt "$hostenv_user@$hostenv_host" "$remote_command" ;;
+              -T) exec ssh -T "$hostenv_user@$hostenv_host" "$remote_command" ;;
+              *) die "unexpected SSH TTY flag: '$hostenv_ssh_tty'" 2 ;;
+            esac
+          }
           set -o pipefail
 
           # Select the environment from --env, the current branch, or the project default.
