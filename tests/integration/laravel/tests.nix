@@ -123,9 +123,21 @@ let
             grep -Fq 'EnvironmentFile=/run/secrets/${user}/laravel_env' "$queue_unit" \
               || fail "queue worker does not load laravel_env"
           ''}
+          php="$profile/bin/php@${serviceName}"
           for extension in bcmath curl fileinfo mbstring openssl pdo_mysql redis tokenizer xml; do
-            "$profile/bin/php@${serviceName}" -m | grep -i -x -q "$extension" \
-              || fail "PHP extension $extension is missing"
+            if ! "$php" -m | grep -i -x -q "$extension"; then
+              printf '\nPHP diagnostics:\n' >&2
+              printf '%s\n' '----------------' >&2
+              printf 'System: %s\n' ${lib.escapeShellArg pkgs.stdenv.hostPlatform.system} >&2
+              printf 'PHP executable: %s\n\n' "$php" >&2
+              "$php" -v >&2 || true
+              printf '\nPHP configuration:\n' >&2
+              "$php" --ini >&2 || true
+              printf '\nLoaded modules:\n' >&2
+              "$php" -m >&2 || true
+              printf '\n' >&2
+              fail "PHP extension $extension is missing"
+            fi
           done
 
           grep -R -Fq 'EnvironmentFile=/run/secrets/${user}/laravel_env' "$units" \

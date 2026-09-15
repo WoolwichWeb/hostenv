@@ -20,10 +20,16 @@
       mkPackageWithConfig = package: cfg_: package.buildEnv {
         extensions = { all, enabled }:
           let
-            selected = lib.attrValues (lib.getAttrs cfg_.extensions all);
+            missing = builtins.filter (name: !(builtins.hasAttr name all)) cfg_.extensions;
+            selected = map (name: all.${name}) cfg_.extensions;
             isWanted = drv: !lib.elem drv.extensionName cfg_.disableExtensions;
           in
-          lib.unique (builtins.filter isWanted (enabled ++ selected));
+          if missing != [ ] then
+            throw ''
+              PHP ${package.version or "unknown"} on ${pkgs.stdenv.hostPlatform.system} does not provide requested extensions: ${lib.concatStringsSep ", " missing}
+            ''
+          else
+            lib.unique (builtins.filter isWanted (enabled ++ selected));
         extraConfig = cfg_.phpOptions;
       };
     
