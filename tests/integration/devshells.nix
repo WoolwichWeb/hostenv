@@ -15,6 +15,8 @@ let
     project.enable = true;
 
     perSystem = { ... }: {
+      documentation.enable = false;
+
       # This check verifies the generated devshell wrappers, not the Hostenv
       # repository's development toolchain.
       devshells.default.devshell.packages = lib.mkForce [ ];

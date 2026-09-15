@@ -3,7 +3,7 @@ let
   providerEnabled = config.provider.enable or false;
 in
 {
-  perSystem = { pkgs, self', config, ... }:
+  perSystem = { pkgs, config, ... }:
     lib.mkIf (!(inputs ? hostenv))
       (let
         docSearch = pkgs.writeTextDir "index.html" "<html><body>docs disabled</body></html>";
@@ -17,14 +17,22 @@ in
         };
       in
       {
-        apps.default = {
-          type = "app";
-          program = "${serveDocs}/bin/serve-docs";
-          meta.description = "Serve hostenv documentation site";
+        apps = lib.optionalAttrs config.documentation.nix.enable {
+          default = {
+            type = "app";
+            program = "${serveDocs}/bin/serve-docs";
+            meta.description = "Serve hostenv documentation site";
+          };
         };
-        packages = {
-          inherit docSearch;
-          default = if providerEnabled then config.packages.hostenv-provider else docSearch;
-        };
+        packages =
+          (lib.optionalAttrs config.documentation.nix.enable {
+            inherit docSearch;
+          })
+          // (lib.optionalAttrs providerEnabled {
+            default = config.packages.hostenv-provider;
+          })
+          // (lib.optionalAttrs (!providerEnabled && config.documentation.nix.enable) {
+            default = docSearch;
+          });
       });
 }
