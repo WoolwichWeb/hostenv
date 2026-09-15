@@ -124,8 +124,9 @@ let
               || fail "queue worker does not load laravel_env"
           ''}
           php="$profile/bin/php@${serviceName}"
+          php_modules=$("$php" -m)
           for extension in bcmath curl fileinfo mbstring openssl pdo_mysql redis tokenizer xml; do
-            if ! "$php" -m | grep -i -x -q "$extension"; then
+            if ! grep -Fxiq -- "$extension" <<<"$php_modules"; then
               printf '\nPHP diagnostics:\n' >&2
               printf '%s\n' '----------------' >&2
               printf 'System: %s\n' ${lib.escapeShellArg pkgs.stdenv.hostPlatform.system} >&2
@@ -133,8 +134,7 @@ let
               "$php" -v >&2 || true
               printf '\nPHP configuration:\n' >&2
               "$php" --ini >&2 || true
-              printf '\nLoaded modules:\n' >&2
-              "$php" -m >&2 || true
+              printf '\nLoaded modules:\n%s\n' "$php_modules" >&2
               printf '\n' >&2
               fail "PHP extension $extension is missing"
             fi
