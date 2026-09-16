@@ -8,6 +8,8 @@
     nixpkgs.follows = "hostenv/nixpkgs";
     flake-parts.follows = "hostenv/flake-parts";
     phps.follows = "hostenv/phps";
+    deploy-rs.follows = "hostenv/deploy-rs";
+    sops-nix.follows = "hostenv/sops-nix";
 
     # Hostenv provider service injects client project inputs here.
     {{HOSTENV_PROJECT_INPUTS}}
@@ -24,8 +26,8 @@
       provider = {
         hostenvHostname = "hosting.example.com";
         deployPublicKeys = [ "ssh-ed25519 AAAA..." ]; # replace me
-        nodeSystems = { default = "x86_64-linux"; };
-        nodeFor = { default = "node-a"; production = "node-a"; testing = "node-a"; development = "node-a"; };
+        nodeSystems.node-a = "x86_64-linux";
+        nodeFor.default = "node-a";
       };
     };
 }

@@ -50,8 +50,11 @@
       provider = {
         hostenvHostname = "hosting.example.com";
         deployPublicKeys = [ "ssh-ed25519 AAAA..." ];
-        nodeSystems = { default = "x86_64-linux"; };
-        nodeFor = { production = "node-a"; testing = "node-a"; development = "node-a"; };
+        nodeSystems.node-a = "x86_64-linux";
+        nodeFor.default = "node-a";
+        # Override by environment type when using more than one node:
+        # nodeFor.production = "node-b";
+        # nodeSystems.node-b = "aarch64-linux";
 
         # Add NixOS system-level configuration that's common to all servers here:
         # nodeModules = [ "nodes/common.nix" ];
@@ -64,7 +67,6 @@
         #     # extraInput = { url = "github:example/extra"; };
         #     # disko = {
         #     #   url = "github:nix-community/disko";
-        #     #   inputs.nixpkgs.follows = "nixpkgs";
         #     # };
         #   };
         #   envInputs = {
