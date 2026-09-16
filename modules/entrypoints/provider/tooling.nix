@@ -113,12 +113,9 @@ in
           nodeMagicRollback = cfg.nodeMagicRollback;
           nodeAutoRollback = cfg.nodeAutoRollback;
           nodeModules = cfg.nodeModules;
-          statePath = cfg.statePath;
-          planPath = cfg.planPath;
           secretsFile = cfg.secretsFile;
           inherit sopsSecretKeys;
           cloudflare = cfg.cloudflare;
-          planSource = cfg.planSource;
           generatedFlake = cfg.generatedFlake;
           deploy = cfg.deploy;
           serviceResolution = cfg.serviceResolution;
