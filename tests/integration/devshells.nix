@@ -8,6 +8,11 @@ let
   system = pkgs.stdenv.hostPlatform.system;
   modules = inputs.import-tree ../../modules;
   moduleList = if builtins.isList modules then modules else [ modules ];
+  devshellFixturePackage = pkgs.writeTextFile {
+    name = "devshell-fixture-package";
+    destination = "/bin/.devshell-fixture";
+    text = "";
+  };
   flake = inputs.flake-parts.lib.mkFlake { inherit inputs; } {
     systems = [ system ];
     imports = [ inputs.devshell.flakeModule ] ++ moduleList;
@@ -15,6 +20,13 @@ let
     project.enable = true;
 
     perSystem = { ... }: {
+      documentation.enable = false;
+
+      # This check verifies the generated devshell wrappers, not the Hostenv
+      # repository's development toolchain. Keep one tiny package so
+      # numtide/devshell has a bin directory in which to install its wrapper.
+      devshells.default.devshell.packages = lib.mkForce [ devshellFixturePackage ];
+
       hostenvProject = {
         makeHostenv = makeHostenv;
         modules = [
