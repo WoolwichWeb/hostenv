@@ -1,7 +1,4 @@
-{ inputs, lib, config, ... }:
-let
-  providerEnabled = config.provider.enable or false;
-in
+{ inputs, lib, ... }:
 {
   perSystem = { pkgs, config, ... }:
     lib.mkIf (!(inputs ? hostenv))
@@ -18,21 +15,14 @@ in
       in
       {
         apps = lib.optionalAttrs config.documentation.nix.enable {
-          default = {
+          serve-docs = {
             type = "app";
             program = "${serveDocs}/bin/serve-docs";
             meta.description = "Serve hostenv documentation site";
           };
         };
-        packages =
-          (lib.optionalAttrs config.documentation.nix.enable {
-            inherit docSearch;
-          })
-          // (lib.optionalAttrs providerEnabled {
-            default = config.packages.hostenv-provider;
-          })
-          // (lib.optionalAttrs (!providerEnabled && config.documentation.nix.enable) {
-            default = docSearch;
-          });
+        packages = lib.optionalAttrs config.documentation.nix.enable {
+          inherit docSearch;
+        };
       });
 }

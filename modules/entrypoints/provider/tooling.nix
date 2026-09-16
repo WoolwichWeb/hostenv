@@ -75,6 +75,11 @@ in
             exec ${cliPkg}/bin/hostenv-provider "$@"
           '';
         };
+        hostenvProviderApp = {
+          type = "app";
+          program = "${hostenvProviderCLI}/bin/hostenv-provider";
+          meta.description = "Hostenv provider CLI";
+        };
 
         # Extract secret names while generating the plan so node configuration
         # can resolve per-secret scope fallbacks without parsing YAML itself.
@@ -121,9 +126,11 @@ in
         };
       in
       {
-        packages = {
-          hostenv-provider = hostenvProviderCLI;
-        };
+        packages.hostenv-provider = hostenvProviderCLI;
+        packages.default = lib.mkDefault hostenvProviderCLI;
+        apps.hostenv-provider = hostenvProviderApp;
+        apps.default = lib.mkDefault hostenvProviderApp;
+
         provider.planPaths = {
           plan = providerGenerator.plan;
           state = providerGenerator.state;

@@ -52,9 +52,15 @@ let
   environmentShell = flake.devShells.${system}.main;
   defaultProfile = defaultShell.config.devshell.package;
   environmentProfile = environmentShell.config.devshell.package;
+  defaultApp = flake.apps.${system}.default;
+  hostenvApp = flake.apps.${system}.hostenv;
+  defaultPackage = flake.packages.${system}.default;
+  environmentPackage = flake.packages.${system}.main;
 in
 assert lib.isDerivation defaultShell;
 assert lib.isDerivation environmentShell;
+assert defaultApp.program == hostenvApp.program;
+assert defaultPackage.outPath == environmentPackage.outPath;
 pkgs.runCommand "devshells-eval" { } ''
   test -x ${defaultProfile}/bin/devshell
   test ! -e ${defaultProfile}/bin/hostenv

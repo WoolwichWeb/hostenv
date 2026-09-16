@@ -109,6 +109,8 @@ in
           else
             makeHostenv baseModules selectedEnvironmentName;
 
+        projectApps = if selectedEval == null then { } else selectedEval.config.hostenv.apps;
+
         outputs = {
           environments = envs;
           inherit (project) defaultEnvironment;
@@ -121,9 +123,15 @@ in
         packages =
           envPackages
           // lib.optionalAttrs (selectedEval != null) {
+            # Keep `nix build` selecting the environment activation package.
             default = selectedEval.config.activatePackage;
           };
-        apps = if selectedEval == null then { } else selectedEval.config.hostenv.apps;
+        apps =
+          projectApps
+          // lib.optionalAttrs (projectApps ? hostenv && !(projectApps ? default)) {
+            # Downstreams can still provide their own stronger apps.default.
+            default = lib.mkDefault projectApps.hostenv;
+          };
         devshells = if selectedEval == null then { } else selectedEval.config.hostenv.devShells;
       }
     );
