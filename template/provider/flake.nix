@@ -55,7 +55,6 @@
 
         # Add NixOS system-level configuration that's common to all servers here:
         # nodeModules = [ "nodes/common.nix" ];
-        planSource = "eval";
 
         # Hostenv generates a new flake in `generated/flake.nix`, which
         # includes each project environment as a separate Flake input. These
