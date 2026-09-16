@@ -21,7 +21,6 @@
       provider = {
         hostenvHostname = "hostenv.sh";
         nodeSystems = { backend01 = "aarch64-linux"; backend02 = "aarch64-linux"; backend03 = "x86_64-linux"; backend04 = "aarch64-linux"; };
-        planSource = "eval"; # or "disk"
       };
     };
 }
@@ -72,7 +71,7 @@ subset. Hostenv requires the file but intentionally does not inspect it for an
 Provider evaluation fails with the three checked SOPS paths when a requested
 key is absent.
 
-2) Generate plan/state (optional if using planSource=eval):
+2) Generate plan/state:
 
 ```
 nix run .#hostenv-provider -- plan
@@ -115,7 +114,7 @@ Outputs:
 
 - `packages.deploy-nodes` / `packages.deploy-envs` per system when a plan exists.
 - Deploy specs live at `lib.hostenv.deploySpec` (per flake output). Example:
-  `nix eval .#lib.hostenv.deploySpec --json | jq` (planSource=eval recommended).
+  `nix eval .#lib.hostenv.deploySpec --json | jq`.
 - Add Haskell dev shell deps via `provider.haskellDevPackages` (appended to `hostenv.haskell.devPackages`).
 
 Optional per-environment settings:
