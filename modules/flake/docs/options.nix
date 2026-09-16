@@ -11,12 +11,6 @@ in
         description = "Whether documentation is enabled by default for Hostenv flake outputs and development tooling.";
       };
 
-      checks.enable = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = "Whether flake checks include documentation outputs. Disabled by default to keep CI closures small.";
-      };
-
       nix.enable = lib.mkOption {
         type = lib.types.bool;
         default = config.documentation.enable;

@@ -3,7 +3,7 @@ let
   cfgTop = config;
 in
 {
-  perSystem = { system, pkgs, config, ... }:
+  perSystem = { system, pkgs, ... }:
     lib.mkIf (!(inputs ? hostenv))
       (
         let
@@ -30,7 +30,7 @@ in
 
           checks = import ../../tests {
             inherit pkgs envs makeHostenv inputs;
-            documentationEnabled = config.documentation.checks.enable;
+            documentationEnabled = false;
           };
 
           packages = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
