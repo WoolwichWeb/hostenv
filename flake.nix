@@ -49,8 +49,8 @@
   #
   # devShells → modules/flake/devshells.nix
   # packages → there's no single file for packages, but an example is
-  #            modules/flake/docs.nix
+  #            modules/flake/docs/serve-docs.nix
   # apps → there's no single file for apps, but an example is
-  #        modules/flake/docs.nix
+  #        modules/flake/docs/serve-docs.nix
   #
 }

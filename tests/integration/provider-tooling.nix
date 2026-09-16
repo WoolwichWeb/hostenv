@@ -41,9 +41,28 @@ let
   perSystem = toolingModule.config.content.perSystem {
     system = pkgs.stdenv.hostPlatform.system;
     inherit pkgs;
-    config.provider.haskellDevPackages = [ ];
+    config = {
+      provider.haskellDevPackages = [ ];
+      documentation.haskell = {
+        dependencies.enable = false;
+        haddock.enable = false;
+      };
+    };
   };
+
+  unwrapDefault = value:
+    if builtins.isAttrs value && value ? _type && value._type == "override" then
+      value.content
+    else
+      value;
+
+  providerPackage = perSystem.packages.hostenv-provider;
+  defaultPackage = unwrapDefault perSystem.packages.default;
+  providerApp = perSystem.apps.hostenv-provider;
+  defaultApp = unwrapDefault perSystem.apps.default;
 in
 asserts.assertTrue "provider-tooling-plan-paths-eval" (
   perSystem.provider.planPaths.plan == expectedPlan
-) "provider tooling should build plan paths using the outer flake config"
+  && defaultPackage.outPath == providerPackage.outPath
+  && defaultApp.program == providerApp.program
+) "provider tooling should build plan paths and default to the provider CLI"

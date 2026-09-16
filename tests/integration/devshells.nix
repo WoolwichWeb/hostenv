@@ -28,8 +28,8 @@ let
       devshells.default.devshell.packages = lib.mkForce [ devshellFixturePackage ];
 
       hostenvProject = {
-        makeHostenv = makeHostenv;
-        modules = [
+        makeHostenv = lib.mkForce makeHostenv;
+        modules = lib.mkForce [
           ({ ... }: {
             hostenv = {
               organisation = lib.mkForce "acme";
@@ -43,7 +43,7 @@ let
             };
           })
         ];
-        environmentName = "main";
+        environmentName = lib.mkForce "main";
       };
     };
   };
@@ -52,9 +52,15 @@ let
   environmentShell = flake.devShells.${system}.main;
   defaultProfile = defaultShell.config.devshell.package;
   environmentProfile = environmentShell.config.devshell.package;
+  defaultApp = flake.apps.${system}.default;
+  hostenvApp = flake.apps.${system}.hostenv;
+  defaultPackage = flake.packages.${system}.default;
+  environmentPackage = flake.packages.${system}.main;
 in
 assert lib.isDerivation defaultShell;
 assert lib.isDerivation environmentShell;
+assert defaultApp.program == hostenvApp.program;
+assert defaultPackage.outPath == environmentPackage.outPath;
 pkgs.runCommand "devshells-eval" { } ''
   test -x ${defaultProfile}/bin/devshell
   test ! -e ${defaultProfile}/bin/hostenv
