@@ -15,7 +15,6 @@ let
     , nodeFor ? { default = null; }
     , nodeModules ? [ ]
     , statePath ? (if inputs ? self then inputs.self + /generated/state.json else null)
-    , planPath ? (if inputs ? self then inputs.self + /generated/plan.json else null)
     , nodeSystems ? { }
       # Server address overrides, particularly for SSH bastions, private IPs, or management hosts.
     , nodeAddresses ? { }
@@ -25,7 +24,6 @@ let
     , nodeMagicRollback ? { }
     , nodeAutoRollback ? { }
     , cloudflare ? { enable = false; zoneId = null; apiTokenFile = null; }
-    , planSource ? "eval"
     , generatedFlake ? { }
     , secretsFile
     , sopsSecretKeys ? { }
@@ -40,7 +38,6 @@ let
     }:
 
     let
-      useEval = planSource == "eval";
       cfgHostenvHostname = hostenvHostname;
       hostenvInput =
         hostenvInputs.requireInput {
@@ -52,46 +49,6 @@ let
         if hostenvInput ? makeHostenv
         then hostenvInput.makeHostenv.${system}
         else builtins.throw "provider plan: hostenv input missing makeHostenv output.";
-
-      requirePath = { name, path, hint ? "" }:
-        if path == null then
-          builtins.throw ''
-            provider plan: ${name} is required.
-            ${hint}
-          ''
-        else if builtins.pathExists path then
-          path
-        else
-          builtins.throw ''
-            provider plan: ${name} not found at ${builtins.toString path}.
-            ${hint}
-          '';
-
-      statePathChecked =
-        if planSource == "disk" then
-          requirePath
-            {
-              name = "statePath";
-              path = statePath;
-              hint = "Set provider.statePath (or pass statePath explicitly) and ensure the file exists (it can be an empty JSON object).";
-            }
-        else if statePath == null then
-          null
-        else if builtins.pathExists statePath then
-          statePath
-        else
-          null;
-
-      planPathChecked =
-        if planSource == "disk" then
-          requirePath
-            {
-              name = "planPath";
-              path = planPath;
-              hint = "Set provider.planPath (or pass planPath explicitly) and ensure the file exists when planSource=\"disk\".";
-            }
-        else
-          planPath;
 
       defaultEnvInputFollows = {
         hostenv = "hostenv";
@@ -131,7 +88,6 @@ let
         map normalize nodeModules;
       # Detect hostenv project inputs by checking for the presence of evaluated environments.
       projectInputs =
-        if (!useEval) then [ ] else
         builtins.filter
           (name:
             let
@@ -148,7 +104,7 @@ let
           (builtins.attrNames inputs);
 
       assertProjectInputs =
-        if useEval && projectInputs == [ ] then
+        if projectInputs == [ ] then
           builtins.throw ''
             provider plan: no client projects found.
 
@@ -162,10 +118,10 @@ let
       state =
         let
           rawValues =
-            if statePathChecked == null then
+            if statePath == null || !(builtins.pathExists statePath) then
               { }
             else
-              lib.importJSON statePathChecked;
+              lib.importJSON statePath;
         in
         lib.filterAttrs (name: _: name != "_description") rawValues;
 
@@ -177,34 +133,6 @@ let
             flake.lock is missing at ${builtins.toString lockPath}.
             Please run: nix flake lock (or nix flake update) at repo root
           '';
-
-      planFromDisk =
-        if useEval then null
-        else lib.importJSON planPathChecked;
-
-      assertDiskUids =
-        if useEval then
-          true
-        else
-          let
-            envs = planFromDisk.environments or { };
-            missing = lib.filterAttrs
-              (_: env:
-                !(env ? uid) || env.uid == null || builtins.typeOf env.uid != "int"
-              )
-              envs;
-            missingNames = builtins.attrNames missing;
-          in
-          if missingNames == [ ] then
-            true
-          else
-            builtins.throw ''
-              provider plan: plan.json is missing integer uid values for: ${lib.concatStringsSep ", " missingNames}
-
-              Each environment in plan.json must include a numeric "uid" to avoid
-              implicit UID assignment by NixOS. Regenerate with planSource="eval"
-              or add uid values to the existing plan file.
-            '';
 
       deployHasSettings =
         (deploy.enable or false)
@@ -285,144 +213,139 @@ let
       # values from provider inputs. For example: see `inputNameToProject` and
       # how it is used in this function.
       realEnvs =
-        if useEval then
-          builtins.concatLists
-            (map
-              (name:
-                let
-                  repo = lockData.nodes.${name}.original or (builtins.throw ''
-                    Could not find ${name} in Flake inputs, do you need to run 'nix flake update ${name}'?
-                  '');
+        builtins.concatLists
+          (map
+            (name:
+              let
+                repo = lockData.nodes.${name}.original or (builtins.throw ''
+                  Could not find ${name} in Flake inputs, do you need to run 'nix flake update ${name}'?
+                '');
 
-                  orgAndProject = inputNameToProject name;
+                orgAndProject = inputNameToProject name;
 
-                  projectLib =
-                    if builtins.hasAttr "lib" inputs.${name} then inputs.${name}.lib
-                    else builtins.throw "provider plan: input '${name}' missing lib output.";
+                projectLib =
+                  if builtins.hasAttr "lib" inputs.${name} then inputs.${name}.lib
+                  else builtins.throw "provider plan: input '${name}' missing lib output.";
 
-                  projectHostenv =
-                    if builtins.hasAttr "hostenv" projectLib then projectLib.hostenv
-                    else builtins.throw "provider plan: input '${name}' missing lib.hostenv output.";
+                projectHostenv =
+                  if builtins.hasAttr "hostenv" projectLib then projectLib.hostenv
+                  else builtins.throw "provider plan: input '${name}' missing lib.hostenv output.";
 
-                  projectHostenvSystem =
-                    if builtins.hasAttr system projectHostenv then projectHostenv.${system}
-                    else builtins.throw "provider plan: input '${name}' missing lib.hostenv.${system} output.";
+                projectHostenvSystem =
+                  if builtins.hasAttr system projectHostenv then projectHostenv.${system}
+                  else builtins.throw "provider plan: input '${name}' missing lib.hostenv.${system} output.";
 
-                  projectEnvironments =
-                    if builtins.hasAttr "environments" projectHostenvSystem then projectHostenvSystem.environments
-                    else builtins.throw "provider plan: input '${name}' is missing lib.hostenv.${system}.environments (export outputs.lib.hostenv.<system>.environments from the project flake).";
+                projectEnvironments =
+                  if builtins.hasAttr "environments" projectHostenvSystem then projectHostenvSystem.environments
+                  else builtins.throw "provider plan: input '${name}' is missing lib.hostenv.${system}.environments (export outputs.lib.hostenv.<system>.environments from the project flake).";
 
-                  # The project output is authoritative for which environments
-                  # exist. Disabled environments are retained in project metadata
-                  # but are not deployment targets.
-                  enabledProjectEnvironments =
-                    lib.filterAttrs (_: env: env.enable) projectEnvironments;
+                # The project output is authoritative for which environments
+                # exist. Disabled environments are retained in project metadata
+                # but are not deployment targets.
+                enabledProjectEnvironments =
+                  lib.filterAttrs (_: env: env.enable) projectEnvironments;
 
-                in
-                lib.attrsets.mapAttrsToList
-                  (
-                    envName: envCfg:
+              in
+              lib.attrsets.mapAttrsToList
+                (
+                  envName: envCfg:
+                    let
+                      envRoot =
+                        if envCfg ? hostenv && envCfg.hostenv ? root then envCfg.hostenv.root
+                        else builtins.throw "provider plan: environment '${envName}' in ${name} is missing hostenv.root";
+
+                      evaluatedHostenv =
+                        hostenvMakeHostenv [
+                          (inputs.${name} + /hostenv.nix)
+                          ({ ... }: {
+                            hostenv.organisation = lib.mkForce orgAndProject.organisation;
+                            hostenv.project = lib.mkForce orgAndProject.project;
+                            hostenv.root = lib.mkForce envRoot;
+                            hostenv.hostenvHostname = lib.mkForce cfgHostenvHostname;
+                          })
+                        ]
+                          envName;
+
+                      migrateEnvExtras =
+                        let
+                          resticBackups = evaluatedHostenv.config.services.restic.backups or { };
+                          migrateBackupKeys = builtins.filter (n: lib.hasSuffix "-migrate" n) (builtins.attrNames resticBackups);
+                        in
+                        { migrations = migrateBackupKeys; };
+
+                      effectiveEnvCfg =
+                        if builtins.hasAttr envName evaluatedHostenv.config.environments
+                        then evaluatedHostenv.config.environments.${envName}
+                        else envCfg;
+                      hostenv = effectiveEnvCfg.hostenv;
+
+                      node = nodeFor.${effectiveEnvCfg.type} or nodeFor.default;
+
+                      authorizedKeys =
+                        let
+                          allUsers = builtins.attrValues effectiveEnvCfg.users;
+                        in
+                        builtins.concatLists (map (u: u.publicKeys or [ ]) allUsers);
+
+                      # Hostname reservation logic.
+                      # Remove current env by username (state keyed by hostenv.userName), not envName.
+                      stateVHosts =
+                        builtins.concatLists (
+                          map (v: v.virtualHosts or [ ])
+                            (builtins.attrValues (builtins.removeAttrs state [ hostenv.userName ]))
+                        );
+                      # All virtualHosts already reserved by other environments.
+                      unreservableVHosts = stateVHosts;
+                      conflictsWithState = lib.intersectLists (builtins.attrNames effectiveEnvCfg.virtualHosts) unreservableVHosts;
+                    in
+                    if conflictsWithState != [ ] then
+                      builtins.throw ''
+                        provider plan: environment '${envName}' declares virtualHosts that are already reserved in state: ${lib.concatStringsSep ", " conflictsWithState}
+                      ''
+                    else
                       let
-                        envRoot =
-                          if envCfg ? hostenv && envCfg.hostenv ? root then envCfg.hostenv.root
-                          else builtins.throw "provider plan: environment '${envName}' in ${name} is missing hostenv.root";
+                        filteredEnvVHosts = lib.filterAttrs
+                          (
+                            vhostName: vhost: ! builtins.any
+                              (reservedName: vhostName == reservedName)
+                              unreservableVHosts
+                          )
+                          effectiveEnvCfg.virtualHosts;
+                        conflicts = lib.subtractLists
+                          (builtins.attrNames effectiveEnvCfg.virtualHosts)
+                          (builtins.attrNames filteredEnvVHosts);
 
-                        evaluatedHostenv =
-                          hostenvMakeHostenv [
-                            (inputs.${name} + /hostenv.nix)
-                            ({ ... }: {
-                              hostenv.organisation = lib.mkForce orgAndProject.organisation;
-                              hostenv.project = lib.mkForce orgAndProject.project;
-                              hostenv.root = lib.mkForce envRoot;
-                              hostenv.hostenvHostname = lib.mkForce cfgHostenvHostname;
-                            })
-                          ]
-                            envName;
-
-                        migrateEnvExtras =
-                          let
-                            resticBackups = evaluatedHostenv.config.services.restic.backups or { };
-                            migrateBackupKeys = builtins.filter (n: lib.hasSuffix "-migrate" n) (builtins.attrNames resticBackups);
-                          in
-                          { migrations = migrateBackupKeys; };
-
-                        effectiveEnvCfg =
-                          if builtins.hasAttr envName evaluatedHostenv.config.environments
-                          then evaluatedHostenv.config.environments.${envName}
-                          else envCfg;
-                        hostenv = effectiveEnvCfg.hostenv;
-
-                        node = nodeFor.${effectiveEnvCfg.type} or nodeFor.default;
-
-                        authorizedKeys =
-                          let
-                            allUsers = builtins.attrValues effectiveEnvCfg.users;
-                          in
-                          builtins.concatLists (map (u: u.publicKeys or [ ]) allUsers);
-
-                        # Hostname reservation logic.
-                        # Remove current env by username (state keyed by hostenv.userName), not envName.
-                        stateVHosts =
-                          builtins.concatLists (
-                            map (v: v.virtualHosts or [ ])
-                              (builtins.attrValues (builtins.removeAttrs state [ hostenv.userName ]))
-                          );
-                        # All virtualHosts already reserved by other environments.
-                        unreservableVHosts = stateVHosts;
-                        conflictsWithState = lib.intersectLists (builtins.attrNames effectiveEnvCfg.virtualHosts) unreservableVHosts;
+                        environmentVirtualHosts =
+                          if conflicts != [ ] then
+                            builtins.throw ''
+                              provider plan: environment '${envName}' declares virtualHosts that are already reserved in state: ${lib.concatStringsSep ", " conflicts}
+                            ''
+                          else
+                            filteredEnvVHosts;
                       in
-                      if conflictsWithState != [ ] then
-                        builtins.throw ''
-                          provider plan: environment '${envName}' declares virtualHosts that are already reserved in state: ${lib.concatStringsSep ", " conflictsWithState}
-                        ''
-                      else
-                        let
-                          filteredEnvVHosts = lib.filterAttrs
-                            (
-                              vhostName: vhost: ! builtins.any
-                                (reservedName: vhostName == reservedName)
-                                unreservableVHosts
-                            )
-                            effectiveEnvCfg.virtualHosts;
-                          conflicts = lib.subtractLists
-                            (builtins.attrNames effectiveEnvCfg.virtualHosts)
-                            (builtins.attrNames filteredEnvVHosts);
+                      let
+                        envWithMigrations = lib.recursiveUpdate effectiveEnvCfg migrateEnvExtras;
+                        projectEnvCfg = envCfg;
+                        hostenv' = hostenv // {
+                          hostenvHostname = cfgHostenvHostname;
+                          backupsRepoHost =
+                            if projectEnvCfg ? hostenv && projectEnvCfg.hostenv ? backupsRepoHost
+                            then projectEnvCfg.hostenv.backupsRepoHost
+                            else hostenv.backupsRepoHost or null;
+                        };
+                      in
+                      envWithMigrations // {
+                        inherit node authorizedKeys;
+                        virtualHosts = environmentVirtualHosts;
+                        hostenv = hostenv';
+                        repo = repo // { ref = hostenv'.gitRef; };
+                      }
+                )
+                enabledProjectEnvironments
+            )
+            projectInputs);
 
-                          environmentVirtualHosts =
-                            if conflicts != [ ] then
-                              builtins.throw ''
-                                provider plan: environment '${envName}' declares virtualHosts that are already reserved in state: ${lib.concatStringsSep ", " conflicts}
-                              ''
-                            else
-                              filteredEnvVHosts;
-                        in
-                        let
-                          envWithMigrations = lib.recursiveUpdate effectiveEnvCfg migrateEnvExtras;
-                          projectEnvCfg = envCfg;
-                          hostenv' = hostenv // {
-                            hostenvHostname = cfgHostenvHostname;
-                            backupsRepoHost =
-                              if projectEnvCfg ? hostenv && projectEnvCfg.hostenv ? backupsRepoHost
-                              then projectEnvCfg.hostenv.backupsRepoHost
-                              else hostenv.backupsRepoHost or null;
-                          };
-                        in
-                        envWithMigrations // {
-                          inherit node authorizedKeys;
-                          virtualHosts = environmentVirtualHosts;
-                          hostenv = hostenv';
-                          repo = repo // { ref = hostenv'.gitRef; };
-                        }
-                  )
-                  enabledProjectEnvironments
-              )
-              projectInputs) else [ ];
-
-      allEnvsUnvalidated =
-        if useEval then realEnvs
-        else
-          builtins.attrValues
-            (planFromDisk.environments or { });
+      allEnvsUnvalidated = realEnvs;
 
       # Fail fast on any virtualHost collisions (state or new envs) in one pass.
       allEnvs =
@@ -477,44 +400,32 @@ let
             ''
         else allEnvsUnvalidated;
 
-      # Assign unique UIDs to new environments when evaluating; in disk mode keep the
-      # UIDs already present in the plan JSON.
+      # Assign unique UIDs to new environments, reusing persisted state when present.
       allEnvsWithUid =
-        if useEval then
-          lib.imap0
-            (idx: env:
-              let
-                user = env.hostenv.userName;
-                uidFromState = if builtins.hasAttr user state then state.${user}.uid else null;
-                stateNodeRaw =
-                  if builtins.hasAttr user state
-                  then state.${user}.node or null
-                  else null;
-                stateNode =
-                  if builtins.isString stateNodeRaw && stateNodeRaw != ""
-                  then stateNodeRaw
-                  else null;
-                previousNode =
-                  if stateNode != null && stateNode != env.node
-                  then stateNode
-                  else null;
-                uid =
-                  if uidFromState != null then uidFromState
-                  else nextUid + idx;
-              in
-              env // { inherit uid previousNode; }
-            )
-            allEnvs
-        else
-          map
-            (env:
-              let
-                uid = env.uid or null;
-                previousNode = env.previousNode or null;
-              in
-              env // { inherit uid previousNode; }
-            )
-            allEnvs;
+        lib.imap0
+          (idx: env:
+            let
+              user = env.hostenv.userName;
+              uidFromState = if builtins.hasAttr user state then state.${user}.uid else null;
+              stateNodeRaw =
+                if builtins.hasAttr user state
+                then state.${user}.node or null
+                else null;
+              stateNode =
+                if builtins.isString stateNodeRaw && stateNodeRaw != ""
+                then stateNodeRaw
+                else null;
+              previousNode =
+                if stateNode != null && stateNode != env.node
+                then stateNode
+                else null;
+              uid =
+                if uidFromState != null then uidFromState
+                else nextUid + idx;
+            in
+            env // { inherit uid previousNode; }
+          )
+          allEnvs;
 
       nodeConnections =
         let
@@ -684,148 +595,143 @@ let
 
       # JSON representation of every environment returned by each hostenv flake.
       generatedConfig =
-        if useEval then
-          let
-            base = {
-              _description = ''
-                Contains a build and deployment plan for hostenv servers on NixOS.
-                There are three data substructures:
+        let
+          base = {
+            _description = ''
+              Contains a build and deployment plan for hostenv servers on NixOS.
+              There are three data substructures:
 
-                1. Under **environments** is a JSON representation of hostenv's own modules config, retaining the original structure of that representation.
-                2. Each element under **nodes** is NixOS server configuration, and will be merged into the configuration of that server during build.
-                3. Under **nodeConnections** is node routing metadata used by provider tooling (SSH hostname/options).
+              1. Under **environments** is a JSON representation of hostenv's own modules config, retaining the original structure of that representation.
+              2. Each element under **nodes** is NixOS server configuration, and will be merged into the configuration of that server during build.
+              3. Under **nodeConnections** is node routing metadata used by provider tooling (SSH hostname/options).
 
-                Note: all manual changes to this file will be discarded.
-              '';
-              hostenvHostname = cfgHostenvHostname;
-              cloudflare = cloudflare;
-              deployUser = deployUser;
-              nixSigning = {
-                trustedPublicKeys = nixSigning.trustedPublicKeys or [ ];
-              };
-              nodeRemoteBuild = nodeRemoteBuild;
-              nodeConnections = nodeConnections;
-              environments = { };
-              nodes = { };
+              Note: all manual changes to this file will be discarded.
+            '';
+            hostenvHostname = cfgHostenvHostname;
+            cloudflare = cloudflare;
+            deployUser = deployUser;
+            nixSigning = {
+              trustedPublicKeys = nixSigning.trustedPublicKeys or [ ];
             };
+            nodeRemoteBuild = nodeRemoteBuild;
+            nodeConnections = nodeConnections;
+            environments = { };
+            nodes = { };
+          };
 
-            configAttrs = builtins.foldl'
-              (acc: elem:
-                let
-                  nameParts = builtins.split "-" elem.hostenv.userName;
-                  firstPart = builtins.elemAt nameParts 0;
-                  sliceName = "user-${elem.hostenv.organisation}-${firstPart}";
-                  uid_ = builtins.toString elem.uid;
-                  nodeName = if builtins.isString elem.node && elem.node != "" then elem.node else builtins.throw "nodeFor/default must be set to a node name for environment ${elem.hostenv.userName}";
-                in
-                lib.recursiveUpdate acc {
-                  environments = acc.environments // {
-                    ${elem.hostenv.userName} = elem;
-                  };
-                  nodes = acc.nodes // {
-                    ${nodeName} =
-                      let
-                        existing = acc.nodes.${elem.node} or { };
-                        nginxCfg = config.flake.lib.hostenv.nginxFrontdoor.mkNodeNginxConfig {
-                          inherit lib;
-                          envs = {
-                            ${elem.hostenv.userName} = elem;
-                          };
-                          runtimeRoot = "/run/hostenv";
-                          defaultEnableLetsEncrypt = letsEncrypt.enable or true;
+          configAttrs = builtins.foldl'
+            (acc: elem:
+              let
+                nameParts = builtins.split "-" elem.hostenv.userName;
+                firstPart = builtins.elemAt nameParts 0;
+                sliceName = "user-${elem.hostenv.organisation}-${firstPart}";
+                uid_ = builtins.toString elem.uid;
+                nodeName = if builtins.isString elem.node && elem.node != "" then elem.node else builtins.throw "nodeFor/default must be set to a node name for environment ${elem.hostenv.userName}";
+              in
+              lib.recursiveUpdate acc {
+                environments = acc.environments // {
+                  ${elem.hostenv.userName} = elem;
+                };
+                nodes = acc.nodes // {
+                  ${nodeName} =
+                    let
+                      existing = acc.nodes.${elem.node} or { };
+                      nginxCfg = config.flake.lib.hostenv.nginxFrontdoor.mkNodeNginxConfig {
+                        inherit lib;
+                        envs = {
+                          ${elem.hostenv.userName} = elem;
                         };
-                      in
-                      lib.recursiveUpdate existing (
-                        lib.recursiveUpdate
-                          {
-                            security.acme = {
-                              acceptTerms = letsEncrypt.acceptTerms;
-                              defaults.email = letsEncrypt.adminEmail;
-                            };
+                        runtimeRoot = "/run/hostenv";
+                        defaultEnableLetsEncrypt = letsEncrypt.enable or true;
+                      };
+                    in
+                    lib.recursiveUpdate existing (
+                      lib.recursiveUpdate
+                        {
+                          security.acme = {
+                            acceptTerms = letsEncrypt.acceptTerms;
+                            defaults.email = letsEncrypt.adminEmail;
+                          };
 
-                            provider = {
-                              inherit deployPublicKeys;
-                              inherit deployUser;
-                              nixSigning.trustedPublicKeys = nixSigning.trustedPublicKeys or [ ];
-                            };
+                          provider = {
+                            inherit deployPublicKeys;
+                            inherit deployUser;
+                            nixSigning.trustedPublicKeys = nixSigning.trustedPublicKeys or [ ];
+                          };
 
-                            users.groups.${elem.hostenv.userName} = {
-                              gid = elem.uid;
-                            };
+                          users.groups.${elem.hostenv.userName} = {
+                            gid = elem.uid;
+                          };
 
-                            users.users.${elem.hostenv.userName} = {
-                              uid = elem.uid;
-                              group = elem.hostenv.userName;
-                              openssh.authorizedKeys.keys = elem.authorizedKeys;
-                              isNormalUser = true;
-                              createHome = true;
-                              linger = true;
-                            };
+                          users.users.${elem.hostenv.userName} = {
+                            uid = elem.uid;
+                            group = elem.hostenv.userName;
+                            openssh.authorizedKeys.keys = elem.authorizedKeys;
+                            isNormalUser = true;
+                            createHome = true;
+                            linger = true;
+                          };
 
-                            systemd.slices = {
-                              ${sliceName} = {
-                                description = "${firstPart} slice";
-                                sliceConfig = {
-                                  CPUAccounting = "yes";
-                                  CPUQuota = "300%";
-                                  MemoryAccounting = "yes";
-                                  MemoryMax = "24G";
-                                };
+                          systemd.slices = {
+                            ${sliceName} = {
+                              description = "${firstPart} slice";
+                              sliceConfig = {
+                                CPUAccounting = "yes";
+                                CPUQuota = "300%";
+                                MemoryAccounting = "yes";
+                                MemoryMax = "24G";
                               };
-                              "user-${elem.hostenv.organisation}-" = { };
-                              "${sliceName}-" = { };
                             };
+                            "user-${elem.hostenv.organisation}-" = { };
+                            "${sliceName}-" = { };
+                          };
 
-                            systemd.services."user@${uid_}" = {
-                              overrideStrategy = "asDropin";
-                              serviceConfig.Slice = "${sliceName}-${uid_}.slice";
-                            };
+                          systemd.services."user@${uid_}" = {
+                            overrideStrategy = "asDropin";
+                            serviceConfig.Slice = "${sliceName}-${uid_}.slice";
+                          };
 
-                          }
-                          nginxCfg
-                      );
-                  };
-                })
-              base
-              allEnvsWithUid;
-          in
-          pkgs.writers.writeJSON
-            "plan.json"
-            configAttrs
-        else
-          planPathChecked;
+                        }
+                        nginxCfg
+                    );
+                };
+              })
+            base
+            allEnvsWithUid;
+        in
+        pkgs.writers.writeJSON
+          "plan.json"
+          configAttrs;
 
       generatedState =
-        if useEval then
-          let
-            planState = builtins.listToAttrs
-              (builtins.map
-                (envCfg: {
-                  name = envCfg.hostenv.userName;
-                  value = {
-                    userName = envCfg.hostenv.userName;
-                    uid = envCfg.uid;
-                    node = envCfg.node;
-                    virtualHosts = builtins.attrNames envCfg.virtualHosts;
-                  };
-                })
-                allEnvsWithUid);
-            mergedState =
-              {
-                _description = ''
-                  Persistent state to retain across deployments. Should be committed to version control.
-                '';
-              } // lib.recursiveUpdate
-                state
-                planState;
-          in
-          pkgs.writers.writeJSON
-            "state.json"
-            mergedState
-        else statePathChecked;
+        let
+          planState = builtins.listToAttrs
+            (builtins.map
+              (envCfg: {
+                name = envCfg.hostenv.userName;
+                value = {
+                  userName = envCfg.hostenv.userName;
+                  uid = envCfg.uid;
+                  node = envCfg.node;
+                  virtualHosts = builtins.attrNames envCfg.virtualHosts;
+                };
+              })
+              allEnvsWithUid);
+          mergedState =
+            {
+              _description = ''
+                Persistent state to retain across deployments. Should be committed to version control.
+              '';
+            } // lib.recursiveUpdate
+              state
+              planState;
+        in
+        pkgs.writers.writeJSON
+          "state.json"
+          mergedState;
 
     in
-    assert (assertProjectInputs && assertDiskUids && assertUnsupportedProviderServiceOptions);
+    assert (assertProjectInputs && assertUnsupportedProviderServiceOptions);
     {
       flake = generatedFlakeFile;
       plan = generatedConfig;
