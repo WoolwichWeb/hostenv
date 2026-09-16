@@ -30,7 +30,7 @@ let
         tmpdir=$(mktemp -d)
         mkdir -p "$tmpdir"/{logs,run}
         output=$("$profile"/bin/nginx -e "$tmpdir/error.log" -t -c "$conf" -p "$tmpdir" 2>&1 || true)
-        echo "$output" | grep -q "syntax is ok" || { echo "$output"; exit 1; }
+        grep -q "syntax is ok" <<<"$output" || { echo "$output"; exit 1; }
       '';
     };
   };
@@ -54,9 +54,10 @@ let
       script = ''
         phpBin="$profile/bin/php-fpm"
         test -x "$phpBin" || { echo "php-fpm not found"; exit 1; }
-        ver="$("$phpBin" --version | head -n1)"
-        echo "$ver" | grep -q "PHP 7.4" || {
-          echo "expected PHP 7.4.*, got: $ver"
+        ver="$("$phpBin" --version)"
+        first_line="''${ver%%$'\n'*}"
+        grep -q "PHP 7.4" <<<"$first_line" || {
+          echo "expected PHP 7.4.*, got: $first_line"
           exit 1
         }
       '';

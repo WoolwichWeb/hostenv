@@ -36,7 +36,8 @@ in
   provider-cli-dry-run-help = pkgs.runCommand "provider-cli-dry-run-help" { } ''
     set -euo pipefail
     for subcmd in plan dns-gate deploy; do
-      ${cliPkg}/bin/hostenv-provider "$subcmd" --help | ${pkgs.gnugrep}/bin/grep -q -- "--dry-run"
+      help_output="$(${cliPkg}/bin/hostenv-provider "$subcmd" --help)"
+      ${pkgs.gnugrep}/bin/grep -q -- "--dry-run" <<<"$help_output"
     done
     echo ok > "$out"
   '';
