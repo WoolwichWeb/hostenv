@@ -1,31 +1,28 @@
 # Provider Quickstart (hostenv)
 
-1) Add hostenv as an input:
+## 1. Initialize the provider
+
+Start with the provider template so all required flake inputs are declared:
+
+```bash
+nix flake init -t gitlab:woolwichweb/hostenv#provider
+```
+
+In the template's `provider` configuration, set the hostname, deployment SSH
+keys, and node mappings. For example:
 
 ```nix
-{
-  inputs.hostenv = {
-    url = "gitlab:woolwichweb/hostenv";
-    inputs.nixpkgs.follows = "nixpkgs";
-    inputs.flake-parts.follows = "flake-parts";
-    inputs.phps.follows = "phps";
-  };
-  inputs.flake-parts.url = "github:hercules-ci/flake-parts";
-  inputs.phps.url = "gitlab:woolwichweb/nix-phps-lts";
-  outputs = inputs@{ self, flake-parts, hostenv, ... }:
-    flake-parts.lib.mkFlake { inherit inputs; } {
-    imports = [
-      hostenv.flakeModules.provider
-    ];
-      systems = [ "x86_64-linux" "aarch64-linux" ];
-      provider = {
-        hostenvHostname = "hostenv.sh";
-        nodeSystems = { backend01 = "aarch64-linux"; backend02 = "aarch64-linux"; backend03 = "x86_64-linux"; backend04 = "aarch64-linux"; };
-        planSource = "eval"; # or "disk"
-      };
-    };
-}
+provider = {
+  hostenvHostname = "hosting.example.com";
+  deployPublicKeys = [ "ssh-ed25519 AAAA..." ]; # replace with your key
+  nodeSystems.node-a = "x86_64-linux";
+  nodeFor.default = "node-a";
+};
 ```
+
+`nodeSystems` is keyed by actual node names; `default` is a fallback in
+`nodeFor`, not in `nodeSystems`. Add `nodeFor.production`, `nodeFor.testing`,
+or `nodeFor.development` only when those types need a different node.
 
 Optional provider knobs:
 
@@ -34,14 +31,23 @@ Optional provider knobs:
 - `provider.generatedFlake.envInputs.follows = { ... };` to override per-environment `inputs.*.follows`.
 - `provider.generatedFlake.envInputs.extra = env: { ... };` to merge extra attrs into each environment input.
 
-**Important:** each client project flake must export `outputs.lib.hostenv.<system>.environments`
+**Important:** add each client project as an `organisation__project` input.
+Each client project flake must export `outputs.lib.hostenv.<system>.environments`
 so the provider can discover environments. The shipped project template already does this.
 Client inputs should point at the `.hostenv` flake (e.g. `dir=.hostenv`) so `hostenv.nix` is at the flake root.
 
-1) Populate nodes and secrets:
-   - Copy `nodes/sample` to `nodes/<node>/` and edit `configuration.nix`/`hardware-configuration.nix`.
-   - Create `secrets/secrets.yaml` with sops.
-   - Create `generated/state.json` (can be `{}` initially).
+## 2. Populate nodes and secrets
+
+Copy `nodes/sample` to `nodes/<node>/` and edit `configuration.nix` and
+`hardware-configuration.nix`. Create `secrets/secrets.yaml` with `sops` before
+planning. The CLI initializes `generated/state.json` on its first non-dry-run
+plan when the file is missing.
+
+**Keep existing state when upgrading.** It preserves UIDs and hostname
+reservations. Move any custom state file to `generated/state.json` and track it
+in Git before removing the old `provider.statePath` setting. See the
+[provider template's upgrade notes](../template/provider/README.md#upgrading-from-configurable-plan-sources)
+for the removed options. Do not replace existing state with `{}`.
 
 Project services may request provider-managed secret files by name through
 `environments.<name>.requiredSecretFiles`. Names are restricted to letters,
@@ -72,28 +78,32 @@ subset. Hostenv requires the file but intentionally does not inspect it for an
 Provider evaluation fails with the three checked SOPS paths when a requested
 key is absent.
 
-2) Generate plan/state (optional if using planSource=eval):
+## 3. Generate the plan
 
-```
+```bash
 nix run .#hostenv-provider -- plan
 ```
+
+Planning always evaluates the project inputs. It writes `generated/plan.json`,
+`generated/state.json`, and `generated/flake.nix`, and updates the generated
+flake's lock file. Commit the generated state so subsequent plans reuse it.
 
 Why the generated `flake.nix` exists: flake inputs are static, but your client
 repos can have many environments (often one per branch/tag). Plan generation
 materialises a new flake whose inputs enumerate each environment (repo × env),
-so deploy-rs can build the exact activation packages and NixOS systems without
-re-evaluating the dynamic hostenv graph. The bundle `generated/{plan.json,
-state.json,flake.nix}` is the deployable, auditable snapshot.
+so deploy-rs can build the activation packages and NixOS systems from that
+snapshot. Deployment still reads `generated/plan.json`; removing disk-mode
+planning does not remove the snapshot or regenerate it during deployment.
 
-1) DNS/ACME safety + Cloudflare (optional):
+## 4. DNS/ACME safety and Cloudflare (optional)
 
-```
+```bash
 CF_API_TOKEN=... CF_ZONE_ID=... nix run .#hostenv-provider -- dns-gate [--with-dns-update] [-n node]
 ```
 
-1) Deploy:
+## 5. Deploy
 
-```
+```bash
 nix run .#hostenv-provider -- deploy [-n node]
 ```
 
@@ -111,12 +121,22 @@ Automated end-to-end demo:
 
 The local demo uses `hostctl` to install temporary hostname mappings for the demo VMs and removes them during teardown/abort.
 
-Outputs:
+## Outputs
 
-- `packages.deploy-nodes` / `packages.deploy-envs` per system when a plan exists.
-- Deploy specs live at `lib.hostenv.deploySpec` (per flake output). Example:
-  `nix eval .#lib.hostenv.deploySpec --json | jq` (planSource=eval recommended).
-- Add Haskell dev shell deps via `provider.haskellDevPackages` (appended to `hostenv.haskell.devPackages`).
+The provider root exposes `packages.<system>.hostenv-provider`,
+`apps.<system>.hostenv-provider`, and `lib.provider.planPaths.<system>`.
+The latter contains the generated plan, state, and flake store paths used by
+the CLI. For example, `nix build --no-link --print-out-paths
+.#lib.provider.planPaths.x86_64-linux.plan` builds a plan without installing it
+into `generated/`.
+
+The generated flake, not the provider root, exposes `deploy.nodes`,
+`nixosConfigurations.<node>`, `packages.<system>.node-<node>`, and
+`packages.<system>.env-<environment-user>`.
+
+Add Haskell development dependencies through
+`perSystem.provider.haskellDevPackages`; these are included in
+`hostenv.haskell.devPackages` for the same system.
 
 Optional per-environment settings:
 
@@ -159,7 +179,7 @@ Notes:
 - On first boot the service copies the provider repo into `$XDG_DATA_HOME/hostenv-provider` if
   `flake.nix` or `generated/state.json` are missing, then runs a broad `nix flake update`.
 - The service resolves hashes from `generated/plan.json`, so ensure a plan exists
-  (run `nix run .#hostenv-provider plan` at least once).
+  (run `nix run .#hostenv-provider -- plan` at least once).
 - Webhook requests resolve the project by matching `<hash>` to
   `hostenv.projectNameHash` in `generated/plan.json`, then run
   `nix flake update <org>__<project>`, generate a new plan, run dns-gate, and deploy
