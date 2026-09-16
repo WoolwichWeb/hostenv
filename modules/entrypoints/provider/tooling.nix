@@ -56,8 +56,17 @@ in
       }:
       let
         providerHsDeps = p: map (name: p.${name}) config.provider.haskellDevPackages;
-        providerGhc = pkgs.haskellPackages.ghcWithPackages providerHsDeps;
-        cliPkg = pkgs.haskellPackages.callCabal2nix "hostenv-provider-cli" providerRoot { };
+        providerGhc =
+          (pkgs.haskellPackages.ghcWithPackages.override {
+            installDocumentation = config.documentation.haskell.dependencies.enable;
+          })
+            providerHsDeps;
+        rawCliPkg = pkgs.haskellPackages.callCabal2nix "hostenv-provider-cli" providerRoot { };
+        cliPkg =
+          if config.documentation.haskell.haddock.enable then
+            rawCliPkg
+          else
+            pkgs.haskell.lib.dontHaddock rawCliPkg;
         hostenvProviderCLI = pkgs.writeShellApplication {
           name = "hostenv-provider";
           runtimeInputs = [ pkgs.jq ];

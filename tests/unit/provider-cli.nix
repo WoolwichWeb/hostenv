@@ -1,14 +1,23 @@
-{ pkgs }:
+{ pkgs, documentationEnabled }:
 let
   src = ../../provider;
-  cliPkg = pkgs.haskellPackages.callCabal2nix "hostenv-provider-cli" src { };
-  ghc = pkgs.haskellPackages.ghcWithPackages (p: [
-    p.aeson
-    p.containers
-    p.process
-    p.scientific
-    p.text
-  ]);
+  rawCliPkg = pkgs.haskellPackages.callCabal2nix "hostenv-provider-cli" src { };
+  cliPkg =
+    if documentationEnabled then
+      rawCliPkg
+    else
+      pkgs.haskell.lib.dontHaddock rawCliPkg;
+  ghc =
+    (pkgs.haskellPackages.ghcWithPackages.override {
+      installDocumentation = documentationEnabled;
+    })
+      (p: [
+        p.aeson
+        p.containers
+        p.process
+        p.scientific
+        p.text
+      ]);
   providerCliDnsGateFilter = pkgs.runCommand "provider-cli-dns-gate-filter" { } ''
     set -euo pipefail
     ${ghc}/bin/runghc -i${src} ${src}/TestDnsGateFilter.hs

@@ -10,7 +10,11 @@ in
       providerService = cfgTop.flake.lib.provider.service;
       packageNames = providerService.haskellDeps;
       serviceSrc = providerService.src;
-      ghc = pkgs.haskellPackages.ghcWithPackages (p: map (name: p.${name}) packageNames);
+      ghc =
+        (pkgs.haskellPackages.ghcWithPackages.override {
+          installDocumentation = config.documentation.haskell.dependencies.enable;
+        })
+          (p: map (name: p.${name}) packageNames);
       servicePkg = pkgs.writeShellScriptBin "hostenv-provider-service" ''
         exec ${ghc}/bin/runghc -i${serviceSrc} ${serviceSrc}/Main.hs "$@"
       '';

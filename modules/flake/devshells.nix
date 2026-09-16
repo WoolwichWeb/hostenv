@@ -7,7 +7,10 @@ in
   options.perSystem = fp.mkPerSystemOption ({ config, pkgs, ... }:
     let
       ghcPackageNames = lib.unique config.hostenv.haskell.devPackages;
-      devGhc = pkgs.haskell.packages.ghc912.ghcWithPackages (p: map (name: p.${name}) ghcPackageNames);
+      ghcWithPackages = pkgs.haskell.packages.ghc912.ghcWithPackages.override {
+        installDocumentation = config.documentation.haskell.dependencies.enable;
+      };
+      devGhc = ghcWithPackages (p: map (name: p.${name}) ghcPackageNames);
       cabalHook = ''
         if command -v ghc >/dev/null; then
           libdir="$(ghc --print-libdir)"
