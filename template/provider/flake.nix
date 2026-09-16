@@ -67,6 +67,7 @@
         #     # extraInput = { url = "github:example/extra"; };
         #     # disko = {
         #     #   url = "github:nix-community/disko";
+        #     #   inputs.nixpkgs.follows = "nixpkgs";
         #     # };
         #   };
         #   envInputs = {
