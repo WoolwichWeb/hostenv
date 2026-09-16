@@ -15,10 +15,7 @@ let
     name = "hostenv";
     context = "provider tooling";
   };
-
-  hostenvRoot = hostenvInput.outPath;
-  providerRoot = hostenvRoot + "/provider";
-
+  providerRoot = hostenvInput.outPath + "/provider";
 in
 {
   options.perSystem = flakeParts.mkPerSystemOption (
@@ -93,33 +90,14 @@ in
           ) sopsKeys;
 
         providerGenerator = providerPlan {
-          inputs = inputs // {
-            hostenv = hostenvInput;
-          };
-          inherit system;
+          inputs = inputs // { hostenv = hostenvInput; };
           lib = pkgs.lib;
-          pkgs = pkgs;
-          letsEncrypt = cfg.letsEncrypt;
-          deployPublicKeys = cfg.deployPublicKeys;
-          deployUser = cfg.deployUser;
-          nixSigning = cfg.nixSigning;
-          hostenvHostname = cfg.hostenvHostname;
-          nodeFor = cfg.nodeFor;
-          nodeSystems = cfg.nodeSystems;
-          nodeAddresses = cfg.nodeAddresses;
-          nodeSshPorts = cfg.nodeSshPorts;
-          nodeSshOpts = cfg.nodeSshOpts;
-          nodeRemoteBuild = cfg.nodeRemoteBuild;
-          nodeMagicRollback = cfg.nodeMagicRollback;
-          nodeAutoRollback = cfg.nodeAutoRollback;
-          nodeModules = cfg.nodeModules;
-          secretsFile = cfg.secretsFile;
-          inherit sopsSecretKeys;
-          cloudflare = cfg.cloudflare;
-          generatedFlake = cfg.generatedFlake;
-          deploy = cfg.deploy;
-          serviceResolution = cfg.serviceResolution;
-          cache = cfg.cache;
+          inherit pkgs system sopsSecretKeys;
+          inherit (cfg)
+            letsEncrypt deployPublicKeys deployUser nixSigning hostenvHostname
+            nodeFor nodeSystems nodeAddresses nodeSshPorts nodeSshOpts
+            nodeRemoteBuild nodeMagicRollback nodeAutoRollback nodeModules
+            secretsFile cloudflare generatedFlake deploy serviceResolution cache;
         };
       in
       {
@@ -129,9 +107,7 @@ in
         apps.default = lib.mkDefault hostenvProviderApp;
 
         provider.planPaths = {
-          plan = providerGenerator.plan;
-          state = providerGenerator.state;
-          flake = providerGenerator.flake;
+          inherit (providerGenerator) plan state flake;
         };
 
         # Add to dev packages for hostenv developers.
