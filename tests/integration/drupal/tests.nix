@@ -41,7 +41,7 @@ let
         tmpdir=$(mktemp -d)
         mkdir -p "$tmpdir"/{logs,run}
         output=$("$profile"/bin/nginx -e "$tmpdir/error.log" -t -c "$nginxConf" -p "$tmpdir" 2>&1 || true)
-        echo "$output" | grep -q "syntax is ok" || { echo "$output"; exit 1; }
+        grep -q "syntax is ok" <<<"$output" || { echo "$output"; exit 1; }
       '';
     };
   };

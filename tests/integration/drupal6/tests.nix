@@ -38,7 +38,7 @@ let
         tmpdir=$(mktemp -d)
         mkdir -p "$tmpdir"/{logs,run}
         output=$("$profile"/bin/nginx -e "$tmpdir/error.log" -t -c "$conf" -p "$tmpdir" 2>&1 || true)
-        echo "$output" | grep -q "syntax is ok" || { echo "$output"; exit 1; }
+        grep -q "syntax is ok" <<<"$output" || { echo "$output"; exit 1; }
       '';
     };
   };
@@ -211,7 +211,7 @@ let
         lineOf() {
           pattern=$1
           label=$2
-          line=$(grep -nF "$pattern" "$conf" | head -n1 | cut -d: -f1 || true)
+          line=$(grep -nFm1 "$pattern" "$conf" | cut -d: -f1 || true)
           test -n "$line" || { echo "$label missing"; exit 1; }
           printf '%s\n' "$line"
         }

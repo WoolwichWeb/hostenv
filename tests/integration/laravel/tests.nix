@@ -95,7 +95,7 @@ let
           tmpdir=$(mktemp -d)
           mkdir -p "$tmpdir/logs" "$tmpdir/run"
           nginx_output=$("$profile/bin/nginx" -e "$tmpdir/error.log" -t -c "$nginx_conf" -p "$tmpdir" 2>&1 || true)
-          printf '%s\n' "$nginx_output" | grep -Fq 'syntax is ok' || fail "nginx syntax check failed"
+          grep -Fq 'syntax is ok' <<<"$nginx_output" || fail "nginx syntax check failed"
 
           grep -Fq 'clear_env = no' "$fpm_conf" || fail "PHP-FPM still clears inherited variables"
           grep -Fq 'env[PATH] = $HOSTENV_PHPFPM_PATH' "$fpm_conf" \
@@ -213,11 +213,11 @@ PHP
             cat "$fpm_test_log" >&2 2>/dev/null || true
             fail "FastCGI request to PHP-FPM path test failed"
           fi
-          printf '%s\n' "$fpm_response" | grep -Fq 'status=0' \
+          grep -Fq 'status=0' <<<"$fpm_response" \
             || fail "PHP-FPM application process could not execute a declared runtime package"
-          printf '%s\n' "$fpm_response" | grep -Fq 'Hello, world!' \
+          grep -Fq 'Hello, world!' <<<"$fpm_response" \
             || fail "PHP-FPM application process did not execute pkgs.hello"
-          if ! printf '%s\n' "$fpm_response" | grep -Fq "$provider_path"; then
+          if ! grep -Fq "$provider_path" <<<"$fpm_response"; then
             printf '%s\n' "$fpm_response" >&2
             fail "PHP-FPM discarded PATH entries supplied by laravel_env"
           fi
@@ -293,9 +293,9 @@ APP_KEY=base64:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
 PATH=$provider_path
 EOF
           artisan_path_output=$(PATH=/also/does/not/contain/hello "$artisan_test" hostenv:path-test)
-          printf '%s\n' "$artisan_path_output" | grep -Fq 'Hello, world!' \
+          grep -Fq 'Hello, world!' <<<"$artisan_path_output" \
             || fail "Artisan lost a declared runtime package after loading laravel_env PATH"
-          printf '%s\n' "$artisan_path_output" | grep -Fq "$provider_path" \
+          grep -Fq "$provider_path" <<<"$artisan_path_output" \
             || fail "Artisan discarded PATH entries supplied by laravel_env"
 
           ${lib.optionalString cfg.redis.enable ''
@@ -351,11 +351,11 @@ EOF
           ''}
 
           version_output=$("$profile/bin/php@${serviceName}" "$app_copy/artisan" --version)
-          printf '%s\n' "$version_output" | grep -Fq 'Laravel Framework ${frameworkVersions.${major}}' \
+          grep -Fq 'Laravel Framework ${frameworkVersions.${major}}' <<<"$version_output" \
             || fail "Artisan did not run the pinned Laravel ${major} fixture"
           precedence_output=$(APP_ENV=provider-secret-value \
             "$profile/bin/php@${serviceName}" "$app_copy/artisan" env)
-          printf '%s\n' "$precedence_output" | grep -Fq 'provider-secret-value' \
+          grep -Fq 'provider-secret-value' <<<"$precedence_output" \
             || fail "an inherited provider value did not override generated .env defaults"
 
           # Test the security boundary by behavior, not by requiring the secret
@@ -368,7 +368,7 @@ EOF
             XDG_CACHE_HOME="$tmpdir/cache" \
             "$profile/bin/activate" 2>&1 && exit 99 || true
           )
-          printf '%s\n' "$activation_output" | grep -Fq 'Laravel activation requires a readable secret file' \
+          grep -Fq 'Laravel activation requires a readable secret file' <<<"$activation_output" \
             || fail "activation did not fail with the provider configuration message"
           test ! -e "$tmpdir/config" || fail "activation changed services before checking laravel_env"
         '';
