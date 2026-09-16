@@ -26,7 +26,6 @@
         deployPublicKeys = [ "ssh-ed25519 AAAA..." ]; # replace me
         nodeSystems = { default = "x86_64-linux"; };
         nodeFor = { default = "node-a"; production = "node-a"; testing = "node-a"; development = "node-a"; };
-        planSource = "eval";
       };
     };
 }
