@@ -1,19 +1,26 @@
 # Hostenv Provider Template
 
-This template boots a provider flake that consumes hostenv projects and generates plan/state for deployment.
+This template consumes hostenv projects and generates the plan, persistent state,
+and flake used to deploy them.
 
 ## Quick start
 
-1. Copy this template (or `nix flake init -t gitlab:woolwichweb/hostenv#provider` once exported).
-2. If you use direnv, run `direnv allow` to load the dev shell from `.envrc`.
-3. Set `provider.hostenvHostname`, `provider.deployPublicKeys`, and your node mappings in `flake.nix`.
-4. The template ships starter node stubs:
-   - `nodes/sample/` (copy to `nodes/<node>/` and edit).
-5. Create `secrets/secrets.yaml` with `sops` (provider uses this at deploy time).
-6. Create `generated/state.json` (can be `{}` initially).
-7. Add NixOS node configs under `nodes/<node>/configuration.nix` (with `system.stateVersion`).
-8. Run `nix run .#hostenv-provider -- plan` to write `generated/{flake.nix,plan.json,state.json}`.
-9. Deploy using your tool of choice (e.g. deploy-rs) pointing at `generated/flake.nix`.
+1. Initialize the provider repository with `nix flake init -t gitlab:woolwichweb/hostenv#provider`.
+2. Set `provider.hostenvHostname`, `provider.deployPublicKeys`, and the node mappings in `flake.nix`. Add each client project as an `organisation__project` input.
+3. Copy `nodes/sample/` to `nodes/<node>/` and edit the configuration files. Each node needs `configuration.nix`, including `system.stateVersion` and its machine-specific configuration.
+4. Enter the development shell with `direnv allow` or `nix develop`.
+5. Create `secrets/secrets.yaml` with `sops` before generating the plan.
+6. Run `nix run .#hostenv-provider -- plan` to write `generated/{flake.nix,plan.json,state.json}`. On a first run, the CLI creates and stages an empty `generated/state.json` if it is missing.
+7. Run `nix run .#hostenv-provider -- dns-gate` for DNS/ACME checks, then `nix run .#hostenv-provider -- deploy`.
+
+Planning always evaluates the project inputs. Deployment consumes the generated
+snapshot; removing disk-mode planning does not remove `generated/plan.json` or
+make the deploy command regenerate it.
+
+**Preserve and commit `generated/state.json`.** It retains environment UIDs,
+node locations, and hostname reservations, including entries for retired
+environments. An empty state is appropriate only for a new provider, not as an
+upgrade or troubleshooting step.
 
 Framework services may request named runtime files. Laravel requests
 `laravel_env`, so add a shell/systemd-compatible multiline value at environment,
@@ -32,6 +39,21 @@ The provider projects it to `/run/secrets/<environment-user>/laravel_env` and
 owns it as that user. Projects can request restrictive names only; they cannot
 control secret paths, modes, owners, or NixOS configuration.
 
+## Upgrading from configurable plan sources
+
+Remove `provider.planSource`, `provider.planPath`, `provider.statePath`, and
+`provider.plan.autoInit` from the provider configuration. They are no longer
+options, and stale settings are evaluation errors rather than ignored values.
+
+Before removing a custom `provider.statePath`, move the existing state to
+`generated/state.json` and add it to version control. Do not replace that state
+with `{}`. A hand-maintained disk plan must instead be represented by project
+inputs and provider configuration before running the planner.
+
+The lower-level `lib.provider.plan` function still accepts `statePath` and
+`lockPath` arguments for explicit callers and tests. These are not provider
+module options. `lib.provider.planPaths.<system>` remains the CLI's output API.
+
 ## Admin UI template
 
 When the provider UI is enabled (GitLab SSO), it regenerates `flake.nix` from
@@ -44,18 +66,14 @@ Edit `flake.template.nix` to make structural changes while keeping the marker:
 
 `flake.nix` is treated as generated output in this flow.
 
-## Inputs
+## Outputs and customisation
 
-- `hostenv` (pinned): provides the provider module and platform library.
-- `nixpkgs`, `flake-parts`: follow `hostenv` pins to stay in sync.
+`packages.<system>.hostenv-provider` and `apps.<system>.hostenv-provider` provide
+the CLI. `lib.provider.planPaths.<system>` exposes the generated plan, state,
+and flake store paths.
 
-## Outputs
-
-- `packages.hostenv-provider`: CLI wrapper.
-
-## Customisation tips
-
-- Ensure client project inputs point at the `.hostenv` flake (e.g. `dir=.hostenv`) and export `outputs.lib.hostenv`.
-- Use `planSource = "disk"` if you want to reuse an existing plan.json without re-evaluating inputs.
-- Add extra Haskell deps for the dev shell via `provider.haskellDevPackages` (appended to `hostenv.haskell.devPackages`).
-- Add provider-specific modules under `modules/` in your repo (e.g. `modules/nixos/<aspect>.nix`) and import them alongside `hostenv.flakeModules.provider` using your preferred module loader.
+Client inputs must point at the `.hostenv` flake (for example, `dir=.hostenv`)
+and export `lib.hostenv.<system>.environments`. Use `provider.nodeModules` for
+shared node configuration and `provider.generatedFlake` to customise generated
+flake inputs. Additional Haskell development dependencies belong in
+`perSystem.provider.haskellDevPackages`.

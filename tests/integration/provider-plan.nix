@@ -169,8 +169,6 @@ let
     {
       hostenvHostname ? "custom.host",
       state ? { },
-      planSource ? "eval",
-      planPath ? null,
       nodeModules ? [ ],
       generatedFlake ? { },
       deploy ? defaultDeploy,
@@ -232,7 +230,6 @@ let
         development = "node1";
       };
       statePath = statePathEffective;
-      planPath = planPath;
       lockPath = lockPath;
       nodeSystems = { };
       cloudflare = {
@@ -240,7 +237,6 @@ let
         zoneId = null;
         apiTokenFile = null;
       };
-      planSource = planSource;
       deploy = deploy;
       cache = cache;
       serviceResolution = serviceResolution;
@@ -351,7 +347,6 @@ let
 
   evalRun = mkPlan { };
   planNoState = evalRun.plan;
-  stateNoState = evalRun.state;
   flakeNoState = evalRun.flake;
   planWithState =
     (mkPlan {
@@ -366,11 +361,6 @@ let
         };
       };
     }).plan;
-  planDisk = mkPlan {
-    planSource = "disk";
-    planPath = planNoState;
-    state = lib.importJSON stateNoState;
-  };
   planCustom = mkPlan {
     nodeModules = [ "nodes/common.nix" ];
     generatedFlake = {
@@ -474,7 +464,6 @@ let
       development = "node1";
     };
     statePath = dummyStatePath;
-    planPath = null;
     lockPath = backupsMixedLockPath;
     nodeSystems = { };
     cloudflare = {
@@ -482,7 +471,6 @@ let
       zoneId = null;
       apiTokenFile = null;
     };
-    planSource = "eval";
   };
   backupsMixedPlanData = lib.importJSON backupsMixedPlan.plan;
   backupsMixedMainUser = backupsMixedEval.config.environments.main.hostenv.userName;
@@ -542,7 +530,6 @@ let
       development = "node1";
     };
     statePath = dummyStatePath;
-    planPath = null;
     lockPath = quotedLockPath;
     nodeSystems = { };
     cloudflare = {
@@ -550,7 +537,6 @@ let
       zoneId = null;
       apiTokenFile = null;
     };
-    planSource = "eval";
   };
   quotedFlakeText = builtins.readFile quotedPlan.flake;
   quotedInvalidUser = quotedInvalidProject.eval.config.environments.main.hostenv.userName;
@@ -578,7 +564,6 @@ let
           development = "node1";
         };
         statePath = dummyStatePath;
-        planPath = null;
         lockPath = lockPath;
         nodeSystems = { };
         cloudflare = {
@@ -586,7 +571,6 @@ let
           zoneId = null;
           apiTokenFile = null;
         };
-        planSource = "eval";
       });
     in
     result;
@@ -642,7 +626,6 @@ let
           development = "node1";
         };
         statePath = dummyStatePath;
-        planPath = null;
         lockPath = lockPath;
         nodeSystems = { };
         cloudflare = {
@@ -650,7 +633,6 @@ let
           zoneId = null;
           apiTokenFile = null;
         };
-        planSource = "eval";
       });
     in
     result;
@@ -705,14 +687,12 @@ let
       development = "node1";
     };
     statePath = dummyStatePath;
-    planPath = null;
     nodeSystems = { };
     cloudflare = {
       enable = false;
       zoneId = null;
       apiTokenFile = null;
     };
-    planSource = "eval";
   });
   tryPlan =
     args:
@@ -860,7 +840,6 @@ let
             development = "node1";
           };
           statePath = dummyStatePath;
-          planPath = null;
           lockPath = lockPath;
           nodeSystems = { };
           cloudflare = {
@@ -868,7 +847,6 @@ let
             zoneId = null;
             apiTokenFile = null;
           };
-          planSource = "eval";
         }).environments;
       result = builtins.tryEval (builtins.deepSeq envsExpr envsExpr);
     in
@@ -1022,15 +1000,6 @@ in
     in
     asserts.assertTrue "provider-plan-flake-inputs-quoted" ok
       "generated flake should quote invalid input identifiers and leave valid ones unquoted";
-
-  provider-plan-planSource-disk =
-    let
-      evalPlanData = lib.importJSON planNoState;
-      diskPlanData = lib.importJSON planDisk.plan;
-    in
-    asserts.assertTrue "provider-plan-planSource-disk" (
-      evalPlanData == diskPlanData
-    ) "planSource=\"disk\" should reuse plan.json contents without re-evaluating hostenv";
 
   provider-plan-missing-projects-asserts =
     asserts.assertTrue "provider-plan-missing-projects-asserts" (!planMissingProjects.success)

@@ -516,25 +516,6 @@ in
       description = "Path to the provider SOPS secrets file, relative to the provider repository root.";
     };
 
-    statePath = mkOption {
-      type = types.path;
-      default =
-        if inputs ? self
-        then inputs.self + /generated/state.json
-        else throw "provider.statePath: inputs.self is required to resolve defaults; set provider.statePath explicitly.";
-    };
-
-    planPath = mkOption {
-      type = types.path;
-      default =
-        if inputs ? self
-        then inputs.self + /generated/plan.json
-        else throw "provider.planPath: inputs.self is required to resolve defaults; set provider.planPath explicitly.";
-    };
-
-    planSource = mkOption { type = types.enum [ "disk" "eval" ]; default = "eval"; };
-    plan.autoInit = (lib.mkEnableOption "automatically setup necessary config for tracking state and secrets") // { default = true; };
-
     generatedFlake = mkOption {
       type = types.submodule {
         options = {
