@@ -28,8 +28,8 @@ let
       devshells.default.devshell.packages = lib.mkForce [ devshellFixturePackage ];
 
       hostenvProject = {
-        makeHostenv = makeHostenv;
-        modules = [
+        makeHostenv = lib.mkForce makeHostenv;
+        modules = lib.mkForce [
           ({ ... }: {
             hostenv = {
               organisation = lib.mkForce "acme";
@@ -43,7 +43,7 @@ let
             };
           })
         ];
-        environmentName = "main";
+        environmentName = lib.mkForce "main";
       };
     };
   };
