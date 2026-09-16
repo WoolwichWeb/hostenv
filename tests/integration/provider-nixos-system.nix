@@ -207,7 +207,6 @@ let
           production = nodeName;
         };
         statePath = statePath;
-        planPath = null;
         lockPath = lockPath;
         nodeSystems = nodeSystems;
         secretsFile = "secrets/secrets.yaml";
