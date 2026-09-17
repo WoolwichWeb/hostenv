@@ -468,6 +468,7 @@
               transaction_isolation = "READ-COMMITTED";
 
               innodb_buffer_pool_size = lib.mkDefault "10G";
+              innodb_buffer_pool_size_max = lib.mkDefault "10G";
               innodb_log_buffer_size = lib.mkDefault "16M";
               innodb_log_file_size = lib.mkDefault "128M";
               innodb_flush_method = lib.mkDefault "O_DIRECT";
