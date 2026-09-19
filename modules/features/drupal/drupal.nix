@@ -1,4 +1,7 @@
-{ ... }:
+{ config, ... }:
+let
+  libHostenv = config.flake.lib.hostenv;
+in
 {
   flake.modules.hostenv.drupal =
     {
@@ -9,6 +12,10 @@
     }:
     let
       cfg = config.services.drupal;
+      mysqlPrograms = libHostenv.mysql.mkPrograms {
+        inherit lib pkgs;
+        package = config.services.mysql.package;
+      };
       env = config.environments.${config.hostenv.environmentName};
 
       # Note on PHP packaging: the PHP version or package is chosen by the
@@ -333,7 +340,7 @@
           find "${cfg.filesDir}/" -type d -name '__MACOSX' -print0 | xargs -0 rm -rf
           find "${cfg.filesDir}/" -type f -name '.DS_Store' -delete
 
-          if ${config.services.mysql.package}/bin/mysql --batch --skip-column-names \
+          if ${mysqlPrograms.client} --batch --skip-column-names \
             --socket="${config.hostenv.runtimeDir}/mysql.sock" \
             -u "${config.hostenv.userName}" \
             -e "SELECT 1 FROM information_schema.tables WHERE table_schema='${cfg.databaseName}' AND table_name='key_value' LIMIT 1;" 2>/dev/null \
