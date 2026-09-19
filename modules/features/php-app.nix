@@ -1,15 +1,28 @@
-{ ... }:
+{ config, ... }:
+let
+  libHostenv = config.flake.lib.hostenv;
+in
 {
   flake.modules.hostenv.php-app =
-    { lib, config, pkgs, ... }:
+    {
+      lib,
+      config,
+      pkgs,
+      ...
+    }:
     let
       cfg = config.services.php-app;
+      mysqlPrograms = libHostenv.mysql.mkPrograms {
+        inherit lib pkgs;
+        package = config.services.mysql.package;
+      };
       migrateBackupName = "php-app-migrate";
     in
     {
       options.services.php-app = {
-        enable = lib.mkEnableOption ''support for a simple PHP application + db.
-          Enabling this will bring up an nginx, PHP-FPM, and MySQL.
+        enable = lib.mkEnableOption ''
+          support for a simple PHP application + db.
+                    Enabling this will bring up an nginx, PHP-FPM, and MySQL.
         '';
 
         codebase = {
@@ -42,7 +55,7 @@
               default = "/run/secrets/${config.hostenv.userName}/backups_env";
               description = ''
                 Location of file containing environment variables for Restic.
-    
+
                 Contains sensitive credentials that shouldn't be in the Nix store. For example, backups stored on Amazon S3 require an access key and secret access key.
               '';
             };
@@ -56,83 +69,87 @@
             assertion = config.services.mysql.backups.enable;
             message = "services.php-app.backups.enable requires services.mysql.backups.enable = true";
           })
-          ++ (lib.optional (cfg.backups.enable && builtins.hasAttr migrateBackupName config.services.restic.backups) {
-            assertion = lib.elem migrateBackupName (config.services.restic.backups.${migrateBackupName}.tags or [ ]);
-            message = "services.restic.backups.php-app-migrate.tags must include \"php-app-migrate\" so migrations can locate snapshots";
-          });
+          ++ (lib.optional
+            (cfg.backups.enable && builtins.hasAttr migrateBackupName config.services.restic.backups)
+            {
+              assertion = lib.elem migrateBackupName (
+                config.services.restic.backups.${migrateBackupName}.tags or [ ]
+              );
+              message = "services.restic.backups.php-app-migrate.tags must include \"php-app-migrate\" so migrations can locate snapshots";
+            }
+          );
 
         services.nginx.virtualHosts = {
-          "${cfg.codebase.name}" = lib.mkDefault
-            {
-              serverName = "_";
-              default = true;
-              forceSSL = false;
-              root = config.hostenv.root;
+          "${cfg.codebase.name}" = lib.mkDefault {
+            serverName = "_";
+            default = true;
+            forceSSL = false;
+            root = config.hostenv.root;
 
-              locations."@rewrite" = {
-                extraConfig = ''
-                  rewrite ^ /index.php;
-                '';
-              };
-
-              locations."/" = {
-                extraConfig = ''
-                  try_files $uri /index.php?$query_string;
-                '';
-              };
-
-              # Set up nginx for Drupal.
-              locations."~ '\.php$'" = {
-                extraConfig = ''
-                  fastcgi_pass unix:${config.hostenv.runtimeDir}/${cfg.codebase.name}.sock;
-                  fastcgi_index index.php;
-     
-                  fastcgi_split_path_info ^(.+?\.php)(|/.*)$;
-                  # Ensure the php file exists. Mitigates CVE-2019-11043
-                  try_files $fastcgi_script_name =404;
-                  fastcgi_intercept_errors on;
-                '';
-
-                fastcgiParams = {
-                  # Block httpoxy attacks. See https://httpoxy.org/.
-                  HTTP_PROXY = "";
-                  SCRIPT_FILENAME = "$document_root$fastcgi_script_name";
-                  PATH_INFO = "$fastcgi_path_info";
-                  QUERY_STRING = "$query_string";
-                };
-              };
-              locations."= /favicon.ico" = {
-                extraConfig = ''
-                  log_not_found off;
-                  access_log off;
-                '';
-              };
-              locations."= /robots.txt" = {
-                extraConfig = ''
-                  allow all;
-                  log_not_found off;
-                  access_log off;
-                '';
-              };
-              locations."~ \..*/.*\.php$" = {
-                return = 403;
-              };
-              locations."~ /vendor/.*\.php$" = {
-                return = 404;
-                extraConfig = ''
-                  deny all;
-                '';
-              };
-              locations."~* \.(js|css|png|jpg|jpeg|gif|ico|svg|avif|wasm)$" = {
-                extraConfig = ''
-                  try_files $uri @rewrite;
-                  expires max;
-                  log_not_found off;
-                '';
-              };
-
-              listen = [{ addr = "unix:${config.hostenv.upstreamRuntimeDir}/in.sock"; }];
+            locations."@rewrite" = {
+              extraConfig = ''
+                rewrite ^ /index.php;
+              '';
             };
+
+            locations."/" = {
+              extraConfig = ''
+                try_files $uri /index.php?$query_string;
+              '';
+            };
+
+            # Set up nginx for Drupal.
+            locations."~ '\.php$'" = {
+              extraConfig = ''
+                fastcgi_pass unix:${config.hostenv.runtimeDir}/${cfg.codebase.name}.sock;
+                fastcgi_index index.php;
+
+                fastcgi_split_path_info ^(.+?\.php)(|/.*)$;
+                # Ensure the php file exists. Mitigates CVE-2019-11043
+                try_files $fastcgi_script_name =404;
+                fastcgi_intercept_errors on;
+              '';
+
+              fastcgiParams = {
+                # Block httpoxy attacks. See https://httpoxy.org/.
+                HTTP_PROXY = "";
+                SCRIPT_FILENAME = "$document_root$fastcgi_script_name";
+                PATH_INFO = "$fastcgi_path_info";
+                QUERY_STRING = "$query_string";
+              };
+            };
+            locations."= /favicon.ico" = {
+              extraConfig = ''
+                log_not_found off;
+                access_log off;
+              '';
+            };
+            locations."= /robots.txt" = {
+              extraConfig = ''
+                allow all;
+                log_not_found off;
+                access_log off;
+              '';
+            };
+            locations."~ \..*/.*\.php$" = {
+              return = 403;
+            };
+            locations."~ /vendor/.*\.php$" = {
+              return = 404;
+              extraConfig = ''
+                deny all;
+              '';
+            };
+            locations."~* \.(js|css|png|jpg|jpeg|gif|ico|svg|avif|wasm)$" = {
+              extraConfig = ''
+                try_files $uri @rewrite;
+                expires max;
+                log_not_found off;
+              '';
+            };
+
+            listen = [ { addr = "unix:${config.hostenv.upstreamRuntimeDir}/in.sock"; } ];
+          };
         };
 
         services.phpfpm.pools."${cfg.codebase.name}" = {
@@ -252,7 +269,10 @@
             initialize = true;
             createWrapper = lib.mkForce true;
             wantsUnits = [ "mysql.service" ];
-            tags = [ migrateBackupName "migrate" ];
+            tags = [
+              migrateBackupName
+              "migrate"
+            ];
           };
         };
 
@@ -280,7 +300,7 @@
             fi
 
             if [ -S "$mysql_sock" ]; then
-              table_count="$(${config.services.mysql.package}/bin/mysql -N -u ${config.hostenv.userName} \
+              table_count="$(${mysqlPrograms.client} -N -u ${config.hostenv.userName} \
                 --socket="$mysql_sock" \
                 -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='app';" 2>/dev/null || echo 0)"
               if [ "''${table_count:-0}" -gt 0 ]; then
@@ -301,7 +321,9 @@
               fi
 
               restore_tmp="$(mktemp -d)"
-              restic_migrate="${config.services.restic.wrapperScripts.${migrateBackupName}}/bin/restic-${migrateBackupName}"
+              restic_migrate="${
+                config.services.restic.wrapperScripts.${migrateBackupName}
+              }/bin/restic-${migrateBackupName}"
 
               ${config.systemd.package}/bin/systemctl --user stop nginx.service || true
               ${config.systemd.package}/bin/systemctl --user stop phpfpm.target || true
@@ -355,6 +377,5 @@
           # HOSTENV_RESTORE_PHP_APP_END
         '';
       };
-    }
-  ;
+    };
 }

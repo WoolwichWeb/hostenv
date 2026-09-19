@@ -1,9 +1,21 @@
-{ ... }:
+{ config, ... }:
+let
+  libHostenv = config.flake.lib.hostenv;
+in
 {
   flake.modules.hostenv.drupal6 =
-    { lib, config, pkgs, ... }:
+    {
+      lib,
+      config,
+      pkgs,
+      ...
+    }:
     let
       cfg = config.services.drupal;
+      mysqlPrograms = libHostenv.mysql.mkPrograms {
+        inherit lib pkgs;
+        package = config.services.mysql.package;
+      };
       env = config.environments.${config.hostenv.environmentName};
 
       # Note on PHP packaging: the PHP version or package is chosen by the
@@ -20,16 +32,19 @@
 
       phpSingleQuoted = value: "'${builtins.replaceStrings [ "\\" "'" ] [ "\\\\" "\\'" ] value}'";
 
-      canonicalVHostFor = envCfg:
+      canonicalVHostFor =
+        envCfg:
         let
           envHostName = envCfg.hostenv.hostname;
           hasDefaultHost = builtins.hasAttr envHostName envCfg.virtualHosts;
           defaultVHost =
-            if hasDefaultHost then envCfg.virtualHosts.${envHostName} else
-            builtins.throw ''
-              ${envHostName} was not in the environment's hosts.
-              Available virtualHosts: ${builtins.toJSON (builtins.attrNames envCfg.virtualHosts)}
-            '';
+            if hasDefaultHost then
+              envCfg.virtualHosts.${envHostName}
+            else
+              builtins.throw ''
+                ${envHostName} was not in the environment's hosts.
+                Available virtualHosts: ${builtins.toJSON (builtins.attrNames envCfg.virtualHosts)}
+              '';
           redirectedToCanonical =
             defaultVHost ? globalRedirect
             && defaultVHost.globalRedirect != null
@@ -39,10 +54,7 @@
 
       canonicalVHost = canonicalVHostFor env;
       canonicalVHostConfig = env.virtualHosts.${canonicalVHost};
-      canonicalProtocol =
-        if canonicalVHostConfig.enableLetsEncrypt
-        then "https://"
-        else "http://";
+      canonicalProtocol = if canonicalVHostConfig.enableLetsEncrypt then "https://" else "http://";
       canonicalUri = canonicalProtocol + canonicalVHost;
 
       mysqlSocket = "${config.hostenv.runtimeDir}/mysql.sock";
@@ -134,8 +146,10 @@
       };
 
       legacyDrushPackage =
-        if cfg.drupal6.drushPackage != null then cfg.drupal6.drushPackage else
-        builtins.throw "services.drupal.majorVersion = 6 requires services.drupal.drupal6.drushPackage because this nixpkgs does not provide pkgs.drush8 or pkgs.drush";
+        if cfg.drupal6.drushPackage != null then
+          cfg.drupal6.drushPackage
+        else
+          builtins.throw "services.drupal.majorVersion = 6 requires services.drupal.drupal6.drushPackage because this nixpkgs does not provide pkgs.drush8 or pkgs.drush";
 
       drush =
         let
@@ -158,7 +172,12 @@
             args+=("--uri=${canonicalUri}")
           fi
 
-          export PATH=${lib.makeBinPath [ drupalPhpPool.effectivePhpCliPackage legacyDrushPackage ]}:$PATH
+          export PATH=${
+            lib.makeBinPath [
+              drupalPhpPool.effectivePhpCliPackage
+              legacyDrushPackage
+            ]
+          }:$PATH
           drush_bin=${legacyDrushPackage}/bin/drush
           if ${pkgs.coreutils}/bin/head -n 1 "$drush_bin" | ${pkgs.gnugrep}/bin/grep -Eq 'php|env php'; then
             exec -a drush ${drupalPhpPool.effectivePhpCliPackage}/bin/php "$drush_bin" "''${args[@]}" "$@"
@@ -192,9 +211,12 @@
         drushPackage = lib.mkOption {
           type = lib.types.nullOr lib.types.package;
           default =
-            if pkgs ? drush8 then pkgs.drush8
-            else if pkgs ? drush then pkgs.drush
-            else null;
+            if pkgs ? drush8 then
+              pkgs.drush8
+            else if pkgs ? drush then
+              pkgs.drush
+            else
+              null;
           defaultText = lib.literalExpression ''
             if pkgs ? drush8 then pkgs.drush8 else if pkgs ? drush then pkgs.drush else null
           '';
@@ -274,10 +296,11 @@
               priority = 110;
               return = 403;
             };
-            locations."~* \\.(engine|inc|info|install|make|module|profile|po|sh|sql|theme|tpl(\\.php)?|xtmpl)$" = {
-              priority = 120;
-              return = 403;
-            };
+            locations."~* \\.(engine|inc|info|install|make|module|profile|po|sh|sql|theme|tpl(\\.php)?|xtmpl)$" =
+              {
+                priority = 120;
+                return = 403;
+              };
             locations."~* ^/(CHANGELOG|COPYRIGHT|INSTALL|LICENSE|MAINTAINERS|UPGRADE).*\\.txt$" = {
               priority = 130;
               return = 403;
@@ -328,7 +351,7 @@
           find "${cfg.filesDir}/" -type d -name '__MACOSX' -print0 | xargs -0 rm -rf
           find "${cfg.filesDir}/" -type f -name '.DS_Store' -delete
 
-          if ${config.services.mysql.package}/bin/mysql --batch --skip-column-names \
+          if ${mysqlPrograms.client} --batch --skip-column-names \
             --socket="${config.hostenv.runtimeDir}/mysql.sock" \
             -u "${config.hostenv.userName}" \
             -e "SELECT 1 FROM information_schema.tables WHERE table_schema='${cfg.databaseName}' AND table_name='system' LIMIT 1;" 2>/dev/null \
@@ -339,8 +362,10 @@
           fi
         '';
 
-        profile = [ project drush ];
+        profile = [
+          project
+          drush
+        ];
       };
-    }
-  ;
+    };
 }

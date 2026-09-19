@@ -1,4 +1,7 @@
-{ ... }:
+{ config, ... }:
+let
+  libHostenv = config.flake.lib.hostenv;
+in
 {
   flake.modules.hostenv.drupalCommon =
     {
@@ -9,6 +12,10 @@
     }:
     let
       cfg = config.services.drupal;
+      mysqlPrograms = libHostenv.mysql.mkPrograms {
+        inherit lib pkgs;
+        package = config.services.mysql.package;
+      };
       env = config.environments.${config.hostenv.environmentName};
       mkDefaultAttrs = lib.mapAttrs (_: lib.mkDefault);
 
@@ -289,7 +296,7 @@
               fi
 
               if [ -S "$mysql_sock" ]; then
-                table_count="$(${config.services.mysql.package}/bin/mysql -N -u ${config.hostenv.userName} \
+                table_count="$(${mysqlPrograms.client} -N -u ${config.hostenv.userName} \
                   --socket="$mysql_sock" \
                   -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${cfg.databaseName}';" 2>/dev/null || echo 0)"
                 if [ "''${table_count:-0}" -gt 0 ]; then
