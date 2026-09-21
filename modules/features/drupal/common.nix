@@ -450,6 +450,11 @@ in
           # point-in-time restore in case anything goes wrong. However,
           # replication to another host is not setup yet.
           replication = lib.mkDefault {
+            # Note on MariaDB 11.4+, there is a replication bug that can
+            # result in MariaDB filling all available disk space.
+            # We work around this in:
+            # flake.modules.hostenv.mysql.settings.mysqld
+            # See that module for details.
             role = "master";
             masterUser = "replication_primary";
             # While we skip-networking and only listen on a socket,

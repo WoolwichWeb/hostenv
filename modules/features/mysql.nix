@@ -466,6 +466,7 @@ in
             datadir = builtins.toString cfg.dataDir;
             socket = "${cfg.runtimeDir}/mysql.sock";
           }
+
           (lib.mkIf (cfg.replication.role == "master" || cfg.replication.role == "slave") {
             log-bin = "mysql-bin-${toString cfg.replication.serverId}";
             log-bin-index = "mysql-bin-${toString cfg.replication.serverId}.index";
@@ -477,9 +478,25 @@ in
               "mysql"
             ];
             expire_logs_days = "5";
-            # Three days: 24*60*60*5
+            # Five days: 24*60*60*5
             binlog_expire_logs_seconds = "432000";
           })
+
+          (lib.mkIf
+            (
+              isMariaDB
+              && lib.versionAtLeast cfg.package.version "11.4"
+              && (cfg.replication.role == "master" || cfg.replication.role == "slave")
+            )
+            {
+              # MariaDB 11.4+ defaults this to 1, which prevents expiry until
+              # a replica has connected. This configuration can lead to MariaDB
+              # filling the disk, see:
+              # https://jira.mariadb.org/browse/MDEV-38849
+              slave_connections_needed_for_purge = 0;
+            }
+          )
+
           (lib.mkIf (!isMariaDB) {
             plugin-load-add = [ "auth_socket.so" ];
           })

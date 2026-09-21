@@ -267,6 +267,7 @@ in
         dataDir = "${config.hostenv.dataDir}/mysql";
         initialDatabases = [ { name = cfg.databaseName; } ];
         ensureDatabases = [ cfg.databaseName ];
+
         ensureUsers = [
           {
             name = config.hostenv.userName;
@@ -277,12 +278,20 @@ in
             ensurePermissions."*.*" = "SELECT, LOCK TABLES";
           }
         ];
+
+        # Enable replication so we get point in time restore.
+        # Note on MariaDB 11.4+, there is a replication bug that can
+        # result in MariaDB filling all available disk space.
+        # We work around this in:
+        # flake.modules.hostenv.mysql.settings.mysqld
+        # See that module for details.
         replication = lib.mkDefault {
           role = "master";
           masterUser = "replication_primary";
           masterPassword = "";
           slaveHost = "localhost";
         };
+
         settings = {
           mysqld = {
             max_connections = lib.mkDefault 1000;
@@ -301,6 +310,7 @@ in
             innodb_flush_method = lib.mkDefault "O_DIRECT";
             innodb_stats_on_metadata = lib.mkDefault false;
           };
+
           mysqldump = {
             quick = true;
             max_allowed_packet = lib.mkDefault "128M";
