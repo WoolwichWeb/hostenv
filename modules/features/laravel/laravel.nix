@@ -21,28 +21,9 @@ in
       migrateBackupName = "laravel-migrate";
       laravelPhpPool = config.services.phpfpm.pools.${cfg.codebase.name};
 
-      canonicalVHostFor =
-        envCfg:
-        let
-          envHostName = envCfg.hostenv.hostname;
-          defaultVHost =
-            if builtins.hasAttr envHostName envCfg.virtualHosts then
-              envCfg.virtualHosts.${envHostName}
-            else
-              throw ''
-                ${envHostName} was not in the environment's virtual hosts.
-                Available virtual hosts: ${builtins.toJSON (builtins.attrNames envCfg.virtualHosts)}
-              '';
-          redirectedToCanonical =
-            defaultVHost.globalRedirect != null
-            && builtins.hasAttr defaultVHost.globalRedirect envCfg.virtualHosts;
-        in
-        if redirectedToCanonical then defaultVHost.globalRedirect else envHostName;
-
-      canonicalVHost = canonicalVHostFor env;
-      canonicalVHostConfig = env.virtualHosts.${canonicalVHost};
       canonicalUri =
-        (if canonicalVHostConfig.enableLetsEncrypt then "https://" else "http://") + canonicalVHost;
+        (if env.virtualHosts.${env.canonicalHost}.enableLetsEncrypt then "https://" else "http://")
+        + env.canonicalHost;
 
       dotenvEscape =
         value: "\"${builtins.replaceStrings [ "\\" "\"" "$" ] [ "\\\\" "\\\"" "\\$" ] value}\"";
@@ -173,9 +154,6 @@ in
 
       mkLaravelDeploymentVerification =
         envCfg:
-        let
-          virtualHost = canonicalVHostFor envCfg;
-        in
         {
           enable = true;
           enforce = true;
@@ -184,7 +162,7 @@ in
               name = "laravel-health";
               type = "httpHostHeaderCurl";
               request = {
-                inherit virtualHost;
+                virtualHost = envCfg.canonicalHost;
                 path = cfg.healthCheckPath;
                 method = "GET";
                 targetHostSource = "nodeConnectionHost";

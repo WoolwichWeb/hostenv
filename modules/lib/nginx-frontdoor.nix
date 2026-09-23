@@ -96,6 +96,7 @@ let
               "enableLetsEncrypt"
               "enableACME"
               "allowIndexing"
+              "canonical"
               "security"
               "hsts"
             ]) // {

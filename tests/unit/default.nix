@@ -4,6 +4,7 @@
 (import ./restic.nix { inherit pkgs; })
   // (import ./deploy-rsync.nix { inherit pkgs makeHostenv; })
   // (import ./hostenv-assertions.nix { inherit pkgs makeHostenv; })
+  // (import ./canonical-host.nix { inherit pkgs makeHostenv; })
   // (import ./cli-wrappers.nix { inherit pkgs makeHostenv; })
   // (import ./cli-command-names.nix { inherit pkgs makeHostenv; })
   // (import ./cli-flags.nix { inherit pkgs makeHostenv; })

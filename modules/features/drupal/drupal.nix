@@ -29,29 +29,9 @@ in
       # This final PHP package is then used in various places in the code, so
       # the same version of PHP is used everywhere.
       drupalPhpPool = config.services.phpfpm.pools."${cfg.codebase.name}";
-      canonicalVHostFor =
-        envCfg:
-        let
-          envHostName = envCfg.hostenv.hostname;
-          hasDefaultHost = builtins.hasAttr envHostName envCfg.virtualHosts;
-          defaultVHost =
-            if hasDefaultHost then
-              envCfg.virtualHosts.${envHostName}
-            else
-              builtins.throw ''
-                ${envHostName} was not in the environment's hosts.
-                Available virtualHosts: ${builtins.toJSON (builtins.attrNames envCfg.virtualHosts)}
-              '';
-          redirectedToCanonical =
-            defaultVHost ? globalRedirect
-            && defaultVHost.globalRedirect != null
-            && builtins.hasAttr defaultVHost.globalRedirect envCfg.virtualHosts;
-        in
-        if redirectedToCanonical then defaultVHost.globalRedirect else envHostName;
-      canonicalVHost = canonicalVHostFor env;
-      canonicalVHostConfig = env.virtualHosts.${canonicalVHost};
-      canonicalProtocol = if canonicalVHostConfig.enableLetsEncrypt then "https://" else "http://";
-      canonicalUri = canonicalProtocol + canonicalVHost;
+      canonicalUri =
+        (if env.virtualHosts.${env.canonicalHost}.enableLetsEncrypt then "https://" else "http://")
+        + env.canonicalHost;
 
       hostenvSettingsFile = pkgs.writeText "settings.hostenv.php" ''
         <?php

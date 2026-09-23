@@ -257,6 +257,75 @@ let
     let
       types = lib.types;
 
+      # Given an attrset of hostnames, determine which one should be canonical.
+      # Throws an error if the user set multiple hostnames to be canonical, or
+      # if the user set their canonical hostname to redirect somewhere else.
+      resolveCanonicalHost =
+        virtualHosts:
+        let
+          # Virtualhosts the user explicitly marked as 'canonical', which means
+          # they are the preferred public hostname for the environment.
+          #
+          # If no hostname is set as canonical, we can infer it from custom
+          # hostnames that serve the application and have Let's Encrypt enabled.
+          # Only one hostname may be canonical, but that condition is handled
+          # below (by throwing).
+          explicit = builtins.attrNames (lib.filterAttrs (_: vhost: vhost.canonical or false) virtualHosts);
+
+          eligible = lib.filterAttrs (
+            host: vhost:
+            host != config.hostenv.hostname
+            && (vhost.globalRedirect or null) == null
+            && (vhost.enableLetsEncrypt or true)
+          ) virtualHosts;
+
+          eligibleNames = builtins.attrNames eligible;
+
+          # Hostnames from the eligible list above that other hostnames
+          # redirect to.
+          #
+          # A redirect to an eligible host is a stronger signal than merely
+          # being one of several hostnames that can serve the application.
+          redirectTargets = lib.unique (
+            lib.filter (target: target != null && builtins.hasAttr target eligible) (
+              lib.mapAttrsToList (_: vhost: vhost.globalRedirect or null) virtualHosts
+            )
+          );
+        in
+        if builtins.length explicit > 1 then
+          throw ''
+            Only one virtual host may be canonical for environment '${name}'.
+            Found: ${lib.concatStringsSep ", " explicit}
+          ''
+
+        else if explicit != [ ] then
+          let
+            canonical = builtins.head explicit;
+            redirect = virtualHosts.${canonical}.globalRedirect or null;
+          in
+          if redirect != null && redirect != forceNull then
+            throw ''
+              Virtual host '${canonical}' in environment '${name}' cannot be
+              both canonical and redirect to '${redirect}'.
+            ''
+          else
+            canonical
+
+        else if builtins.length redirectTargets == 1 then
+          builtins.head redirectTargets
+
+        else if eligibleNames != [ ] then
+          # If the canonical hostname cannot be inferred, just grab the
+          # first one. Note that attribute names are sorted, so this will
+          # always be the first eligible *after the list is sorted into
+          # alphabetical order*.
+          builtins.head eligibleNames
+
+        else
+          # The base case: only the generated environment URL is available,
+          # e.g. some-environment-abc1234.example.com
+          config.hostenv.hostname;
+
       user = {
         options = {
 
@@ -306,7 +375,7 @@ let
           lib.mkOption {
             type = types.attrsOf (
               types.submodule (
-                { config, ... }: {
+                { config, options, ... }: {
                   options = {
 
                     locations = lib.mkOption {
@@ -352,6 +421,19 @@ let
                       '';
                     };
 
+                    canonical = lib.mkOption {
+                      type = types.bool;
+                      default = false;
+                      description = ''
+                        Whether this virtual host is the canonical public hostname
+                        for the environment.
+
+                        Hostenv normally infers the canonical hostname. Set this when
+                        an environment serves several hostnames and the intended
+                        canonical hostname would otherwise be ambiguous.
+                      '';
+                    };
+
                     globalRedirect = lib.mkOption {
                       type = types.nullOr types.str;
                       default = null;
@@ -365,8 +447,13 @@ let
                         let
                           hostName = envConfig.hostenv.hostname or "";
                           thisHost = config._module.args.name;
+                          thisPrio = options.globalRedirect.highestPrio;
                         in
-                        if thisHost == hostName then value: if value == forceNull then null else value else value: value;
+                        value:
+                        if thisHost == hostName && thisPrio < lib.modules.defaultOverridePriority && value == null then
+                          forceNull
+                        else
+                          value;
                     };
 
                     redirectCode = lib.mkOption {
@@ -497,11 +584,46 @@ let
               )
             );
             default = { };
+            apply =
+              virtualHosts:
+              let
+                hostname = config.hostenv.hostname;
+                canonicalHost = resolveCanonicalHost virtualHosts;
+                generatedVHost = virtualHosts.${hostname};
+                setGeneratedRedirect =
+                  target:
+                  virtualHosts
+                  // {
+                    ${hostname} = generatedVHost // {
+                      globalRedirect = target;
+                    };
+                  };
+              in
+              if generatedVHost.globalRedirect == forceNull then
+                setGeneratedRedirect null
+              else if generatedVHost.globalRedirect != null then
+                virtualHosts
+              else if canonicalHost != hostname then
+                setGeneratedRedirect canonicalHost
+              else
+                virtualHosts;
             description = ''
               Optional virtual host configuration. Enabling a framework provides a
               sensible default.
             '';
           };
+
+        canonicalHost = lib.mkOption {
+          type = types.str;
+          readOnly = true;
+          internal = true;
+          description = ''
+            Resolved canonical public hostname for this environment.
+
+            Internal modules should consume this value instead of independently
+            inferring a canonical hostname from virtualHosts.
+          '';
+        };
 
         deploymentVerification = lib.mkOption {
           type = types.submodule (
@@ -670,7 +792,10 @@ let
 
       };
 
-      config.virtualHosts.${config.hostenv.hostname} = lib.mkDefault { };
+      config = {
+        virtualHosts.${config.hostenv.hostname} = lib.mkDefault { };
+        canonicalHost = resolveCanonicalHost config.virtualHosts;
+      };
     };
 
   mkHostenvFunctions =
