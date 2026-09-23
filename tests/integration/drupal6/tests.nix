@@ -124,7 +124,7 @@ let
         drush="$profile/bin/drush"
         test -x "$drush" || { echo "missing drush wrapper"; exit 1; }
         grep -q -- '--root=.*web' "$drush" || { echo "drush wrapper missing web root"; exit 1; }
-        grep -q -- '--uri=' "$drush" || { echo "drush wrapper missing default uri"; exit 1; }
+        grep -Fq -- '--uri=https://www.drupal6.example.com' "$drush" || { echo "drush wrapper missing canonical default uri"; exit 1; }
         grep -q 'exec -a drush' "$drush" || { echo "drush wrapper does not exec as drush"; exit 1; }
         grep -q '/bin/php' "$drush" || { echo "drush wrapper does not route PHP scripts through pool PHP"; exit 1; }
         if grep -q 'vendor/bin/drush' "$drush"; then

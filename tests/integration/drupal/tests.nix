@@ -142,6 +142,25 @@ let
     };
   };
 
+  drushCanonicalUri = env: prefix: expectedUri: {
+    "${prefix}-drush-canonical-uri" = asserts.assertRun {
+      name = "${prefix}-drush-canonical-uri";
+      inherit env;
+      script = ''
+        drush="$profile/bin/drush"
+        test -x "$drush" || { echo "missing drush wrapper"; exit 1; }
+        grep -Fq -- '--uri=${expectedUri}' "$drush" || {
+          echo "drush wrapper does not default to canonical URI ${expectedUri}"
+          exit 1
+        }
+        grep -Fq -- '--uri=*|-l|--uri)' "$drush" || {
+          echo "drush wrapper no longer preserves caller-supplied URI overrides"
+          exit 1
+        }
+      '';
+    };
+  };
+
   drupalRestoreMarker = env: prefix: {
     "${prefix}-restore-marker" = asserts.assertRun {
       name = "${prefix}-restore-marker";
@@ -184,5 +203,6 @@ profileStructure envs.drupalProduction "drupal-prod"
 // nginxSocketListen envs.drupalDev "drupal-dev"
 // drupalStructure envs.drupalProduction "drupal-prod"
 // drupalStructure envs.drupalDev "drupal-dev"
+// (drushCanonicalUri envs.drupalProduction "drupal-prod" "https://www.example.com")
 // drupalRestoreMarker envs.drupalProduction "drupal-prod"
   // drupalRestoreMarker envs.drupalDev "drupal-dev"

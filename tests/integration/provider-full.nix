@@ -101,6 +101,10 @@ let
   drupalMainUser = drupal.eval.config.environments.main.hostenv.userName;
   drupalMainVerification = planData.environments.${drupalMainUser}.deploymentVerification or { };
   drupalMainHost = planData.environments.${drupalMainUser}.hostenv.hostname;
+  drupalMainCanonicalHost = planData.environments.${drupalMainUser}.canonicalHost;
+  drupalMainNode = planData.environments.${drupalMainUser}.node;
+  drupalMainFrontdoorVHost =
+    planData.nodes.${drupalMainNode}.services.nginx.virtualHosts.${drupalMainHost} or { };
   drupalMainChecks = drupalMainVerification.checks or [ ];
   drupalMainCheck = if drupalMainChecks == [ ] then { } else builtins.head drupalMainChecks;
   drupalMainConstraints = drupalMainCheck.constraints or [ ];
@@ -168,7 +172,8 @@ in
         (drupalMainVerification.enable or false)
         && (drupalMainVerification.enforce or false)
         && (drupalMainCheck.type or null) == "httpHostHeaderCurl"
-        && (request.virtualHost or null) == drupalMainHost
+        && (request.virtualHost or null) == drupalMainCanonicalHost
+        && (drupalMainFrontdoorVHost.globalRedirect or null) == drupalMainCanonicalHost
         && (request.path or null) == "/user/login"
         && (request.followRedirects or false)
         && (request.tlsMode or null) == "strict"

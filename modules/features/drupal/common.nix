@@ -19,31 +19,10 @@ in
       env = config.environments.${config.hostenv.environmentName};
       mkDefaultAttrs = lib.mapAttrs (_: lib.mkDefault);
 
-      canonicalVHostFor =
-        envCfg:
-        let
-          envHostName = envCfg.hostenv.hostname;
-          hasDefaultHost = builtins.hasAttr envHostName envCfg.virtualHosts;
-          defaultVHost =
-            if hasDefaultHost then
-              envCfg.virtualHosts.${envHostName}
-            else
-              throw ''
-                ${envHostName} was not in the environment's hosts.
-                Available virtualHosts: ${builtins.toJSON (builtins.attrNames envCfg.virtualHosts)}
-              '';
-          redirectedToCanonical =
-            defaultVHost ? globalRedirect
-            && defaultVHost.globalRedirect != null
-            && builtins.hasAttr defaultVHost.globalRedirect envCfg.virtualHosts;
-        in
-        if redirectedToCanonical then defaultVHost.globalRedirect else envHostName;
-
       drupalGeneratorRegex = ''<meta[[:space:]]+name="Generator"[[:space:]]+content="Drupal [0-9]'';
       mkDrupalDeploymentVerification =
         envCfg:
         let
-          canonicalVHost = canonicalVHostFor envCfg;
           drupalVerificationConstraints = [
             {
               rule = "allowNonZeroExitStatus";
@@ -71,7 +50,7 @@ in
               name = "drupal-homepage";
               type = "httpHostHeaderCurl";
               request = {
-                virtualHost = canonicalVHost;
+                virtualHost = envCfg.canonicalHost;
                 path = "/user/login";
                 method = "GET";
                 targetHostSource = "nodeConnectionHost";

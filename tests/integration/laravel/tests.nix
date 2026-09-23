@@ -59,7 +59,7 @@ let
 
           grep -Fq 'APP_ENV="production"' "$app/.env" || fail "production APP_ENV default is missing"
           grep -Fq 'APP_DEBUG="false"' "$app/.env" || fail "production APP_DEBUG default is missing"
-          grep -Fq 'APP_URL="https://${env.config.hostenv.hostname}"' "$app/.env" || fail "canonical APP_URL is missing"
+          grep -Fq 'APP_URL="https://${env.config.environments.main.canonicalHost}"' "$app/.env" || fail "canonical APP_URL is missing"
           grep -Fq 'LOG_CHANNEL="stderr"' "$app/.env" || fail "stderr logging default is missing"
           grep -Fq 'DB_SOCKET="${env.config.hostenv.runtimeDir}/mysql.sock"' "$app/.env" \
             || fail "MariaDB socket default is missing"
@@ -472,13 +472,17 @@ EOF
       name = "Laravel 10 default deployment health check";
       passed =
         cfg10.environments.main.deploymentVerification.checks != [ ]
-        && (builtins.head cfg10.environments.main.deploymentVerification.checks).request.path == "/";
+        && (builtins.head cfg10.environments.main.deploymentVerification.checks).request.path == "/"
+        && (builtins.head cfg10.environments.main.deploymentVerification.checks).request.virtualHost
+          == cfg10.environments.main.canonicalHost;
     }
     {
       name = "Laravel 12 configured deployment health check";
       passed =
         cfg12.environments.main.deploymentVerification.checks != [ ]
-        && (builtins.head cfg12.environments.main.deploymentVerification.checks).request.path == "/up";
+        && (builtins.head cfg12.environments.main.deploymentVerification.checks).request.path == "/up"
+        && (builtins.head cfg12.environments.main.deploymentVerification.checks).request.virtualHost
+          == cfg12.environments.main.canonicalHost;
     }
   ];
 
