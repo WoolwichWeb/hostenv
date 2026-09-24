@@ -49,6 +49,11 @@ let
       node = "retired-node";
       virtualHosts = [ "retired.example" ];
     };
+    retiredOnActiveNode = {
+      uid = 4502;
+      node = "node-a";
+      virtualHosts = [ "retired-on-active-node.example" ];
+    };
   };
   stateFile = pkgs.writeText "state.json" (builtins.toJSON persistedState);
   lockFile = pkgs.writeText "flake.lock" (builtins.toJSON {
@@ -83,6 +88,17 @@ let
   baseline = mkPlan { };
   plan = lib.importJSON baseline.plan;
   state = lib.importJSON baseline.state;
+  movedEnvironment = mkPlan {
+    nodeFor = {
+      default = "old-node";
+      production = "node-a";
+    };
+    nodeSystems = {
+      node-a = system;
+      old-node = system;
+    };
+  };
+  movedPlan = lib.importJSON movedEnvironment.plan;
   withoutState = mkPlan { statePath = null; };
   missingState = mkPlan { statePath = providerRoot + "/generated/absent.json"; };
   noStatePlan = lib.importJSON withoutState.plan;
@@ -173,6 +189,14 @@ in
     && plan.nodeConnections ? old-node
     && plan.nodeConnections ? retired-node
   ) "previous and retired nodes must remain available to migration routing";
+
+  provider-plan-retired-users = asserts.assertTrue "provider-plan-retired-users" (
+    plan.nodes.node-a.provider.retiredUsers.retiredOnActiveNode.uid == 4502
+    && !(plan.nodes.node-a.provider.retiredUsers ? retired)
+    && !(plan.nodes.node-a.provider.retiredUsers ? ${mainUser})
+    && movedPlan.nodes.old-node.provider.retiredUsers.${mainUser}.uid == 2501
+    && !(movedPlan.nodes.node-a.provider.retiredUsers ? ${mainUser})
+  ) "users removed from an active node, including moved environments, must be passed to NixOS cleanup only on their previous node";
 
   provider-plan-optional-state = asserts.assertTrue "provider-plan-optional-state" (
     lib.importJSON missingState.plan == noStatePlan
