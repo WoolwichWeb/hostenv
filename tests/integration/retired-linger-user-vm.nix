@@ -36,5 +36,8 @@ pkgs.testers.runNixOSTest {
         machine.fail("test -e /var/lib/systemd/linger/${user}")
         machine.fail("systemctl is-active --quiet user@${toString uid}.service")
         machine.fail("test -S /run/user/${toString uid}/bus")
+
+    with subtest("retired-user cleanup remains idempotent"):
+        machine.succeed("/run/current-system/activate")
   '';
 }

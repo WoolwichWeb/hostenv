@@ -13,12 +13,14 @@
           echo "retiring Hostenv user ${name}"
 
           if getent passwd ${escapedName} >/dev/null; then
-            ${pkgs.systemd}/bin/loginctl disable-linger ${escapedName} || true
+            ${pkgs.systemd}/bin/loginctl disable-linger ${escapedName} || rm -f ${lingerPath}
           else
             rm -f ${lingerPath}
           fi
 
-          ${pkgs.systemd}/bin/systemctl stop ${lib.escapeShellArg "user@${toString user.uid}.service"} || true
+          if ${pkgs.systemd}/bin/systemctl is-active --quiet ${lib.escapeShellArg "user@${toString user.uid}.service"}; then
+            ${pkgs.systemd}/bin/systemctl stop ${lib.escapeShellArg "user@${toString user.uid}.service"}
+          fi
         '';
     in
     {
