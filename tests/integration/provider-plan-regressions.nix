@@ -49,6 +49,11 @@ let
       node = "retired-node";
       virtualHosts = [ "retired.example" ];
     };
+    retiredOnActiveNode = {
+      uid = 4502;
+      node = "node-a";
+      virtualHosts = [ "retired-on-active-node.example" ];
+    };
   };
   stateFile = pkgs.writeText "state.json" (builtins.toJSON persistedState);
   lockFile = pkgs.writeText "flake.lock" (builtins.toJSON {
@@ -173,6 +178,12 @@ in
     && plan.nodeConnections ? old-node
     && plan.nodeConnections ? retired-node
   ) "previous and retired nodes must remain available to migration routing";
+
+  provider-plan-retired-users = asserts.assertTrue "provider-plan-retired-users" (
+    plan.nodes.node-a.provider.retiredUsers.retiredOnActiveNode.uid == 4502
+    && !(plan.nodes.node-a.provider.retiredUsers ? retired)
+    && !(plan.nodes.node-a.provider.retiredUsers ? ${mainUser})
+  ) "retired users on an active node must be passed to NixOS cleanup without including active or other-node users";
 
   provider-plan-optional-state = asserts.assertTrue "provider-plan-optional-state" (
     lib.importJSON missingState.plan == noStatePlan

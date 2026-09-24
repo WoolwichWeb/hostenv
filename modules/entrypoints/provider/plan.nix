@@ -278,6 +278,24 @@ let
         )
         validatedEnvironments;
 
+      currentUserNames = map (env: env.hostenv.userName) environmentsWithUid;
+
+      # State entries outlive environments so UIDs remain reserved. When an
+      # environment disappears, retain enough information to stop its lingering
+      # systemd user manager before NixOS removes the UNIX account.
+      retiredEnvironments = lib.filterAttrs
+        (name: env:
+          !(builtins.elem name currentUserNames)
+          && builtins.isInt (env.uid or null)
+          && builtins.isString (env.node or null)
+          && env.node != "")
+        state;
+
+      retiredUsersForNode = nodeName:
+        lib.mapAttrs
+          (_: env: { uid = env.uid; })
+          (lib.filterAttrs (_: env: env.node == nodeName) retiredEnvironments);
+
       nodeConnections =
         let
           # Remember old nodes too: migrations may still need to contact them.
@@ -450,6 +468,7 @@ let
                           provider = {
                             inherit deployPublicKeys deployUser;
                             nixSigning.trustedPublicKeys = nixSigning.trustedPublicKeys or [ ];
+                            retiredUsers = retiredUsersForNode nodeName;
                           };
                           users.groups.${env.hostenv.userName}.gid = env.uid;
                           users.users.${env.hostenv.userName} = {
