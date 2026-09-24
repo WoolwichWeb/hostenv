@@ -64,7 +64,7 @@ let
 
       nodeModulesRel =
         let
-          basePath = if inputs ? self then builtins.toString inputs.self else null;
+          basePath = if inputs ? self then toString inputs.self else null;
           normalize = module:
             if builtins.isString module then
               module
@@ -72,7 +72,7 @@ let
               if basePath == null then
                 throw "provider plan: nodeModules path values require inputs.self; use string paths relative to the provider root."
               else
-                let modulePath = builtins.toString module;
+                let modulePath = toString module;
                 in
                 if lib.hasPrefix (basePath + "/") modulePath then
                   lib.removePrefix (basePath + "/") modulePath
@@ -107,7 +107,7 @@ let
         else
           true;
 
-      state = builtins.removeAttrs
+      state = removeAttrs
         (if statePath == null || !(builtins.pathExists statePath)
          then { }
          else lib.importJSON statePath)
@@ -118,7 +118,7 @@ let
           lib.importJSON lockPath
         else
           throw ''
-            flake.lock is missing at ${builtins.toString lockPath}.
+            flake.lock is missing at ${toString lockPath}.
             Please run: nix flake lock (or nix flake update) at repo root
           '';
 
@@ -128,7 +128,7 @@ let
         || (deploy.nodeAuthTokenFile or null) != null
         || (deploy.nodeAuthTokenFiles or { }) != { }
         || (deploy.reconnectSeconds or 5) != 5
-        || (builtins.removeAttrs deploy [
+        || (removeAttrs deploy [
           "enable"
           "providerApiBaseUrl"
           "nodeAuthTokenFile"
@@ -138,7 +138,7 @@ let
 
       cacheHasSettings =
         (cache.enable or false)
-        || (builtins.removeAttrs cache [ "enable" ]) != { };
+        || (removeAttrs cache [ "enable" ]) != { };
 
       assertUnsupportedProviderServiceOptions =
         if deployHasSettings then
@@ -278,31 +278,39 @@ let
         )
         validatedEnvironments;
 
-      currentEnvironmentsByUser = builtins.listToAttrs (map
-        (env: {
-          name = env.hostenv.userName;
-          value = env;
-        })
-        environmentsWithUid);
+      # User accounts that will need processing to remove their accounts from
+      # the given node. An unclean removal can cause deployments to fail.
+      retiredUsersForNode =
+        let
+          currentEnvironmentsByUser = builtins.listToAttrs (map
+            (env: {
+              name = env.hostenv.userName;
+              value = env;
+            })
+            environmentsWithUid);
 
-      # State entries outlive environment placement so UIDs remain reserved.
-      # If an environment disappears or moves to another node, stop the
-      # lingering user manager on its previous node before NixOS removes that
-      # node's UNIX account.
-      retiredEnvironmentPlacements = lib.filterAttrs
-        (name: previous:
-          let current = currentEnvironmentsByUser.${name} or null;
-          in
-          builtins.isInt (previous.uid or null)
-          && builtins.isString (previous.node or null)
-          && previous.node != ""
-          && (current == null || current.node != previous.node))
-        state;
+          # If an environment disappears or moves to another node, stop the
+          # lingering user manager on its previous node before NixOS removes that
+          # node's UNIX account.
+          # `state` is useful here as entries are retained after environment
+          # UNIX user accounts are deleted from the node they are deployed to.
+          # This is ostensibly to reserve UIDs, but here state entries are used
+          # to figure out which users have been retired or moved to a different
+          # node.
+          retiredEnvs = lib.filterAttrs
+            (name: previous:
+              let current = currentEnvironmentsByUser.${name} or null;
+              in
+              builtins.isInt (previous.uid or null)
+              && builtins.isString (previous.node or null)
+              && previous.node != ""
+              && (current == null || current.node != previous.node))
+            state;
 
-      retiredUsersForNode = nodeName:
-        lib.mapAttrs
+        in
+        nodeName: lib.mapAttrs
           (_: env: { uid = env.uid; })
-          (lib.filterAttrs (_: env: env.node == nodeName) retiredEnvironmentPlacements);
+          (lib.filterAttrs (_: env: env.node == nodeName) retiredEnvs);
 
       nodeConnections =
         let
@@ -446,7 +454,7 @@ let
               let
                 firstPart = builtins.head (lib.splitString "-" env.hostenv.userName);
                 sliceName = "user-${env.hostenv.organisation}-${firstPart}";
-                uidText = builtins.toString env.uid;
+                uidText = toString env.uid;
                 nodeName =
                   if builtins.isString env.node && env.node != "" then env.node
                   else throw "nodeFor/default must be set to a node name for environment ${env.hostenv.userName}";
