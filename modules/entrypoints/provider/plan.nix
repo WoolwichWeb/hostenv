@@ -278,23 +278,31 @@ let
         )
         validatedEnvironments;
 
-      currentUserNames = map (env: env.hostenv.userName) environmentsWithUid;
+      currentEnvironmentsByUser = builtins.listToAttrs (map
+        (env: {
+          name = env.hostenv.userName;
+          value = env;
+        })
+        environmentsWithUid);
 
-      # State entries outlive environments so UIDs remain reserved. When an
-      # environment disappears, retain enough information to stop its lingering
-      # systemd user manager before NixOS removes the UNIX account.
-      retiredEnvironments = lib.filterAttrs
-        (name: env:
-          !(builtins.elem name currentUserNames)
-          && builtins.isInt (env.uid or null)
-          && builtins.isString (env.node or null)
-          && env.node != "")
+      # State entries outlive environment placement so UIDs remain reserved.
+      # If an environment disappears or moves to another node, stop the
+      # lingering user manager on its previous node before NixOS removes that
+      # node's UNIX account.
+      retiredEnvironmentPlacements = lib.filterAttrs
+        (name: previous:
+          let current = currentEnvironmentsByUser.${name} or null;
+          in
+          builtins.isInt (previous.uid or null)
+          && builtins.isString (previous.node or null)
+          && previous.node != ""
+          && (current == null || current.node != previous.node))
         state;
 
       retiredUsersForNode = nodeName:
         lib.mapAttrs
           (_: env: { uid = env.uid; })
-          (lib.filterAttrs (_: env: env.node == nodeName) retiredEnvironments);
+          (lib.filterAttrs (_: env: env.node == nodeName) retiredEnvironmentPlacements);
 
       nodeConnections =
         let

@@ -88,6 +88,17 @@ let
   baseline = mkPlan { };
   plan = lib.importJSON baseline.plan;
   state = lib.importJSON baseline.state;
+  movedEnvironment = mkPlan {
+    nodeFor = {
+      default = "old-node";
+      production = "node-a";
+    };
+    nodeSystems = {
+      node-a = system;
+      old-node = system;
+    };
+  };
+  movedPlan = lib.importJSON movedEnvironment.plan;
   withoutState = mkPlan { statePath = null; };
   missingState = mkPlan { statePath = providerRoot + "/generated/absent.json"; };
   noStatePlan = lib.importJSON withoutState.plan;
@@ -183,7 +194,9 @@ in
     plan.nodes.node-a.provider.retiredUsers.retiredOnActiveNode.uid == 4502
     && !(plan.nodes.node-a.provider.retiredUsers ? retired)
     && !(plan.nodes.node-a.provider.retiredUsers ? ${mainUser})
-  ) "retired users on an active node must be passed to NixOS cleanup without including active or other-node users";
+    && movedPlan.nodes.old-node.provider.retiredUsers.${mainUser}.uid == 2501
+    && !(movedPlan.nodes.node-a.provider.retiredUsers ? ${mainUser})
+  ) "users removed from an active node, including moved environments, must be passed to NixOS cleanup only on their previous node";
 
   provider-plan-optional-state = asserts.assertTrue "provider-plan-optional-state" (
     lib.importJSON missingState.plan == noStatePlan
