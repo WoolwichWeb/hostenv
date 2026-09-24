@@ -1,10 +1,16 @@
 { ... }:
 {
   flake.modules.nixos.hostenv-user-lifecycle =
-    { config, lib, pkgs, ... }:
+    {
+      config,
+      lib,
+      pkgs,
+      ...
+    }:
     let
       retiredUsers = config.provider.retiredUsers;
-      cleanupUser = name: user:
+      cleanupUser =
+        name: user:
         let
           escapedName = lib.escapeShellArg name;
           lingerPath = lib.escapeShellArg "/var/lib/systemd/linger/${name}";
@@ -25,12 +31,16 @@
     in
     {
       options.provider.retiredUsers = lib.mkOption {
-        type = lib.types.attrsOf (lib.types.submodule ({ ... }: {
-          options.uid = lib.mkOption {
-            type = lib.types.int;
-            description = "Reserved UID of a retired Hostenv environment user.";
-          };
-        }));
+        type = lib.types.attrsOf (
+          lib.types.submodule (
+            { ... }: {
+              options.uid = lib.mkOption {
+                type = lib.types.int;
+                description = "Reserved UID of a retired Hostenv environment user.";
+              };
+            }
+          )
+        );
         default = { };
         internal = true;
         description = "Retired Hostenv users whose lingering systemd managers must be stopped before account removal.";
@@ -46,6 +56,5 @@
         # later try to reload a dead /run/user/<uid>/bus.
         system.activationScripts.users.deps = lib.mkAfter [ "hostenv-retired-users" ];
       };
-    }
-  ;
+    };
 }
